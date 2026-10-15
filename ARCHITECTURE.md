@@ -76,7 +76,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the signed UKI command line; the root hash is covered by the Secure Boot signature |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
 | Memory | zram swap of 32 GiB (a ceiling, not a reservation; its index costs about 128 MiB); zswap off; no disk swap |
-| Seat and session | seatd; Sway, foot, fuzzel, mako, swaylock, swayidle, kanshi; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
+| Seat and session | seatd; Sway, foot, wmenu, mako, swaylock, swayidle, kanshi; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
 | Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels denied until approved from the menu; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
 | Power | Never suspends. CPU energy preference and a 4.2 GHz clock cap set per power source by a small OpenRC service on AC events; runtime power management for idle devices; thermald; a known-noisy ACPI event masked only if it is not the embedded controller's |
@@ -507,7 +507,7 @@ Convergent writes as little as it can. The rules:
 | `guests` | from the menu | Creates a guest with the next free address, snapshots, updates guests and the firewall pair in order with its checks and rollback |
 | `check` | after boot, after update, daily | The checker (section 8) |
 | `bar` | in the session | The status bar: reads `/proc` and `/sys` without starting programs; asks vmalert every 30 seconds |
-| `menu` | from a key binding | fuzzel over a directory of plain action files, each one line: a label and the command it runs |
+| `menu` | from a key binding | wmenu over a directory of plain action files, each one line: a label and the command it runs |
 | `browser` | from the menu or a link | Starts a browser container with its restricted Wayland and audio sockets |
 | `facts` | once per boot; daily | Writes the host's extra figures as text files for node_exporter, archives pstore records |
 | `dns-push` | weekly; from the menu | Downloads, validates and pushes the blocklist and the owner's records file to both firewalls |

@@ -1,0 +1,29 @@
+# Kernel: Gentoo's hardened configuration; modules signed with a key made for each build.
+# No initramfs from the package: the build makes its own, and the UKI (build/, section 6).
+sys-kernel/gentoo-kernel hardened modules-sign -initramfs
+
+# The boot loader and UKI tools from systemd-utils, with udev; no systemd init.
+sys-apps/systemd-utils boot ukify kernel-install udev tmpfiles
+
+# Containers and VMs, confined by AppArmor.
+app-containers/incus qemu apparmor
+app-containers/lxc apparmor caps tools
+
+# Required by the sets' dependencies.
+# pango (for Sway's text) needs freetype with harfbuzz.
+media-libs/freetype harfbuzz
+# LXC's tools link libcap statically.
+sys-libs/libcap static-libs
+# Incus imports images with xz-compressed squashfs.
+sys-fs/squashfs-tools lzma
+# QEMU for Incus VMs: the console (spice), the configuration drive (virtfs), USB passthrough
+# of an approved network adapter to wan (usb), and usbredir, which Incus requires. Nothing else.
+app-emulation/qemu spice usbredir virtfs usb -vnc -curl -oss -jpeg -png
+# swtpm, the VMs' virtual TPM, needs gnutls with PKCS#11 and its tools.
+net-libs/gnutls pkcs11 tools
+# Incus' database (cowsql) needs raft with lz4.
+dev-libs/raft lz4
+# Incus applies image deltas with xdelta, which must read xz.
+dev-util/xdelta lzma
+# Incus drives nftables through its JSON interface.
+net-firewall/nftables json

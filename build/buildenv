@@ -1,0 +1,65 @@
+#!/bin/sh
+# buildenv: create or update the builder on the build host (ARCHITECTURE section 6).
+# Run as root from a checkout of this repository: build/buildenv
+# The builder is a chroot made from the pinned, signature-checked stage3, with the pinned
+# Portage snapshot and this repository's Portage configuration.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+. "$here/build.conf"
+. "$here/chroot.sh"
+
+die() { echo "buildenv: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+mirror=https://distfiles.gentoo.org/releases/amd64/autobuilds
+key=/usr/share/openpgp-keys/gentoo-release.asc
+[ -r "$key" ] || die "$key missing (sec-keys/openpgp-keys-gentoo-release)"
+
+work=$(mktemp -d)
+trap 'chroot_umount; rm -rf "$work"' EXIT
+
+# 1. The stage3, only when there is no builder yet.
+if [ ! -x "$BUILDER/bin/sh" ]; then
+	tarball="stage3-amd64-$STAGE3_VARIANT-$STAGE3_BUILD.tar.xz"
+	curl -fsSL -o "$work/$tarball" "$mirror/$STAGE3_BUILD/$tarball"
+	curl -fsSL -o "$work/$tarball.asc" "$mirror/$STAGE3_BUILD/$tarball.asc"
+	GNUPGHOME="$work/gnupg"; export GNUPGHOME
+	mkdir -m 700 "$GNUPGHOME"
+	gpg -q --import "$key"
+	gpg -q --verify "$work/$tarball.asc" "$work/$tarball" || die "stage3 signature does not verify"
+	mkdir -p "$BUILDER"
+	tar -xpf "$work/$tarball" --xattrs-include='*.*' --numeric-owner -C "$BUILDER"
+	echo "buildenv: builder created from $tarball"
+fi
+
+# 2. This repository's Portage configuration, replacing whatever was there.
+etc="$BUILDER/etc/portage"
+[ -d "$etc/make.conf" ] || { rm -f "$etc/make.conf"; mkdir "$etc/make.conf"; }
+cp "$repo/portage/make.conf" "$etc/make.conf/10-convergent"
+jobs=$(nproc)
+printf 'MAKEOPTS="-j%s -l%s"\nEMERGE_DEFAULT_OPTS="${EMERGE_DEFAULT_OPTS} --jobs=4 --load-average=%s"\n' \
+	"$jobs" "$jobs" "$jobs" >"$etc/make.conf/90-local"
+for d in package.use package.accept_keywords package.license sets; do
+	rm -rf "${etc:?}/$d"
+	mkdir -p "$etc/$d"
+	cp -r "$repo/portage/$d/." "$etc/$d/"
+done
+cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
+
+# 3. The pinned snapshot (signature checked by emerge-webrsync), the profile, the binary
+#    package keys.
+chroot_mount
+stamp=/var/db/repos/gentoo/.convergent-snapshot
+chroot "$BUILDER" /bin/sh -eu -c "
+	if [ \"\$(cat $stamp 2>/dev/null)\" = '$SNAPSHOT_DATE' ]; then
+		echo 'buildenv: snapshot $SNAPSHOT_DATE already in place'
+	else
+		emerge-webrsync -q --revert=$SNAPSHOT_DATE
+		echo '$SNAPSHOT_DATE' >$stamp
+	fi
+	eselect profile set $PROFILE
+	getuto >/dev/null
+"
+echo "buildenv: builder ready at $BUILDER (snapshot $SNAPSHOT_DATE, profile $PROFILE)"

@@ -1,0 +1,30 @@
+#!/bin/sh
+# packages: install the release's package sets into the staging root, the future system image
+# (ARCHITECTURE section 6, step 2). Gentoo's binary packages are used where they match; what is
+# compiled here becomes a binary package for next time.
+#   build/packages            install
+#   build/packages --pretend  show what would be installed, and how much is compiled
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+. "$here/chroot.sh"
+
+[ "$(id -u)" = 0 ] || { echo "packages: run as root" >&2; exit 1; }
+[ -x "$BUILDER/bin/sh" ] || { echo "packages: no builder; run build/buildenv first" >&2; exit 1; }
+
+sets="@system @convergent @convergent-apps"
+chroot_mount
+trap chroot_umount EXIT
+
+if [ "${1:-}" = --pretend ]; then
+	plan=$(chroot "$BUILDER" emerge --root=/staging --update --deep --newuse --pretend --verbose $sets 2>&1) || {
+		printf '%s\n' "$plan" | tail -n 40
+		exit 1
+	}
+	printf '%s\n' "$plan" | grep -E '^\[(binary|ebuild)' >"$BUILDER/tmp/plan"
+	echo "packages: $(grep -c '^\[binary' "$BUILDER/tmp/plan") from binaries, $(grep -c '^\[ebuild' "$BUILDER/tmp/plan") to compile"
+	grep '^\[ebuild' "$BUILDER/tmp/plan" | sed 's/^\[ebuild[^]]*\] //; s/ .*//'
+else
+	chroot "$BUILDER" emerge --root=/staging --update --deep --newuse --quiet-build=y $sets
+fi
