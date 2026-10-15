@@ -4,27 +4,43 @@
 # compiled here becomes a binary package for next time.
 #   build/packages            install
 #   build/packages --pretend  show what would be installed, and how much is compiled
+#
+# The image has a Portage configuration of its own (/image-config in the builder): the same
+# files as the builder's, plus portage/profile, which takes the toolchain and the package
+# manager out of the image's base set. The builder keeps them to do the building.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
 . "$here/build.conf"
 . "$here/chroot.sh"
 
 [ "$(id -u)" = 0 ] || { echo "packages: run as root" >&2; exit 1; }
 [ -x "$BUILDER/bin/sh" ] || { echo "packages: no builder; run build/buildenv first" >&2; exit 1; }
 
+# The image's configuration root, rebuilt from the builder's and this repository's each run.
+conf="$BUILDER/image-config/etc/portage"
+rm -rf "$BUILDER/image-config"
+mkdir -p "$conf"
+cp -r "$BUILDER/etc/portage/make.conf" "$BUILDER/etc/portage/binrepos.conf" "$BUILDER/etc/portage/gnupg" "$conf/"
+for d in package.use package.accept_keywords package.license sets profile; do
+	mkdir -p "$conf/$d"
+	cp -r "$repo/portage/$d/." "$conf/$d/"
+done
+ln -s "../../../var/db/repos/gentoo/profiles/$PROFILE" "$conf/make.profile"
+
 sets="@system @convergent @convergent-apps"
+emerge="env PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse"
 chroot_mount
 trap chroot_umount EXIT
 
 if [ "${1:-}" = --pretend ]; then
-	plan=$(chroot "$BUILDER" emerge --root=/staging --update --deep --newuse --pretend --verbose $sets 2>&1) || {
+	plan=$(chroot "$BUILDER" $emerge --pretend --verbose $sets 2>&1) || {
 		printf '%s\n' "$plan" | tail -n 40
 		exit 1
 	}
 	printf '%s\n' "$plan" | grep -E '^\[(binary|ebuild)' >"$BUILDER/tmp/plan"
 	echo "packages: $(grep -c '^\[binary' "$BUILDER/tmp/plan") from binaries, $(grep -c '^\[ebuild' "$BUILDER/tmp/plan") to compile"
-	grep '^\[ebuild' "$BUILDER/tmp/plan" | sed 's/^\[ebuild[^]]*\] //; s/ .*//'
 else
-	chroot "$BUILDER" emerge --root=/staging --update --deep --newuse --quiet-build=y $sets
+	chroot "$BUILDER" $emerge --quiet-build=y --keep-going=y $sets
 fi

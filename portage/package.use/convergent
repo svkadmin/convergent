@@ -2,8 +2,8 @@
 # No initramfs from the package: the build makes its own, and the UKI (build/, section 6).
 sys-kernel/gentoo-kernel hardened modules-sign -initramfs
 
-# The boot loader and UKI tools from systemd-utils, with udev; no systemd init.
-sys-apps/systemd-utils boot ukify kernel-install udev tmpfiles
+# systemd-boot and udev from systemd-utils; no systemd init. (ukify runs only in the builder.)
+sys-apps/systemd-utils boot kernel-install udev tmpfiles
 
 # Containers and VMs, confined by AppArmor.
 app-containers/incus qemu apparmor
@@ -27,3 +27,13 @@ dev-libs/raft lz4
 dev-util/xdelta lzma
 # Incus drives nftables through its JSON interface.
 net-firewall/nftables json
+
+# No mail on the laptop: sudo logs to syslog, and only smartctl is needed, not smartd.
+app-admin/sudo -sendmail
+sys-apps/smartmontools -daemon
+# Intel's GPU drivers need no LLVM at run time (the builder still uses it to compile shaders).
+media-libs/mesa -llvm
+# No Perl or Python on the laptop: AppArmor's library without its language bindings
+# (aa-status is C), ebtables (an Incus dependency) without its Perl helper.
+sys-libs/libapparmor -perl -python
+net-firewall/ebtables -perl

@@ -46,6 +46,7 @@ for d in package.use package.accept_keywords package.license sets; do
 	mkdir -p "$etc/$d"
 	cp -r "$repo/portage/$d/." "$etc/$d/"
 done
+cp "$here/builder.use" "$etc/package.use/zz-builder"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
 
 # 3. The pinned snapshot (signature checked by emerge-webrsync), the profile, the binary

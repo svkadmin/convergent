@@ -79,7 +79,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 | Seat and session | seatd; Sway, foot, wmenu, mako, swaylock, swayidle, kanshi; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
 | Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels denied until approved from the menu; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
-| Power | Never suspends. CPU energy preference and a 4.2 GHz clock cap set per power source by a small OpenRC service on AC events; runtime power management for idle devices; thermald; a known-noisy ACPI event masked only if it is not the embedded controller's |
+| Power | Never suspends. CPU energy preference and a 4.2 GHz clock cap set per power source by a small handler on AC events; runtime power management for idle devices; thermal control left to the firmware; a known-noisy ACPI event masked only if it is not the embedded controller's |
 | Host firewall | nftables: input accepted only on the `host` interface and only from the listed sources (section 4.2); forwarding off |
 | Logs | syslog-ng, forwarded to svc over TLS; a bounded local buffer for when svc is down |
 | Crashes | Kernel crash records from pstore archived at boot by an OpenRC service and reported to svc |
