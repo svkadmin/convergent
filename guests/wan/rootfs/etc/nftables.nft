@@ -1,0 +1,74 @@
+#!/usr/sbin/nft -f
+# Convergent wan: the packet filter (ARCHITECTURE sections 3.2, 4.2 and 10).
+# Default drop everywhere. Inbound on upstream: only DHCP replies. wan's own egress: DHCP on
+# upstream and syslog to svc on transit. Management: SSH from the host, a metrics scrape from
+# svc, and ping from the firewalls (their liveness probe). The one NAT lives here.
+flush ruleset
+
+define transit     = "eth0"
+define upstream    = { "wlan0", "eth1" }
+define internal    = 100.80.0.0/16
+define wan_addr    = 100.80.0.10
+define host_addr   = 100.80.1.10
+define svc_addr    = 100.80.2.10
+define portal_addr = 100.80.3.11
+define fw_addrs    = { 100.80.0.1, 100.80.0.2, 100.80.0.3 }
+
+table inet wan {
+	# Portal mode (wan-portal): while it holds { wan_addr : resolver }, DNS sent to wan's
+	# transit address by the portal browser is forwarded to the upstream resolver. Empty = off.
+	map portal_dns {
+		type ipv4_addr : ipv4_addr
+	}
+
+	# The same resolver as a set, for the forward chain: a DNAT is remembered per flow by the
+	# connection tracking, so emptying the map alone would leave flows that already exist running.
+	# The forward chain drops any DNAT-ed packet whose destination is not in this set, so closing
+	# takes effect on existing flows at once, without conntrack-tools.
+	set portal_ns {
+		type ipv4_addr
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state invalid drop
+		iifname $upstream udp sport 67 udp dport 68 accept
+		iifname $upstream drop
+		ct state established,related accept
+		iifname $transit ip saddr $host_addr ip daddr $wan_addr tcp dport 22 ct state new accept
+		iifname $transit ip saddr $svc_addr ip daddr $wan_addr tcp dport 9100 ct state new accept
+		iifname $transit ip saddr $fw_addrs ip daddr $wan_addr icmp type echo-request limit rate 20/second accept
+	}
+
+	# Transit to upstream, from the internal range to anywhere outside it; replies back. A lease
+	# that overlaps the internal range cannot be used to reach internal addresses (no rule
+	# allows a destination inside it), and nothing new ever enters from upstream.
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		ct state invalid drop
+		iifname $transit ct status dnat ip daddr != @portal_ns drop
+		iifname $upstream oifname $transit ct state established,related accept
+		iifname $transit oifname $upstream ip saddr $internal ip daddr != $internal accept
+	}
+
+	chain output {
+		type filter hook output priority filter; policy drop;
+		oif lo accept
+		ct state invalid drop
+		oifname $upstream udp sport 68 udp dport 67 accept
+		oifname $upstream drop
+		ct state established,related accept
+		oifname $transit ip daddr $svc_addr tcp dport 6514 ct state new accept
+	}
+
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname $transit ip saddr $portal_addr ip daddr $wan_addr meta l4proto { tcp, udp } th dport 53 dnat ip to ip daddr map @portal_dns
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		iifname $transit oifname $upstream ip saddr $internal masquerade
+	}
+}

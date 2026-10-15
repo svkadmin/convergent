@@ -1,0 +1,329 @@
+{
+  "uid": "cv-overview",
+  "title": "Convergent / Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "timezone": "browser",
+  "tags": [
+    "convergent"
+  ],
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Release update",
+        "expr": "changes(cv_release_built_seconds[1m]) > 0",
+        "titleFormat": "Release update",
+        "textFormat": "Host release build date changed",
+        "iconColor": "#3b82f6",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "metrics"
+        },
+        "enable": true,
+        "hide": false,
+        "step": "30s",
+        "useValueForTime": false
+      },
+      {
+        "name": "Firewall failover",
+        "expr": "changes(convergent_carp_state{node=\"fw1\",vhid=\"3\"}[1m]) > 0",
+        "titleFormat": "CARP transition",
+        "textFormat": "fw1 svc CARP master state changed",
+        "iconColor": "#f59e0b",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "metrics"
+        },
+        "enable": true,
+        "hide": false,
+        "step": "30s",
+        "useValueForTime": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Scrape reachability",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Active alerts",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ALERTS{alertstate=\"firing\"}",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 3,
+      "title": "Host CPU busy",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[5m])))",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Host available memory",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_memory_MemAvailable_bytes{node=\"host\"}",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "State free space",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_filesystem_avail_bytes{node=\"host\",mountpoint=\"/var\"}",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Battery charge",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_power_supply_capacity{node=\"host\"}",
+          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "title": "Recent infrastructure logs",
+      "type": "logs",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "logs"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\")",
+          "queryType": "instant",
+          "maxLines": 100
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending"
+      }
+    }
+  ],
+  "links": [
+    {
+      "title": "Overview",
+      "type": "link",
+      "url": "/d/cv-overview",
+      "keepTime": true
+    },
+    {
+      "title": "Compartments",
+      "type": "link",
+      "url": "/d/cv-compartments",
+      "keepTime": true
+    },
+    {
+      "title": "Network path",
+      "type": "link",
+      "url": "/d/cv-network-path",
+      "keepTime": true
+    },
+    {
+      "title": "Security",
+      "type": "link",
+      "url": "/d/cv-security",
+      "keepTime": true
+    }
+  ]
+}

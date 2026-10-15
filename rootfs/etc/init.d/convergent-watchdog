@@ -1,0 +1,36 @@
+#!/sbin/openrc-run
+# Convergent: feeds the hardware watchdog that the initramfs armed (ARCHITECTURE section 5.2),
+# until `slot bless` stops this service (the magic close disarms it), or until the deadline.
+# A short sh loop under start-stop-daemon: no extra package, and the deadline and the magic
+# close are two lines of it. After the deadline it stops feeding, so the board resets in under
+# 180 s and a hung-but-alive boot counts as a failed try. Enabled in the sysinit runlevel.
+
+description="Feeds the hardware watchdog until the boot is blessed"
+command=/bin/sh
+pidfile=/run/convergent-watchdog.pid
+
+# 20 feeds, 30 s apart: ten minutes from the start of this service.
+loop='
+exec 3>/dev/watchdog || exit 1
+s=
+trap "printf V >&3; kill \$s 2>/dev/null; exit 0" TERM
+n=0
+while [ "$n" -lt 20 ]; do
+	printf . >&3
+	sleep 30 & s=$!
+	wait "$s"
+	n=$((n + 1))
+done
+logger -t convergent-watchdog "no bless within ten minutes, the watchdog is left to reset the board"
+'
+
+depend() {
+	after devfs
+}
+
+start() {
+	ebegin "Feeding the watchdog"
+	start-stop-daemon --start --quiet --background --make-pidfile --pidfile "$pidfile" \
+		--exec "$command" -- -c "$loop"
+	eend $?
+}

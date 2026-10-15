@@ -1,0 +1,154 @@
+#!/bin/sh
+# image: assemble a release from the staging root (ARCHITECTURE section 6, steps 3 to 6):
+# the image root, the EROFS image with its dm-verity tree, the initramfs, and one UKI per slot.
+# Runs as root on the build host after build/packages. The UKIs are left unsigned; signing on
+# the owner's token is the last step of a release (section 6, step 7).
+#   build/image [release]      release defaults to the UTC date and time
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+. "$here/build.conf"
+. "$here/chroot.sh"
+
+die() { echo "image: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+release=${1:-$(date -u +%Y%m%d%H%M)}
+staging="$BUILDER/staging"
+root="$BUILDER/image-root"                 # the image root, a copy of the staging root
+out="$BUILDER/releases/$release"           # inside the builder, so its tools can reach it
+[ -d "$staging/usr" ] || die "no staging root; run build/packages first"
+[ ! -e "$out" ] || die "release $release exists already"
+mkdir -p "$out"
+
+# 1. The image root: the staging root, this repository's rootfs over it, then everything the
+#    laptop does not run taken out again.
+rm -rf "$root"
+cp -a "$staging" "$root"
+# Owned by root whatever the checkout's owner; modes kept.
+cp -R --preserve=mode,timestamps,links "$repo/rootfs/." "$root/"
+# Modes git does not keep.
+chmod 0440 "$root"/etc/sudoers.d/*
+chmod 0600 "$root"/etc/audit/rules.d/*
+# The tools of ARCHITECTURE section 12.
+install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
+chmod 0755 "$root"/etc/init.d/convergent-*
+kver=$(ls "$root/lib/modules")
+[ "$(echo "$kver" | wc -l)" = 1 ] || die "expected one kernel in the image, found: $kver"
+cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
+# The kernel as it was really built: a cached package could predate build/kernel.config.
+config="$root/usr/src/linux-$kver/.config"
+for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y \
+	CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y CONFIG_VFIO_PCI=y \
+	'# CONFIG_KEXEC is not set' '# CONFIG_KEXEC_FILE is not set' '# CONFIG_HIBERNATION is not set' \
+	'# CONFIG_IWLWIFI is not set' '# CONFIG_DRM_NOUVEAU is not set'; do
+	grep -qxF "$want" "$config" || die "the kernel was not built with: $want (rebuild sys-kernel/gentoo-kernel)"
+done
+# Intel CPU microcode, loaded before the initramfs (the UKI's first initrd).
+[ -s "$root/boot/intel-uc.img" ] || die "no Intel microcode in the staging root (sys-firmware/intel-microcode)"
+cp "$root/boot/intel-uc.img" "$out/microcode.cpio"
+gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
+rm -rf "$root"/usr/src "$root"/usr/include "$root"/usr/share/doc "$root"/usr/share/man \
+	"$root"/usr/share/info "$root"/usr/share/gtk-doc "$root"/usr/lib*/pkgconfig "$root"/usr/share/pkgconfig \
+	"$root"/var/db/pkg "$root"/var/db/repos "$root"/var/cache/* "$root"/var/lib/portage "$root"/etc/portage \
+	"$root"/etc/kernel "$root"/boot/* "$root"/usr/libexec/gcc "$gccdir/include" "$gccdir/plugin"
+find "$root/usr/lib" "$root/usr/lib64" -name '*.a' -delete
+find "$gccdir" -maxdepth 1 \( -name '*.o' -o -name '*.la' \) -delete
+# The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
+find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name 'cc' -o -name 'cpp' \
+	-o -name 'x86_64-pc-linux-gnu-*' \) -delete
+printf '%s\n' "$release" >"$root/usr/lib/convergent/release"
+# Mount points the initramfs needs: the image is read-only once made.
+mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/home" "$root/tmp" "$root/var" "$root/srv"
+# Every writable /etc entry must exist in the image: the initramfs binds over it.
+grep -v '^#' "$root/usr/lib/convergent/etc-state" | while read -r entry; do
+	[ -n "$entry" ] && [ ! -e "$root/etc/$entry" ] || continue
+	mkdir -p "$(dirname "$root/etc/$entry")"
+	install -m 0644 /dev/null "$root/etc/$entry"
+done
+ln -sfn ../proc/self/mounts "$root/etc/mtab"   # as systemd-tmpfiles makes it
+# auditd loads audit.rules as it is; the fragments are put together here, as augenrules would.
+cat "$root"/etc/audit/rules.d/*.rules >"$root/etc/audit/audit.rules"
+chmod 0600 "$root/etc/audit/audit.rules"
+# What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
+# DHCP client (every address is static).
+rl="$root/etc/runlevels"
+rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
+for s in boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
+	default/cronie default/acpid default/dbus default/node_exporter default/lxcfs default/incus \
+	sysinit/convergent-watchdog default/convergent-bless boot/convergent-net; do
+	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
+	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
+done
+
+# 2. Firmware: only what the laptop's own devices load. The Wi-Fi card's lives in the wan VM;
+#    the NVIDIA card has no host driver at all.
+(
+	cd "$root/usr/lib/firmware"
+	find . ! -type d | while read -r f; do
+		for k in $FIRMWARE_KEEP; do
+			case ${f#./} in "$k"*) continue 2 ;; esac
+		done
+		rm -f "$f"
+	done
+	find . -type d -empty -delete
+)
+
+chroot_mount
+trap chroot_umount EXIT
+bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
+rel=/releases/$release
+
+# 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
+#    so Convergent's module is put there for the run; afterwards dracut leaves the image, which
+#    never builds an initramfs itself.
+cp -r "$repo/initramfs/90convergent" "$root/usr/lib/dracut/modules.d/"
+chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh
+# The links to the kernel sources and build files point at nothing once /usr/src is gone.
+find "$root/lib/modules/$kver" -maxdepth 1 -xtype l -delete
+bld depmod -b /image-root "$kver"
+bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
+	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
+	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" \
+	"$rel/initramfs.img"
+rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \
+	"$root"/usr/bin/dracut* "$root/usr/bin/lsinitrd"
+
+# 4. The EROFS image and its dm-verity hash tree, one after the other in the slot image.
+bld mkfs.erofs -zlz4hc "$rel/root.erofs" /image-root >/dev/null
+size=$(stat -c %s "$out/root.erofs")
+[ $((size % 4096)) = 0 ] || die "EROFS image is not a whole number of 4 KiB blocks"
+blocks=$((size / 4096))
+verity=$(bld veritysetup format --no-superblock --data-block-size=4096 --hash-block-size=4096 \
+	"$rel/root.erofs" "$rel/root.hash")
+roothash=$(echo "$verity" | awk '/^Root hash:/ { print $3 }')
+salt=$(echo "$verity" | awk '/^Salt:/ { print $2 }')
+[ -n "$roothash" ] && [ -n "$salt" ] || die "veritysetup gave no root hash"
+cat "$out/root.erofs" "$out/root.hash" >"$out/slot.img"
+rm "$out/root.erofs" "$out/root.hash"
+
+# 5. One UKI per slot: the same kernel, initramfs and microcode; the command line names the slot.
+for slot in a b; do
+	part="PARTLABEL=cv-slot-$slot"
+	table="vroot,,,ro,0 $((blocks * 8)) verity 1 $part $part 4096 4096 $blocks $blocks sha256 $roothash $salt"
+	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
+		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
+		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma iTCO_wdt.heartbeat=180 quiet" \
+		" init=/sbin/init" >"$out/cmdline-$slot"
+	# init= last: dracut hands init every bare word after it, and without it every bare word on
+	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
+	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" \
+		--initrd "$rel/initramfs.img" --cmdline "@$rel/cmdline-$slot" \
+		--os-release @/image-root/usr/lib/os-release --uname "$kver" \
+		--output "$rel/convergent-$release-$slot.efi" >/dev/null
+done
+
+# 6. The manifest: what the release is made of.
+{
+	echo "release $release"
+	echo "kernel $kver"
+	echo "roothash $roothash"
+	sha256sum "$out/slot.img" "$out"/convergent-*.efi | sed "s|$out/||"
+} >"$out/manifest"
+echo "image: release $release in $out"

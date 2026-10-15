@@ -1,0 +1,33 @@
+# The complete scrape set from sections 4.2/8: no discovery, self-scrapes,
+# browser/guest exporters, vmagent or remote_write client from another guest.
+global:
+  scrape_interval: 30s
+  scrape_timeout: 5s
+scrape_configs:
+  - job_name: node
+    honor_labels: false
+    sample_limit: 10000
+    static_configs:
+      - targets: ['100.80.1.10:9100']
+        labels: {node: host}
+      - targets: ['100.80.2.2:9100']
+        labels: {node: fw1}
+      - targets: ['100.80.2.3:9100']
+        labels: {node: fw2}
+      - targets: ['100.80.0.10:9100']
+        labels: {node: wan}
+  - job_name: incus
+    metrics_path: /1.0/metrics
+    scheme: https
+    honor_labels: false
+    sample_limit: 10000
+    static_configs:
+      - targets: ['100.80.1.10:8444']
+        labels: {node: host}
+    tls_config:
+      ca_file: /etc/victoria-metrics/tls/incus-ca.crt
+      cert_file: /etc/victoria-metrics/tls/incus-client.crt
+      key_file: /etc/victoria-metrics/tls/incus-client.key
+      server_name: host
+      insecure_skip_verify: false
+      min_version: TLS12

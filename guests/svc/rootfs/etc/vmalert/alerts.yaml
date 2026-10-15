@@ -1,0 +1,314 @@
+# Section 8 rules. Thresholds/periods below are initial policy assumptions.
+# Evaluation is every 30s; CARP convergence itself is ~3s, not this scraper.
+#
+# Input contract for section 12's producers (not implemented in svc):
+# node_exporter adds node=host/fw1/fw2/wan from scrape.yaml. All cv_* are
+# gauges unless suffixed _total. Booleans are 0/1; timestamps are Unix seconds.
+# Write textfiles atomically, without explicit sample timestamps.
+#
+# Firewall inputs from guests/fw/site/usr/local/libexec/convergent/fw-facts:
+# /var/node_exporter/textfile/convergent_fw.prom, every minute:
+# convergent_carp_state{interface=carp0..carp5,carpdev,vhid=1..6},
+#   state 2=MASTER, 1=BACKUP, 0=INIT; vhids map to transit/host/svc/web/admin/guests.
+# convergent_pf_enabled, convergent_pf_states, convergent_pf_state_limit,
+# convergent_pf_ruleset_info{loaded,file}, convergent_default_route_present,
+# convergent_unbound_up, convergent_dns_file_mtime_seconds{file="blocklist.rpz"}.
+# unbound_up is unbound-control status, not an external DNS transaction probe.
+# ResolverStale detects missing/old resolver facts by the file's own mtime.
+# The host checker must supply cv_firewall_ruleset_expected_info{firewall,loaded}=1
+# from the accepted release: "loaded" is EXACTLY the firewall's pfctl -sr |
+# sha256 output (including its prefix), NOT the raw pf.conf file digest.
+# Missing expected hashes fail closed as ruleset drift; never compare the
+# collector's loaded and file labels, since those hash different byte streams.
+#
+# host boot.prom, once each boot: cv_secure_boot_verified, cv_lockdown_enabled,
+# cv_luks_header_matches_release, cv_crash_records (retained until acknowledged).
+# host daily.prom, daily: cv_nvme_spare_percent{device}, cv_nvme_spare_threshold_percent{device},
+# cv_nvme_media_errors_total{device}, cv_nvme_critical_warning{device},
+# cv_nts_authenticated_sources, cv_certificate_not_after_seconds{certificate}.
+# host release.prom, at update: cv_release_built_seconds,
+# cv_guest_image_built_seconds{project,name}, cv_guest_release_eol_seconds{project,name}.
+# host checker.prom, boot/update/daily: cv_checker_success,
+# cv_checker_last_run_seconds, cv_default_route_ok{compartment},
+# cv_passthrough_device_present{device}, cv_host_netdev_expected{device},
+# cv_guest_route_expected{project,name,route}, cv_service_up{compartment,service},
+# cv_incus_pool_used_bytes{pool}, cv_incus_pool_limit_bytes{pool}.
+# host checker.prom also supplies cv_wan_reserved_leak=0/1 from its
+# reserved-egress check. The current fw collector does not export that fact.
+# Host Incus lifecycle event forwarding must supply the log tag incus-event.
+# These host integration contracts remain outside guests/svc.
+# Same file: cv_guest_expected_running{project,name}; explicit inventory,
+# including fw1/fw2/wan/svc=1, on-demand browsers=0 while intentionally closed.
+# Incus hypervisor CPU metrics vanish for stopped guests; no guest agent is
+# required. Never invent an Incus state metric.
+# GuestRestarted uses host Incus event logs because wan/fw have no guest agent.
+#
+# Host producers must write cv_collector_success{collector}=0/1 in each file.
+# Staleness uses node_textfile_mtime_seconds{file}, not sample freshness.
+# Host paths must end in boot.prom, daily.prom, release.prom, checker.prom;
+# firewall paths must end in convergent_fw.prom. wan uses wan.prom.
+# No custom time exporter.
+groups:
+  - name: path
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: FirewallDown
+        expr: up{job="node",node=~"fw1|fw2"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}'}
+      - alert: CarpSplit
+        expr: sum by (interface,vhid) (convergent_carp_state{node=~"fw1|fw2"} == bool 2) != 1
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'CARP interface has both masters or no master: {{ $labels.interface }}'}
+      - alert: CarpFlapping
+        expr: changes(convergent_carp_state{node=~"fw1|fw2"}[10m]) > 4
+        labels: {severity: warning}
+        annotations: {summary: 'Repeated CARP transitions on {{ $labels.node }} / {{ $labels.interface }}'}
+      - alert: NoDefaultRoute
+        expr: (cv_default_route_ok == 0) or (convergent_default_route_present{node=~"fw1|fw2"} == 0)
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'Expected default route absent: {{ $labels.compartment }}'}
+      - alert: FirewallRulesetDrift
+        expr: convergent_pf_ruleset_info{node=~"fw1|fw2"} unless on (node,loaded) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")
+        labels: {severity: critical}
+        annotations: {summary: 'pf ruleset differs from release on {{ $labels.node }}'}
+      - alert: StateTableHigh
+        expr: convergent_pf_states{node=~"fw1|fw2"} / convergent_pf_state_limit{node=~"fw1|fw2"} > 0.8
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'pf state table above 80% on {{ $labels.node }}'}
+      - alert: UpstreamOverlap
+        expr: (max(convergent_wan_upstream_overlap{node="wan"}) > 0) or (max(cv_wan_overlap_events) > 0)
+        labels: {severity: critical, compartment: wan, tag: convergent-alert}
+        annotations: {summary: 'wan refused an upstream lease overlapping the internal /16'}
+      - alert: WanReservedLeak
+        expr: cv_wan_reserved_leak != 0
+        labels: {severity: critical}
+        annotations: {summary: 'Reserved-address leak detected toward wan'}
+  - name: dns
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: ResolverDown
+        expr: convergent_unbound_up{node=~"fw1|fw2"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'unbound probe failed on {{ $labels.node }}'}
+      - alert: ResolverStale
+        expr: (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180) or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_unbound_up)
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: 'Resolver facts missing or older than three minutes on {{ $labels.node }}'}
+      - alert: BlocklistStale
+        expr: time() - convergent_dns_file_mtime_seconds{node=~"fw1|fw2",file="blocklist.rpz"} > 864000
+        labels: {severity: warning}
+        annotations: {summary: 'Loaded RPZ generation over 10 days old on {{ $labels.node }}'}
+  - name: compartments
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: GuestStopped
+        expr: (cv_guest_expected_running == 1 unless on (project,name) count by (project,name) (incus_cpu_seconds_total{job="incus"})) and on () (up{job="incus"} == 1)
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Expected guest missing from Incus metrics: {{ $labels.project }}/{{ $labels.name }}'}
+      - alert: ServiceDown
+        expr: (up == 0) or (cv_service_up == 0) or (convergent_pf_enabled{node=~"fw1|fw2"} == 0)
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'Scrape or expected service failed; inspect labels'}
+      - alert: PassthroughDeviceMissing
+        expr: cv_passthrough_device_present == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'Required passed-through device absent: {{ $labels.device }}'}
+      - alert: HostNetdevUnexpected
+        expr: cv_host_netdev_expected == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Unexpected host network device/address: {{ $labels.device }}'}
+      - alert: GuestRouteInjected
+        expr: cv_guest_route_expected == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Unexpected route in {{ $labels.project }}/{{ $labels.name }}: {{ $labels.route }}'}
+  - name: hardware-capacity
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: NvmeSpareLow
+        expr: cv_nvme_spare_percent < cv_nvme_spare_threshold_percent
+        labels: {severity: critical}
+        annotations: {summary: 'NVMe available spare below device threshold: {{ $labels.device }}'}
+      - alert: NvmeErrors
+        expr: (cv_nvme_media_errors_total > 0) or (cv_nvme_critical_warning > 0)
+        labels: {severity: critical}
+        annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}'}
+      - alert: BatteryLow
+        expr: (node_power_supply_capacity{node="host"} < 15) and on (node,power_supply) (node_power_supply_info{node="host",status="Discharging"} == 1)
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Battery below 15% while discharging'}
+      - alert: StateVolumeHigh
+        expr: 1 - node_filesystem_avail_bytes{node="host",mountpoint="/var"} / node_filesystem_size_bytes{node="host",mountpoint="/var"} > 0.85
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'State filesystem over 85% full'}
+      - alert: IncusPoolHigh
+        expr: cv_incus_pool_used_bytes / cv_incus_pool_limit_bytes > 0.85
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'Incus pool over 85% of quota: {{ $labels.pool }}'}
+  - name: currency
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: ReleaseOld
+        expr: time() - cv_release_built_seconds > 2592000
+        labels: {severity: warning}
+        annotations: {summary: 'Host release over 30 days old'}
+      - alert: GuestImageOld
+        expr: time() - cv_guest_image_built_seconds > 2592000
+        labels: {severity: warning}
+        annotations: {summary: 'Guest image over 30 days old: {{ $labels.project }}/{{ $labels.name }}'}
+      - alert: GuestReleaseEOL
+        expr: cv_guest_release_eol_seconds < time()
+        labels: {severity: critical}
+        annotations: {summary: 'Guest operating system past upstream EOL: {{ $labels.project }}/{{ $labels.name }}'}
+  - name: security-time
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: SecureBootNotVerified
+        expr: cv_secure_boot_verified == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Secure Boot verification not established'}
+      - alert: LockdownOff
+        expr: cv_lockdown_enabled == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Kernel confidentiality lockdown disabled'}
+      - alert: KernelTainted
+        expr: node_sysctl_kernel_tainted{node="host"} != 0
+        labels: {severity: warning}
+        annotations: {summary: 'Host kernel tainted'}
+      - alert: LuksHeaderChanged
+        expr: cv_luks_header_matches_release == 0
+        labels: {severity: critical}
+        annotations: {summary: 'LUKS header differs from accepted hash'}
+      - alert: CertExpiry
+        expr: cv_certificate_not_after_seconds - time() < 1209600
+        labels: {severity: warning}
+        annotations: {summary: 'Certificate expires within 14 days: {{ $labels.certificate }}'}
+      - alert: ClockOffsetHigh
+        expr: (abs(node_timex_offset_seconds{node=~"host|wan"}) > 0.1) or (abs(node_time_seconds{job="node"} - timestamp(node_time_seconds{job="node"})) > 2)
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'Clock offset high on {{ $labels.node }}'}
+      - alert: NtsUnauthenticated
+        expr: cv_nts_authenticated_sources < 2
+        labels: {severity: critical}
+        annotations: {summary: 'Fewer than two authenticated agreeing NTS sources'}
+      - alert: CrashRecorded
+        expr: cv_crash_records > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Unacknowledged pstore crash records'}
+  - name: monitoring
+    interval: 30s
+    concurrency: 1
+    rules:
+      - alert: CollectorStale
+        expr: |
+          (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180)
+          or (time() - node_textfile_mtime_seconds{node="host",file=~".*(daily|checker).prom"} > 129600)
+          or (node_textfile_mtime_seconds{job="node"} > time() + 60)
+          or (time() - node_textfile_mtime_seconds{node="wan",file=~".*wan.prom"} > 180)
+          or (up{job="node",node="wan"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*wan.prom"})
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*convergent_fw.prom"})
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*boot.prom"})
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*daily.prom"})
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*release.prom"})
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*checker.prom"})
+          or (node_textfile_mtime_seconds{node="host",file=~".*boot.prom"} < on (node) group_left node_boot_time_seconds{node="host"})
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Collector file absent, stale, from a previous boot or dated in the future'}
+      - alert: CollectorBroken
+        expr: |
+          (node_textfile_scrape_error{job="node"} != 0)
+          or (cv_collector_success == 0)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_collector_success)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_carp_state)
+          or (count by (node) (convergent_carp_state{node=~"fw1|fw2"}) != 6)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_pf_enabled)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_pf_ruleset_info)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_pf_states)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_pf_state_limit)
+          or (convergent_pf_state_limit <= 0)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_unbound_up)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_dns_file_mtime_seconds{file="blocklist.rpz"})
+          or (up{job="node",node="host"} == 1 unless on (node) cv_secure_boot_verified)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_lockdown_enabled)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_luks_header_matches_release)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_crash_records)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_nts_authenticated_sources)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_certificate_not_after_seconds)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_release_built_seconds)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_guest_expected_running)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_default_route_ok)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_wan_reserved_leak)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)"))
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_default_route_present)
+          or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_overlap)
+          or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_up)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_service_up)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_passthrough_device_present)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_host_netdev_expected)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_guest_route_expected)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_incus_pool_used_bytes)
+          or (cv_incus_pool_limit_bytes <= 0)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_incus_pool_limit_bytes)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_percent)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_threshold_percent)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_media_errors_total)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_critical_warning)
+          or (cv_guest_expected_running unless on (project,name) cv_guest_image_built_seconds)
+          or (cv_guest_expected_running unless on (project,name) cv_guest_release_eol_seconds)
+          or (up{job="node",node="host"} == 1 unless on (node) node_sysctl_kernel_tainted)
+          or (up{job="node",node=~"host|wan"} == 1 unless on (node) node_timex_offset_seconds)
+          or (up{job="node"} == 1 unless on (node) node_time_seconds)
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Collector failed, textfile is malformed or required facts are missing'}
+      - alert: CheckerFailed
+        expr: cv_checker_success == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Release/security checker reported a failure'}
+      - alert: CheckerStale
+        expr: (time() - cv_checker_last_run_seconds > 129600) or absent(cv_checker_last_run_seconds) or absent(cv_checker_success)
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Checker missing or more than 36 hours since last run'}
+  - name: logs
+    type: vlogs
+    interval: 30s
+    concurrency: 1
+    rules:
+      # Actual wan-check contract: tag convergent-alert, message prefix
+      # UpstreamOverlap; its metric is latched until a safe lease is seen.
+      # Record recent events as well, so the API's single alert survives an
+      # event arriving before its corresponding scrape. Match transport IP,
+      # not a sender-controlled syslog hostname.
+      - record: cv_wan_overlap_events
+        expr: '_time:10m remote_ip:="100.80.0.10" app_name:="convergent-alert" _msg:~"^UpstreamOverlap( |$)" | stats count() events'
+      - alert: AuditEvent
+        expr: '_time:5m remote_ip:="100.80.1.10" app_name:in("audit","auditd") | stats count() hits | filter hits:>0'
+        labels: {severity: warning}
+        annotations: {summary: 'Host audit events received; review records in the log view'}
+      # The host forwards Incus lifecycle events with this tag and message
+      # fields. Explicit started/restarted records, not missing VM metrics.
+      - alert: GuestRestarted
+        expr: '_time:5m remote_ip:="100.80.1.10" app_name:="incus-event" _msg:~"(^| )(instance-started|instance-restarted)( |$)" | stats count() hits | filter hits:>0'
+        labels: {severity: warning}
+        annotations: {summary: 'Incus guest started or restarted; inspect lifecycle event'}

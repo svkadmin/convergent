@@ -1,0 +1,125 @@
+#!/bin/sh
+# wan-wifi: Wi-Fi networks for the host's menu, called through wan-ssh (ARCHITECTURE 3.2).
+# Credentials live only here: iwd keeps what it learns in /var/lib/iwd (mode 0600).
+#   list              known networks, one per line
+#   scan              networks in range
+#   status            the connection now
+#   add | add-hidden  SSID on line 1 of standard input, passphrase on line 2 (empty or absent:
+#                     an open network); joins the network and so saves it
+#   connect | connect-hidden | forget     SSID on line 1
+#   disconnect | auto                     stop, or let iwd autoconnect again
+# The SSID and passphrase never appear on an SSH command line. The passphrase is on iwctl's
+# command line for the moment it takes to join; /proc is mounted with hidepid=2.
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+. /etc/wan/wan.conf
+LC_ALL=C
+export LC_ALL
+
+die() { echo "wan-wifi: $*" >&2; exit 1; }
+
+esc=$(printf '\033')
+
+# run SECONDS COMMAND...: show the output without iwctl's colour codes, keep its exit status.
+run() {
+	_out=$(timeout "$@" 2>&1)
+	_rc=$?
+	printf '%s\n' "$_out" | sed "s/${esc}\[[0-9;]*[A-Za-z]//g"
+	return $_rc
+}
+
+read_ssid() {
+	IFS= read -r ssid || true
+	[ -n "$ssid" ] || die "SSID missing"
+	[ "$(printf %s "$ssid" | wc -c)" -le 32 ] || die "SSID longer than 32 bytes"
+	if printf %s "$ssid" | grep -q '[[:cntrl:]]'; then
+		die "SSID has control characters"
+	fi
+}
+
+read_pass() {
+	pass=
+	IFS= read -r pass || true
+	[ -n "$pass" ] || return 0
+	if [ "${#pass}" -lt 8 ] || [ "${#pass}" -gt 63 ]; then
+		die "passphrase must be 8 to 63 characters"
+	fi
+	if printf %s "$pass" | grep -q '[[:cntrl:]]'; then
+		die "passphrase has control characters"
+	fi
+}
+
+# join VERB: connect or connect-hidden to $ssid, with $pass if there is one.
+join() {
+	if [ -n "$pass" ]; then
+		run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$1" "$ssid"
+	else
+		run 45 iwctl station "$WIFI_IF" "$1" "$ssid"
+	fi
+}
+
+# Known networks: file names in /var/lib/iwd are the SSID, or "=" and its hex when it has
+# characters other than letters, digits, space, "-" and "_".
+decode() {
+	case $1 in
+	=*)
+		h=${1#=}
+		while [ -n "$h" ]; do
+			printf "\\x${h%"${h#??}"}"
+			h=${h#??}
+		done
+		echo
+		;;
+	*) echo "$1" ;;
+	esac
+}
+
+case ${1:-} in
+list)
+	for f in /var/lib/iwd/*.psk /var/lib/iwd/*.open; do
+		[ -e "$f" ] || continue
+		b=${f##*/}
+		decode "${b%.*}"
+	done
+	;;
+scan)
+	run 10 iwctl station "$WIFI_IF" scan >/dev/null
+	sleep 4
+	run 10 iwctl station "$WIFI_IF" get-networks
+	;;
+status)
+	run 10 iwctl station "$WIFI_IF" show
+	ip -4 -o addr show dev "$WIFI_IF" 2>/dev/null | awk '{print "address", $4}'
+	;;
+add)
+	read_ssid
+	read_pass
+	join connect
+	;;
+add-hidden)
+	read_ssid
+	read_pass
+	join connect-hidden
+	;;
+connect)
+	read_ssid
+	run 45 iwctl station "$WIFI_IF" connect "$ssid"
+	;;
+connect-hidden)
+	read_ssid
+	run 45 iwctl station "$WIFI_IF" connect-hidden "$ssid"
+	;;
+forget)
+	read_ssid
+	run 10 iwctl known-networks "$ssid" forget
+	;;
+disconnect)
+	run 10 iwctl station "$WIFI_IF" disconnect
+	;;
+auto)
+	run 10 iwctl station "$WIFI_IF" autoconnect on
+	;;
+*)
+	echo "usage: wan-wifi list|scan|status|add|add-hidden|connect|connect-hidden|forget|disconnect|auto" >&2
+	exit 2
+	;;
+esac

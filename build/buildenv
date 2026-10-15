@@ -52,6 +52,7 @@ cp "$here/builder.use" "$etc/package.use/zz-builder"
 printf '%s\n' '#!/bin/sh' 'ROOT=/ EROOT=/ exec /usr/bin/getuto "$@"' >"$BUILDER/usr/local/bin/getuto-builder"
 chmod 755 "$BUILDER/usr/local/bin/getuto-builder"
 echo 'PORTAGE_TRUST_HELPER=/usr/local/bin/getuto-builder' >"$etc/make.conf/85-trust"
+cp "$here/builder.set" "$etc/sets/convergent-builder"
 # The kernel configuration fragment, merged by Gentoo's kernel package over its hardened one.
 install -D -m 0644 "$here/kernel.config" "$BUILDER/etc/kernel/config.d/50-convergent.config"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
@@ -93,4 +94,6 @@ printf '%s\n' 'FEATURES="${FEATURES} binpkg-signing"' \
 	>/etc/portage/make.conf/86-signing
 gpgconf --homedir "$home" --kill all
 EOF
+# 5. The builder's own tools (build/builder.set); nothing happens when they are there already.
+chroot "$BUILDER" emerge --noreplace --quiet-build=y @convergent-builder
 echo "buildenv: builder ready at $BUILDER (snapshot $SNAPSHOT_DATE, profile $PROFILE)"

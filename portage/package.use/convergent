@@ -37,3 +37,9 @@ media-libs/mesa -llvm
 # (aa-status is C), ebtables (an Incus dependency) without its Perl helper.
 sys-libs/libapparmor -perl -python
 net-firewall/ebtables -perl
+
+# Passwords hashed with yescrypt (PAM, through pambase).
+sys-auth/pambase yescrypt
+
+# Static addresses only: no DHCP client on the host.
+net-misc/netifrc -dhcp

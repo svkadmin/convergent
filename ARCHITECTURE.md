@@ -102,8 +102,9 @@ takes the upstream address by DHCP and performs the only NAT in the system.
   inside except syslog to svc.
 - **Management:** no Incus agent and no guest API; SSH from the host only, on its transit address.
 - **Overlap:** refuses an upstream lease that overlaps the internal range and raises an alert.
-- **Captive portals:** a DNS forwarder to the upstream resolver on its transit address, which pf
-  opens only for the portal browser and only while portal mode is on.
+- **Captive portals:** DNS to wan's transit address is passed to the upstream resolver (a NAT
+  rule, no forwarder process), only from the portal browser and only while portal mode is on;
+  portal mode ends by itself after 30 minutes.
 - **Time:** from the host clock (PTP over KVM, disciplined by chrony in the VM).
 - **Size:** memory capped at 512 MiB; the emulated HPET off and free page reporting on, both
   measured on Archer.
@@ -340,12 +341,18 @@ nothing on the laptop boots.
 
 ### 7.2 Update
 
-1. Fetch a release from the build host or a USB stick; verify the manifest; refuse a downgrade.
+1. Fetch a release from the build host or a USB stick; verify the manifest. Refused: an update
+   from a slot not yet marked good (it would overwrite the only good one), and any release not
+   newer than the highest ever marked good (kept on the state volume, so a rollback by hand
+   does not reopen the way to older releases).
 2. Write the image to the inactive slot; read it back and verify.
 3. Install its UKI with a boot counter: systemd-boot gives it three tries.
 4. Reboot. The initramfs snapshots `/var` cold before anything starts.
 5. After the health checks pass (both firewalls answer, wan, svc, the session), the slot is
-   marked good and becomes the default.
+   marked good and becomes the default: first the highest release is recorded, then the boot
+   counter is dropped, then the release is named good, so a crash at any point is safe. Every
+   boot runs the checks, a release already good included; until they pass the watchdog keeps
+   counting.
 
 Guests are updated only on a host slot already marked good, one at a time, each after a snapshot
 of its state volume; the last three snapshots per guest are kept. The firewalls go one at a time:

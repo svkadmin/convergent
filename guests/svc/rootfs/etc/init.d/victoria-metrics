@@ -1,0 +1,37 @@
+#!/sbin/openrc-run
+description="Single-node metrics, exactly five external scrape endpoints"
+supervisor=supervise-daemon
+pidfile="/run/$RC_SVCNAME.pid"
+retry="TERM/60/KILL/5"
+no_new_privs=true
+command=/usr/bin/victoria-metrics
+command_user=vmmetrics:vmmetrics
+directory=/var/lib/victoria-metrics
+command_args="-httpListenAddr=127.0.0.1:8428
+    -storageDataPath=/var/lib/victoria-metrics -retentionPeriod=14d
+    -memory.allowedBytes=32MiB -search.maxMemoryPerQuery=8MiB
+    -search.maxConcurrentRequests=2 -search.maxQueryDuration=10s
+    -storage.maxHourlySeries=25000 -storage.maxDailySeries=50000
+    -storage.minFreeDiskSpaceBytes=256MiB
+    -promscrape.config=/etc/victoria-metrics/scrape.yaml
+    -promscrape.maxScrapeSize=4MiB"
+export GOMEMLIMIT=80MiB GOMAXPROCS=1
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+output_logger="logger -t victoria-metrics"
+error_logger="logger -t victoria-metrics"
+umask=0027
+
+depend() { need net; use syslog; }
+start_pre() {
+    # Injected BEFORE first start by host, never baked into a release:
+    # Incus metrics-only client cert/key, server CA/cert; server SAN must
+    # include DNS:host (see scrape.yaml). Trust this client as type=metrics.
+    for file in incus-ca.crt incus-client.crt incus-client.key; do
+        /usr/local/sbin/svc-secret-check vmmetrics "/etc/victoria-metrics/tls/$file" || {
+            eerror "missing/insecure host-injected Incus TLS file: $file"; return 1;
+        }
+    done
+    checkpath -d -m 0750 -o vmmetrics:vmmetrics "$directory"
+}

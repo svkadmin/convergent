@@ -1,0 +1,20 @@
+#!/sbin/openrc-run
+# Convergent: the host's own nftables table (ARCHITECTURE section 4.4). Only `inet host` is
+# replaced, in one transaction: Incus keeps its own tables, the guests' address and MAC
+# filters, beside it. Stopping leaves the rules in place.
+description="The host's own firewall table"
+
+depend() {
+	before net incus
+	provide firewall
+}
+
+start() {
+	ebegin "Loading the host firewall"
+	nft -f /etc/nftables.rules
+	eend $?
+}
+
+stop() {
+	return 0
+}

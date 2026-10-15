@@ -1,0 +1,29 @@
+# OpenRC runlevels of the wan image: "runlevel service". The build clears Alpine's defaults
+# and adds exactly these; a service that does not exist stops the build.
+# Nothing here listens except sshd, node-exporter (both on the transit address) and dbus (a
+# local socket). chronyd opens no port; syslog-ng only connects out.
+sysinit devfs
+sysinit dmesg
+sysinit mdev
+sysinit hwdrivers
+boot modules
+boot sysctl
+boot hostname
+boot hwclock
+boot root
+boot localmount
+boot bootmisc
+boot seedrng
+boot wan-firewall
+boot networking
+default dbus
+default iwd
+default chronyd
+default syslog-ng
+default sshd
+default acpid
+default crond
+default node-exporter
+default local
+shutdown killprocs
+shutdown mount-ro

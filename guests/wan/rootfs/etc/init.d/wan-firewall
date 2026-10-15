@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# Loads the packet filter before any interface or listener exists. If the rules do not load,
+# this fails and networking, iwd and sshd (rc_need) do not start: wan stays cut off.
+description="wan packet filter"
+
+depend() {
+	need localmount
+	after modules sysctl
+	before networking iwd sshd
+}
+
+start() {
+	ebegin "Loading /etc/nftables.nft"
+	nft -f /etc/nftables.nft
+	eend $?
+}
+
+stop() {
+	# The rules stay in force through shutdown.
+	return 0
+}

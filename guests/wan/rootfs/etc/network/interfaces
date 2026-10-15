@@ -1,0 +1,17 @@
+# Convergent wan: the transit link is static (ARCHITECTURE section 4.1, decision 18) and has no
+# default route; that comes from the upstream lease, which iwd takes on wlan0.
+# eth0 is the only virtio NIC, so it is the first Ethernet device the kernel names.
+auto lo
+iface lo inet loopback
+
+# Transit: wan is .10 on 100.80.0.0/28; the firewalls are .1 (CARP), .2 and .3. The rest of
+# the internal range is reached through the CARP gateway.
+auto eth0
+iface eth0 inet static
+	address 100.80.0.10/28
+	up ip route add 100.80.0.0/16 via 100.80.0.1 dev eth0
+
+# Optional wired uplink (a USB adapter passed in by the host), configured when it appears.
+# The DHCP client sends no host name unless a hostname line is given, and none is.
+allow-hotplug eth1
+iface eth1 inet dhcp

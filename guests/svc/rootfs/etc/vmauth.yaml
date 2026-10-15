@@ -1,0 +1,8 @@
+# vmalert supports a single datasource.url; route by its protocol path.
+# https://docs.victoriametrics.com/victorialogs/vmalert/#how-to-use-one-vmalert-for-victorialogs-and-victoriametrics-rules-at-the-same-time
+unauthorized_user:
+  url_map:
+    - src_paths: ['/api/v1/query', '/api/v1/query_range']
+      url_prefix: http://127.0.0.1:8428
+    - src_paths: ['/select/logsql/.*']
+      url_prefix: http://127.0.0.1:9428

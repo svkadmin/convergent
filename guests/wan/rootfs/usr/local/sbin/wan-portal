@@ -1,0 +1,86 @@
+#!/bin/sh
+# wan-portal: captive-portal DNS on or off (ARCHITECTURE sections 3.2 and 9). Called by the host
+# through wan-ssh. There is no forwarder process: while on, the packet filter rewrites DNS that
+# the portal browser sends to wan's transit address so it goes to the upstream resolver (a
+# destination NAT through the map portal_dns in /etc/nftables.nft). Off, that map is empty and
+# the same packets reach wan's own input chain, which drops them.
+# The resolver is also kept in the set portal_ns, which the forward chain checks for every
+# DNAT-ed packet: the connection tracking remembers a DNAT per flow, so without that check a
+# flow opened before "off" (or before the lease changed) would keep being forwarded; with it,
+# closing is immediate for old flows too, and no extra package is needed.
+# The firewalls are closed separately (pfctl, see pf.conf); the host runs portal on and off on
+# all three. Through wan-ssh the host has: portal on | off | status. refresh is for wan-check.
+#   wan-portal on | off | refresh | status
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+. /etc/wan/wan.conf
+. /usr/local/lib/wan-lib.sh
+
+d=/run/wan
+die() { echo "wan-portal: $*" >&2; exit 1; }
+mkdir -p "$d" || die "could not create $d"
+exec 8> "$d/portal.lock"
+flock -x 8 || die "could not lock portal mode"
+
+# The first upstream resolver recorded from the lease (iwd and udhcpc both go through the
+# resolvconf shim, so they end up in the same store).
+resolver() {
+	cat "$d"/resolv.*.dns 2>/dev/null | awk '$1 == "nameserver" { print $2; exit }'
+}
+
+close_map() {
+	nft -f - <<EOF
+flush map inet wan portal_dns
+flush set inet wan portal_ns
+EOF
+}
+
+set_map() {
+	ns=$(resolver)
+	[ -n "$ns" ] || return 1
+	is_ipv4 "$ns" || return 1
+	# A resolver inside the internal range would be a leak of the overlap kind.
+	if overlaps_internal "$ns" 32; then
+		return 1
+	fi
+	nft -f - <<EOF || return 1
+flush map inet wan portal_dns
+flush set inet wan portal_ns
+add element inet wan portal_dns { $TRANSIT_ADDR : $ns }
+add element inet wan portal_ns { $ns }
+EOF
+	echo "$ns"
+}
+
+case ${1:-} in
+on)
+	mkdir -p "$d"
+	ns=$(set_map) || die "no usable upstream resolver (no lease with DNS)"
+	date +%s > "$d/portal"
+	logger -t wan-portal "portal mode on, resolver $ns for $PORTAL_BROWSER, at most $PORTAL_MAX_MIN minutes"
+	;;
+off)
+	close_map || die "could not close portal DNS"
+	rm -f "$d/portal"
+	logger -t wan-portal "portal mode off"
+	;;
+refresh)
+	# Only while on: follow a changed lease; with no usable resolver, close.
+	[ -e "$d/portal" ] || exit 0
+	set_map >/dev/null || {
+		close_map || die "could not close portal DNS"
+		rm -f "$d/portal"
+		logger -t wan-portal "portal mode off, the resolver is gone"
+	}
+	;;
+status)
+	if [ -e "$d/portal" ]; then
+		echo "on $(resolver)"
+	else
+		echo off
+	fi
+	;;
+*)
+	echo "usage: wan-portal on|off|refresh|status" >&2
+	exit 2
+	;;
+esac

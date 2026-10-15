@@ -1,0 +1,99 @@
+#!/bin/sh
+# test: boot a release in QEMU before it is signed. A throw-away disk with the ESP, both slots
+# and a LUKS state partition; a passphrase made for this run only, typed on the serial console;
+# passes when the login prompt appears. Runs as root on the build host after build/image.
+#   build/test <release>
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+. "$here/chroot.sh"
+
+die() { echo "test: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+release=${1:?usage: build/test <release>}
+rel=/releases/$release
+[ -s "$BUILDER$rel/slot.img" ] || die "no release $release; run build/image first"
+
+bld() { chroot "$BUILDER" "$@"; }
+work=/test/$release
+rm -rf "$BUILDER$work"
+mkdir -p "$BUILDER$work/esp"
+chroot_mount
+loop=''
+cleanup() {
+	mountpoint -q "$BUILDER$work/esp" && umount "$BUILDER$work/esp"
+	bld cryptsetup close cvtest-state 2>/dev/null || true
+	[ -n "$loop" ] && losetup -d "$loop"
+	chroot_umount
+}
+trap cleanup EXIT
+
+# 1. The disk: the same partition labels the installer uses.
+disk="$BUILDER$work/disk.img"
+truncate -s 16G "$disk"
+slot_mib=$(( ($(stat -c %s "$BUILDER$rel/slot.img") >> 20) + 64 ))
+bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
+	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
+loop=$(losetup -fP --show "$disk")
+# The partition nodes appear asynchronously; dd to a missing one would write a file into /dev.
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p4" ] && break; sleep 1; done
+for p in 1 2 3 4; do [ -b "${loop}p$p" ] || die "no partition device ${loop}p$p"; done
+dd if="$BUILDER$rel/slot.img" of="${loop}p2" bs=4M conv=fsync status=none
+
+# 2. The state volume, with a passphrase that exists for this run only.
+pass=$(head -c 18 /dev/urandom | base64)
+# Kept beside the throwaway disk, to open it afterwards and read its logs.
+(umask 077; echo "$pass" >"$BUILDER$work/passphrase")
+printf '%s' "$pass" | bld cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
+	--pbkdf-memory 65536 --iter-time 200 --key-file - "${loop}p4"
+printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
+bld mkfs.btrfs -q /dev/mapper/cvtest-state
+bld cryptsetup close cvtest-state
+
+# 3. The ESP: systemd-boot and slot A's UKI, rebuilt with the serial console added (the only
+#    difference from the release's own UKI, which is what gets signed).
+bld mkfs.vfat -F 32 -n CV-ESP "${loop}p1" >/dev/null
+mount "${loop}p1" "$BUILDER$work/esp"
+mkdir -p "$BUILDER$work/esp/EFI/BOOT" "$BUILDER$work/esp/EFI/Linux" "$BUILDER$work/esp/loader"
+cp "$BUILDER/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$BUILDER$work/esp/EFI/BOOT/BOOTX64.EFI"
+printf 'timeout 0\neditor no\n' >"$BUILDER$work/esp/loader/loader.conf"
+# The serial console in place of quiet, ahead of init= (dracut hands what follows it to init).
+sed 's/ quiet / console=ttyS0,115200 /' "$BUILDER$rel/cmdline-a" >"$BUILDER$work/cmdline"
+kver=$(awk '/^kernel / { print $2 }' "$BUILDER$rel/manifest")
+bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
+	--cmdline "@$work/cmdline" --os-release @/image-root/usr/lib/os-release --uname "$kver" \
+	--output "$work/esp/EFI/Linux/convergent-$release-a+3.efi" >/dev/null
+umount "$BUILDER$work/esp"
+losetup -d "$loop"
+loop=''
+
+# 4. Boot it: UEFI firmware, the disk, the serial console. The passphrase is typed when asked.
+cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+log="$BUILDER$work/console.log"
+CVTEST_PASS="$pass" CVTEST_WORK="$work" bld python3 - <<'EOF'
+import os, subprocess, select, time, sys
+work = os.environ["CVTEST_WORK"]
+pw = os.environ["CVTEST_PASS"].encode() + b"\n"
+qemu = subprocess.Popen([
+    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", "4096",
+    "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
+    "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
+    "-drive", f"file={work}/disk.img,if=virtio,format=raw",
+    "-nographic", "-no-reboot", "-nic", "none"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+seen, sent, deadline = b"", False, time.time() + 300
+with open(f"{work}/console.log", "wb") as log:
+    while time.time() < deadline and qemu.poll() is None:
+        if select.select([qemu.stdout], [], [], 1)[0]:
+            chunk = os.read(qemu.stdout.fileno(), 4096)
+            log.write(chunk); log.flush()
+            seen = (seen + chunk)[-4096:]
+            if not sent and b"Convergent passphrase" in seen:
+                qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
+            if b"convergent: release " in seen and b" is good" in seen:   # slot bless, after its checks
+                print("test: the release blessed itself"); qemu.kill(); qemu.wait(); sys.exit(0)
+    qemu.kill(); qemu.wait()
+    print("test: no blessing within 5 minutes" if qemu.returncode is None or time.time() >= deadline else "test: the VM stopped")
+    sys.exit(1)
+EOF

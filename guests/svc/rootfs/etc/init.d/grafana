@@ -1,0 +1,27 @@
+#!/sbin/openrc-run
+description="Grafana, host-menu start/stop only; never a boot dependency"
+supervisor=supervise-daemon
+pidfile="/run/$RC_SVCNAME.pid"
+retry="TERM/60/KILL/5"
+no_new_privs=true
+command=/usr/sbin/grafana-server
+command_user=grafana:grafana
+directory=/usr/share/grafana
+command_args="--homepath=/usr/share/grafana --config=/etc/grafana.ini"
+export GOMEMLIMIT=160MiB GOMAXPROCS=1
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+output_logger="logger -t grafana"
+error_logger="logger -t grafana"
+umask=0027
+depend() { need net victoria-metrics victoria-logs; }
+start_pre() {
+    for file in admin-password secret-key; do
+        /usr/local/sbin/svc-secret-check grafana "/etc/grafana/$file" || {
+            eerror "missing/insecure host-injected Grafana secret: $file"; return 1;
+        }
+        [ "$(wc -c <"/etc/grafana/$file")" -ge 32 ] || return 1
+    done
+    checkpath -d -m 0750 -o grafana:grafana /var/lib/grafana
+}

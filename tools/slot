@@ -1,0 +1,217 @@
+#!/bin/sh
+# slot: the A/B slots (ARCHITECTURE sections 5.2, 7.2, 7.3). Runs as root; exits when done.
+#   slot bless            after each boot: if the health checks pass, record the highest release,
+#                         drop any counter, record the release as good, prune the /var of
+#                         releases no slot can boot, stop the watchdog
+#   slot status           the booted release and slot, both slots' UKIs, the release marked good
+#   slot write <dir>      write the release in <dir> (build/image output) to the inactive slot;
+#                         only from a blessed release, only upwards of the highest ever blessed
+# Health checks: no crashed, failed or stopped service in OpenRC's default runlevel, and every
+# executable in /usr/lib/convergent/health.d/ exits 0 (an empty directory passes).
+# State top level (subvolid=5), mounted at /run/cv-state: good, highest, var-<release>.
+set -eu
+
+linux=EFI/Linux
+health=/usr/lib/convergent/health.d
+stm=/run/cv-state
+esp=
+mounted=
+
+die() { logger -t slot "$*"; echo "slot: $*" >&2; exit 1; }
+log() { logger -t slot "$*"; echo "slot: $*"; }
+usage() { echo "usage: slot bless | status | write <release-dir>" >&2; exit 2; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+# One run at a time.
+exec 9>/run/convergent-slot.lock
+flock -w 120 9 || die "another slot is running"
+
+# Whatever this run mounted is unmounted on the way out.
+cleanup() {
+	for d in $mounted; do umount "$d" 2>/dev/null || :; done
+	[ -z "$esp" ] || rmdir "$esp" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+# The booted release and slot, from the kernel command line.
+booted() {
+	release=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+	slot=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^dm-mod\.waitfor=PARTLABEL=cv-slot-//p')
+	[ -n "$release" ] || die "no convergent.release= on the kernel command line"
+	case $slot in a | b) ;; *) die "the kernel command line names no slot" ;; esac
+}
+
+esp_mount() {
+	esp=$(mktemp -d /run/slot.XXXXXX)
+	mount -t vfat -o nodev,nosuid,noexec /dev/disk/by-partlabel/cv-esp "$esp" || die "the ESP did not mount"
+	mounted="$esp $mounted"
+}
+
+state_mount() {   # state_mount ro|rw
+	mkdir -p "$stm"
+	mount -t btrfs -o "$1,subvolid=5,noatime,nodev,nosuid,noexec" /dev/mapper/cv-state "$stm" ||
+		die "the state volume did not mount"
+	mounted="$stm $mounted"
+}
+
+# The ESP's UKIs of one slot, good or counting.
+ukis() {
+	for f in "$esp/$linux"/convergent-*-"$1".efi "$esp/$linux"/convergent-*-"$1"+*.efi; do
+		if [ -e "$f" ]; then echo "$f"; fi
+	done
+}
+
+uki_release() { r=${1##*/}; r=${r#convergent-}; echo "${r%%-*}"; }
+
+uki_counter() {
+	case $1 in
+	*+*) c=${1##*+}; echo "+${c%.efi}" ;;
+	*) echo good ;;
+	esac
+}
+
+disarm() { rc-service -q convergent-watchdog stop || :; }
+
+healthy() {
+	[ -z "$(rc-status --crashed)" ] || { log "crashed services: $(rc-status --crashed | tr '\n' ' ')"; return 1; }
+	# ini: "name = state"; a service that crashed, failed to start or was stopped is not up.
+	if rc-status -f ini default | grep -Eq '^[^=]*= *(crashed|failed|stopped)( |$)'; then
+		log "services of the default runlevel are not running"
+		return 1
+	fi
+	for h in "$health"/*; do
+		[ -f "$h" ] && [ -x "$h" ] || continue
+		"$h" || { log "health check $h failed"; return 1; }
+	done
+}
+
+# The number in a state file, 0 when there is none.
+num() { n=$(cat "$stm/$1" 2>/dev/null || :); case $n in '' | *[!0-9]*) n=0 ;; esac; echo "$n"; }
+
+# Replace a state file whole.
+put() { printf '%s\n' "$2" >"$stm/$1.new" && mv "$stm/$1.new" "$stm/$1" && sync || die "could not write $1"; }
+
+# Keep the /var of the booted release and of the other slot's UKI; the rest is stale.
+prune() {
+	[ "$slot" = a ] && o=b || o=a
+	keep=" $release "
+	for u in $(ukis "$o"); do keep="$keep$(uki_release "$u") "; done
+	for v in "$stm"/var-*; do
+		[ -d "$v" ] || continue
+		case $keep in *" ${v##*/var-} "*) continue ;; esac
+		log "removing the stale ${v##*/}"
+		btrfs -q subvolume delete "$v" || log "could not remove $v"
+	done
+}
+
+# The booted release is accepted: make the state say so (idempotent), then stop the watchdog.
+accept() {
+	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] || put good "$release"
+	prune
+	disarm
+	log "release $release in slot $slot is good"
+	echo "convergent: release $release is good" 2>/dev/null >/dev/console || :
+}
+
+bless() {
+	booted
+	esp_mount
+	# shellcheck disable=SC2046
+	set -- $(ukis "$slot")
+	[ $# = 1 ] || die "expected one UKI for slot $slot on the ESP, found $#"
+	uki=$1
+	case ${uki##*/} in
+	convergent-"$release"-"$slot".efi)
+		# Uncounted (the first boot after the install, a fallback, a hand rollback, or a crash
+		# after the rename below): nothing to count, but the state may still lag behind.
+		;;
+	convergent-"$release"-"$slot"+*) ;;
+	*) die "the UKI of slot $slot is not release $release" ;;
+	esac
+	if ! healthy; then
+		log "release $release in slot $slot failed its health checks"
+		echo "convergent: release $release failed its checks" 2>/dev/null >/dev/console || :
+		exit 1
+	fi
+	# Health first, durable highest before UKI rename/sync, then durable good: a crash cannot lower the floor.
+	state_mount rw
+	if expr "$release" '>' "$(num highest)" >/dev/null; then put highest "$release"; fi
+	case ${uki##*/} in
+	*+*) mv "$uki" "$esp/$linux/convergent-$release-$slot.efi" && sync || die "could not rename the UKI" ;;
+	esac
+	accept
+}
+
+status() {
+	booted
+	esp_mount
+	state_mount ro
+	echo "booted  $release  slot $slot"
+	for s in a b; do
+		u=$(ukis "$s")
+		if [ -n "$u" ]; then echo "slot $s  $(uki_release "$u")  $(uki_counter "$u")"; else echo "slot $s  none"; fi
+	done
+	echo "good    $(cat "$stm/good" 2>/dev/null || echo none)"
+	echo "highest $(num highest)"
+}
+
+write() {
+	dir=$1
+	[ "${CONVERGENT_UNSIGNED:-}" = 1 ] ||
+		die "manifests are not signature-checked yet; set CONVERGENT_UNSIGNED=1 to write an unsigned release"
+	[ -f "$dir/manifest" ] || die "no manifest in $dir"
+	# TODO(signing): verify the manifest's signature against the owner's key before trusting it.
+	new=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
+	case $new in '' | *[!0-9]*) die "the manifest names no release" ;; esac
+	for f in slot.img "convergent-$new-a.efi" "convergent-$new-b.efi"; do
+		grep -q "  $f\$" "$dir/manifest" || die "the manifest does not list $f"
+	done
+	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) ||
+		die "the release does not match its manifest"
+
+	booted
+	expr "$new" '>' "$release" >/dev/null || die "release $new is not newer than the booted $release"
+	# The fallback is the booted slot: only a blessed release may overwrite the other one.
+	state_mount rw
+	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] ||
+		die "the booted release $release is not the one marked good; boot the good slot or let it bless first"
+	hi=$(num highest)
+	expr "$new" '>' "$hi" >/dev/null || die "release $new is not newer than $hi, the highest ever blessed"
+	[ "$slot" = a ] && inactive=b || inactive=a
+	part=/dev/disk/by-partlabel/cv-slot-$inactive
+	[ -b "$part" ] || die "no partition $part"
+	size=$(stat -c %s "$dir/slot.img")
+	[ "$size" -le "$(blockdev --getsize64 "$part")" ] || die "slot.img does not fit in slot $inactive"
+	sum=$(awk '$2 == "slot.img" { print $1 }' "$dir/manifest")
+
+	# The slot's old UKI goes first: once the image is overwritten it would only fail verity.
+	esp_mount
+	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"+*.efi.new; do
+		if [ -e "$f" ]; then rm "$f"; fi
+	done
+	sync
+	# A release that failed before left its /var; a reinstall starts clean (new is above the
+	# booted and good release, so this is never theirs).
+	for v in "$stm/var-$new" "$stm/var-$new.new"; do
+		if [ -d "$v" ]; then btrfs -q subvolume delete "$v" || die "could not remove $v"; fi
+	done
+	log "writing release $new to slot $inactive"
+	dd if="$dir/slot.img" of="$part" bs=1M conv=fsync status=none || die "writing slot $inactive failed"
+	blockdev --flushbufs "$part"
+	[ "$(head -c "$size" "$part" | sha256sum | cut -d' ' -f1)" = "$sum" ] ||
+		die "slot $inactive does not read back as slot.img"
+
+	# Three tries; the extra suffix keeps systemd-boot from seeing a half-copied file.
+	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
+	cp "$dir/convergent-$new-$inactive.efi" "$dst.new" && cmp -s "$dir/convergent-$new-$inactive.efi" "$dst.new" &&
+		sync && mv "$dst.new" "$dst" && sync || die "could not install the UKI"
+	log "release $new is in slot $inactive with three tries; reboot to try it"
+}
+
+case ${1:-} in
+bless) [ $# = 1 ] || usage; bless ;;
+status) [ $# = 1 ] || usage; status ;;
+write) [ $# = 2 ] || usage; write "$2" ;;
+*) usage ;;
+esac

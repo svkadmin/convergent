@@ -16,7 +16,10 @@ chroot_mount() {
 chroot_umount() {
 	# gpg-agent, started by Portage's key helper, would keep /dev busy.
 	chroot "$BUILDER" gpgconf --kill all 2>/dev/null || true
-	pkill -x gpg-agent 2>/dev/null || true
+	# Any agent left running inside the builder (its root is the builder), and no other.
+	for p in $(pgrep -x gpg-agent); do
+		[ "$(readlink "/proc/$p/root")" = "$BUILDER" ] && kill "$p"
+	done
 	for d in run dev sys proc; do
 		mountpoint -q "$BUILDER/$d" && umount -R "$BUILDER/$d"
 	done

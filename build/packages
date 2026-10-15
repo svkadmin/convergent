@@ -39,8 +39,11 @@ if [ "${1:-}" = --pretend ]; then
 		printf '%s\n' "$plan" | tail -n 40
 		exit 1
 	}
-	printf '%s\n' "$plan" | grep -E '^\[(binary|ebuild)' >"$BUILDER/tmp/plan"
+	printf '%s\n' "$plan" | grep -E '^\[(binary|ebuild)' >"$BUILDER/tmp/plan" || true # nothing to do
 	echo "packages: $(grep -c '^\[binary' "$BUILDER/tmp/plan") from binaries, $(grep -c '^\[ebuild' "$BUILDER/tmp/plan") to compile"
 else
 	chroot "$BUILDER" $emerge --quiet-build=y --keep-going=y $sets
+	# Whatever the sets no longer need leaves the image (a USE change can orphan a package).
+	chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config \
+		emerge --root=/staging --depclean --quiet
 fi

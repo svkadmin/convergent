@@ -1,0 +1,258 @@
+#!/bin/sh
+# build: build the wan guest image (ARCHITECTURE section 3.2; section 6, step 5).
+# Run as root on the build host itself, not inside the Portage builder (it needs loop devices).
+#   WAN_COUNTRY=XX HOST_SSH_PUBKEY_FILE=... SVC_CA_FILE=... guests/wan/build [outdir]
+#
+# Method: a plain apk bootstrap, no third-party image script. Alpine's own minirootfs (pinned
+# by SHA-256 in build.conf) is unpacked and used as a chroot; its apk installs the packages
+# into the new root with signature checking against the keys that came inside it. No
+# --allow-untrusted, no apk.static to fetch: the one unsigned input is the pinned minirootfs.
+#
+# Output (outdir, default OUT_DIR from build.conf):
+#   wan.qcow2                 the disk: GPT, a small ESP with GRUB, an ext4 root. qcow2 because
+#                             Incus imports a VM disk in that form (split image), sparse and
+#                             compressed, so the release stays small.
+#   wan-metadata.tar.xz       the Incus image metadata (UEFI, secure boot off: GRUB is unsigned)
+#   wan.manifest              versions, hashes, SSH host key; goes into the release manifest
+#   ssh_host_ed25519_key.pub  what the host must pin for wan
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+
+die() { echo "build: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+for t in curl sha256sum tar xz truncate chroot mount umount losetup sfdisk mkfs.vfat mkfs.ext4 qemu-img \
+	ssh-keygen awk sed grep tac blkid realpath; do
+	command -v "$t" >/dev/null 2>&1 || die "$t is missing on the build host"
+done
+
+out=${1:-$OUT_DIR}
+
+# 1. Inputs.
+case $WAN_COUNTRY in
+[A-Z][A-Z]) ;;
+*) die "set WAN_COUNTRY to the two-letter regulatory country (for example from the environment)" ;;
+esac
+[ "$MINIROOTFS_SHA256" != unset ] || die "pin MINIROOTFS and MINIROOTFS_SHA256 in build.conf"
+[ -r "$HOST_SSH_PUBKEY_FILE" ] || die "HOST_SSH_PUBKEY_FILE is not a readable file"
+[ -r "$SVC_CA_FILE" ] || die "SVC_CA_FILE is not a readable file"
+grep -q 'BEGIN CERTIFICATE' "$SVC_CA_FILE" || die "SVC_CA_FILE is not a PEM certificate"
+hostkey=$(awk 'NR == 1 { print $1 " " $2 }' "$HOST_SSH_PUBKEY_FILE")
+printf '%s\n' "$hostkey" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+=*$' ||
+	die "HOST_SSH_PUBKEY_FILE must hold an ssh-ed25519 public key"
+
+# The address range must agree between wan.conf and the packet filter (plain files, two places).
+net=$(sed -n 's/^INTERNAL_NET=//p' "$here/rootfs/etc/wan/wan.conf")
+grep -q "^define internal    = $net\$" "$here/rootfs/etc/nftables.nft" ||
+	die "INTERNAL_NET in wan.conf and 'internal' in nftables.nft disagree"
+
+# Packages (names as in Alpine's main and community; a wrong one stops the build, loudly).
+# Services come with their -openrc subpackages automatically. No Incus agent, no DNS or DHCP
+# server, no mDNS, no editor, no compiler, no Python.
+PACKAGES="alpine-baselayout busybox busybox-openrc busybox-mdev-openrc mdev-conf openrc mkinitfs
+	linux-lts linux-firmware-intel wireless-regdb grub grub-efi
+	iwd dbus nftables flock openssh-server chrony syslog-ng acpid prometheus-node-exporter"
+
+work=$(mktemp -d /var/tmp/wan-build.XXXXXX)
+mounts=$work/mounts
+: > "$mounts"
+loop=
+cleanup() {
+	set +e
+	if [ -s "$mounts" ]; then
+		tac "$mounts" | while read -r m; do umount "$m"; done
+	fi
+	[ -n "$loop" ] && losetup -d "$loop"
+	# Never remove a tree that still has something mounted in it.
+	if grep -q " $work" /proc/mounts; then
+		echo "build: mounts remain under $work; left in place" >&2
+	else
+		rm -rf "$work"
+	fi
+}
+trap cleanup EXIT INT TERM
+
+mountrec() { mount "$@"; for _last; do :; done; echo "$_last" >> "$mounts"; }
+bind() { mkdir -p "$2"; mountrec --bind "$1" "$2"; }
+
+# 2. The bootstrap: download, verify the pin, unpack.
+mkdir -p "$CACHE_DIR"
+mini_tar=$CACHE_DIR/$MINIROOTFS
+if [ ! -f "$mini_tar" ]; then
+	curl -fsSL -o "$mini_tar.part" "$ALPINE_MIRROR/$ALPINE_BRANCH/releases/x86_64/$MINIROOTFS"
+	mv "$mini_tar.part" "$mini_tar"
+fi
+echo "$MINIROOTFS_SHA256  $mini_tar" | sha256sum -c - >/dev/null || die "$MINIROOTFS does not match its pin"
+mini=$work/mini
+mkdir -p "$mini"
+tar -xzf "$mini_tar" -C "$mini"
+cp /etc/resolv.conf "$mini/etc/resolv.conf"
+
+# 3. The disk: GPT, ESP, ext4 root.
+mkdir -p "$out"
+raw=$work/wan.raw
+truncate -s "$IMAGE_SIZE" "$raw"
+printf 'label: gpt\n,32M,U\n,,L\n' | sfdisk -q "$raw"
+loop=$(losetup --find --show --partscan "$raw")
+n=0
+while [ ! -b "${loop}p2" ]; do
+	n=$((n + 1))
+	[ "$n" -le 50 ] || die "partitions of $loop did not appear"
+	sleep 0.2
+done
+uuid=$(cat /proc/sys/kernel/random/uuid)
+mkfs.vfat -F 32 -n WANESP "${loop}p1" >/dev/null
+mkfs.ext4 -q -L wanroot -U "$uuid" "${loop}p2"
+target=$work/target
+mkdir -p "$target"
+mountrec -t ext4 "${loop}p2" "$target"
+mkdir -p "$target/boot/efi"
+mountrec -t vfat "${loop}p1" "$target/boot/efi"
+
+# 4. Packages, from the pinned release's repositories, signatures checked.
+mkdir -p "$target/etc/apk/keys" "$target/etc/mkinitfs" "$target/dev" "$target/proc" "$target/sys"
+cp "$mini"/etc/apk/keys/* "$target/etc/apk/keys/"
+printf '%s\n' "$ALPINE_MIRROR/$ALPINE_BRANCH/main" "$ALPINE_MIRROR/$ALPINE_BRANCH/community" \
+	> "$target/etc/apk/repositories"
+cp "$here/rootfs/etc/mkinitfs/mkinitfs.conf" "$target/etc/mkinitfs/mkinitfs.conf"
+bind /dev "$mini/dev"
+bind /proc "$mini/proc"
+bind "$target" "$mini/target"
+bind /dev "$mini/target/dev"
+bind /proc "$mini/target/proc"
+bind /sys "$mini/target/sys"
+bind /dev "$target/dev"
+bind /proc "$target/proc"
+bind /sys "$target/sys"
+# shellcheck disable=SC2086
+chroot "$mini" /sbin/apk --root /target --initdb --no-cache add $PACKAGES
+
+inchroot() { chroot "$target" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "$@"; }
+inchroot sh -c 'command -v flock' >/dev/null || die "flock is missing after install"
+
+# Only what was asked for: the kernel and its firmware must be there.
+[ -e "$target/boot/vmlinuz-lts" ] || die "no /boot/vmlinuz-lts after install"
+ls "$target"/lib/firmware/iwlwifi-* >/dev/null 2>&1 || die "no iwlwifi firmware after install"
+kver=$(ls "$target/lib/modules")
+[ "$(echo "$kver" | wc -l)" -eq 1 ] || die "expected one kernel in /lib/modules"
+# The services this overlay configures must be the ones the packages ship.
+grep -q 'ARGS' "$target/etc/init.d/node-exporter" || die "node-exporter's init script does not read ARGS; adapt rootfs/etc/conf.d/node-exporter"
+grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's default.script does not read RESOLV_CONF; adapt rootfs/etc/udhcpc"
+
+# 5. Firmware: keep only the files for the card, if build.conf says which. The package puts the
+# payloads under intel/iwlwifi and links to them from iwlwifi-* in /lib/firmware: the links that
+# are not kept go, and then every payload that no kept link (or kept file) points to.
+if [ -n "$IWLWIFI_FW_KEEP" ]; then
+	tgt=$(realpath "$target")
+	fw=$tgt/lib/firmware
+	kept=$work/fw-kept
+	: > "$kept"
+	for f in "$fw"/iwlwifi-*; do
+		keep=0
+		for p in $IWLWIFI_FW_KEEP; do
+			case ${f##*/} in $p) keep=1 ;; esac
+		done
+		if [ "$keep" -eq 0 ]; then
+			rm -f "$f"
+		elif [ -L "$f" ]; then
+			l=$(readlink "$f")
+			case $l in /*) l=$tgt$l ;; *) l=$fw/$l ;; esac
+			realpath -m "$l" >> "$kept"
+		else
+			realpath -m "$f" >> "$kept"
+		fi
+	done
+	ls "$fw"/iwlwifi-* >/dev/null 2>&1 || die "IWLWIFI_FW_KEEP removed every firmware file"
+	[ -s "$kept" ] || die "IWLWIFI_FW_KEEP kept no firmware payload"
+	if [ -d "$fw/intel/iwlwifi" ]; then
+		find "$fw/intel/iwlwifi" -type f | while read -r f; do
+			grep -qxF "$f" "$kept" || rm -f "$f"
+		done
+	fi
+fi
+
+# 6. The overlay, then its placeholders. Ownership is root; modes are set below, because a
+# checkout (especially on Windows) does not reliably carry them.
+tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner -cf - . | tar -C "$target" -xf -
+sed -i "s|@ROOT_UUID@|$uuid|g; s|@WAN_COUNTRY@|$WAN_COUNTRY|g" "$target/boot/grub/grub.cfg" "$target/etc/fstab"
+sed -i "s|@HOST_SSH_KEY@|$hostkey|" "$target/root/.ssh/authorized_keys"
+install -m 0644 "$SVC_CA_FILE" "$target/etc/syslog-ng/svc-ca.pem"
+if grep -rIl '@[A-Z_][A-Z_]*@' "$target/boot/grub" "$target/etc/fstab" "$target/root/.ssh" "$target/etc/wan" \
+	"$target/etc/ssh" "$target/etc/network" "$target/etc/syslog-ng/syslog-ng.conf"; then
+	die "placeholders left in the files above"
+fi
+
+chmod 755 "$target"/usr/local/sbin/wan-* "$target/usr/sbin/resolvconf" \
+	"$target/etc/init.d/wan-firewall" "$target/etc/local.d/10-wan.start" \
+	"$target/etc/udhcpc/post-bound/wan-dns" "$target/etc/udhcpc/post-renew/wan-dns" "$target/etc/udhcpc/post-deconfig/wan-dns"
+chmod 644 "$target/usr/local/lib/wan-lib.sh" "$target/etc/udhcpc/udhcpc.conf" "$target/etc/wan/wan.conf" "$target/etc/nftables.nft"
+chmod 700 "$target/root" "$target/root/.ssh"
+chmod 600 "$target/root/.ssh/authorized_keys" "$target/etc/crontabs/root"
+chmod 644 "$target/etc/ssh/sshd_config" "$target/etc/syslog-ng/syslog-ng.conf"
+# root has no password and no console login; SSH with the host's key is the way in.
+sed -i 's/^root:[^:]*:/root:*:/' "$target/etc/shadow"
+
+# 7. The SSH host key: made here, so the host can pin it from the manifest.
+rm -f "$target"/etc/ssh/ssh_host_*
+ssh-keygen -q -t ed25519 -N '' -C wan -f "$target/etc/ssh/ssh_host_ed25519_key"
+cp "$target/etc/ssh/ssh_host_ed25519_key.pub" "$out/ssh_host_ed25519_key.pub"
+
+# 8. Runlevels: Alpine's defaults cleared, exactly the list in runlevels added.
+rm -f "$target"/etc/runlevels/*/*
+while read -r lvl svc; do
+	case $lvl in '' | '#'*) continue ;; esac
+	[ -e "$target/etc/init.d/$svc" ] || die "service $svc is not installed"
+	inchroot rc-update add "$svc" "$lvl" >/dev/null
+done < "$here/runlevels"
+
+# 9. Initramfs (again, now that mkinitfs.conf and /etc/modules are final) and the boot loader.
+inchroot mkinitfs -o /boot/initramfs-lts "$kver"
+mkdir -p "$target/boot/efi/EFI/BOOT"
+cat > "$target/tmp/embed.cfg" <<EOF
+search --no-floppy --fs-uuid --set=root $uuid
+set prefix=(\$root)/boot/grub
+configfile \$prefix/grub.cfg
+EOF
+inchroot grub-mkimage -O x86_64-efi -o /boot/efi/EFI/BOOT/BOOTX64.EFI -c /tmp/embed.cfg -p /boot/grub \
+	part_gpt ext2 fat normal configfile linux search search_fs_uuid echo
+[ -s "$target/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || die "no boot loader was written"
+
+# 10. Facts for the manifest, then clean up what the image must not carry.
+inchroot apk info -v | sort > "$work/packages"
+: > "$target/etc/apk/repositories"
+rm -rf "$target"/var/cache/apk/* "$target"/tmp/* "$target"/root/.ash_history
+du -sm "$target" | awk '{ print "build: root filesystem " $1 " MiB" }'
+sync
+fstrim "$target" 2>/dev/null || true
+
+# 11. Close everything and write the outputs.
+tac "$mounts" | while read -r m; do umount "$m"; done
+: > "$mounts"
+losetup -d "$loop"
+loop=
+qemu-img convert -c -O qcow2 "$raw" "$out/wan.qcow2"
+epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
+mkdir -p "$work/meta"
+cat > "$work/meta/metadata.yaml" <<EOF
+architecture: x86_64
+creation_date: $epoch
+properties:
+  description: Convergent wan, Alpine ${ALPINE_BRANCH#v}
+  os: Alpine
+  release: "${ALPINE_BRANCH#v}"
+  variant: wan
+requirements:
+  secureboot: "false"
+EOF
+tar -C "$work/meta" -cJf "$out/wan-metadata.tar.xz" metadata.yaml
+{
+	echo "alpine=${ALPINE_BRANCH#v}"
+	echo "minirootfs=$MINIROOTFS sha256=$MINIROOTFS_SHA256"
+	echo "country=$WAN_COUNTRY"
+	echo "image_sha256=$(sha256sum "$out/wan.qcow2" | awk '{ print $1 }')"
+	echo "metadata_sha256=$(sha256sum "$out/wan-metadata.tar.xz" | awk '{ print $1 }')"
+	echo "ssh_host_key=$(cat "$out/ssh_host_ed25519_key.pub")"
+	sed 's/^/package=/' "$work/packages"
+} > "$out/wan.manifest"
+echo "build: wrote $out"

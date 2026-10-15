@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+# Existing packaged router: one vmalert can query metrics and logs. No public
+# listener, no extra scraper, no Alertmanager and no custom proxy daemon.
+description="Loopback query router for mixed MetricsQL and LogsQL rules"
+supervisor=supervise-daemon
+pidfile="/run/$RC_SVCNAME.pid"
+retry="TERM/60/KILL/5"
+no_new_privs=true
+command=/usr/bin/vmauth
+command_user=vmauth:vmauth
+command_args="-httpListenAddr=127.0.0.1:8427 -auth.config=/etc/vmauth.yaml"
+export GOMEMLIMIT=16MiB GOMAXPROCS=1
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+output_logger="logger -t vmauth"
+error_logger="logger -t vmauth"
+umask=0027
+depend() { need victoria-metrics victoria-logs; }

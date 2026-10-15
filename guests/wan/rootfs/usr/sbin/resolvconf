@@ -1,0 +1,27 @@
+#!/bin/sh
+# resolvconf shim: the one interface iwd has for handing a lease's DNS servers to the system
+# (NameResolvingService=resolvconf). iwd calls it as "resolvconf -a wlan0.dns" with the
+# servers on standard input, and "resolvconf -d wlan0.dns" when the lease goes.
+# wan resolves nothing itself; the servers are kept for captive-portal mode (wan-portal), and
+# the call is the earliest sign of a new lease, so the overlap check runs now (wan-check).
+set -eu
+umask 022
+d=/run/wan
+mkdir -p "$d"
+case ${1:-} in
+-a | -d) ;;
+*) exit 1 ;;
+esac
+name=${2:-}
+case $name in
+'' | *[!A-Za-z0-9._-]*) exit 1 ;;
+esac
+if [ "$1" = -a ]; then
+	cat > "$d/resolv.$name.tmp"
+	mv "$d/resolv.$name.tmp" "$d/resolv.$name"
+else
+	rm -f "$d/resolv.$name"
+fi
+# Detached: iwd waits for this process, and wan-check talks to iwd.
+setsid /usr/local/sbin/wan-check --delay 2 </dev/null >/dev/null 2>&1 &
+exit 0

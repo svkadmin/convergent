@@ -1,0 +1,18 @@
+# Daemons: pf, CARP failover logic, time, ssh, resolver, metrics. Nothing else.
+pf=YES
+pflogd_flags=
+ifstated_flags=
+ntpd_flags=
+sshd_flags=
+unbound_flags=
+syslogd_flags="-C /etc/ssl/convergent-ca.pem"
+node_exporter_flags="--web.listen-address=@NET@.2.@ME@:9100 --collector.textfile.directory=/var/node_exporter/textfile"
+pkg_scripts=node_exporter
+# Every address is static and the resolver is local.
+dhcpleased_flags=NO
+slaacd_flags=NO
+resolvd_flags=NO
+smtpd_flags=NO
+sndiod_flags=NO
+check_quotas=NO
+multicast=NO

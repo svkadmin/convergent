@@ -1,0 +1,77 @@
+#!/bin/sh
+# install.site: run once by the installer, inside the new system, after the sets are in.
+# fw1 and fw2 are one tree; the differences are the values in /etc/convergent (net, node.*,
+# build), substituted into the template files below. Any failure stops the install.
+set -eu
+umask 022
+
+die() { echo "install.site: $*" >&2; exit 1; }
+
+cd /etc/convergent
+node=$(sed 's/\..*//' /etc/myname)
+[ -f "node.$node" ] || die "no node.$node for host '$node'"
+for f in net build "node.$node"; do [ -f "$f" ] || die "missing /etc/convergent/$f"; done
+[ -s /etc/ssl/convergent-ca.pem ] || die "missing /etc/ssl/convergent-ca.pem (the CA of svc's log receiver)"
+
+# The installer rewrites a few network files after the sets are unpacked; ours wait in late/.
+for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
+
+# One KEY=value per line becomes one sed rule.
+subst=/tmp/convergent.sed
+: >"$subst"
+for f in net build "node.$node"; do
+	grep -E '^[A-Z0-9_]+=' "$f" | while IFS== read -r k v; do
+		printf 's|@%s@|%s|g\n' "$k" "$v"
+	done >>"$subst"
+done
+. ./build
+[ -n "${CARPPASS:-}" ] || die "no CARPPASS in /etc/convergent/build"
+
+templates="
+	/etc/pf.conf /etc/ifstated.conf /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
+	/etc/rc.conf.local /etc/mygate /etc/resolv.conf /etc/ssh/sshd_config
+	/etc/hostname.vio0 /etc/hostname.vio1 /etc/hostname.vio2 /etc/hostname.vio3
+	/etc/hostname.vio4 /etc/hostname.vio5 /etc/hostname.vio6
+	/etc/hostname.carp0 /etc/hostname.carp1 /etc/hostname.carp2 /etc/hostname.carp3
+	/etc/hostname.carp4 /etc/hostname.carp5 /etc/hostname.pfsync0
+	/var/unbound/etc/unbound.conf /var/unbound/etc/local-names.conf
+"
+for f in $templates; do
+	[ -f "$f" ] || die "missing template $f"
+	sed -f "$subst" "$f" >"$f.new"
+	mv "$f.new" "$f"
+	if grep -qE '@[A-Z0-9_]+@' "$f"; then die "unfilled value in $f"; fi
+done
+rm -f "$subst"
+
+# Modes: the secrets private, the rest as the system expects.
+chown root:wheel /etc/pf.conf /etc/hostname.* /etc/ssh/sshd_config /etc/ifstated.conf
+chmod 0600 /etc/pf.conf /etc/hostname.* /etc/ifstated.conf
+chmod 0644 /etc/ssh/sshd_config /etc/ssl/convergent-ca.pem /etc/convergent/update_src
+chmod 0640 /etc/convergent/pf.guests
+chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
+chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch
+
+# Metrics: node_exporter comes from packages. The build host serves them over the installer's
+# own network (the firewalls have no HTTPS egress); pkg_add checks each package's signature.
+PKG_PATH="$PKG_URL" pkg_add -I $PKGS
+install -d -m 0755 -o root -g wheel /var/node_exporter /var/node_exporter/textfile
+
+# The facts script, every minute (the system crontab has a user column; the line names root).
+grep -q fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab
+
+# Check what can be checked without the interfaces and the other node.
+ssh-keygen -A >/dev/null
+unbound-checkconf /var/unbound/etc/unbound.conf >/dev/null || die "unbound-checkconf failed"
+ifstated -nf /etc/ifstated.conf || die "ifstated.conf does not parse"
+sh -n /usr/local/libexec/convergent/fw-facts || die "fw-facts does not parse"
+sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
+
+# The host key's fingerprint, for the build log, so the host can pin it.
+echo "CONVERGENT-HOSTKEY $node $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)"
+
+# What is left is only for the build.
+cp "node.$node" node
+rm -rf /etc/convergent/late /etc/convergent/build /etc/convergent/crontab /etc/convergent/node.fw1 \
+	/etc/convergent/node.fw2 /install.site
+echo "CONVERGENT-INSTALL-SITE-OK $node"

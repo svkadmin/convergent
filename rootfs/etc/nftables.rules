@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# Convergent: the host's own firewall (ARCHITECTURE sections 4.2 and 4.4). Input only on the
+# `host` interface and only from the listed sources; the guest bridges reach nothing here.
+# The host is never a router: forwarding is dropped. Outbound is the firewalls' business.
+# Only this table is replaced; the empty declaration first makes the delete safe on first load.
+table inet host
+delete table inet host
+
+table inet host {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state invalid drop
+		ct state established,related accept
+		iifname != "host" drop
+		ip saddr { 100.80.1.2, 100.80.1.3 } udp dport 123 accept       comment "fw1, fw2: time"
+		ip saddr 100.80.2.10 tcp dport { 9100, 8444 } ct state new accept comment "svc: metrics"
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}

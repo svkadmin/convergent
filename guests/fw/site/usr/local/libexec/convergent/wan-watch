@@ -1,0 +1,25 @@
+#!/bin/sh
+# Reconcile only our contribution, once per ifstated probe. /var/run is cleared at boot.
+set -eu
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+state=/var/run/convergent-wan-demote
+umask 077
+die() { logger -t wan-watch "$*"; echo "wan-watch: $*" >&2; exit 1; }
+
+want=128
+ping -q -c 1 -w 1 "${1:?wan address required}" >/dev/null && want=0
+owned=0
+[ ! -e "$state" ] || owned=$(cat "$state") || die "cannot read owned demotion"
+case $owned in 0|128) ;; *) die "invalid owned demotion" ;; esac
+# An interrupted ioctl/record pair is ambiguous; never guess and subtract kernel demotions.
+[ ! -e "$state.new" ] || die "interrupted adjustment; reboot to reconcile demotions"
+if [ "$want" != "$owned" ]; then
+	if [ "$want" = 128 ]; then op=carpdemote; else op=-carpdemote; fi
+	printf '%s\n' "$want" >"$state.new" || die "cannot prepare owned demotion"
+	if ! ifconfig -g wanwatch "$op" 128; then
+		rm -f "$state.new"
+		die "cannot adjust wanwatch by $op 128; will retry"
+	fi
+	mv "$state.new" "$state" || die "cannot record owned demotion; reboot to reconcile"
+fi
+[ "$want" = 0 ]

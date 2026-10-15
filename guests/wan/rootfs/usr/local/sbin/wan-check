@@ -1,0 +1,80 @@
+#!/bin/sh
+# wan-check: refuse an upstream lease that overlaps the internal range (ARCHITECTURE section 3.2).
+# Run by cron every minute and by the resolvconf shim after each lease; takes a lock, so
+# overlapping runs do nothing. A lease on an upstream interface that shares any address with
+# INTERNAL_NET is refused: the radio is disconnected (iwd then stops autoconnecting until the
+# next explicit connect) or the wired uplink is taken down.
+#
+# The alert: a syslog line with the fixed program name convergent-alert and a message that
+# starts with "UpstreamOverlap", forwarded to svc. A text file for node_exporter holds the same
+# fact as a figure, which stays 1 until a lease that does not overlap is seen.
+#   convergent_wan_upstream_overlap, convergent_wan_upstream_up, convergent_wan_portal_mode
+# Meanwhile the packet filter allows no route to the internal range through upstream, so an
+# overlapping lease cannot leak traffic in the time before this runs.
+#
+# Also: portal mode is refreshed with the current resolver, and switched off after
+# PORTAL_MAX_MIN minutes.
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+. /etc/wan/wan.conf
+. /usr/local/lib/wan-lib.sh
+
+if [ "${1:-}" = --delay ]; then
+	sleep "${2:-2}"
+fi
+
+d=/run/wan
+m=/run/node_exporter
+mkdir -p "$d" "$m"
+chmod 755 "$d" "$m"
+exec 9> "$d/check.lock"
+flock -n 9 || exit 0
+
+good=0
+bad=0
+for ifc in $UP_IFS; do
+	for cidr in $(ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | awk '{print $4}'); do
+		if overlaps_internal "${cidr%/*}" "${cidr#*/}"; then
+			bad=1
+			echo "$ifc $cidr $(date +%s)" > "$d/refused"
+			logger -t convergent-alert -p local0.crit \
+				"UpstreamOverlap interface=$ifc lease=$cidr internal=$INTERNAL_NET action=refused"
+			if [ "$ifc" = "$WIFI_IF" ]; then
+				timeout 10 iwctl station "$ifc" disconnect >/dev/null 2>&1
+			else
+				ip addr flush dev "$ifc" 2>/dev/null
+				ip link set dev "$ifc" down 2>/dev/null
+			fi
+		else
+			good=1
+		fi
+	done
+done
+# A good lease clears the refusal; with no lease at all the last verdict stands.
+if [ "$bad" -eq 0 ] && [ "$good" -eq 1 ]; then
+	rm -f "$d/refused"
+fi
+
+if [ -e "$d/portal" ]; then
+	since=$(cat "$d/portal" 2>/dev/null || echo 0)
+	if [ $(( $(date +%s) - since )) -gt $(( PORTAL_MAX_MIN * 60 )) ]; then
+		/usr/local/sbin/wan-portal off
+	else
+		/usr/local/sbin/wan-portal refresh
+	fi
+fi
+
+overlap=0
+[ -e "$d/refused" ] && overlap=1
+portal=0
+[ -e "$d/portal" ] && portal=1
+{
+	echo "# TYPE convergent_wan_upstream_overlap gauge"
+	echo "convergent_wan_upstream_overlap $overlap"
+	echo "# TYPE convergent_wan_upstream_up gauge"
+	echo "convergent_wan_upstream_up $good"
+	echo "# TYPE convergent_wan_portal_mode gauge"
+	echo "convergent_wan_portal_mode $portal"
+} > "$m/wan.prom.tmp"
+chmod 644 "$m/wan.prom.tmp"
+mv "$m/wan.prom.tmp" "$m/wan.prom"
+exit 0

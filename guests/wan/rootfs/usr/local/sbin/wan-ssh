@@ -1,0 +1,22 @@
+#!/bin/sh
+# wan-ssh: the forced command of the host's key (ARCHITECTURE section 3.2). The host may run
+# exactly the commands below and nothing else. No arguments travel on the command line: an
+# SSID and a passphrase arrive on standard input (see wan-wifi), so no quoting can go wrong.
+#   wifi list | scan | status | auto | disconnect | connect | connect-hidden | add | add-hidden | forget
+#   portal on | off | status
+#   check
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+case ${SSH_ORIGINAL_COMMAND:-} in
+"wifi list" | "wifi scan" | "wifi status" | "wifi auto" | "wifi disconnect" | \
+"wifi connect" | "wifi connect-hidden" | "wifi add" | "wifi add-hidden" | "wifi forget")
+	exec /usr/local/sbin/wan-wifi "${SSH_ORIGINAL_COMMAND#wifi }"
+	;;
+"portal on" | "portal off" | "portal status")
+	exec /usr/local/sbin/wan-portal "${SSH_ORIGINAL_COMMAND#portal }"
+	;;
+"check")
+	exec /usr/local/sbin/wan-check
+	;;
+esac
+echo "wan-ssh: command refused" >&2
+exit 126

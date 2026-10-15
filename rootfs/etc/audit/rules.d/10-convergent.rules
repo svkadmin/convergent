@@ -1,0 +1,23 @@
+# Convergent: audit rules (ARCHITECTURE section 3.1). Everything else in /etc and all of /usr is
+# read-only and verified by dm-verity, so the watches cover what can still change.
+-D
+-b 8192
+-f 1
+
+# The writable identity files (rootfs/usr/lib/convergent/etc-state).
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/subuid -p wa -k identity
+-w /etc/subgid -p wa -k identity
+-w /etc/usbguard/rules.conf -p wa -k usb
+
+# Every command the owner runs as root, from either ABI.
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
+-a always,exit -F arch=b32 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
+-w /var/log/sudo.log -p wa -k sudolog
+
+# Loading or removing a kernel module.
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules

@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+description="Alert evaluation; host polls /api/v1/alerts on TCP 8880 every 30s"
+supervisor=supervise-daemon
+pidfile="/run/$RC_SVCNAME.pid"
+retry="TERM/60/KILL/5"
+no_new_privs=true
+command=/usr/bin/vmalert
+command_user=vmalert:vmalert
+command_args="-httpListenAddr=100.80.2.10:8880
+    -rule=/etc/vmalert/*.yaml -evaluationInterval=30s
+    -datasource.url=http://127.0.0.1:8427
+    -remoteWrite.url=http://127.0.0.1:8428
+    -remoteRead.url=http://127.0.0.1:8428
+    -notifier.blackhole -rule.resultsLimit=256"
+# Blackhole disables outbound notifications, not rule evaluation/API state.
+# The host bar must treat timeouts, non-200 and failed/stale rule evaluations
+# as UNKNOWN. A live HTTP listener alone does not prove evaluation health;
+# inspect /api/v1/rules lastEvaluation, health and lastError as well.
+export GOMEMLIMIT=32MiB GOMAXPROCS=1
+respawn_delay=5
+respawn_max=5
+respawn_period=60
+output_logger="logger -t vmalert"
+error_logger="logger -t vmalert"
+umask=0027
+depend() { need vmauth; }

@@ -1,0 +1,184 @@
+#!/bin/sh
+# Native x86_64 Linux build host, root; requires trusted apk-tools, GNU tar,
+# curl, sha256sum, chroot and an independently provisioned Alpine signing-key
+# directory (ALPINE_KEYS, normally /usr/share/apk/keys). Never bootstrap trust
+# by downloading keys alongside packages. No --allow-untrusted anywhere.
+# Output: out/metadata.tar.gz + out/rootfs.tar.gz, importable with:
+# incus image import metadata.tar.gz rootfs.tar.gz --alias convergent-svc
+# No private keys or owner passwords enter the image. See init.d start checks.
+set -eu
+umask 022
+here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+die() { echo "svc/build: $*" >&2; exit 1; }
+[ "$#" = 0 ] || die "usage: ALPINE_KEYS=/trusted/alpine/keys guests/svc/build"
+[ "$(id -u)" = 0 ] || die "run on the build host as root"
+[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || die "native x86_64 Linux required"
+for tool in apk tar curl sha256sum chroot; do
+    command -v "$tool" >/dev/null || die "missing build tool: $tool"
+done
+keys=${ALPINE_KEYS:-/usr/share/apk/keys}
+case $keys in /*) ;; *) die "ALPINE_KEYS must be absolute" ;; esac
+[ -d "$keys" ] || die "provision Alpine's trusted signing keys first"
+set -- "$keys"/*.pub
+[ -f "$1" ] || die "no trusted Alpine public keys in $keys"
+mkdir -p "$here/out"
+work=$(mktemp -d "$here/out/.build.XXXXXXXX")
+cleanup() {
+    case $work in "$here/out"/.build.*) rm -rf -- "$work" ;; esac
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+root=$work/rootfs
+mkdir -p "$root/etc/apk/keys" "$work/apks"
+cp "$keys"/*.pub "$root/etc/apk/keys/"
+cp "$here/repositories" "$root/etc/apk/repositories"
+
+apk_root() {
+    apk --root "$root" --arch x86_64 --no-cache "$@"
+}
+# No kernel, SSH, cron, DHCP client, exporter, compiler or Incus agent.
+apk_root --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc ifupdown-ng ca-certificates
+case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "bootstrap is not Alpine 3.24" ;; esac
+apk_root update
+while read -r name version repository rest; do
+    case $name in ''|'#'*) continue ;; esac
+    if apk_root search --exact --quiet "$name" | grep -q .; then
+        apk_root add "$name"
+    else
+        # Fetch only this leaf from edge; signature verification also occurs
+        # during installation. Dependencies MUST resolve from 3.24 or fail.
+        apk --arch x86_64 --keys-dir "$keys" --repositories-file /dev/null \
+            --repository "https://dl-cdn.alpinelinux.org/alpine/edge/$repository" \
+            --no-cache fetch --output "$work/apks" "$name=$version"
+        apk_root add "$work/apks/$name-$version.apk"
+    fi
+done <"$here/packages"
+
+# Grafana's VictoriaLogs datasource is not an Alpine package. Install a
+# signed Grafana plugin release with a repository-pinned SHA-256. No runtime
+# plugin downloads. Digest published in GitHub's v0.32.0 expanded assets:
+# https://github.com/VictoriaMetrics/victorialogs-datasource/releases/expanded_assets/v0.32.0
+plugin_version=0.32.0
+plugin_sha256=e100b767f19cd614ac8ac3860458a3fb33f5aa7a876e924d0340010e40d1c0d4
+plugin_archive=victoriametrics-logs-datasource-v$plugin_version.tar.gz
+curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --output "$work/$plugin_archive" \
+    "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v$plugin_version/$plugin_archive"
+printf '%s  %s\n' "$plugin_sha256" "$work/$plugin_archive" | sha256sum -c -
+tar -tzf "$work/$plugin_archive" >"$work/plugin-files"
+if grep -E '(^/|(^|/)\.\.(/|$))' "$work/plugin-files"; then die "unsafe plugin archive"; fi
+mkdir "$work/plugin"
+tar -xzf "$work/$plugin_archive" --no-same-owner -C "$work/plugin"
+plugin_json=$(find "$work/plugin" -type f -name plugin.json)
+[ "$(printf '%s\n' "$plugin_json" | wc -l)" = 1 ] && [ -f "$plugin_json" ] || die "unexpected plugin layout"
+plugin=$root/usr/share/grafana/plugins/victoriametrics-logs-datasource
+mkdir -p "$plugin"
+cp -R "${plugin_json%/plugin.json}/." "$plugin/"
+[ -s "$plugin/MANIFEST.txt" ] || die "plugin signature manifest missing"
+
+cp -R "$here/rootfs/." "$root/"
+chmod 755 "$root/etc/init.d/"* "$root/usr/local/sbin/"*
+chroot "$root" /bin/sh -eu <<'SETUP'
+for account in vmmetrics vmlogs vmalert vmauth grafana; do
+    if ! id "$account" >/dev/null 2>&1; then
+        addgroup -S "$account"
+        adduser -S -D -H -h /nonexistent -s /sbin/nologin -G "$account" "$account"
+    fi
+done
+passwd -l root
+mkdir -p /var/lib/victoria-metrics /var/lib/victoria-logs /var/lib/grafana
+chown vmmetrics:vmmetrics /var/lib/victoria-metrics
+chown vmlogs:vmlogs /var/lib/victoria-logs
+chown grafana:grafana /var/lib/grafana
+chmod 750 /var/lib/victoria-metrics /var/lib/victoria-logs /var/lib/grafana
+mkdir -p /etc/victoria-metrics/tls /etc/victoria-logs/tls
+chown root:vmmetrics /etc/victoria-metrics/tls
+chown root:vmlogs /etc/victoria-logs/tls
+chown root:grafana /etc/grafana
+chmod 750 /etc/victoria-metrics/tls /etc/victoria-logs/tls /etc/grafana
+# Package post-install scripts must not decide this image's runlevels.
+rm -rf /etc/runlevels
+mkdir -p /etc/runlevels/sysinit /etc/runlevels/boot /etc/runlevels/default /etc/runlevels/shutdown
+rc-update add devfs sysinit
+rc-update add dmesg sysinit
+rc-update add sysfs sysinit
+rc-update add hostname boot
+rc-update add bootmisc boot
+rc-update add sysctl boot
+rc-update add networking boot
+rc-update add syslog boot
+rc-update add victoria-metrics default
+rc-update add victoria-logs default
+rc-update add vmauth default
+rc-update add vmalert default
+# Grafana is deliberately absent from every runlevel.
+rc-update add killprocs shutdown
+rc-update add savecache shutdown
+# No password login or getty; management is local Incus exec by the host.
+# No package-generated SUID/SGID entry point is needed in a service guest.
+find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} \;
+# Every service we use must exist; fail image creation rather than silently
+# emitting an incomplete runlevel if Alpine changed its package splits.
+for service in devfs dmesg sysfs hostname bootmisc sysctl networking syslog killprocs savecache; do
+    [ -x "/etc/init.d/$service" ]
+done
+SETUP
+
+# Keep the package database/version manifest for provenance, remove apk itself
+# if a dependency pulled it in. The laptop receives whole images, never updates.
+if apk_root info --exists apk-tools >/dev/null 2>&1; then apk_root del apk-tools; fi
+apk_root info -v >"$work/packages.txt"
+# The tools package also carries clients this image never runs.
+rm -f "$root/usr/bin/vmagent" "$root/usr/bin/vmctl"
+
+# Native binaries validate configs without starting listeners. This build is
+# not executed by repository checks. TLS files are injected only at deployment;
+# scrape parsing cannot validate their contents until then.
+# Parse every configured flag with the selected package versions; -help exits
+# before listeners, storage or credentials are opened. Config parsing follows.
+chroot "$root" /bin/sh -eu <<'FLAGS'
+for service in victoria-metrics victoria-logs vmauth vmalert; do
+    (
+        RC_SVCNAME=$service
+        . "/etc/init.d/$service"
+        eval '"$command"' $command_args -help
+    ) >"/tmp/$service.help" 2>&1 || :
+    grep -q -- '-httpListenAddr' "/tmp/$service.help" || { cat "/tmp/$service.help" >&2; exit 1; }
+    if grep -q 'flag provided but not defined\|invalid value' "/tmp/$service.help"; then
+        cat "/tmp/$service.help" >&2
+        exit 1
+    fi
+    rm -f "/tmp/$service.help"
+done
+FLAGS
+chroot "$root" /usr/bin/vmalert -rule='/etc/vmalert/*.yaml' \
+    -datasource.url=http://127.0.0.1:8427 -notifier.blackhole -dryRun
+chroot "$root" /usr/bin/vmauth -auth.config=/etc/vmauth.yaml -dryRun
+for script in "$root/etc/init.d/victoria-metrics" "$root/etc/init.d/victoria-logs" \
+    "$root/etc/init.d/vmalert" "$root/etc/init.d/vmauth" "$root/etc/init.d/grafana" \
+    "$root/usr/local/sbin/svc-secret-check"; do
+    sh -n "$script"
+done
+rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
+# Empty /dev, /proc, /sys and /run are supplied by Incus/OpenRC at runtime.
+mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/tmp"
+chmod 1777 "$root/tmp"
+epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
+case $epoch in ''|*[!0-9]*) die "invalid SOURCE_DATE_EPOCH" ;; esac
+cat >"$work/metadata.yaml" <<EOF
+architecture: x86_64
+creation_date: $epoch
+properties:
+  os: Alpine
+  release: '3.24'
+  variant: convergent-svc
+  description: Convergent svc (Alpine 3.24, OpenRC, x86_64)
+EOF
+tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
+# Preserve service-account ownership; numeric IDs are shifted by unprivileged Incus.
+tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
+(cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
+for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do
+    mv "$work/$artifact" "$here/out/$artifact"
+done
+echo "svc/build: image in $here/out (private credentials still required)"

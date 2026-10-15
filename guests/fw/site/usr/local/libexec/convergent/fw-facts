@@ -1,0 +1,69 @@
+#!/bin/sh
+# fw-facts: CARP, pf and unbound state as a text file for node_exporter (ARCHITECTURE
+# sections 8 and 12). Cron runs it every minute; the file is replaced whole, and its own age
+# is the staleness signal.
+set -u
+dir=/var/node_exporter/textfile
+out=$dir/convergent_fw.prom
+tmp=$dir/.convergent_fw.$$
+umask 022
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+{
+	echo "convergent_fw_facts_timestamp_seconds $(date +%s)"
+
+	# CARP: state per interface (2 master, 1 backup, 0 init), preempt and the group's demotion.
+	ifconfig | awk '
+		/^[a-z]+[0-9]+: / { ifn = $1; sub(/:$/, "", ifn) }
+		/^[ \t]+carp: / && ifn ~ /^carp/ {
+			s = ($2 == "MASTER") ? 2 : (($2 == "BACKUP") ? 1 : 0)
+			v = d = a = ""
+			for (i = 3; i < NF; i++) {
+				if ($i == "vhid") v = $(i + 1)
+				if ($i == "carpdev") d = $(i + 1)
+				if ($i == "advskew") a = $(i + 1)
+			}
+			printf "convergent_carp_state{interface=\"%s\",carpdev=\"%s\",vhid=\"%s\"} %d\n", ifn, d, v, s
+			printf "convergent_carp_advskew{interface=\"%s\"} %d\n", ifn, a
+		}'
+	echo "convergent_carp_preempt $(sysctl -n net.inet.carp.preempt)"
+	ifconfig -g carp 2>/dev/null | awk '/demote/ { print "convergent_carp_demotion " $NF; exit }'
+
+	# pfsync: link running, and defer on.
+	ifconfig pfsync0 2>/dev/null | awk '
+		/flags=/ { up = ($0 ~ /RUNNING/) }
+		/defer:/ { df = ($0 ~ /defer: on/) }
+		END { printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n", up, df }'
+
+	# pf: enabled, states against the limit, counters, and what is loaded.
+	pfctl -si 2>/dev/null | awk '
+		/^Status:/ { printf "convergent_pf_enabled %d\n", ($2 == "Enabled") }
+		/current entries/ && !done { printf "convergent_pf_states %s\n", $3; done = 1 }
+		/^Counters/ { c = 1; next }
+		/^[^ \t]/ { c = 0 }
+		c && $2 ~ /^[0-9]+$/ { printf "convergent_pf_counter_total{name=\"%s\"} %s\n", $1, $2 }'
+	pfctl -sm 2>/dev/null | awk '/^states/ { print "convergent_pf_state_limit " $4 }'
+	echo "convergent_pf_ruleset_info{loaded=\"$(pfctl -sr 2>/dev/null | sha256)\",file=\"$(sha256 -q /etc/pf.conf)\"} 1"
+
+	# Default route.
+	route -n show -inet 2>/dev/null | awk '
+		$1 == "default" { printf "convergent_default_route_info{gateway=\"%s\"} 1\n", $2; n = 1 }
+		END { printf "convergent_default_route_present %d\n", n }'
+
+	# unbound: answering, a few counters, and the age of the pushed files.
+	if unbound-control status >/dev/null 2>&1; then
+		echo "convergent_unbound_up 1"
+		unbound-control stats_noreset 2>/dev/null | awk -F= '
+			$1 == "total.num.queries" { print "convergent_unbound_queries_total " $2 }
+			$1 == "total.num.cachehits" { print "convergent_unbound_cachehits_total " $2 }
+			$1 == "num.answer.rcode.SERVFAIL" { print "convergent_unbound_servfail_total " $2 }
+			$1 == "num.answer.rcode.NXDOMAIN" { print "convergent_unbound_nxdomain_total " $2 }'
+	else
+		echo "convergent_unbound_up 0"
+	fi
+	for f in blocklist.rpz local-owner.conf; do
+		m=$(stat -f %m "/var/unbound/etc/$f" 2>/dev/null) &&
+			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m"
+	done
+} >"$tmp"
+mv "$tmp" "$out"
