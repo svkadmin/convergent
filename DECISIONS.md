@@ -33,13 +33,14 @@ An accepted decision is changed by adding a new entry that supersedes it, not by
 | 26 | Watchdog armed by the initramfs after the passphrase | accepted | A slow passphrase must not consume boot tries; a hang after it must |
 | 27 | Upstream LAN not part of "internet"; printing to it switched on from the menu | accepted | The upstream network is untrusted too |
 | 28 | DNS on the firewall pair: OpenBSD's unbound answers on every segment's gateway address; the host fetches and pushes the blocklist | accepted | DNS fails over with the gateway; svc stops being a single point; the firewalls get no HTTPS egress |
-| 29 | zram only, capped at 4 GiB; no disk swap | proposed | 62 GB of RAM and no hibernation: disk swap adds an encrypted partition for a case that should not happen |
-| 30 | User namespaces allowed for the owner (Firefox's own sandbox needs them inside its container) | proposed | The host user runs almost nothing besides the session; blocking them weakens the browsers more than it protects the host |
-| 31 | No journal-style log sealing; logs leave the host as they are written | proposed | Shipping to svc gives the tamper evidence that mattered, with no extra mechanism |
-| 32 | A USB network adapter can only be a wired uplink of wan; Archer's other roles (lab network, off) are dropped | proposed | One role covers the real use; the others were network policy for rare cases |
-| 33 | Blocklist exceptions through one allow-list file; no unfiltered segments | proposed | Exceptions stay visible and few |
-| 34 | The idle lock can be paused from the bar until the next lock | proposed | Archer's NL switch was used; it ends at the next lock, so it cannot be forgotten forever |
-| 35 | Fingerprint for the lock screen only, off by default, if the reader is supported | proposed | Convenience on the lock screen; never for login or sudo |
-| 36 | A `@convergent-apps` set the owner edits for personal programs (file manager, theme, editors) | proposed | Personal tools stay out of the infrastructure set and the review |
-| 37 | VMs with UEFI and a virtual TPM, Windows supported; nested virtualisation off unless switched on per guest | proposed | Keeps Archer's VM support; nested KVM is attack surface most guests do not need |
-| 38 | No LUKS header copy on the laptop's disk; offline backups only | proposed | Archer's on-disk header vault was a convenience; the offline copies are the real recovery |
+| 29 | zram only, 32 GiB; no disk swap | accepted | A ceiling, not a reservation: headroom for VM-heavy work at the price of about 128 MiB of index; 62 GB of RAM and no hibernation make disk swap unnecessary |
+| 30 | User namespaces allowed for the owner (Firefox's own sandbox needs them inside its container) | accepted | The host user runs almost nothing besides the session; blocking them weakens the browsers more than it protects the host |
+| 31 | No journal-style log sealing; logs leave the host as they are written | accepted | Shipping to svc gives the tamper evidence that mattered, with no extra mechanism |
+| 32 | A USB network adapter can only be a wired uplink of wan; Archer's other roles (lab network, off) are dropped | accepted | One role covers the real use; the others were network policy for rare cases |
+| 33 | Blocklist exceptions through one allow-list file; no unfiltered segments | accepted | Exceptions stay visible and few |
+| 34 | The idle lock can be paused from the bar until the next lock | accepted | Archer's NL switch was used; it ends at the next lock, so it cannot be forgotten forever |
+| 35 | Fingerprint for the lock screen only, off by default, if the reader is supported | accepted | Convenience on the lock screen; never for login or sudo |
+| 36 | A `@convergent-apps` set the owner edits for personal programs (file manager, theme, editors) | accepted | Personal tools stay out of the infrastructure set and the review |
+| 37 | VMs with UEFI and a virtual TPM, Windows supported; nested virtualisation off unless switched on per guest | accepted | Keeps Archer's VM support; nested KVM is attack surface most guests do not need |
+| 38 | No LUKS header copy on the laptop's disk; offline backups only | accepted | Archer's on-disk header vault was a convenience; the offline copies are the real recovery |
+| 39 | Our own code: no daemons, existing tools first, shell, under 1 % of one core at idle; every piece listed in ARCHITECTURE section 12 | accepted | The owner asked for minimal custom services; Archer's status bar and collector alone used about 12 % of a core |

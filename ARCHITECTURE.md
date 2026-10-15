@@ -6,7 +6,7 @@ repository: everything it runs is built from here, verified at boot, and replace
 whole on update.
 
 This document describes the design. [DECISIONS.md](DECISIONS.md) records the choices
-behind it and their status. Section 13 maps what Convergent keeps, improves and drops from
+behind it and their status. Section 14 maps what Convergent keeps, improves and drops from
 its predecessor, Archer.
 
 ---
@@ -75,7 +75,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 | Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled, signed with the owner's key; one signed unified kernel image (UKI) per slot, plus a signed recovery UKI |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the signed UKI command line; the root hash is covered by the Secure Boot signature |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
-| Memory | zram swap capped at 4 GiB; zswap off; no disk swap |
+| Memory | zram swap of 32 GiB (a ceiling, not a reservation; its index costs about 128 MiB); zswap off; no disk swap |
 | Seat and session | seatd; Sway, foot, fuzzel, mako, swaylock, swayidle, kanshi; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
 | Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels denied until approved from the menu; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
@@ -84,7 +84,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 | Logs | syslog-ng, forwarded to svc over TLS; a bounded local buffer for when svc is down |
 | Crashes | Kernel crash records from pstore archived at boot by an OpenRC service and reported to svc |
 | Time | chrony with NTS from three sources, needing two to agree; starts without waiting for the network; serves NTP to the firewalls |
-| Listening on the host | chrony (UDP 123, from the firewalls only) and node_exporter (TCP 9100, from svc only). Nothing else |
+| Listening on the host | chrony (UDP 123, from the firewalls only), node_exporter (TCP 9100, from svc only) and Incus' metrics endpoint (TCP 8444, TLS with a client certificate, from svc only). Nothing else |
 
 ### 3.2 wan (VM)
 
@@ -218,6 +218,7 @@ segment except transit and sync; it is not repeated below.
 | fw1, fw2 | host | NTP 123 | Time |
 | fw1, fw2 | internet | DoT 853 to the forwarders | Resolution |
 | svc | host, fw1, fw2, wan | 9100 | Metrics scrape |
+| svc | host | Incus metrics 8444 | Instance state |
 | fw1, fw2, wan | svc | syslog 6514 | Logs |
 | web (web, tmp) | internet | 80, 443 (TCP and UDP) | Browsing |
 | web | upstream LAN | IPP 631, only when printing is switched on | Printing |
@@ -249,9 +250,9 @@ router; the firewalls are.
   address and certificate name, validates DNSSEC, and answers only internal segments.
 - **IPv4 only:** AAAA answers are suppressed; the DNS-over-HTTPS canary domain answers "no",
   so applications fall back to the system resolver.
-- **Local names:** every compartment's name and reverse record come from the address table of
-  section 4.1, plus a file of the owner's own records, validated before it is pushed to both
-  firewalls together.
+- **Local names:** every compartment's name and reverse record are generated from the address
+  table of section 4.1 when the firewall image is built. The owner's own records live in one
+  file, validated and pushed to both firewalls together with the blocklist.
 - **Blocklist:** an RPZ zone. The host downloads it weekly, retries on failure, validates it,
   and pushes the same file to both firewalls over SSH; the last good copy stays in force until
   a new one validates. A short allow-list file holds the owner's exceptions.
@@ -381,11 +382,13 @@ Firmware updates use signed capsules only, applied from the menu.
 
 ## 8. Observability
 
-- **Metrics:** node_exporter on the host, the firewalls and wan; VictoriaMetrics scrapes them.
-  Small collectors on the host add what node_exporter lacks: Incus instance state, NVMe SMART,
-  release and guest-image currency, the pf and CARP state of each firewall, the resolvers, time
-  and NTS state, Secure Boot and lockdown state, the LUKS header hash, crash records, and their
-  own freshness.
+- **Metrics:** VictoriaMetrics scrapes node_exporter on the host, the firewalls and wan, and
+  Incus' own metrics endpoint for instance state. Time and synchronisation come from
+  node_exporter's time collector; staleness of any extra figure from the file's own age, which
+  node_exporter reports. The few figures nothing else provides are written as small text files
+  by the scripts of section 12: on each firewall its CARP, pf and unbound state; on the host,
+  once per boot, Secure Boot, lockdown, the LUKS header hash and crash records, daily the NVMe
+  health and NTS state, and at each update the release and guest-image dates.
 - **Logs:** syslog over TLS from every compartment, plus the audit records, to VictoriaLogs.
   Retention is bounded by size and age.
 - **Alerts:** vmalert evaluates the rules; the status bar shows the counts, or "unknown" when svc
@@ -474,11 +477,49 @@ not by enrolling Microsoft's third-party certificate.
 | wan (512 cap, plus QEMU overhead) | 500 |
 | fw1 + fw2 (384 each, plus QEMU overhead, unbound with the blocklist) | 1 000 |
 | svc | 350 |
-| Total, idle, browsers closed | about 2 750 |
+| zram index for 32 GiB | 130 |
+| Total, idle, browsers closed | about 2 880 |
+
+The margin to 3 GB is small. If measurement shows it is crossed, the first levers are the zram
+size and the firewalls' memory caps.
 
 ---
 
-## 12. Repository layout
+## 12. Our own code
+
+Convergent writes as little as it can. The rules:
+
+- **No daemons of our own.** Every piece below is a short script started by OpenRC at boot, by
+  cron, by acpid, or by the owner from the menu, and exits when done.
+- **Existing tools first.** What an exporter, Incus, OpenRC or a base-system tool already does is
+  not written again (section 8 lists what that removed).
+- **Shell for the first release.** POSIX shell where it suffices; nothing that needs a runtime of
+  its own.
+- **A budget.** Together the status bar and every periodic script use under 1 % of one core at
+  idle (Archer's equivalents used about 12 %).
+
+| Piece | Runs | Does |
+|---|---|---|
+| `build` | on the build host | Builds and signs a release (section 6) |
+| `install` | from the install stick | Installs a release (section 7.1) |
+| initramfs steps | at every boot | Section 5.2, step 4 |
+| `slot` | from the menu; once after each boot | Writes a release to the inactive slot; after the health checks, marks the booted slot good |
+| `guests` | from the menu | Creates a guest with the next free address, snapshots, updates guests and the firewall pair in order with its checks and rollback |
+| `check` | after boot, after update, daily | The checker (section 8) |
+| `bar` | in the session | The status bar: reads `/proc` and `/sys` without starting programs; asks vmalert every 30 seconds |
+| `menu` | from a key binding | fuzzel over a directory of plain action files, each one line: a label and the command it runs |
+| `browser` | from the menu or a link | Starts a browser container with its restricted Wayland and audio sockets |
+| `facts` | once per boot; daily | Writes the host's extra figures as text files for node_exporter, archives pstore records |
+| `dns-push` | weekly; from the menu | Downloads, validates and pushes the blocklist and the owner's records file to both firewalls |
+| `portal` | from the menu | Turns captive-portal mode on and off |
+| `devices` | from the menu | Approves a USB or Thunderbolt device |
+| `backup` | from the menu | Encrypted export to external media (section 7.4) |
+| power handler | acpid, on AC events | Sets the CPU energy preference and clock cap |
+| firewall facts | cron on each firewall | Writes CARP, pf and unbound state as text files for node_exporter |
+
+---
+
+## 13. Repository layout
 
 ```
 README.md  ARCHITECTURE.md  DECISIONS.md  USAGE.md  RECOVERY.md
@@ -491,12 +532,12 @@ guests/fw/    OpenBSD install.conf, site set, pf.conf, CARP, pfsync, ifstated, u
 guests/svc/   Alpine image definition, VictoriaMetrics, VictoriaLogs, vmalert rules, dashboards
 guests/browser/  Alpine image with Firefox and its policies
 install/      the installer
-tools/        menu, status bar, collectors, update, slot blessing, checker
+tools/        the pieces of section 12
 ```
 
 ---
 
-## 13. From Archer
+## 14. From Archer
 
 **Kept or improved:** the radio in a VM; the firewall pair (now with its own kernels, shared
 connection state and DNS that fails over with it); the hardened kernel, signed boot and lockdown;
