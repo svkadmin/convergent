@@ -52,6 +52,8 @@ cp "$here/builder.use" "$etc/package.use/zz-builder"
 printf '%s\n' '#!/bin/sh' 'ROOT=/ EROOT=/ exec /usr/bin/getuto "$@"' >"$BUILDER/usr/local/bin/getuto-builder"
 chmod 755 "$BUILDER/usr/local/bin/getuto-builder"
 echo 'PORTAGE_TRUST_HELPER=/usr/local/bin/getuto-builder' >"$etc/make.conf/85-trust"
+# The kernel configuration fragment, merged by Gentoo's kernel package over its hardened one.
+install -D -m 0644 "$here/kernel.config" "$BUILDER/etc/kernel/config.d/50-convergent.config"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
 
 # 3. The pinned snapshot (signature checked by emerge-webrsync), the profile, the binary
@@ -68,4 +70,27 @@ chroot "$BUILDER" /bin/sh -eu -c "
 	eselect profile set $PROFILE
 	getuto >/dev/null
 "
+
+# 4. The packages built here are signed with the builder's own key, which Portage trusts like
+#    Gentoo's: a cached package swapped on disk is refused. The key is made once and kept.
+chroot "$BUILDER" /bin/sh -eu <<'EOF'
+home=/etc/convergent/binpkg-gnupg
+if [ ! -s "$home/fingerprint" ]; then
+	install -d -m 700 "$home"
+	gpg --homedir "$home" --batch --passphrase '' \
+		--quick-gen-key 'Convergent builder <builder@convergent.invalid>' ed25519 sign never
+	gpg --homedir "$home" --list-secret-keys --with-colons |
+		awk -F: '/^fpr/ { print $10; exit }' >"$home/fingerprint"
+fi
+fpr=$(cat "$home/fingerprint")
+gpg --homedir "$home" --export --armor "$fpr" | gpg --homedir /etc/portage/gnupg --batch --quiet --import
+gpg --homedir /etc/portage/gnupg --batch --yes --pinentry-mode loopback \
+	--passphrase-file /etc/portage/gnupg/pass --quick-lsign-key "$fpr"
+# Recomputed now: Portage verifies as an unprivileged user that cannot update it.
+gpg --homedir /etc/portage/gnupg --batch --check-trustdb
+printf '%s\n' 'FEATURES="${FEATURES} binpkg-signing"' \
+	"BINPKG_GPG_SIGNING_GPG_HOME=\"$home\"" "BINPKG_GPG_SIGNING_KEY=\"$fpr\"" \
+	>/etc/portage/make.conf/86-signing
+gpgconf --homedir "$home" --kill all
+EOF
 echo "buildenv: builder ready at $BUILDER (snapshot $SNAPSHOT_DATE, profile $PROFILE)"
