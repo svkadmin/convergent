@@ -1,0 +1,9 @@
+#!/sbin/openrc-run
+description="Select browser role before networking"
+depend() {
+    need bootmisc sysctl
+    before networking
+}
+start() {
+    /usr/local/sbin/browser-setup
+}

@@ -1,0 +1,31 @@
+# Apply after browser-base; init --ephemeral, stop on close/failure.
+config:
+  environment.BROWSER_ROLE: "portal"
+  # Static address is selected by browser-setup.
+  security.protection.delete: "false"
+  limits.memory: 512MiB
+description: Convergent portal browser
+devices:
+  eth0:
+    type: nic
+    nictype: bridged
+    parent: web
+    name: eth0
+    hwaddr: "00:16:3e:80:03:11"
+    ipv4.address: 100.80.3.11
+    security.ipv4_filtering: "true"
+    security.ipv6_filtering: "true"
+    security.mac_filtering: "true"
+    security.port_isolation: "true"
+  wayland:
+    type: disk
+    source: /run/convergent/browser/portal/wayland-0
+    path: /mnt/browser/wayland-0
+    readonly: "true"
+    required: "true"
+  pipewire:
+    type: disk
+    source: /run/convergent/browser/portal/pipewire-0
+    path: /mnt/browser/pipewire-0
+    readonly: "true"
+    required: "true"

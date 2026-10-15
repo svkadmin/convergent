@@ -1,0 +1,197 @@
+#!/bin/sh
+# ARCHITECTURE 8, 12
+# Reset luks-header.sha256 after an approved keyslot change; refresh the backup.
+# Keep archived pstore records until acknowledged.
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+out=/var/lib/node_exporter
+sdir=/var/lib/convergent
+run=/run/convergent
+efi=/sys/firmware/efi/efivars
+efi_guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
+cert=/var/lib/incus/server.crt
+
+die() { logger -t facts "$*"; echo "facts: $*" >&2; exit 1; }
+log() { logger -t facts "$*"; }
+usage() { echo "usage: facts boot | daily | auto" >&2; exit 2; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+umask 022
+mkdir -p "$out" "$run" "$sdir" || die "could not create the state directories"
+exec 9>"$run/facts.lock"
+
+buf=
+ok=1
+m() { printf '%s\n' "$*" >>"$buf"; }
+bad() { ok=0; log "$*"; }
+
+# Publish NAME.prom with cv_collector_success{collector}.
+publish() {
+	m "cv_collector_success{collector=\"$2\"} $ok"
+	chmod 644 "$buf" && mv "$buf" "$out/$1.prom" || die "could not write $out/$1.prom"
+	buf=
+}
+
+trap 'rm -f "$buf"' EXIT
+
+new_buf() { buf=$(mktemp "$out/.facts.XXXXXX") || die "could not write in $out"; ok=1; }
+
+# --- boot ---
+
+fact_release() {
+	i=0
+	up=$(cut -d. -f1 /proc/uptime)
+	while :; do
+		st=$(slot status 2>/dev/null) || st=
+		rel=$(echo "$st" | awk '$1 == "booted" { print $2 }')
+		slt=$(echo "$st" | awk '$1 == "booted" { print $4 }')
+		good=$(echo "$st" | awk '$1 == "good" { print $2 }')
+		high=$(echo "$st" | awk '$1 == "highest" { print $2 }')
+		# Wait for this boot's bless.
+		[ "$up" -lt 600 ] && [ "$good" != "$rel" ] && [ "$i" -lt 18 ] || break
+		i=$((i + 1)); sleep 10
+	done
+	if [ -z "$rel" ]; then bad "slot status gave nothing"; return; fi
+	m "cv_booted_info{release=\"$rel\",slot=\"$slt\"} 1"
+	m "cv_release_number{which=\"booted\"} $rel"
+	case $good in '' | *[!0-9]*) ;; *) m "cv_release_number{which=\"good\"} $good" ;; esac
+	case $high in '' | *[!0-9]*) ;; *) m "cv_release_number{which=\"highest\"} $high" ;; esac
+}
+
+efivar() { od -An -t u1 -j4 -N1 "$efi/$1-$efi_guid" 2>/dev/null | tr -d ' \n'; }
+
+fact_secure_boot() {
+	sb=$(efivar SecureBoot); setup=$(efivar SetupMode)
+	case $sb$setup in [01][01]) ;; *) bad "Secure Boot state unreadable in $efi" ;; esac
+	if [ "$sb" = 1 ] && [ "$setup" = 0 ]; then m "cv_secure_boot_verified 1"; else m "cv_secure_boot_verified 0"; fi
+}
+
+# Confidentiality lockdown.
+fact_lockdown() {
+	lk=$(cat /sys/kernel/security/lockdown 2>/dev/null) || lk=
+	case $lk in
+	*'[confidentiality]'*) m "cv_lockdown_enabled 1" ;;
+	'') bad "lockdown state unreadable"; m "cv_lockdown_enabled 0" ;;
+	*) m "cv_lockdown_enabled 0" ;;
+	esac
+}
+
+fact_luks() {
+	dev=$(cryptsetup status cv-state 2>/dev/null | awk '$1 == "device:" { print $2 }')
+	[ -b "$dev" ] || { bad "no LUKS device behind cv-state"; return; }
+	d=$(mktemp -d "$run/luks.XXXXXX") || { bad "no scratch space for the LUKS header"; return; }
+	umask 077
+	if cryptsetup luksHeaderBackup --disable-locks "$dev" --header-backup-file "$d/h" >/dev/null 2>&1; then
+		h=$(sha256sum <"$d/h" | cut -d' ' -f1)
+		acc=$(cat "$sdir/luks-header.sha256" 2>/dev/null || :)
+		if [ -z "$acc" ]; then
+			echo "$h" >"$sdir/luks-header.sha256" && acc=$h && log "LUKS header seen for the first time, recorded"
+		fi
+		if [ "$h" = "$acc" ]; then m "cv_luks_header_matches_release 1"; else m "cv_luks_header_matches_release 0"; fi
+	else
+		bad "could not read the LUKS header of $dev"
+	fi
+	umask 022
+	rm -rf "$d"
+}
+
+fact_pstore() {
+	ps=/sys/fs/pstore
+	arch=$sdir/pstore
+	if [ -d "$ps" ] && ! grep -q " $ps " /proc/mounts; then mount -t pstore pstore "$ps" 2>/dev/null || :; fi
+	umask 077
+	mkdir -p "$arch" || { bad "could not create $arch"; umask 022; return; }
+	if [ -n "$(ls -A "$ps" 2>/dev/null)" ]; then
+		dst=$arch/$(date -u +%Y%m%dT%H%M%SZ)
+		mkdir -p "$dst" || bad "could not create $dst"
+		for f in "$ps"/*; do
+			[ -f "$f" ] || continue
+			if cp -p "$f" "$dst/" && cmp -s "$f" "$dst/${f##*/}"; then
+				sync
+				rm -f "$f" || bad "could not clear ${f##*/} from pstore"
+			else
+				bad "could not archive ${f##*/}"
+			fi
+		done
+		rmdir "$dst" 2>/dev/null || log "crash records archived in $dst"
+	fi
+	umask 022
+	m "cv_crash_records $(find "$arch" -type f | wc -l)"
+}
+
+boot() {
+	new_buf
+	fact_release
+	fact_secure_boot
+	fact_lockdown
+	fact_luks
+	fact_pstore
+	publish boot boot
+}
+
+# --- daily ---
+
+fact_nvme() {
+	found=
+	for c in /sys/class/nvme/nvme[0-9]*; do
+		[ -e "$c" ] || continue
+		n=${c##*/}
+		rows=$(smartctl -j -A "/dev/$n" 2>/dev/null | jq -r --arg d "$n" '
+			.nvme_smart_health_information_log // empty | . as $l |
+			"cv_nvme_spare_percent{device=\"\($d)\"} \($l.available_spare)",
+			"cv_nvme_spare_threshold_percent{device=\"\($d)\"} \($l.available_spare_threshold)",
+			"cv_nvme_media_errors_total{device=\"\($d)\"} \($l.media_errors)",
+			"cv_nvme_critical_warning{device=\"\($d)\"} \($l.critical_warning)"' 2>/dev/null)
+		if [ -n "$rows" ]; then echo "$rows" >>"$buf"; found=1; else bad "no health log from $n"; fi
+	done
+	[ -n "$found" ] || bad "no NVMe device read"
+}
+
+# Count selected/combined sources with NTS cookies.
+fact_nts() {
+	n=$({ chronyc -n -c sources 2>/dev/null | sed 's/^/S,/'; chronyc -n authdata 2>/dev/null | sed 's/^/A /'; } | awk '
+		/^S,/ { split($0, f, ","); if (f[3] ~ /^[*+]$/) agree[f[4]] = 1; next }
+		/^A / { if ($3 == "NTS" && $(NF - 1) > 0) auth[$2] = 1 }
+		END { for (k in agree) if (k in auth) c++; print c + 0 }')
+	case $n in '' | *[!0-9]*) bad "chronyc gave no answer"; return ;; esac
+	m "cv_nts_authenticated_sources $n"
+}
+
+fact_certs() {
+	e=$(openssl x509 -noout -enddate -in "$cert" 2>/dev/null) || {
+		bad "cannot read the certificate $cert"; return
+	}
+	case $e in notAfter=?*) e=${e#notAfter=} ;; *) bad "no expiry in $cert"; return ;; esac
+	s=$(date -d "$e" +%s 2>/dev/null) || s=
+	if [ -n "$s" ]; then m "cv_certificate_not_after_seconds{certificate=\"incus-server\"} $s"; else bad "cannot read the certificate $cert"; fi
+}
+
+daily() {
+	new_buf
+	fact_nvme
+	fact_nts
+	fact_certs
+	publish daily daily
+}
+
+# --- auto ---
+
+age() { _m=$(stat -c %Y "$1" 2>/dev/null) || { echo 999999999; return; }; echo $(( $(date +%s) - _m )); }
+
+auto() {
+	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ]; then
+		boot
+	fi
+	if [ "$(age "$out/daily.prom")" -ge 72000 ]; then
+		daily
+	fi
+}
+
+case ${1:-} in
+boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; boot ;;
+daily) [ $# = 1 ] || usage; flock -w 120 9 || die "another facts is running"; daily ;;
+auto) [ $# = 1 ] || usage; flock -n 9 || exit 0; auto ;;
+*) usage ;;
+esac

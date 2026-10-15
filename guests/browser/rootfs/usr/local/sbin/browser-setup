@@ -1,0 +1,26 @@
+#!/bin/sh
+set -eu
+umask 022
+die() { echo "browser-setup: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "root required"
+role=$BROWSER_ROLE
+case $role in
+    web) address=100.80.3.10; prefix=24; gateway=100.80.3.1; resolver=$gateway ;;
+    tmp)
+        address=$BROWSER_IPV4
+        case $address in 100.80.3.[2-9][0-9]) ;; *) die "tmp requires 100.80.3.20..99" ;; esac
+        prefix=24; gateway=100.80.3.1; resolver=$gateway ;;
+    portal) address=100.80.3.11; prefix=24; gateway=100.80.3.1; resolver=100.80.0.10 ;;
+    admin) address=100.80.4.10; prefix=28; gateway=100.80.4.1; resolver=$gateway ;;
+    *) die "BROWSER_ROLE must be web, tmp, portal or admin" ;;
+esac
+rm -f /run/browser-ready
+cp "/usr/share/convergent-browser/$role/policies.json" /usr/lib/firefox-esr/distribution/policies.json
+printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n    address %s/%s\n    gateway %s\n' \
+    "$address" "$prefix" "$gateway" >/etc/network/interfaces
+printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$resolver" >/etc/resolv.conf
+mkdir -p /run/user/1000 /home/browser/profile /home/browser/Downloads
+chown 1000:1000 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads
+chmod 700 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads
+printf '%s\n' "$role" >/run/browser-role
+touch /run/browser-ready

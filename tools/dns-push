@@ -1,0 +1,211 @@
+#!/bin/sh
+# ARCHITECTURE 4.5
+# Root-owned inputs: /var/lib/convergent/dns/{allow,records}.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+conf=/etc/convergent/dns.conf
+ssh_conf=/etc/convergent/ssh_config
+state=/var/lib/convergent/dns
+run=/run/convergent
+rdir=/var/unbound/etc
+fws="fw2 fw1"
+work= src_open=
+# Unique probe outside Unbound's default local zones.
+selftest=cv-$(date +%s)-$$.example.net
+selftest_addr=192.0.2.53
+
+die() { echo "dns-push: $*" >&2; exit 1; }
+rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@"; }
+rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@"; }
+close_src() {
+	_closed=0
+	for _f in $fws; do
+		rsh "$_f" "pfctl -t blocklist_src -T flush" >/dev/null || _closed=1
+	done
+	[ "$_closed" = 0 ] || return 1
+	src_open=
+}
+# Serialize remote swaps and recovery; OpenBSD clears /var/run on boot.
+lock="set -e
+cd $rdir
+i=0
+until mkdir /var/run/convergent-dns.lock 2>/dev/null; do
+	i=\$((i + 1)); [ \$i -lt 90 ] || exit 1; sleep 1
+done
+trap 'rmdir /var/run/convergent-dns.lock' 0
+trap 'exit 1' HUP INT TERM"
+# Preserve backups until both activations commit.
+restore="cd $rdir && cp -p blocklist.rpz.prev blocklist.rpz &&
+cp -p local-owner.conf.prev local-owner.conf && unbound-control reload >/dev/null"
+rollback() {
+	[ -e "$state/pending" ] || return 0
+	_failed=0
+	for _f in $fws; do
+		rsh "$_f" "$lock
+$restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _failed=1; }
+	done
+	rm -f "$state/stamp"
+	[ "$_failed" = 0 ] && rm -f "$state/pending"
+}
+cleanup() {
+	_rc=$?
+	trap - 0
+	trap '' HUP INT TERM
+	rollback || _rc=1
+	[ -z "$src_open" ] || close_src || _rc=1
+	[ -z "$work" ] || rm -rf "$work"
+	exit "$_rc"
+}
+
+# public_v4 A.B.C.D: an address pf.conf does not count as nonpublic.
+public_v4() {
+	case $1 in
+	'' | *[!0-9.]* | *..* | .* | *.) return 1 ;;
+	0.* | 10.* | 127.* | 169.254.* | 192.168.* | 198.18.* | 198.19.* | 192.0.0.* | 192.0.2.* | \
+	198.51.100.* | 203.0.113.* | 22[4-9].* | 2[3-5][0-9].* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | \
+	100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*) return 1 ;;
+	esac
+	case $(printf '%s\n' "$1" | tr -cd . | wc -c) in 3) ;; *) return 1 ;; esac
+}
+
+download() {
+	url=$BLOCKLIST_URL
+	case $url in https://[A-Za-z0-9]*) ;; *) die "BLOCKLIST_URL in $conf must start with https://" ;; esac
+	case $url in *[!A-Za-z0-9._~:/?=\&%+,@-]*) die "BLOCKLIST_URL has characters that are not allowed" ;; esac
+	host=${url#https://}
+	host=${host%%/*}
+	case $host in '' | *[!A-Za-z0-9.-]*) die "BLOCKLIST_URL must name a host, without port or user" ;; esac
+	ips=
+	for _a in $(getent ahostsv4 "$host" | awk '$2 == "STREAM" { print $1 }' | sort -u | head -n 8); do
+		if public_v4 "$_a"; then ips="$ips $_a"; fi
+	done
+	[ -n "$ips" ] || die "$host resolves to no public IPv4 address"
+	src_open=1
+	for _f in $fws; do
+		rsh "$_f" "pfctl -t blocklist_src -T replace$ips" >/dev/null || die "could not open the blocklist source on $_f"
+	done
+	_res=$(echo $ips | tr ' ' ',')
+
+	(
+		ulimit -f $(( (BLOCKLIST_MAX_BYTES + 511) / 512 + 8 )) 2>/dev/null || :
+		curl -q --silent --show-error --fail --noproxy '*' --proto =https --proto-redir =https \
+			--tlsv1.2 --connect-timeout 15 --max-time 180 --max-filesize "$BLOCKLIST_MAX_BYTES" \
+			--resolve "$host:443:$_res" -o "$work/list.raw" "$url"
+	) || die "the download from $host failed"
+	close_src
+}
+
+# Validate the source RPZ grammar and minimum entry count.
+validate() {
+	_size=$(wc -c <"$work/list.raw")
+	[ "$_size" -gt 0 ] && [ "$_size" -le "$BLOCKLIST_MAX_BYTES" ] || die "RPZ size outside limits"
+	awk "$domain"'
+		/^[ \t]*;/ || NF == 0 { next }
+		$1 == "$TTL" && NF == 2 && $2 ~ /^[0-9]+$/ { ttl++; next }
+		$0 ~ /^@/ && $1 == "@" && $2 == "SOA" && NF == 9 && $3 == "localhost." && $4 == "root.localhost." {
+			for (i=5; i<=9; i++) if ($i !~ /^[0-9]+$/) exit 1
+			soa++; next
+		}
+		$0 ~ /^[ \t]/ && $1 == "NS" && NF == 2 && $2 == "localhost." { ns++; next }
+		$0 !~ /^[ \t]/ && NF == 3 && $2 == "CNAME" && $3 == "." {
+			d=$1; sub(/^\*\./, "", d)
+			if (!isdom(d) || seen[$1]++) exit 1
+			if ($1 == d) n++
+			next
+		}
+		{ exit 1 }
+		END { if (ttl != 1 || soa != 1 || ns != 1 || n < '"$BLOCKLIST_MIN_DOMAINS"') exit 1 }
+	' "$work/list.raw" || die "invalid or undersized RPZ"
+}
+domain='
+function isdom(s, n, i, a) {
+	if (length(s) > 253 || s !~ /^[a-z0-9_.-]+$/) return 0
+	n=split(s,a,".")
+	if (n < 2 || a[n] ~ /^[0-9]+$/) return 0
+	for (i=1; i<=n; i++)
+		if (!length(a[i]) || length(a[i]) > 63 || a[i] ~ /^-/ || a[i] ~ /-$/) return 0
+	return 1
+}'
+
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# -le 1 ] || die "usage: dns-push [local | auto]"
+mode=${1:-full}
+case $mode in full | local | auto) ;; *) die "usage: dns-push [local | auto]" ;; esac
+mkdir -p "$state" "$run"
+exec 9>"$run/dns-push.lock"
+flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+rollback || die "recover both firewalls before another push"
+if [ "$mode" = auto ]; then
+	last=$(cat "$state/stamp" 2>/dev/null || :)
+	case $last in '' | *[!0-9]*) last=0 ;; esac
+	[ $(( $(date +%s) - last )) -ge 604800 ] || exit 0
+fi
+. "$conf"
+case ${BLOCKLIST_MAX_BYTES:-} in '' | *[!0-9]*) die "invalid size cap" ;; esac
+case ${BLOCKLIST_MIN_DOMAINS:-} in '' | *[!0-9]*) die "invalid entry minimum" ;; esac
+[ "$BLOCKLIST_MAX_BYTES" -gt 0 ] && [ "$BLOCKLIST_MIN_DOMAINS" -gt 0 ] || die "limits must be positive"
+work=$(mktemp -d "$run/dns-push.XXXXXX")
+if [ "$mode" = local ]; then cp "$state/list.rpz" "$work/list.raw"; else download; fi
+validate
+: >"$work/allow.in"
+[ ! -f "$state/allow" ] || cp "$state/allow" "$work/allow.in"
+awk "$domain"'
+	{ sub(/#.*/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); if (!$0) next
+	  d=tolower($0); sub(/\.$/, "", d); if (!isdom(d)) exit 1; print d }
+' "$work/allow.in" >"$work/allow" || die "invalid allow-list"
+
+awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" '
+	BEGIN {
+		print "$ORIGIN blocklist.rpz."
+		while ((getline d < allow) > 0) ok[d]=ok["*." d]=1
+	}
+	!($1 in ok) { print }
+	END {
+		for (d in ok) print d " CNAME rpz-passthru."
+		print probe " A " addr
+		print "blocked-" probe " CNAME ."
+	}
+' "$work/list.raw" >"$work/blocklist.rpz"
+: >"$work/local-owner.conf"
+[ ! -f "$state/records" ] || cp "$state/records" "$work/local-owner.conf"
+
+# Stage, hash and validate both candidates before activation.
+for fw in $fws; do
+	for file in blocklist.rpz local-owner.conf; do
+		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file"
+		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
+		[ "$(rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
+	done
+	rsh "$fw" "cd $rdir &&
+		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
+		unbound-checkconf $rdir/dns-check.conf >/dev/null &&
+		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev"
+done
+# Journal both firewalls before activation.
+: >"$state/pending"
+sync
+for fw in $fws; do
+	rsh "$fw" "$lock
+		trap 's=\$?; set +e; trap - 0; if [ \$s != 0 ]; then $restore; fi; rmdir /var/run/convergent-dns.lock; exit \$s' 0
+		trap 'exit 1' HUP INT TERM
+		cd $rdir
+		mv blocklist.rpz.new blocklist.rpz
+		mv local-owner.conf.new local-owner.conf
+		unbound-checkconf $rdir/unbound.conf >/dev/null
+		unbound-control reload >/dev/null"
+	rsh "$fw" "i=0; while [ \$i -lt 30 ]; do
+		host -t A $selftest 127.0.0.1 2>&1 | grep -Fq 'has address $selftest_addr' &&
+			host -t A blocked-$selftest 127.0.0.1 2>&1 | grep -q NXDOMAIN && exit 0
+		i=\$((i + 1)); sleep 2
+	done; exit 1"
+done
+cp "$work/list.raw" "$state/list.rpz.new"
+mv "$state/list.rpz.new" "$state/list.rpz"
+[ "$mode" = local ] || date +%s >"$state/stamp"
+sync
+rm "$state/pending"
+echo "dns-push: updated both firewalls"

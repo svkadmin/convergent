@@ -1,0 +1,36 @@
+#!/bin/sh
+# ARCHITECTURE 3.5
+# Host supplies filtered socket inodes accessible to guest UID 1000.
+# Wayland: deny capture, input injection, other surfaces and privileged globals.
+# PipeWire: playback; microphone only when requested; no monitor capture.
+# Host waits for exit, stops/reaps instances, closes portal rules/Grafana.
+set -eu
+umask 077
+die() { echo "browser-launch: $*" >&2; exit 1; }
+[ "$(id -u)" = 1000 ] || die "run as browser (UID 1000)"
+[ -f /run/browser-ready ] || die "role setup incomplete"
+role=$(cat /run/browser-role)
+case $role in web|tmp|portal|admin) ;; *) die "invalid role" ;; esac
+case $role in
+    admin)
+        [ "$#" = 0 ] || die "admin accepts no URL arguments"
+        set -- http://100.80.2.10:3000/ ;;
+    portal)
+        [ "$#" = 1 ] || die "portal requires the captive page URL"
+        case $1 in http://*|https://*) ;; *) die "portal requires HTTP(S)" ;; esac ;;
+    *)
+        for url do
+            case $url in http://*|https://*) ;; *) die "expected HTTP(S) URL" ;; esac
+        done ;;
+esac
+[ -S /mnt/browser/wayland-0 ] || die "missing restricted Wayland socket"
+[ -S /mnt/browser/pipewire-0 ] || die "missing restricted PipeWire socket"
+cd /home/browser
+
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LOGNAME=browser \
+    LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
+    PIPEWIRE_REMOTE=/mnt/browser/pipewire-0 MOZ_ENABLE_WAYLAND=1 GDK_BACKEND=wayland \
+    GTK_USE_PORTAL=0 NO_AT_BRIDGE=1 \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent \
+    /usr/bin/firefox-esr --no-remote --name="convergent-$role" --class="convergent-$role" \
+    --profile /home/browser/profile "$@"

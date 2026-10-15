@@ -1,0 +1,36 @@
+# Apply after browser-base; preserve private state across updates.
+config:
+  environment.BROWSER_ROLE: "admin"
+  # Static address is selected by browser-setup.
+  security.protection.delete: "true"
+  limits.memory: 1GiB
+description: Convergent admin browser
+devices:
+  eth0:
+    type: nic
+    nictype: bridged
+    parent: admin
+    name: eth0
+    hwaddr: "00:16:3e:80:04:10"
+    ipv4.address: 100.80.4.10
+    security.ipv4_filtering: "true"
+    security.ipv6_filtering: "true"
+    security.mac_filtering: "true"
+    security.port_isolation: "true"
+  wayland:
+    type: disk
+    source: /run/convergent/browser/admin/wayland-0
+    path: /mnt/browser/wayland-0
+    readonly: "true"
+    required: "true"
+  pipewire:
+    type: disk
+    source: /run/convergent/browser/admin/pipewire-0
+    path: /mnt/browser/pipewire-0
+    readonly: "true"
+    required: "true"
+  state:
+    type: disk
+    pool: default
+    source: browser-admin-state
+    path: /home/browser

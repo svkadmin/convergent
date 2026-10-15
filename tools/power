@@ -1,0 +1,56 @@
+#!/bin/sh
+# ARCHITECTURE 3.1
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+ac_epp=balance_performance
+cap=4200000
+bat_epp=power
+
+cpu=/sys/devices/system/cpu/cpufreq
+ps=/sys/class/power_supply
+
+die() { logger -t power "$*"; echo "power: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+# Mains/USB-C online, or no battery, means AC.
+source_now() {
+	bat=
+	for s in "$ps"/*; do
+		[ -e "$s/type" ] || continue
+		case $(cat "$s/type") in
+		Battery) bat=1 ;;
+		Mains | USB*) [ "$(cat "$s/online" 2>/dev/null || echo 0)" = 1 ] && { echo ac; return; } ;;
+		esac
+	done
+	if [ -n "$bat" ]; then echo battery; else echo ac; fi
+}
+
+case ${1:-} in
+'') src=$(source_now) ;;
+ac | battery) src=$1 ;;
+*) echo "usage: power [ac | battery]" >&2; exit 2 ;;
+esac
+if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
+
+rc=0
+set_file() {
+	[ -e "$1" ] || return 0
+	[ "$(cat "$1" 2>/dev/null)" = "$2" ] && return 0
+	echo "$2" >"$1" 2>/dev/null || { echo "power: could not set $1 to $2" >&2; rc=1; }
+}
+
+for p in "$cpu"/policy[0-9]*; do
+	[ -d "$p" ] || continue
+	if [ -e "$p/energy_performance_preference" ]; then
+		set_file "$p/scaling_governor" powersave
+		set_file "$p/energy_performance_preference" "$epp"
+	fi
+	max=$(cat "$p/cpuinfo_max_freq" 2>/dev/null || echo "$cap")
+	if [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
+	set_file "$p/scaling_max_freq" "$want"
+done
+[ -d "$cpu" ] || { echo "power: no cpufreq in sysfs" >&2; exit 1; }
+
+logger -t power "$src: energy preference $epp, clock cap $cap kHz"
+exit "$rc"

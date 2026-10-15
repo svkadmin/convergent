@@ -1,0 +1,323 @@
+#!/bin/sh
+# ARCHITECTURE 7.1
+# CONVERGENT_UNSIGNED=1 sh install/install <release-dir>
+set -eu
+set +ax
+unset pass again answer
+umask 077
+export LC_ALL=C
+
+die() { echo "install: $*" >&2; exit 1; }
+run() { "$@" || die "failed: $1"; }
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# = 1 ] || die "usage: install/install <release-dir>"
+for cmd in lsblk findmnt readlink blockdev sgdisk udevadm cryptsetup mkfs.vfat mkfs.btrfs \
+	btrfs losetup mount umount sha256sum stat awk grep cp cmp sync stty mktemp \
+	useradd groupadd usermod chpasswd efibootmgr poweroff dd head cut chmod chown \
+	mkdir rm mv cat sleep usbguard od tr; do
+	command -v "$cmd" >/dev/null 2>&1 || die "missing tool: $cmd"
+done
+[ -d /sys/firmware/efi/efivars ] || die "boot the stick in UEFI mode"
+exec 3<>/dev/tty || die "no terminal"
+tty_mode=$(stty -g <&3) || die "cannot read terminal settings"
+run ulimit -c 0
+work= loop= mapper= image_mounted= state_mounted= esp_mounted=
+
+cleanup() {
+	bad=0
+	stty "$tty_mode" <&3 || bad=1
+	pass= again= answer=
+	if [ -n "$esp_mounted" ]; then
+		if umount "$work/esp"; then esp_mounted=; else bad=1; fi
+	fi
+	if [ -n "$state_mounted" ]; then
+		if umount "$work/state"; then state_mounted=; else bad=1; fi
+	fi
+	if [ -n "$mapper" ] && [ -z "$state_mounted" ]; then
+		if cryptsetup close "$mapper"; then mapper=; else bad=1; fi
+	fi
+	if [ -n "$image_mounted" ]; then
+		if umount "$work/image"; then image_mounted=; else bad=1; fi
+	fi
+	if [ -n "$loop" ] && [ -z "$image_mounted" ]; then
+		if losetup -d "$loop"; then loop=; else bad=1; fi
+	fi
+	if [ "$bad" = 0 ] && [ -n "$work" ]; then
+		if rm -rf "$work"; then work=; else bad=1; fi
+	fi
+	[ "$bad" = 0 ]
+}
+finish() {
+	status=$1
+	trap - 0
+	cleanup || { echo 'install: cleanup failed; inspect mounts and mappings' >&2; status=1; }
+	[ "$status" = 0 ] || die "installation did not complete"
+}
+trap 'finish $?' 0
+trap 'die interrupted' HUP INT TERM
+
+ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "terminal closed"; }
+secret() {
+	run stty -echo <&3
+	ask "$1: "
+	pass=$answer
+	ask "
+Repeat $1: "
+	again=$answer
+	answer=
+	run stty "$tty_mode" <&3
+	printf '\n' >&3
+	[ "$pass" = "$again" ] || die "the two entries differ"
+	[ "${#pass}" -ge 12 ] || die "use at least 12 characters"
+	again=
+}
+
+# Parse only manifest fields; never source cmdline-*.
+[ "${CONVERGENT_UNSIGNED:-}" = 1 ] ||
+	die "manifests are not signature-checked yet; set CONVERGENT_UNSIGNED=1 to install"
+dir=$(cd "$1" && pwd -P) || die "no release directory"
+[ -f "$dir/manifest" ] || die "no manifest"
+# TODO(signing): verify the manifest signature.
+release=$(awk '$1 == "release" { print $2 }' "$dir/manifest") || die "cannot read manifest"
+case $release in '' | *[!0-9]*) die "the manifest names no release" ;; esac
+[ "${#release}" -le 16 ] || die "release number is too large"
+awk -v r="$release" '
+	$1 == "release" && NF == 2 && $2 == r { release++; next }
+	$1 == "kernel" && NF == 2 { kernel++; next }
+	$1 == "roothash" && NF == 2 && length($2) == 64 && $2 !~ /[^0-9a-f]/ { root++; next }
+	length($1) == 64 && $1 !~ /[^0-9a-f]/ && NF == 2 && substr($0,65,2) == "  " {
+		if ($2 != "slot.img" && $2 != "convergent-" r "-a.efi" && $2 != "convergent-" r "-b.efi") exit 1
+		if (++seen[$2] != 1) exit 1
+		n++; next
+	}
+	{ exit 1 }
+	END { if (release != 1 || kernel != 1 || root != 1 || n != 3) exit 1 }
+' "$dir/manifest" || die "malformed manifest"
+(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) ||
+	die "the release does not match its manifest"
+size=$(stat -c %s "$dir/slot.img") || die "cannot size slot.img"
+[ "$size" -gt 0 ] && [ $((size % 4096)) = 0 ] || die "invalid slot.img size"
+sum=$(awk '$2 == "slot.img" { print $1 }' "$dir/manifest") || die "no slot checksum"
+# Round up to MiB, then add 25%, at least 64 MiB, to each slot.
+image_mib=$(((size + 1048575) / 1048576))
+headroom=$(((image_mib + 3) / 4))
+[ "$headroom" -ge 64 ] || headroom=64
+slot_mib=$((image_mib + headroom))
+bootloader=${CONVERGENT_BOOTLOADER:-/usr/lib/systemd/boot/efi/systemd-bootx64.efi}
+# Check x86_64 EFI image structure.
+pe() {
+	pe_file=$1
+	pe_size=$(stat -Lc %s "$pe_file") || return 1
+	[ "$pe_size" -ge 64 ] && [ "$(od -An -tx1 -N2 "$pe_file" | tr -d ' \n')" = 4d5a ] || return 1
+	pe_off=$(od -An -tu4 -j60 -N4 "$pe_file") || return 1
+	[ "$pe_off" -ge 64 ] && [ $((pe_off + 112)) -le "$pe_size" ] || return 1
+	[ "$(od -An -tx1 -j "$pe_off" -N6 "$pe_file" | tr -d ' \n')" = 504500006486 ] || return 1
+	[ "$(od -An -tu2 -j $((pe_off + 24)) -N2 "$pe_file")" -eq 523 ] || return 1
+	[ "$(od -An -tu2 -j $((pe_off + 92)) -N2 "$pe_file")" -eq 10 ] || return 1
+	pe_n=$(od -An -tu2 -j $((pe_off + 6)) -N2 "$pe_file")
+	pe_opt=$(od -An -tu2 -j $((pe_off + 20)) -N2 "$pe_file")
+	[ "$pe_n" -gt 0 ] && [ "$pe_n" -le 96 ] && [ "$pe_opt" -ge 112 ] || return 1
+	pe_table=$((pe_off + 24 + pe_opt))
+	pe_end=$((pe_table + 40 * pe_n))
+	[ "$pe_end" -le "$pe_size" ] || return 1
+	pe_linux=
+	while [ "$pe_n" -gt 0 ]; do
+		pe_len=$(od -An -tu4 -j $((pe_table + 16)) -N4 "$pe_file")
+		pe_ptr=$(od -An -tu4 -j $((pe_table + 20)) -N4 "$pe_file")
+		[ $((pe_ptr + pe_len)) -le "$pe_size" ] || return 1
+		if [ "$(od -An -tx1 -j "$pe_table" -N8 "$pe_file" | tr -d ' \n')" = 2e6c696e75780000 ]; then
+			[ "$pe_len" -gt 0 ] && [ "$pe_ptr" -ge "$pe_end" ] || return 1
+			pe_linux=1
+		fi
+		pe_table=$((pe_table + 40)); pe_n=$((pe_n - 1))
+	done
+	[ "$2" != uki ] || [ -n "$pe_linux" ]
+}
+pe "$bootloader" efi || die "invalid systemd-boot PE image"
+pe "$dir/convergent-$release-a.efi" uki || die "invalid slot A UKI"
+# TODO(signing): verify EFI signatures and firmware enrollment.
+boot_size=$(stat -Lc %s "$bootloader") || die "cannot size systemd-boot"
+uki_size=$(stat -Lc %s "$dir/convergent-$release-a.efi") || die "cannot size UKI"
+[ $((boot_size * 2 + uki_size)) -lt $((1000 * 1048576)) ] || die "boot files do not fit the ESP"
+
+# Resolve the live root's disks; refuse RAM/overlay roots.
+rootdev=$(findmnt -nro SOURCE /) || die "cannot identify the live root"
+rootdev=$(readlink -f "$rootdev") || die "cannot resolve the live root"
+[ -b "$rootdev" ] || die "the live root is not block-backed; cannot identify the stick"
+ancestry=$(lsblk -snrpo NAME,TYPE "$rootdev") || die "cannot trace the live root"
+bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" { print $1 }')
+[ -n "$bootdisks" ] || die "cannot identify the boot disk"
+[ "$(cat /sys/class/drm/renderD128/device/vendor)" = 0x8086 ] ||
+	die "/dev/dri/renderD128 must be the Intel render node"
+run lsblk -p -o NAME,SIZE,TYPE,MODEL,SERIAL,MOUNTPOINTS
+ask 'Target disk path (all its data will be erased): '
+typed=$answer
+case $typed in /dev/*) ;; *) die "enter an absolute /dev disk path" ;; esac
+disk=$(readlink -f "$typed") || die "cannot resolve target"
+
+check_disk() {
+	[ -b "$disk" ] || die "not a block device: $disk"
+	kind=$(lsblk -dnro TYPE "$disk") || die "cannot identify target"
+	[ "$kind" = disk ] || die "target must be a whole physical disk"
+	for d in $bootdisks; do [ "$disk" != "$d" ] || die "refusing the boot stick"; done
+	ro=$(blockdev --getro "$disk") || die "cannot read target flags"
+	[ "$ro" = 0 ] || die "target is read-only"
+	mounts=$(lsblk -nrpo MOUNTPOINTS "$disk") || die "cannot inspect target mounts"
+	[ -z "$mounts" ] || die "target has mounted partitions or active swap"
+	nodes=$(lsblk -nrpo NAME "$disk") || die "cannot inspect target holders"
+	for node in $nodes; do
+		for holder in /sys/class/block/"${node##*/}"/holders/*; do
+			[ ! -e "$holder" ] || die "target has an active block-device holder"
+		done
+	done
+}
+check_disk
+identity=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk") || die "cannot identify target"
+serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
+disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
+# Leave at least 4 GiB for state, plus GPT/alignment space.
+[ "$disk_size" -ge $(((1024 + slot_mib * 2 + 4096 + 4) * 1048576)) ] || die "target is too small"
+printf 'Release %s; %s; ESP 1024 MiB; slots %s MiB each; state is the rest.\n' "$release" "$disk" "$slot_mib"
+ask "Type $typed again, or ERASE followed by a space and serial $serial: "
+if [ "$answer" != "$typed" ]; then
+	[ -n "$serial" ] && [ "$answer" = "ERASE $serial" ] || die "erase confirmation did not match"
+fi
+
+# Prepare account hashes in /run before erasing.
+[ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
+work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
+run mkdir "$work/image" "$work/accounts" "$work/accounts/etc" "$work/esp" "$work/state"
+loop=$(losetup --find --show --read-only "$dir/slot.img") || die "cannot open image"
+run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
+image_mounted=1
+grep -qx 'command_args="-g seat"' "$work/image/etc/init.d/seatd" ||
+	die "image seatd must own its socket with -g seat"
+[ "$(cat "$work/image/usr/lib/convergent/release")" = "$release" ] || die "image release differs"
+for f in passwd shadow group gshadow subuid subgid; do
+	grep -qx "$f" "$work/image/usr/lib/convergent/etc-state" || die "$f is not state-bound"
+	[ -f "$work/image/etc/$f" ] && [ ! -L "$work/image/etc/$f" ] || die "no regular image /etc/$f"
+	run cp -a "$work/image/etc/$f" "$work/accounts/etc/$f"
+done
+ask 'Owner login name: '
+owner=$answer
+case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;; esac
+[ "${#owner}" -le 32 ] || die "login name is too long"
+for f in passwd shadow group gshadow subuid subgid; do
+	if grep -q "^$owner:" "$work/accounts/etc/$f"; then die "account name already exists"; fi
+done
+# Gentoo's OpenRC seatd service owns its socket with -g seat.
+for group in wheel seat audio; do
+	if ! grep -q "^$group:" "$work/accounts/etc/group"; then
+		run groupadd -P "$work/accounts" -r "$group"
+	fi
+done
+run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio \
+	-K CREATE_MAIL_SPOOL=no -K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
+run usermod -P "$work/accounts" -L root
+
+secret 'Owner password'
+printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
+	die "could not hash password with yescrypt"
+pass=
+awk -F: -v u="$owner" '$1 == u && $2 ~ /^\$y\$/ { ok=1 } END { exit !ok }' \
+	"$work/accounts/etc/shadow" || die "owner password is not yescrypt"
+for f in subuid subgid; do
+	awk -F: -v u="$owner" '$1 == u && $2 >= 100000 && $3 >= 65536 { ok=1 } END { exit !ok }' \
+		"$work/accounts/etc/$f" || die "no subordinate IDs for owner in $f"
+done
+uid=$(awk -F: -v u="$owner" '$1 == u { print $3 }' "$work/accounts/etc/passwd")
+gid=$(awk -F: -v u="$owner" '$1 == u { print $4 }' "$work/accounts/etc/passwd")
+# Exclude the install stick from the generated USBGuard policy.
+grep -qx usbguard/rules.conf "$work/image/usr/lib/convergent/etc-state" ||
+	die "USBGuard policy is not state-bound"
+: >"$work/stick-ports"
+for d in $bootdisks; do
+	usb=$(readlink -f "/sys/class/block/${d##*/}/device") || die "cannot trace stick USB path"
+	while [ -n "$usb" ] && [ ! -f "$usb/idVendor" ]; do usb=${usb%/*}; done
+	[ -f "$usb/idVendor" ] || die "boot disk is not USB: $d"
+	printf '%s\n' "${usb##*/}" >>"$work/stick-ports"
+done
+usbguard generate-policy -p >"$work/usb.all" || die "cannot generate USBGuard policy"
+awk '
+	NR == FNR { ports[$0]=0; next }
+	{
+		for (p in ports)
+			if (index($0, " via-port \"" p "\"")) { ports[p]++; next }
+		print
+	}
+	END { for (p in ports) if (!ports[p]) exit 1 }
+' "$work/stick-ports" "$work/usb.all" >"$work/usb.rules" || die "install stick missing from USB policy"
+[ -s "$work/usb.rules" ] || die "empty USBGuard policy"
+secret 'LUKS passphrase'
+
+# Recheck target identity; use disk-local partition paths.
+check_disk
+[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
+run sgdisk --zap-all "$disk"
+run sgdisk -n1:0:+1024M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
+	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$disk"
+run blockdev --rereadpt "$disk"
+run udevadm settle
+case $disk in *[0-9]) prefix=${disk}p ;; *) prefix=$disk ;; esac
+set -- cv-esp cv-slot-a cv-slot-b cv-state
+for p in 1 2 3 4; do
+	for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "$prefix$p" ] && break; run sleep 1; done
+	[ -b "$prefix$p" ] || die "no partition device $prefix$p"
+	[ "$(lsblk -dnro PARTLABEL "$prefix$p")" = "$1" ] || die "partition label differs: $prefix$p"
+	shift
+done
+esp=${prefix}1 slota=${prefix}2 slotb=${prefix}3 state=${prefix}4
+run dd if="$dir/slot.img" of="$slota" bs=1M conv=fsync status=none
+run blockdev --flushbufs "$slota"
+[ "$(head -c "$size" "$slota" | sha256sum | cut -d' ' -f1)" = "$sum" ] || die "slot A readback differs"
+run dd if=/dev/zero of="$slotb" bs=1M count="$slot_mib" conv=fsync status=none
+
+# Argon2id: 1 GiB, four passes, four lanes.
+printf '%s' "$pass" | cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
+	--pbkdf-memory 1048576 --pbkdf-force-iterations 4 --pbkdf-parallel 4 --key-file - "$state" ||
+	die "could not format LUKS"
+mapname=cv-install-$$
+[ ! -e "/dev/mapper/$mapname" ] || die "mapping already exists"
+printf '%s' "$pass" | cryptsetup open --type luks2 --key-file - "$state" "$mapname" || die "could not open LUKS"
+mapper=$mapname
+pass=
+run mkfs.btrfs -q "/dev/mapper/$mapper"
+run mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec "/dev/mapper/$mapper" "$work/state"
+state_mounted=1
+run btrfs -q subvolume create "$work/state/home"
+run mkdir "$work/state/etc" "$work/state/home/$owner"
+for f in passwd shadow group gshadow subuid subgid; do
+	run cp -a "$work/accounts/etc/$f" "$work/state/etc/$f"
+done
+run chown 0:0 "$work/state/etc/"*
+run chmod 0644 "$work/state/etc/passwd" "$work/state/etc/group" "$work/state/etc/subuid" "$work/state/etc/subgid"
+run chmod 0600 "$work/state/etc/shadow" "$work/state/etc/gshadow"
+run chmod 0755 "$work/state/home" "$work/state/etc"
+run mkdir "$work/state/etc/usbguard"
+run cp "$work/usb.rules" "$work/state/etc/usbguard/rules.conf"
+run chmod 0600 "$work/state/etc/usbguard/rules.conf"
+if [ -d "$work/image/etc/skel" ]; then run cp -a "$work/image/etc/skel/." "$work/state/home/$owner/"; fi
+run chown -R "$uid:$gid" "$work/state/home/$owner"
+run chmod 0700 "$work/state/home/$owner"
+# First boot initializes /var and records good/highest.
+
+run mkfs.vfat -F 32 -n CV-ESP "$esp"
+run mount -t vfat -o nodev,nosuid,noexec "$esp" "$work/esp"
+esp_mounted=1
+run mkdir -p "$work/esp/EFI/BOOT" "$work/esp/EFI/systemd" "$work/esp/EFI/Linux" "$work/esp/loader"
+for dst in EFI/BOOT/BOOTX64.EFI EFI/systemd/systemd-bootx64.efi; do
+	run cp "$bootloader" "$work/esp/$dst"
+	run cmp -s "$bootloader" "$work/esp/$dst"
+done
+printf 'timeout 3\neditor no\ndefault convergent-*\n' >"$work/esp/loader/loader.conf" || die "cannot write loader.conf"
+dst=$work/esp/EFI/Linux/convergent-$release-a+3.efi
+run cp "$dir/convergent-$release-a.efi" "$dst.new"
+run cmp -s "$dir/convergent-$release-a.efi" "$dst.new"
+run sync
+run mv "$dst.new" "$dst"
+run sync
+run efibootmgr --create --disk "$disk" --part 1 --label Convergent --loader '\EFI\systemd\systemd-bootx64.efi'
+cleanup || die "could not close the installed system"
+printf 'Installed release %s on %s for %s.\nESP: 1 GiB; slots: %s MiB each; encrypted state: remainder.\n' "$release" "$disk" "$owner" "$slot_mib"
+printf 'Slot A verified, three boot tries; slot B empty. First boot prepares /var and blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\nRemove the install stick after power-off, before booting.\n'
+run poweroff

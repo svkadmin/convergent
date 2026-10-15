@@ -1,0 +1,160 @@
+#!/bin/sh
+# ARCHITECTURE 3.2, 4.2, 9
+# /run/convergent/portal: start epoch; 0 retries closure each minute.
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+net=100.80
+wan_addr=$net.0.10
+portal_addr=$net.3.11
+max=30
+conf=/etc/convergent/ssh_config
+run=/run/convergent
+stamp=$run/portal
+
+die() { logger -t portal "$*"; echo "portal: $*" >&2; exit 1; }
+log() { logger -t portal "$*"; echo "portal: $*"; }
+usage() { echo "usage: portal on [A.B.C.D/LEN] | off | status | expire" >&2; exit 2; }
+[ "$(id -u)" = 0 ] || die "run as root"
+
+# Expiry yields to an active menu action.
+umask 077
+mkdir -p "$run" || die "could not create $run"
+exec 9>"$run/portal.lock"
+if [ "${1:-}" = expire ]; then
+	flock -n 9 || exit 0
+else
+	flock -w 60 9 || die "another portal is running"
+fi
+
+rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@"; }
+
+# Normalize an external IPv4 /16..30 network.
+net_of() {
+	case $1 in */*) ;; *) return 1 ;; esac
+	_l=${1#*/}
+	case $_l in '' | *[!0-9]*) return 1 ;; esac
+	[ "$_l" -ge 16 ] && [ "$_l" -le 30 ] || return 1
+	_n=$(
+		IFS=.
+		# shellcheck disable=SC2086
+		set -- ${1%/*}
+		[ $# -eq 4 ] || exit 1
+		for o in "$@"; do
+			case $o in '' | 0?* | *[!0-9]*) exit 1 ;; esac
+			[ "$o" -le 255 ] || exit 1
+		done
+		_a=$(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
+		_a=$(( _a & ((0xFFFFFFFF << (32 - _l)) & 0xFFFFFFFF) ))
+		echo "$(( _a >> 24 )).$(( (_a >> 16) & 255 )).$(( (_a >> 8) & 255 )).$(( _a & 255 ))"
+	) || return 1
+	case $_n in "$net".*) return 1 ;; esac
+	echo "$_n/$_l"
+}
+
+upstream_net() {
+	_a=$(rsh wan wifi status 2>/dev/null | awk '$1 == "address" { print $2; exit }')
+	[ -n "$_a" ] || return 1
+	net_of "$_a"
+}
+
+open_side() {
+	case $1 in
+	wan) rsh wan portal on ;;
+	*) rsh "$1" "pfctl -t portal_dns -T replace $wan_addr && pfctl -t portal_lan -T replace $lan" ;;
+	esac
+}
+
+# Flush tables and kill portal states in both directions.
+close_side() {
+	case $1 in
+	wan) rsh wan portal off ;;
+	*) rsh "$1" "rc=0; pfctl -t portal_dns -T flush || rc=1; pfctl -t portal_lan -T flush || rc=1; pfctl -k $portal_addr || rc=1; pfctl -k 0.0.0.0/0 -k $portal_addr || rc=1; exit \$rc" ;;
+	esac
+}
+
+# Try every side; collect failures in bad.
+close_all() {
+	bad=
+	for _s in fw1 fw2 wan; do
+		close_side "$_s" >/dev/null || bad="$bad $_s"
+	done
+	[ -z "$bad" ]
+}
+
+off() {
+	if close_all; then
+		rm -f "$stamp"
+		log "portal mode off: fw1, fw2 and wan closed"
+	else
+		# Retry closure next minute.
+		echo 0 >"$stamp"
+		die "portal mode NOT closed on:$bad; trying again every minute"
+	fi
+}
+
+on() {
+	if [ $# -ge 1 ]; then
+		lan=$(net_of "$1") || die "not an IPv4 network of 16 to 30 bits outside $net.0.0/16: $1"
+	else
+		lan=$(upstream_net) || die "wan has no upstream address to take the network from; give it: portal on A.B.C.D/LEN"
+	fi
+	{ date +%s >"$stamp.new" && mv "$stamp.new" "$stamp"; } || die "could not write $stamp"
+	for _s in wan fw1 fw2; do
+		if ! open_side "$_s"; then
+			logger -t portal "could not open portal mode on $_s; closing"
+			close_all || :
+			if [ -z "$bad" ]; then rm -f "$stamp"; else echo 0 >"$stamp"; fi
+			die "could not open portal mode on $_s; everything closed again${bad:+ except:$bad (retrying every minute)}"
+		fi
+	done
+	log "portal mode on for $portal_addr toward $lan, for at most $max minutes"
+}
+
+# status_side SIDE: on or off, or fail.
+status_side() {
+	case $1 in
+	wan) _r=$(rsh wan portal status) || return 1 ;;
+	*) _r=$(rsh "$1" 'echo "dns $(pfctl -t portal_dns -T show | wc -l) lan $(pfctl -t portal_lan -T show | wc -l)"') || return 1 ;;
+	esac
+	case $1 in
+	wan) printf '%s\n' "$_r" | awk '$1 == "on" || $1 == "off" { print; f = 1 } END { exit !f }' ;;
+	*) printf '%s\n' "$_r" | awk '$1 == "dns" { print ($2 > 0 || $4 > 0) ? "on" : "off"; f = 1 } END { exit !f }' ;;
+	esac
+}
+
+status() {
+	n_on=0 n_off=0 n_bad=0
+	for _s in wan fw1 fw2; do
+		if _r=$(status_side "$_s" 2>"$run/portal.err"); then
+			printf '%-4s %s\n' "$_s" "$_r"
+			case $_r in on*) n_on=$((n_on + 1)) ;; *) n_off=$((n_off + 1)) ;; esac
+		else
+			printf '%-4s unreachable: %s\n' "$_s" "$(head -n 1 "$run/portal.err")"
+			n_bad=$((n_bad + 1))
+		fi
+	done
+	if [ "$n_bad" -gt 0 ]; then v=unknown
+	elif [ "$n_on" = 3 ]; then v=on
+	elif [ "$n_off" = 3 ]; then v=off
+	else v=mixed; fi
+	echo "portal: $v"
+	[ "$v" = on ] || [ "$v" = off ]
+}
+
+expire() {
+	[ -e "$stamp" ] || exit 0
+	t=$(cat "$stamp" 2>/dev/null || :)
+	case $t in '' | *[!0-9]*) t=0 ;; esac
+	[ $(( $(date +%s) - t )) -ge $(( max * 60 )) ] || exit 0
+	[ "$t" = 0 ] || log "portal mode is $max minutes old"
+	off
+}
+
+case ${1:-} in
+on) shift; [ $# -le 1 ] || usage; on "$@" ;;
+off) [ $# = 1 ] || usage; off ;;
+status) [ $# = 1 ] || usage; status ;;
+expire) [ $# = 1 ] || usage; expire ;;
+*) usage ;;
+esac

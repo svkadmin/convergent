@@ -1,0 +1,7 @@
+# ARCHITECTURE 12; auto retries overdue work hourly.
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+@reboot root facts boot
+@reboot root power
+17 * * * * root facts auto
+42 * * * * root dns-push auto
+* * * * * root [ -e /run/convergent/portal ] && portal expire

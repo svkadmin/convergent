@@ -1,0 +1,91 @@
+#!/bin/sh
+# ARCHITECTURE 3.5, 6
+# Requires native x86_64 Linux, root and separately trusted ALPINE_KEYS.
+set -eu
+umask 022
+here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+die() { echo "browser/build: $*" >&2; exit 1; }
+[ "$#" = 0 ] || die "usage: ALPINE_KEYS=/trusted/keys guests/browser/build"
+[ "$(id -u)" = 0 ] || die "root required"
+[ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || die "native x86_64 Linux required"
+for tool in apk tar chroot jq sha256sum; do
+    command -v "$tool" >/dev/null || die "missing tool: $tool"
+done
+keys=${ALPINE_KEYS:-/usr/share/apk/keys}
+case $keys in /*) ;; *) die "ALPINE_KEYS must be absolute" ;; esac
+set -- "$keys"/*.pub
+[ -f "$1" ] || die "provision trusted Alpine signing keys first"
+mkdir -p "$here/out"
+work=$(mktemp -d "$here/out/.build.XXXXXXXX")
+cleanup() {
+    case $work in "$here/out"/.build.*) rm -rf -- "$work" ;; esac
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+root=$work/rootfs
+mkdir -p "$root/etc/apk/keys"
+cp "$keys"/*.pub "$root/etc/apk/keys/"
+cp "$here/repositories" "$root/etc/apk/repositories"
+apk_root() { apk --root "$root" --arch x86_64 --no-cache "$@"; }
+
+apk_root --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
+    ifupdown-ng ca-certificates firefox-esr=140.12.0-r0 font-dejavu \
+    pipewire-libs pipewire-alsa mesa-egl mesa-dri-gallium
+case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
+cp -R "$here/rootfs/." "$root/"
+for role in web tmp portal admin; do
+    mkdir -p "$root/usr/share/convergent-browser/$role"
+    jq -s '.[0] * .[1]' "$here/policies.json" "$here/roles/$role/policies.json" \
+        >"$root/usr/share/convergent-browser/$role/policies.json"
+    jq -e '.policies | type == "object"' \
+        "$root/usr/share/convergent-browser/$role/policies.json" >/dev/null
+done
+chmod 755 "$root/usr/local/bin/browser-launch" "$root/usr/local/sbin/browser-setup" \
+    "$root/etc/init.d/browser-setup"
+chroot "$root" /bin/sh -eu <<'SETUP'
+addgroup -g 1000 browser
+adduser -D -u 1000 -G browser -h /home/browser -s /sbin/nologin browser
+passwd -l root
+passwd -l browser
+mkdir -p /home/browser/profile /home/browser/Downloads /mnt/browser /usr/lib/firefox-esr/distribution
+touch /mnt/browser/wayland-0 /mnt/browser/pipewire-0
+chown -R 1000:1000 /home/browser
+chmod 700 /home/browser /home/browser/profile /home/browser/Downloads
+rm -rf /etc/runlevels
+mkdir -p /etc/runlevels/sysinit /etc/runlevels/boot /etc/runlevels/default /etc/runlevels/shutdown
+for service in devfs dmesg sysfs; do rc-update add "$service" sysinit; done
+for service in hostname bootmisc sysctl browser-setup networking; do rc-update add "$service" boot; done
+for service in killprocs savecache; do rc-update add "$service" shutdown; done
+find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} \;
+SETUP
+# Keep libraries, never a D-Bus broker/autolauncher or PipeWire daemon.
+if apk_root info --exists apk-tools >/dev/null 2>&1; then apk_root del apk-tools; fi
+for package in incus-agent dbus dbus-daemon dbus-x11 pipewire pipewire-pulse wireplumber; do
+    if apk_root info --exists "$package" >/dev/null 2>&1; then die "unexpected server: $package"; fi
+done
+apk_root info -v | LC_ALL=C sort >"$work/packages.txt"
+cp "$work/packages.txt" "$root/usr/share/convergent-browser/packages.txt"
+: >"$root/etc/apk/repositories"
+rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
+mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/tmp"
+chmod 1777 "$root/tmp"
+for script in "$here/build" "$root/usr/local/bin/browser-launch" \
+    "$root/usr/local/sbin/browser-setup" "$root/etc/init.d/browser-setup"; do sh -n "$script"; done
+epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
+case $epoch in ''|*[!0-9]*) die "invalid SOURCE_DATE_EPOCH" ;; esac
+cat >"$work/metadata.yaml" <<EOF
+architecture: x86_64
+creation_date: $epoch
+properties:
+  os: Alpine
+  release: '3.24'
+  variant: convergent-browser
+  description: Convergent Firefox ESR (Alpine 3.24, x86_64)
+EOF
+tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
+tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
+(cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
+for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do
+    mv "$work/$artifact" "$here/out/$artifact"
+done
+echo "browser/build: image in $here/out"
