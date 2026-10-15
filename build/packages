@@ -30,7 +30,7 @@ done
 ln -s "../../../var/db/repos/gentoo/profiles/$PROFILE" "$conf/make.profile"
 
 sets="@system @convergent @convergent-apps"
-emerge="env PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse"
+emerge="env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse"
 chroot_mount
 trap chroot_umount EXIT
 

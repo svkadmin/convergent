@@ -47,6 +47,11 @@ for d in package.use package.accept_keywords package.license sets; do
 	cp -r "$repo/portage/$d/." "$etc/$d/"
 done
 cp "$here/builder.use" "$etc/package.use/zz-builder"
+# Portage runs its key helper with ROOT set to the root being installed; for the image that is
+# /staging, where the helper would build a keyring. The builder's keyring is the one to use.
+printf '%s\n' '#!/bin/sh' 'ROOT=/ EROOT=/ exec /usr/bin/getuto "$@"' >"$BUILDER/usr/local/bin/getuto-builder"
+chmod 755 "$BUILDER/usr/local/bin/getuto-builder"
+echo 'PORTAGE_TRUST_HELPER=/usr/local/bin/getuto-builder' >"$etc/make.conf/85-trust"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
 
 # 3. The pinned snapshot (signature checked by emerge-webrsync), the profile, the binary
