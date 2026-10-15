@@ -1,8 +1,6 @@
 #!/usr/sbin/nft -f
-# Convergent: the host's own firewall (ARCHITECTURE sections 4.2 and 4.4). Input only on the
-# `host` interface and only from the listed sources; the guest bridges reach nothing here.
-# The host is never a router: forwarding is dropped. Outbound is the firewalls' business.
-# Only this table is replaced; the empty declaration first makes the delete safe on first load.
+# ARCHITECTURE 4.2, 4.4
+# Replace only inet host; preserve Incus tables.
 table inet host
 delete table inet host
 

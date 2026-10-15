@@ -1,7 +1,5 @@
 #!/bin/sh
-# fw-facts: CARP, pf and unbound state as a text file for node_exporter (ARCHITECTURE
-# sections 8 and 12). Cron runs it every minute; the file is replaced whole, and its own age
-# is the staleness signal.
+# ARCHITECTURE 8, 12; cron replaces this textfile every minute.
 set -u
 dir=/var/node_exporter/textfile
 out=$dir/convergent_fw.prom
@@ -12,7 +10,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 {
 	echo "convergent_fw_facts_timestamp_seconds $(date +%s)"
 
-	# CARP: state per interface (2 master, 1 backup, 0 init), preempt and the group's demotion.
+	# CARP: 2 master, 1 backup, 0 init.
 	ifconfig | awk '
 		/^[a-z]+[0-9]+: / { ifn = $1; sub(/:$/, "", ifn) }
 		/^[ \t]+carp: / && ifn ~ /^carp/ {

@@ -1,14 +1,5 @@
 #!/bin/sh
-# slot: the A/B slots (ARCHITECTURE sections 5.2, 7.2, 7.3). Runs as root; exits when done.
-#   slot bless            after each boot: if the health checks pass, record the highest release,
-#                         drop any counter, record the release as good, prune the /var of
-#                         releases no slot can boot, stop the watchdog
-#   slot status           the booted release and slot, both slots' UKIs, the release marked good
-#   slot write <dir>      write the release in <dir> (build/image output) to the inactive slot;
-#                         only from a blessed release, only upwards of the highest ever blessed
-# Health checks: no crashed, failed or stopped service in OpenRC's default runlevel, and every
-# executable in /usr/lib/convergent/health.d/ exits 0 (an empty directory passes).
-# State top level (subvolid=5), mounted at /run/cv-state: good, highest, var-<release>.
+# ARCHITECTURE 5.2, 7.2, 7.3
 set -eu
 
 linux=EFI/Linux
@@ -75,7 +66,7 @@ disarm() { rc-service -q convergent-watchdog stop || :; }
 
 healthy() {
 	[ -z "$(rc-status --crashed)" ] || { log "crashed services: $(rc-status --crashed | tr '\n' ' ')"; return 1; }
-	# ini: "name = state"; a service that crashed, failed to start or was stopped is not up.
+
 	if rc-status -f ini default | grep -Eq '^[^=]*= *(crashed|failed|stopped)( |$)'; then
 		log "services of the default runlevel are not running"
 		return 1
@@ -92,7 +83,7 @@ num() { n=$(cat "$stm/$1" 2>/dev/null || :); case $n in '' | *[!0-9]*) n=0 ;; es
 # Replace a state file whole.
 put() { printf '%s\n' "$2" >"$stm/$1.new" && mv "$stm/$1.new" "$stm/$1" && sync || die "could not write $1"; }
 
-# Keep the /var of the booted release and of the other slot's UKI; the rest is stale.
+# Keep /var for bootable releases only.
 prune() {
 	[ "$slot" = a ] && o=b || o=a
 	keep=" $release "
@@ -105,7 +96,6 @@ prune() {
 	done
 }
 
-# The booted release is accepted: make the state say so (idempotent), then stop the watchdog.
 accept() {
 	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] || put good "$release"
 	prune
@@ -123,8 +113,7 @@ bless() {
 	uki=$1
 	case ${uki##*/} in
 	convergent-"$release"-"$slot".efi)
-		# Uncounted (the first boot after the install, a fallback, a hand rollback, or a crash
-		# after the rename below): nothing to count, but the state may still lag behind.
+		# Uncounted UKI; state may still need updating.
 		;;
 	convergent-"$release"-"$slot"+*) ;;
 	*) die "the UKI of slot $slot is not release $release" ;;
@@ -134,7 +123,7 @@ bless() {
 		echo "convergent: release $release failed its checks" 2>/dev/null >/dev/console || :
 		exit 1
 	fi
-	# Health first, durable highest before UKI rename/sync, then durable good: a crash cannot lower the floor.
+	# Persist highest, remove boot counter, then persist good.
 	state_mount rw
 	if expr "$release" '>' "$(num highest)" >/dev/null; then put highest "$release"; fi
 	case ${uki##*/} in
@@ -161,7 +150,7 @@ write() {
 	[ "${CONVERGENT_UNSIGNED:-}" = 1 ] ||
 		die "manifests are not signature-checked yet; set CONVERGENT_UNSIGNED=1 to write an unsigned release"
 	[ -f "$dir/manifest" ] || die "no manifest in $dir"
-	# TODO(signing): verify the manifest's signature against the owner's key before trusting it.
+	# TODO(signing): verify the manifest signature.
 	new=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 	case $new in '' | *[!0-9]*) die "the manifest names no release" ;; esac
 	for f in slot.img "convergent-$new-a.efi" "convergent-$new-b.efi"; do
@@ -172,7 +161,7 @@ write() {
 
 	booted
 	expr "$new" '>' "$release" >/dev/null || die "release $new is not newer than the booted $release"
-	# The fallback is the booted slot: only a blessed release may overwrite the other one.
+	# Only a good boot may overwrite the fallback.
 	state_mount rw
 	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] ||
 		die "the booted release $release is not the one marked good; boot the good slot or let it bless first"
@@ -185,14 +174,13 @@ write() {
 	[ "$size" -le "$(blockdev --getsize64 "$part")" ] || die "slot.img does not fit in slot $inactive"
 	sum=$(awk '$2 == "slot.img" { print $1 }' "$dir/manifest")
 
-	# The slot's old UKI goes first: once the image is overwritten it would only fail verity.
+	# Remove the old UKI before overwriting its image.
 	esp_mount
 	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"+*.efi.new; do
 		if [ -e "$f" ]; then rm "$f"; fi
 	done
 	sync
-	# A release that failed before left its /var; a reinstall starts clean (new is above the
-	# booted and good release, so this is never theirs).
+	# Remove /var from a previous failed attempt at this release.
 	for v in "$stm/var-$new" "$stm/var-$new.new"; do
 		if [ -d "$v" ]; then btrfs -q subvolume delete "$v" || die "could not remove $v"; fi
 	done
@@ -202,7 +190,7 @@ write() {
 	[ "$(head -c "$size" "$part" | sha256sum | cut -d' ' -f1)" = "$sum" ] ||
 		die "slot $inactive does not read back as slot.img"
 
-	# Three tries; the extra suffix keeps systemd-boot from seeing a half-copied file.
+	# Stage the UKI before exposing its three-try boot entry.
 	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
 	cp "$dir/convergent-$new-$inactive.efi" "$dst.new" && cmp -s "$dir/convergent-$new-$inactive.efi" "$dst.new" &&
 		sync && mv "$dst.new" "$dst" && sync || die "could not install the UKI"

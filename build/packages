@@ -1,13 +1,5 @@
 #!/bin/sh
-# packages: install the release's package sets into the staging root, the future system image
-# (ARCHITECTURE section 6, step 2). Gentoo's binary packages are used where they match; what is
-# compiled here becomes a binary package for next time.
-#   build/packages            install
-#   build/packages --pretend  show what would be installed, and how much is compiled
-#
-# The image has a Portage configuration of its own (/image-config in the builder): the same
-# files as the builder's, plus portage/profile, which takes the toolchain and the package
-# manager out of the image's base set. The builder keeps them to do the building.
+# ARCHITECTURE 6; install release sets into /staging.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,7 +10,7 @@ repo=${here%/build}
 [ "$(id -u)" = 0 ] || { echo "packages: run as root" >&2; exit 1; }
 [ -x "$BUILDER/bin/sh" ] || { echo "packages: no builder; run build/buildenv first" >&2; exit 1; }
 
-# The image's configuration root, rebuilt from the builder's and this repository's each run.
+# Rebuild image-only Portage configuration.
 conf="$BUILDER/image-config/etc/portage"
 rm -rf "$BUILDER/image-config"
 mkdir -p "$conf"
@@ -35,15 +27,10 @@ chroot_mount
 trap chroot_umount EXIT
 
 if [ "${1:-}" = --pretend ]; then
-	plan=$(chroot "$BUILDER" $emerge --pretend --verbose $sets 2>&1) || {
-		printf '%s\n' "$plan" | tail -n 40
-		exit 1
-	}
-	printf '%s\n' "$plan" | grep -E '^\[(binary|ebuild)' >"$BUILDER/tmp/plan" || true # nothing to do
-	echo "packages: $(grep -c '^\[binary' "$BUILDER/tmp/plan") from binaries, $(grep -c '^\[ebuild' "$BUILDER/tmp/plan") to compile"
+	chroot "$BUILDER" $emerge --pretend --verbose $sets
 else
 	chroot "$BUILDER" $emerge --quiet-build=y --keep-going=y $sets
-	# Whatever the sets no longer need leaves the image (a USE change can orphan a package).
+	# Remove packages no longer needed by the sets.
 	chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config \
 		emerge --root=/staging --depclean --quiet
 fi

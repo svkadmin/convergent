@@ -1,8 +1,9 @@
 #!/bin/sh
-# test: boot a release in QEMU before it is signed. A throw-away disk with the ESP, both slots
-# and a LUKS state partition; a passphrase made for this run only, typed on the serial console;
-# passes when the login prompt appears. Runs as root on the build host after build/image.
+# test: boot unsigned releases on a throwaway disk. Runs as root after build/image.
 #   build/test <release>
+#   build/test --corrupt <release>
+#   build/test --fallback <good-release> <bad-release>
+#   build/test --interrupt <good-release> <new-release>
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -10,90 +11,293 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
+usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
-release=${1:?usage: build/test <release>}
-rel=/releases/$release
-[ -s "$BUILDER$rel/slot.img" ] || die "no release $release; run build/image first"
+mode=boot
+case ${1:-} in
+--corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
+--fallback | --interrupt) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
+*) [ $# = 1 ] || usage ;;
+esac
+release=$1
+other=${2:-}
+size=0
+for r in "$@"; do
+	case $r in '' | *[!0-9]*) die "release must be numeric: $r" ;; esac
+	[ -s "$BUILDER/releases/$r/slot.img" ] || die "no release $r; run build/image first"
+	n=$(stat -c %s "$BUILDER/releases/$r/slot.img")
+	[ "$n" -le "$size" ] || size=$n
+done
+if [ -n "$other" ]; then
+	expr "$other" '>' "$release" >/dev/null || die "release $other must be newer than $release"
+fi
 
 bld() { chroot "$BUILDER" "$@"; }
 work=/test/$release
 rm -rf "$BUILDER$work"
 mkdir -p "$BUILDER$work/esp"
-chroot_mount
+disk="$BUILDER$work/disk.img"
+esp="$BUILDER$work/esp"
 loop=''
+driver=''
 cleanup() {
-	mountpoint -q "$BUILDER$work/esp" && umount "$BUILDER$work/esp"
-	bld cryptsetup close cvtest-state 2>/dev/null || true
-	[ -n "$loop" ] && losetup -d "$loop"
+	set +e
+	# Reap QEMU through its driver before touching the disk or chroot mounts.
+	if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || :; wait "$driver" 2>/dev/null || :; fi
+	if mountpoint -q "$esp"; then umount "$esp" || :; fi
+	bld cryptsetup close cvtest-state 2>/dev/null || :
+	if [ -n "$loop" ]; then losetup -d "$loop" || :; fi
 	chroot_umount
 }
 trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+chroot_mount
 
-# 1. The disk: the same partition labels the installer uses.
-disk="$BUILDER$work/disk.img"
-truncate -s 16G "$disk"
-slot_mib=$(( ($(stat -c %s "$BUILDER$rel/slot.img") >> 20) + 64 ))
-bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
-	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
-loop=$(losetup -fP --show "$disk")
-# The partition nodes appear asynchronously; dd to a missing one would write a file into /dev.
-for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p4" ] && break; sleep 1; done
-for p in 1 2 3 4; do [ -b "${loop}p$p" ] || die "no partition device ${loop}p$p"; done
-dd if="$BUILDER$rel/slot.img" of="${loop}p2" bs=4M conv=fsync status=none
+attach() {
+	loop=$(losetup -fP --show "$disk")
+	# Never let dd create a file in /dev while partition nodes are appearing.
+	for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p4" ] && break; sleep 1; done
+	for p in 1 2 3 4; do [ -b "${loop}p$p" ] || die "no partition device ${loop}p$p"; done
+}
 
-# 2. The state volume, with a passphrase that exists for this run only.
-pass=$(head -c 18 /dev/urandom | base64)
-# Kept beside the throwaway disk, to open it afterwards and read its logs.
-(umask 077; echo "$pass" >"$BUILDER$work/passphrase")
-printf '%s' "$pass" | bld cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
-	--pbkdf-memory 65536 --iter-time 200 --key-file - "${loop}p4"
-printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
-bld mkfs.btrfs -q /dev/mapper/cvtest-state
-bld cryptsetup close cvtest-state
+detach() {
+	sync
+	losetup -d "$loop"
+	loop=''
+}
 
-# 3. The ESP: systemd-boot and slot A's UKI, rebuilt with the serial console added (the only
-#    difference from the release's own UKI, which is what gets signed).
-bld mkfs.vfat -F 32 -n CV-ESP "${loop}p1" >/dev/null
-mount "${loop}p1" "$BUILDER$work/esp"
-mkdir -p "$BUILDER$work/esp/EFI/BOOT" "$BUILDER$work/esp/EFI/Linux" "$BUILDER$work/esp/loader"
-cp "$BUILDER/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$BUILDER$work/esp/EFI/BOOT/BOOTX64.EFI"
-printf 'timeout 0\neditor no\n' >"$BUILDER$work/esp/loader/loader.conf"
-# The serial console in place of quiet, ahead of init= (dracut hands what follows it to init).
-sed 's/ quiet / console=ttyS0,115200 /' "$BUILDER$rel/cmdline-a" >"$BUILDER$work/cmdline"
-kver=$(awk '/^kernel / { print $2 }' "$BUILDER$rel/manifest")
-bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
-	--cmdline "@$work/cmdline" --os-release @/image-root/usr/lib/os-release --uname "$kver" \
-	--output "$work/esp/EFI/Linux/convergent-$release-a+3.efi" >/dev/null
-umount "$BUILDER$work/esp"
-losetup -d "$loop"
-loop=''
+make_disk() {
+	truncate -s 16G "$disk"
+	slot_mib=$(( (size >> 20) + 64 ))
+	bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
+		-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
+	attach
+}
 
-# 4. Boot it: UEFI firmware, the disk, the serial console. The passphrase is typed when asked.
-cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
-log="$BUILDER$work/console.log"
-CVTEST_PASS="$pass" CVTEST_WORK="$work" bld python3 - <<'EOF'
-import os, subprocess, select, time, sys
+write_slot() {   # release partition [byte-count]
+	if [ $# = 3 ]; then
+		dd if="$BUILDER/releases/$1/slot.img" of="${loop}p$2" bs=4M iflag=count_bytes count="$3" conv=fsync status=none
+	else
+		dd if="$BUILDER/releases/$1/slot.img" of="${loop}p$2" bs=4M conv=fsync status=none
+	fi
+}
+
+corrupt() {
+	# Byte 2048 is after the superblock, in EROFS's first verified 4 KiB data block.
+	# Mount must read the superblock at 1024, so verity must check this whole block.
+	bld python3 - "${loop}p$1" <<'EOF'
+import os, sys
+with open(sys.argv[1], "r+b", buffering=0) as image:
+    image.seek(1024)
+    assert image.read(4) == b"\xe2\xe1\xf5\xe0", "not EROFS"
+    image.seek(2048)
+    byte = image.read(1)
+    image.seek(2048)
+    image.write(bytes([byte[0] ^ 1]))
+    os.fsync(image.fileno())
+EOF
+}
+
+make_state() {
+	pass=$(head -c 18 /dev/urandom | base64)
+	# Kept beside the disk, to open it afterwards and read its logs.
+	(umask 077; echo "$pass" >"$BUILDER$work/passphrase")
+	printf '%s' "$pass" | bld cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
+		--pbkdf-memory 65536 --iter-time 200 --key-file - "${loop}p4"
+	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
+	bld mkfs.btrfs -q /dev/mapper/cvtest-state
+	bld cryptsetup close cvtest-state
+}
+
+make_esp() {
+	bld mkfs.vfat -F 32 -n CV-ESP "${loop}p1" >/dev/null
+	mount "${loop}p1" "$esp"
+	mkdir -p "$esp/EFI/BOOT" "$esp/EFI/Linux" "$esp/loader"
+	cp "$BUILDER/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$esp/EFI/BOOT/BOOTX64.EFI"
+	printf 'timeout 0\neditor no\n' >"$esp/loader/loader.conf"
+}
+
+install_uki() {   # release slot counter
+	rel=/releases/$1
+	# Serial replaces quiet, ahead of init=, as in the single-release test.
+	sed 's/ quiet / console=ttyS0,115200 /' "$BUILDER$rel/cmdline-$2" >"$BUILDER$work/cmdline"
+	kver=$(awk '/^kernel / { print $2 }' "$BUILDER$rel/manifest")
+	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
+		--cmdline "@$work/cmdline" --os-release @/image-root/usr/lib/os-release --uname "$kver" \
+		--output "$work/esp/EFI/Linux/convergent-$1-$2$3.efi" >/dev/null
+}
+
+run_vm() {
+	runs=$((runs + 1))
+	remaining=$((deadline - $(date +%s)))
+	[ "$remaining" -gt 0 ] || die "total boot time expired"
+	[ "$remaining" -le 300 ] || remaining=300
+	log="$BUILDER$work/console-$runs.log"
+	ln -sfn "console-$runs.log" "$BUILDER$work/console.log"
+	echo "test: boot $runs ($mode), console: $log"
+	# chroot execs Python, so the cleanup trap can reap its QEMU child.
+	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
+		chroot "$BUILDER" python3 - <<'EOF' &
+import json, os, re, select, signal, socket, subprocess, time
+
 work = os.environ["CVTEST_WORK"]
+run = os.environ["CVTEST_RUN"]
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
+deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
+path = f"{work}/qmp.sock"
+if os.path.exists(path):
+    os.unlink(path)
+
+def interrupted(signum, frame):
+    raise SystemExit(1)
+
+for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
     "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", "4096",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
     "-drive", f"file={work}/disk.img,if=virtio,format=raw",
-    "-nographic", "-no-reboot", "-nic", "none"],
+    "-qmp", f"unix:{path},server=on,wait=off",
+    "-nographic", "-monitor", "none", "-nic", "none"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-seen, sent, deadline = b"", False, time.time() + 300
-with open(f"{work}/console.log", "wb") as log:
-    while time.time() < deadline and qemu.poll() is None:
-        if select.select([qemu.stdout], [], [], 1)[0]:
-            chunk = os.read(qemu.stdout.fileno(), 4096)
-            log.write(chunk); log.flush()
-            seen = (seen + chunk)[-4096:]
-            if not sent and b"Convergent passphrase" in seen:
-                qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
-            if b"convergent: release " in seen and b" is good" in seen:   # slot bless, after its checks
-                print("test: the release blessed itself"); qemu.kill(); qemu.wait(); sys.exit(0)
-    qemu.kill(); qemu.wait()
-    print("test: no blessing within 5 minutes" if qemu.returncode is None or time.time() >= deadline else "test: the VM stopped")
-    sys.exit(1)
+qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+seen, messages = b"", b""
+sent = ready = quitting = powered_off = False
+ended = "stopped"
+
+def command(name):
+    qmp.sendall(json.dumps({"execute": name}).encode() + b"\n")
+
+try:
+    # Connect before reading the guest console, so no shutdown event can be missed.
+    while True:
+        try:
+            qmp.connect(path)
+            break
+        except (FileNotFoundError, ConnectionRefusedError):
+            if qemu.poll() is not None or time.monotonic() >= deadline:
+                raise RuntimeError("QEMU did not open QMP")
+            time.sleep(0.05)
+    streams = [qemu.stdout, qmp]
+    with open(f"{work}/console-{run}.log", "wb") as log:
+        # Drain both streams after exit; the last read may contain the verdict.
+        while streams:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                ended = "timeout"
+                break
+            for stream in select.select(streams, [], [], min(1, left))[0]:
+                try:
+                    chunk = os.read(stream.fileno(), 4096)
+                except ConnectionResetError:   # QMP after quit
+                    chunk = b""
+                if not chunk:
+                    streams.remove(stream)
+                    continue
+                if stream is qmp:
+                    messages += chunk
+                    while b"\n" in messages:
+                        line, messages = messages.split(b"\n", 1)
+                        event = json.loads(line)
+                        if "QMP" in event:
+                            command("qmp_capabilities")
+                        if "return" in event:
+                            ready = True
+                        if event.get("event") == "SHUTDOWN":
+                            powered_off |= event.get("data", {}).get("reason") == "guest-shutdown"
+                else:
+                    log.write(chunk); log.flush()
+                    seen = (seen + chunk)[-8192:]
+                    if not sent and b"Convergent passphrase" in seen:
+                        qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
+            if ready and not quitting and re.search(rb"convergent: release [0-9]+ is good\r?\n", seen):
+                # Bless syncs good/highest and the ESP; quit flushes QEMU's disk writes.
+                command("quit")
+                quitting = True
+        if ended != "timeout":
+            qemu.wait(timeout=max(0.1, deadline - time.monotonic()))
+            if qemu.returncode == 0:
+                ended = "blessed" if quitting else "poweroff" if powered_off else "stopped"
+finally:
+    if qemu.poll() is None:
+        qemu.kill()
+    qemu.wait()
+    with open(f"{work}/console-{run}.log", "ab") as log:
+        log.write(qemu.stdout.read())
+    qmp.close()
+    with open(f"{work}/ended-{run}", "w") as result:
+        result.write(ended + "\n")
+print(f"test: VM ended: {ended}")
 EOF
+	driver=$!
+	if wait "$driver"; then driver=''; else driver=''; die "QEMU driver failed; see $log"; fi
+	ended=$(cat "$BUILDER$work/ended-$runs")
+}
+
+blessed() {
+	[ "$ended" = blessed ] && grep -qF "convergent: release $release is good" "$log"
+}
+
+refused() {
+	[ "$ended" = poweroff ] && ! grep -q ' is good' "$log" &&
+		grep -Eq 'verity:.*(data|metadata) block [0-9]+ is corrupted' "$log"
+}
+
+make_disk
+write_slot "$release" 2
+make_state
+make_esp
+case $mode in
+boot | corrupt) install_uki "$release" a +3 ;;
+*) install_uki "$release" a '' ;;
+esac
+umount "$esp"
+[ "$mode" != corrupt ] || corrupt 2
+detach
+cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+runs=0
+case $mode in boot | corrupt) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
+deadline=$(($(date +%s) + budget))
+run_vm
+case $mode in
+boot) blessed || die "release $release did not bless; see $log" ;;
+corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
+fallback | interrupt)
+	blessed || die "initial release $release did not bless; see $log"
+	# A has now made good, highest and var-<release> through the real boot path.
+	attach
+	if [ "$mode" = interrupt ]; then
+		half=$(( $(stat -c %s "$BUILDER/releases/$other/slot.img") / 2 ))
+		write_slot "$other" 3 "$half"
+		detach
+		run_vm
+		blessed || die "A did not bless after the partial write; see $log"
+	else
+		write_slot "$other" 3
+		corrupt 3
+		mount "${loop}p1" "$esp"
+		install_uki "$other" b +3
+		# As install/install: newest entry first, exhausted entries last.
+		printf 'timeout 0\neditor no\ndefault convergent-*\n' >"$esp/loader/loader.conf"
+		umount "$esp"
+		detach
+		failed=0
+		for attempt in 1 2 3 4 5 6; do
+			run_vm
+			if blessed; then break; fi
+			refused || die "B did not fail with verity and poweroff; see $log"
+			failed=$((failed + 1))
+		done
+		blessed || die "A did not return within six attempts; see $log"
+		[ "$failed" = 3 ] || die "expected three failed B boots, got $failed"
+		attach
+		mount "${loop}p1" "$esp"
+		[ -f "$esp/EFI/Linux/convergent-$other-b+0-3.efi" ] || die "B's UKI is not exhausted (+0-3)"
+		[ -f "$esp/EFI/Linux/convergent-$release-a.efi" ] || die "A's uncounted UKI is missing"
+		umount "$esp"
+		detach
+	fi
+	;;
+esac
+echo "test: $mode passed ($runs boots); disk, passphrase and consoles in $BUILDER$work"

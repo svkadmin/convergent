@@ -1,31 +1,9 @@
-# Infrastructure profile. Assumes pool/project "default", bridge "svc".
-# Before launch, on the host (Btrfs quotas must actually be enforced):
-# incus storage volume create default svc-metrics size=2GiB
-# incus storage volume create default svc-logs size=6GiB
-# incus storage volume create default svc-grafana size=512MiB
-# Then create svc using this profile. Keep these volumes on image replacement.
-# The existing svc bridge MUST have DHCP/DNS/NAT and IPv6 disabled.
-# pf is the sole network admission policy, installed before starting svc:
-#   6514 <- host 100.80.1.10, fw1 100.80.2.2, fw2 100.80.2.3, wan 100.80.0.10
-#   8880,9428 <- host 100.80.1.10 only
-#   3000 <- admin 100.80.4.10 only
-#   outbound -> exactly scrape.yaml targets plus DNS to 100.80.2.1
-# No proxy devices or host-global kernel/device privileges.
-# Host menu: guests/svc/grafana start; open the admin browser at
-# http://100.80.2.10:3000; guests/svc/grafana stop when the view is closed.
-# Host injects unique credentials before service start (never in the image):
-# /etc/victoria-logs/tls/{server.crt,server.key}          root:vmlogs 0640
-# /etc/victoria-metrics/tls/{incus-ca.crt,incus-client.crt,incus-client.key}
-#                                                      root:vmmetrics 0640
-# /etc/grafana/{admin-password,secret-key}               root:grafana 0640
-# Use guest numeric group IDs from "incus exec svc -- id SERVICE" when
-# pushing files. Preserve/reinject credentials and issuer trust on replacement.
-# The Incus client certificate is trusted as type=metrics, never type=client;
-# its server certificate must have SAN DNS:host. Syslog SAN IP:100.80.2.10
-# and DNS:svc; every sender trusts its issuer and verifies the SAN.
-# VM/VL GOMEMLIMIT is a soft heap limit; cache flags only limit caches.
-# 350 MiB is a hard idle ceiling, still subject to measurement under load.
-# The host menu raises it to 768 MiB only while Grafana is running.
+# ARCHITECTURE 3.4, 4.2
+# Create persistent svc-{metrics,logs,grafana} volumes (2GiB/6GiB/512MiB).
+# Inject root:SERVICE 0640 TLS files and Grafana secrets before start.
+# Incus client: type=metrics, server SAN DNS:host.
+# Syslog server SAN: IP:100.80.2.10, DNS:svc; senders verify the CA/SAN.
+# grafana raises the idle 350MiB cap to 768MiB while viewed.
 config:
   security.privileged: "false"
   security.nesting: "false"

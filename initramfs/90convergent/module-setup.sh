@@ -1,7 +1,5 @@
 #!/bin/bash
-# dracut module: Convergent's boot steps (ARCHITECTURE section 5.2, step 4).
-# The kernel has already created the dm-verity root from the UKI command line; dracut mounts
-# it. This module then opens the state volume and prepares the writable places.
+# ARCHITECTURE 5.2
 
 check() {
 	return 255 # only when asked for by name

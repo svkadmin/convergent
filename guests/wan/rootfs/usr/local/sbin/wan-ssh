@@ -1,10 +1,5 @@
 #!/bin/sh
-# wan-ssh: the forced command of the host's key (ARCHITECTURE section 3.2). The host may run
-# exactly the commands below and nothing else. No arguments travel on the command line: an
-# SSID and a passphrase arrive on standard input (see wan-wifi), so no quoting can go wrong.
-#   wifi list | scan | status | auto | disconnect | connect | connect-hidden | add | add-hidden | forget
-#   portal on | off | status
-#   check
+# ARCHITECTURE 3.2; allow only the exact SSH commands below.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 case ${SSH_ORIGINAL_COMMAND:-} in
 "wifi list" | "wifi scan" | "wifi status" | "wifi auto" | "wifi disconnect" | \

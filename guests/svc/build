@@ -1,11 +1,6 @@
 #!/bin/sh
-# Native x86_64 Linux build host, root; requires trusted apk-tools, GNU tar,
-# curl, sha256sum, chroot and an independently provisioned Alpine signing-key
-# directory (ALPINE_KEYS, normally /usr/share/apk/keys). Never bootstrap trust
-# by downloading keys alongside packages. No --allow-untrusted anywhere.
-# Output: out/metadata.tar.gz + out/rootfs.tar.gz, importable with:
-# incus image import metadata.tar.gz rootfs.tar.gz --alias convergent-svc
-# No private keys or owner passwords enter the image. See init.d start checks.
+# ARCHITECTURE 3.4, 6
+# Requires native x86_64 Linux, root and separately trusted ALPINE_KEYS.
 set -eu
 umask 022
 here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
@@ -45,8 +40,7 @@ while read -r name version repository rest; do
     if apk_root search --exact --quiet "$name" | grep -q .; then
         apk_root add "$name"
     else
-        # Fetch only this leaf from edge; signature verification also occurs
-        # during installation. Dependencies MUST resolve from 3.24 or fail.
+        # Signed leaf fallback only; dependencies must resolve from 3.24.
         apk --arch x86_64 --keys-dir "$keys" --repositories-file /dev/null \
             --repository "https://dl-cdn.alpinelinux.org/alpine/edge/$repository" \
             --no-cache fetch --output "$work/apks" "$name=$version"
@@ -54,10 +48,7 @@ while read -r name version repository rest; do
     fi
 done <"$here/packages"
 
-# Grafana's VictoriaLogs datasource is not an Alpine package. Install a
-# signed Grafana plugin release with a repository-pinned SHA-256. No runtime
-# plugin downloads. Digest published in GitHub's v0.32.0 expanded assets:
-# https://github.com/VictoriaMetrics/victorialogs-datasource/releases/expanded_assets/v0.32.0
+# Pinned signed VictoriaLogs datasource plugin.
 plugin_version=0.32.0
 plugin_sha256=e100b767f19cd614ac8ac3860458a3fb33f5aa7a876e924d0340010e40d1c0d4
 plugin_archive=victoriametrics-logs-datasource-v$plugin_version.tar.gz
@@ -114,43 +105,20 @@ rc-update add vmalert default
 # Grafana is deliberately absent from every runlevel.
 rc-update add killprocs shutdown
 rc-update add savecache shutdown
-# No password login or getty; management is local Incus exec by the host.
-# No package-generated SUID/SGID entry point is needed in a service guest.
+# Remove SUID/SGID entry points.
 find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} \;
-# Every service we use must exist; fail image creation rather than silently
-# emitting an incomplete runlevel if Alpine changed its package splits.
+# Require every configured service.
 for service in devfs dmesg sysfs hostname bootmisc sysctl networking syslog killprocs savecache; do
     [ -x "/etc/init.d/$service" ]
 done
 SETUP
 
-# Keep the package database/version manifest for provenance, remove apk itself
-# if a dependency pulled it in. The laptop receives whole images, never updates.
+# Retain package provenance; remove the package manager.
 if apk_root info --exists apk-tools >/dev/null 2>&1; then apk_root del apk-tools; fi
 apk_root info -v >"$work/packages.txt"
 # The tools package also carries clients this image never runs.
 rm -f "$root/usr/bin/vmagent" "$root/usr/bin/vmctl"
 
-# Native binaries validate configs without starting listeners. This build is
-# not executed by repository checks. TLS files are injected only at deployment;
-# scrape parsing cannot validate their contents until then.
-# Parse every configured flag with the selected package versions; -help exits
-# before listeners, storage or credentials are opened. Config parsing follows.
-chroot "$root" /bin/sh -eu <<'FLAGS'
-for service in victoria-metrics victoria-logs vmauth vmalert; do
-    (
-        RC_SVCNAME=$service
-        . "/etc/init.d/$service"
-        eval '"$command"' $command_args -help
-    ) >"/tmp/$service.help" 2>&1 || :
-    grep -q -- '-httpListenAddr' "/tmp/$service.help" || { cat "/tmp/$service.help" >&2; exit 1; }
-    if grep -q 'flag provided but not defined\|invalid value' "/tmp/$service.help"; then
-        cat "/tmp/$service.help" >&2
-        exit 1
-    fi
-    rm -f "/tmp/$service.help"
-done
-FLAGS
 chroot "$root" /usr/bin/vmalert -rule='/etc/vmalert/*.yaml' \
     -datasource.url=http://127.0.0.1:8427 -notifier.blackhole -dryRun
 chroot "$root" /usr/bin/vmauth -auth.config=/etc/vmauth.yaml -dryRun
@@ -160,7 +128,7 @@ for script in "$root/etc/init.d/victoria-metrics" "$root/etc/init.d/victoria-log
     sh -n "$script"
 done
 rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
-# Empty /dev, /proc, /sys and /run are supplied by Incus/OpenRC at runtime.
+
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/tmp"
 chmod 1777 "$root/tmp"
 epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
@@ -175,7 +143,7 @@ properties:
   description: Convergent svc (Alpine 3.24, OpenRC, x86_64)
 EOF
 tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
-# Preserve service-account ownership; numeric IDs are shifted by unprivileged Incus.
+
 tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
 (cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
 for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do

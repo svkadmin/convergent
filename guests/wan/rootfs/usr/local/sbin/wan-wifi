@@ -1,15 +1,7 @@
 #!/bin/sh
-# wan-wifi: Wi-Fi networks for the host's menu, called through wan-ssh (ARCHITECTURE 3.2).
-# Credentials live only here: iwd keeps what it learns in /var/lib/iwd (mode 0600).
-#   list              known networks, one per line
-#   scan              networks in range
-#   status            the connection now
-#   add | add-hidden  SSID on line 1 of standard input, passphrase on line 2 (empty or absent:
-#                     an open network); joins the network and so saves it
-#   connect | connect-hidden | forget     SSID on line 1
-#   disconnect | auto                     stop, or let iwd autoconnect again
-# The SSID and passphrase never appear on an SSH command line. The passphrase is on iwctl's
-# command line for the moment it takes to join; /proc is mounted with hidepid=2.
+# ARCHITECTURE 3.2
+# Read SSID then optional passphrase from stdin; credentials stay in wan.
+# iwctl briefly receives the passphrase in argv; /proc uses hidepid=2.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/wan/wan.conf
 LC_ALL=C
@@ -19,7 +11,7 @@ die() { echo "wan-wifi: $*" >&2; exit 1; }
 
 esc=$(printf '\033')
 
-# run SECONDS COMMAND...: show the output without iwctl's colour codes, keep its exit status.
+# Run with a deadline; strip iwctl colors and preserve its status.
 run() {
 	_out=$(timeout "$@" 2>&1)
 	_rc=$?
@@ -48,7 +40,6 @@ read_pass() {
 	fi
 }
 
-# join VERB: connect or connect-hidden to $ssid, with $pass if there is one.
 join() {
 	if [ -n "$pass" ]; then
 		run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$1" "$ssid"
@@ -57,29 +48,9 @@ join() {
 	fi
 }
 
-# Known networks: file names in /var/lib/iwd are the SSID, or "=" and its hex when it has
-# characters other than letters, digits, space, "-" and "_".
-decode() {
-	case $1 in
-	=*)
-		h=${1#=}
-		while [ -n "$h" ]; do
-			printf "\\x${h%"${h#??}"}"
-			h=${h#??}
-		done
-		echo
-		;;
-	*) echo "$1" ;;
-	esac
-}
-
 case ${1:-} in
 list)
-	for f in /var/lib/iwd/*.psk /var/lib/iwd/*.open; do
-		[ -e "$f" ] || continue
-		b=${f##*/}
-		decode "${b%.*}"
-	done
+	run 10 iwctl known-networks list
 	;;
 scan)
 	run 10 iwctl station "$WIFI_IF" scan >/dev/null

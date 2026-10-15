@@ -1,5 +1,5 @@
 #!/bin/sh
-# Reconcile only our contribution, once per ifstated probe. /var/run is cleared at boot.
+# Reconcile our demotion contribution once per probe.
 set -eu
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 state=/var/run/convergent-wan-demote
@@ -11,7 +11,7 @@ ping -q -c 1 -w 1 "${1:?wan address required}" >/dev/null && want=0
 owned=0
 [ ! -e "$state" ] || owned=$(cat "$state") || die "cannot read owned demotion"
 case $owned in 0|128) ;; *) die "invalid owned demotion" ;; esac
-# An interrupted ioctl/record pair is ambiguous; never guess and subtract kernel demotions.
+# Ambiguous interrupted adjustment: refuse until reboot.
 [ ! -e "$state.new" ] || die "interrupted adjustment; reboot to reconcile demotions"
 if [ "$want" != "$owned" ]; then
 	if [ "$want" = 128 ]; then op=carpdemote; else op=-carpdemote; fi

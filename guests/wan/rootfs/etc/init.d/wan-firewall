@@ -1,6 +1,5 @@
 #!/sbin/openrc-run
-# Loads the packet filter before any interface or listener exists. If the rules do not load,
-# this fails and networking, iwd and sshd (rc_need) do not start: wan stays cut off.
+# Networking and listeners require a loaded filter.
 description="wan packet filter"
 
 depend() {

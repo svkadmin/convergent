@@ -1,19 +1,6 @@
 #!/bin/sh
-# wan-check: refuse an upstream lease that overlaps the internal range (ARCHITECTURE section 3.2).
-# Run by cron every minute and by the resolvconf shim after each lease; takes a lock, so
-# overlapping runs do nothing. A lease on an upstream interface that shares any address with
-# INTERNAL_NET is refused: the radio is disconnected (iwd then stops autoconnecting until the
-# next explicit connect) or the wired uplink is taken down.
-#
-# The alert: a syslog line with the fixed program name convergent-alert and a message that
-# starts with "UpstreamOverlap", forwarded to svc. A text file for node_exporter holds the same
-# fact as a figure, which stays 1 until a lease that does not overlap is seen.
-#   convergent_wan_upstream_overlap, convergent_wan_upstream_up, convergent_wan_portal_mode
-# Meanwhile the packet filter allows no route to the internal range through upstream, so an
-# overlapping lease cannot leak traffic in the time before this runs.
-#
-# Also: portal mode is refreshed with the current resolver, and switched off after
-# PORTAL_MAX_MIN minutes.
+# ARCHITECTURE 3.2
+# Refuse overlaps, latch UpstreamOverlap until a safe lease, expire portal mode.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/wan/wan.conf
 . /usr/local/lib/wan-lib.sh
@@ -49,7 +36,7 @@ for ifc in $UP_IFS; do
 		fi
 	done
 done
-# A good lease clears the refusal; with no lease at all the last verdict stands.
+
 if [ "$bad" -eq 0 ] && [ "$good" -eq 1 ]; then
 	rm -f "$d/refused"
 fi

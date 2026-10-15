@@ -1,53 +1,9 @@
-# Section 8 rules. Thresholds/periods below are initial policy assumptions.
-# Evaluation is every 30s; CARP convergence itself is ~3s, not this scraper.
-#
-# Input contract for section 12's producers (not implemented in svc):
-# node_exporter adds node=host/fw1/fw2/wan from scrape.yaml. All cv_* are
-# gauges unless suffixed _total. Booleans are 0/1; timestamps are Unix seconds.
-# Write textfiles atomically, without explicit sample timestamps.
-#
-# Firewall inputs from guests/fw/site/usr/local/libexec/convergent/fw-facts:
-# /var/node_exporter/textfile/convergent_fw.prom, every minute:
-# convergent_carp_state{interface=carp0..carp5,carpdev,vhid=1..6},
-#   state 2=MASTER, 1=BACKUP, 0=INIT; vhids map to transit/host/svc/web/admin/guests.
-# convergent_pf_enabled, convergent_pf_states, convergent_pf_state_limit,
-# convergent_pf_ruleset_info{loaded,file}, convergent_default_route_present,
-# convergent_unbound_up, convergent_dns_file_mtime_seconds{file="blocklist.rpz"}.
-# unbound_up is unbound-control status, not an external DNS transaction probe.
-# ResolverStale detects missing/old resolver facts by the file's own mtime.
-# The host checker must supply cv_firewall_ruleset_expected_info{firewall,loaded}=1
-# from the accepted release: "loaded" is EXACTLY the firewall's pfctl -sr |
-# sha256 output (including its prefix), NOT the raw pf.conf file digest.
-# Missing expected hashes fail closed as ruleset drift; never compare the
-# collector's loaded and file labels, since those hash different byte streams.
-#
-# host boot.prom, once each boot: cv_secure_boot_verified, cv_lockdown_enabled,
-# cv_luks_header_matches_release, cv_crash_records (retained until acknowledged).
-# host daily.prom, daily: cv_nvme_spare_percent{device}, cv_nvme_spare_threshold_percent{device},
-# cv_nvme_media_errors_total{device}, cv_nvme_critical_warning{device},
-# cv_nts_authenticated_sources, cv_certificate_not_after_seconds{certificate}.
-# host release.prom, at update: cv_release_built_seconds,
-# cv_guest_image_built_seconds{project,name}, cv_guest_release_eol_seconds{project,name}.
-# host checker.prom, boot/update/daily: cv_checker_success,
-# cv_checker_last_run_seconds, cv_default_route_ok{compartment},
-# cv_passthrough_device_present{device}, cv_host_netdev_expected{device},
-# cv_guest_route_expected{project,name,route}, cv_service_up{compartment,service},
-# cv_incus_pool_used_bytes{pool}, cv_incus_pool_limit_bytes{pool}.
-# host checker.prom also supplies cv_wan_reserved_leak=0/1 from its
-# reserved-egress check. The current fw collector does not export that fact.
-# Host Incus lifecycle event forwarding must supply the log tag incus-event.
-# These host integration contracts remain outside guests/svc.
-# Same file: cv_guest_expected_running{project,name}; explicit inventory,
-# including fw1/fw2/wan/svc=1, on-demand browsers=0 while intentionally closed.
-# Incus hypervisor CPU metrics vanish for stopped guests; no guest agent is
-# required. Never invent an Incus state metric.
-# GuestRestarted uses host Incus event logs because wan/fw have no guest agent.
-#
-# Host producers must write cv_collector_success{collector}=0/1 in each file.
-# Staleness uses node_textfile_mtime_seconds{file}, not sample freshness.
-# Host paths must end in boot.prom, daily.prom, release.prom, checker.prom;
-# firewall paths must end in convergent_fw.prom. wan uses wan.prom.
-# No custom time exporter.
+# ARCHITECTURE 8
+# cv_* booleans: 0/1; timestamps: Unix seconds; atomic textfiles, no sample times.
+# Producers: host boot/daily/release/checker.prom; fw convergent_fw.prom; wan wan.prom.
+# Expected pf hash: pfctl -sr | sha256, including its prefix.
+# Checker supplies running inventory; closed on-demand browsers are not expected.
+# Host forwards Incus lifecycle logs with app_name incus-event.
 groups:
   - name: path
     interval: 30s
@@ -295,19 +251,14 @@ groups:
     interval: 30s
     concurrency: 1
     rules:
-      # Actual wan-check contract: tag convergent-alert, message prefix
-      # UpstreamOverlap; its metric is latched until a safe lease is seen.
-      # Record recent events as well, so the API's single alert survives an
-      # event arriving before its corresponding scrape. Match transport IP,
-      # not a sender-controlled syslog hostname.
+      # Match wan transport IP, tag and event prefix.
       - record: cv_wan_overlap_events
         expr: '_time:10m remote_ip:="100.80.0.10" app_name:="convergent-alert" _msg:~"^UpstreamOverlap( |$)" | stats count() events'
       - alert: AuditEvent
         expr: '_time:5m remote_ip:="100.80.1.10" app_name:in("audit","auditd") | stats count() hits | filter hits:>0'
         labels: {severity: warning}
         annotations: {summary: 'Host audit events received; review records in the log view'}
-      # The host forwards Incus lifecycle events with this tag and message
-      # fields. Explicit started/restarted records, not missing VM metrics.
+      # Host-forwarded Incus lifecycle events.
       - alert: GuestRestarted
         expr: '_time:5m remote_ip:="100.80.1.10" app_name:="incus-event" _msg:~"(^| )(instance-started|instance-restarted)( |$)" | stats count() hits | filter hits:>0'
         labels: {severity: warning}

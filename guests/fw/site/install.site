@@ -1,7 +1,5 @@
 #!/bin/sh
-# install.site: run once by the installer, inside the new system, after the sets are in.
-# fw1 and fw2 are one tree; the differences are the values in /etc/convergent (net, node.*,
-# build), substituted into the template files below. Any failure stops the install.
+# Apply this node's templates after installing the sets.
 set -eu
 umask 022
 
@@ -13,7 +11,7 @@ node=$(sed 's/\..*//' /etc/myname)
 for f in net build "node.$node"; do [ -f "$f" ] || die "missing /etc/convergent/$f"; done
 [ -s /etc/ssl/convergent-ca.pem ] || die "missing /etc/ssl/convergent-ca.pem (the CA of svc's log receiver)"
 
-# The installer rewrites a few network files after the sets are unpacked; ours wait in late/.
+# Restore files the installer rewrites after unpacking sets.
 for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
 
 # One KEY=value per line becomes one sed rule.
@@ -52,12 +50,10 @@ chmod 0640 /etc/convergent/pf.guests
 chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
 chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch
 
-# Metrics: node_exporter comes from packages. The build host serves them over the installer's
-# own network (the firewalls have no HTTPS egress); pkg_add checks each package's signature.
+# pkg_add verifies packages from the build host.
 PKG_PATH="$PKG_URL" pkg_add -I $PKGS
 install -d -m 0755 -o root -g wheel /var/node_exporter /var/node_exporter/textfile
 
-# The facts script, every minute (the system crontab has a user column; the line names root).
 grep -q fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab
 
 # Check what can be checked without the interfaces and the other node.

@@ -1,9 +1,5 @@
 #!/bin/sh
-# resolvconf shim: the one interface iwd has for handing a lease's DNS servers to the system
-# (NameResolvingService=resolvconf). iwd calls it as "resolvconf -a wlan0.dns" with the
-# servers on standard input, and "resolvconf -d wlan0.dns" when the lease goes.
-# wan resolves nothing itself; the servers are kept for captive-portal mode (wan-portal), and
-# the call is the earliest sign of a new lease, so the overlap check runs now (wan-check).
+# iwd DNS hook: record portal resolvers and check lease overlap.
 set -eu
 umask 022
 d=/run/wan

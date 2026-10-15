@@ -1,5 +1,4 @@
-# chroot.sh: mount and unmount what the builder chroot needs. Sourced by the build scripts,
-# which set BUILDER (build.conf).
+# Builder chroot mounts; caller sets BUILDER.
 
 chroot_mount() {
 	for d in proc sys dev run; do
@@ -14,9 +13,9 @@ chroot_mount() {
 }
 
 chroot_umount() {
-	# gpg-agent, started by Portage's key helper, would keep /dev busy.
+	# Stop Portage's gpg-agent before unmounting /dev.
 	chroot "$BUILDER" gpgconf --kill all 2>/dev/null || true
-	# Any agent left running inside the builder (its root is the builder), and no other.
+	# Kill only agents rooted in this builder.
 	for p in $(pgrep -x gpg-agent); do
 		[ "$(readlink "/proc/$p/root")" = "$BUILDER" ] && kill "$p"
 	done

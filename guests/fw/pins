@@ -1,18 +1,13 @@
-# Convergent: what the firewall images are built from. Changing a pin is a deliberate,
-# reviewed act. Sourced by build.
+# Firewall build pins.
 
-# OpenBSD release (amd64) and where its files are fetched from. File names carry the version
-# without the dot (base78.tgz); newer releases are drop-in if the installer's questions are unchanged.
+# OpenBSD amd64 release and mirror.
 OPENBSD_VERSION=7.8
 OPENBSD_MIRROR=https://cdn.openbsd.org/pub/OpenBSD
-# The release's signify key (openbsd-NN-base.pub) is fetched from the project's own server and
-# refused unless it matches this SHA256. Fill it from the release's signify key, compare with
-# a second source and review it; build refuses this empty pin and prints the digest it saw.
+# Pin the signify key hash after independent verification.
 OPENBSD_KEY_MIRROR=https://ftp.openbsd.org/pub/OpenBSD
 OPENBSD_KEY_SHA256=
 
-# Packages from the release's package directory (their dependencies follow); pkg_add checks
-# their signatures during the install.
+# pkg_add verifies package signatures.
 FW_PACKAGES="node_exporter"
 
 # Image size and the installer's memory (the firewalls run in 384 MiB).

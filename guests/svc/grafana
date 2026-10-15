@@ -1,27 +1,21 @@
 #!/bin/sh
-# Host-menu action, run as root in the infrastructure Incus project:
-#   guests/svc/grafana start   (then open the admin browser)
-#   guests/svc/grafana stop    (on closing the dashboard view)
-# No polling or background process. Failures are visible to the menu.
+# ARCHITECTURE 3.4; host-menu start/stop.
 set -eu
 [ "$(id -u)" = 0 ] || { echo "grafana: run as root on host" >&2; exit 1; }
 [ "$#" = 1 ] || { echo "usage: grafana start|stop" >&2; exit 2; }
-project=${CONVERGENT_INFRA_PROJECT:-default}
-incus_svc() { incus --project "$project" "$@"; }
 case $1 in
     start)
-        incus_svc config set svc limits.memory 768MiB
-        if ! incus_svc exec svc -- rc-service grafana start; then
-            # Restore the idle ceiling only if no Grafana remains running.
-            if ! incus_svc exec svc -- rc-service grafana status; then
-                incus_svc config set svc limits.memory 350MiB
+        incus --project default config set svc limits.memory 768MiB
+        if ! incus --project default exec svc -- rc-service grafana start; then
+            if ! incus --project default exec svc -- rc-service grafana status; then
+                incus --project default config set svc limits.memory 350MiB
             fi
             exit 1
         fi
         ;;
     stop)
-        incus_svc exec svc -- rc-service grafana stop
-        incus_svc config set svc limits.memory 350MiB
+        incus --project default exec svc -- rc-service grafana stop
+        incus --project default config set svc limits.memory 350MiB
         ;;
     *) echo "usage: grafana start|stop" >&2; exit 2 ;;
 esac

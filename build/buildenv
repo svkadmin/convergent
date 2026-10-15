@@ -1,8 +1,5 @@
 #!/bin/sh
-# buildenv: create or update the builder on the build host (ARCHITECTURE section 6).
-# Run as root from a checkout of this repository: build/buildenv
-# The builder is a chroot made from the pinned, signature-checked stage3, with the pinned
-# Portage snapshot and this repository's Portage configuration.
+# ARCHITECTURE 6; run as root on the build host.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -20,7 +17,7 @@ key=/usr/share/openpgp-keys/gentoo-release.asc
 work=$(mktemp -d)
 trap 'chroot_umount; rm -rf "$work"' EXIT
 
-# 1. The stage3, only when there is no builder yet.
+# Bootstrap the signed stage3 once.
 if [ ! -x "$BUILDER/bin/sh" ]; then
 	tarball="stage3-amd64-$STAGE3_VARIANT-$STAGE3_BUILD.tar.xz"
 	curl -fsSL -o "$work/$tarball" "$mirror/$STAGE3_BUILD/$tarball"
@@ -34,7 +31,7 @@ if [ ! -x "$BUILDER/bin/sh" ]; then
 	echo "buildenv: builder created from $tarball"
 fi
 
-# 2. This repository's Portage configuration, replacing whatever was there.
+# Replace Portage configuration from the repository.
 etc="$BUILDER/etc/portage"
 [ -d "$etc/make.conf" ] || { rm -f "$etc/make.conf"; mkdir "$etc/make.conf"; }
 cp "$repo/portage/make.conf" "$etc/make.conf/10-convergent"
@@ -47,18 +44,16 @@ for d in package.use package.accept_keywords package.license sets; do
 	cp -r "$repo/portage/$d/." "$etc/$d/"
 done
 cp "$here/builder.use" "$etc/package.use/zz-builder"
-# Portage runs its key helper with ROOT set to the root being installed; for the image that is
-# /staging, where the helper would build a keyring. The builder's keyring is the one to use.
+# Use the builder's keyring when installing into /staging.
 printf '%s\n' '#!/bin/sh' 'ROOT=/ EROOT=/ exec /usr/bin/getuto "$@"' >"$BUILDER/usr/local/bin/getuto-builder"
 chmod 755 "$BUILDER/usr/local/bin/getuto-builder"
 echo 'PORTAGE_TRUST_HELPER=/usr/local/bin/getuto-builder' >"$etc/make.conf/85-trust"
 cp "$here/builder.set" "$etc/sets/convergent-builder"
-# The kernel configuration fragment, merged by Gentoo's kernel package over its hardened one.
+# Gentoo kernel configuration fragment.
 install -D -m 0644 "$here/kernel.config" "$BUILDER/etc/kernel/config.d/50-convergent.config"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
 
-# 3. The pinned snapshot (signature checked by emerge-webrsync), the profile, the binary
-#    package keys.
+# Verify pinned snapshot; select profile and binary-package keys.
 chroot_mount
 stamp=/var/db/repos/gentoo/.convergent-snapshot
 chroot "$BUILDER" /bin/sh -eu -c "
@@ -72,8 +67,7 @@ chroot "$BUILDER" /bin/sh -eu -c "
 	getuto >/dev/null
 "
 
-# 4. The packages built here are signed with the builder's own key, which Portage trusts like
-#    Gentoo's: a cached package swapped on disk is refused. The key is made once and kept.
+# Persistent key for signed local binary packages.
 chroot "$BUILDER" /bin/sh -eu <<'EOF'
 home=/etc/convergent/binpkg-gnupg
 if [ ! -s "$home/fingerprint" ]; then
@@ -87,13 +81,13 @@ fpr=$(cat "$home/fingerprint")
 gpg --homedir "$home" --export --armor "$fpr" | gpg --homedir /etc/portage/gnupg --batch --quiet --import
 gpg --homedir /etc/portage/gnupg --batch --yes --pinentry-mode loopback \
 	--passphrase-file /etc/portage/gnupg/pass --quick-lsign-key "$fpr"
-# Recomputed now: Portage verifies as an unprivileged user that cannot update it.
+# Refresh trustdb before unprivileged verification.
 gpg --homedir /etc/portage/gnupg --batch --check-trustdb
 printf '%s\n' 'FEATURES="${FEATURES} binpkg-signing"' \
 	"BINPKG_GPG_SIGNING_GPG_HOME=\"$home\"" "BINPKG_GPG_SIGNING_KEY=\"$fpr\"" \
 	>/etc/portage/make.conf/86-signing
 gpgconf --homedir "$home" --kill all
 EOF
-# 5. The builder's own tools (build/builder.set); nothing happens when they are there already.
+# Install builder tools.
 chroot "$BUILDER" emerge --noreplace --quiet-build=y @convergent-builder
 echo "buildenv: builder ready at $BUILDER (snapshot $SNAPSHOT_DATE, profile $PROFILE)"

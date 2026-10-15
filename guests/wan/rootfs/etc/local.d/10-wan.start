@@ -1,6 +1,5 @@
 #!/bin/sh
-# Other users' processes are hidden (a passphrase is briefly on iwctl's command line), the
-# state directories exist, and the first check runs without waiting for cron.
+# Hide other users' command lines; initialize state and run the first check.
 mount -o remount,hidepid=2 /proc
 mkdir -p /run/wan /run/node_exporter
 chmod 755 /run/wan /run/node_exporter

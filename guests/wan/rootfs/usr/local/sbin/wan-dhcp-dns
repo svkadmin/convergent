@@ -1,9 +1,5 @@
 #!/bin/sh
-# wan-dhcp-dns: hands a wired lease's DNS servers to the resolvconf shim, as iwd does for the
-# radio, so they reach the same store (/run/wan) and start the same overlap check (wan-check).
-# Called by the hooks in /etc/udhcpc (post-bound, post-renew, post-deconfig) from udhcpc's
-# default.script, which exports $interface and $dns.
-#   wan-dhcp-dns set | clear
+# udhcpc post-* hook; interface/dns are exported by default.script.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 case ${interface:-} in
 '' | *[!A-Za-z0-9_-]*) exit 1 ;;

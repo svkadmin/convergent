@@ -1,15 +1,5 @@
 #!/bin/sh
-# Convergent: open the state volume and prepare the writable places, before the switch to the
-# verified root (ARCHITECTURE section 5.2, step 4). Runs in dracut's pre-pivot hook.
-#
-# State volume (LUKS2, Btrfs), found by its partition label:
-#   good               the release marked good last
-#   var-<release>      /var of one release; made on the release's first boot as a snapshot of
-#                      the good release's, so a fallback finds its own /var untouched
-#   home               /home
-#   pool               the Incus storage pool; never rolled back with a release
-#   etc/               the writable /etc entries listed in the image
-
+# ARCHITECTURE 5.2
 
 release=$(getarg convergent.release=)
 [ -n "$release" ] || die "convergent: no convergent.release= on the command line"
@@ -19,8 +9,7 @@ state=/run/cv-state
 udevadm settle
 [ -b "$dev" ] || die "convergent: no partition labelled cv-state"
 
-# Three tries; then dracut's emergency action (power off, no shell). One prompt of our own:
-# cryptsetup reads the passphrase from standard input and never touches the terminal.
+# Three passphrase attempts; failure powers off.
 tries=0
 while :; do
 	[ "$tries" -lt 3 ] || die "convergent: the state volume did not open"
@@ -34,10 +23,9 @@ while :; do
 done
 pass=''
 
-# From here a hang counts as a failed boot try: the watchdog reboots, systemd-boot counts it.
-# Armed only when the image feeds it; a single write without the magic close leaves it running.
+# Arm without magic close; a hang must reset the board.
 if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
-	# The TCO watchdog hangs off the LPC bridge on older chipsets, the SMBus controller on newer.
+	# TCO watchdog: LPC or SMBus, depending on chipset.
 	modprobe -q lpc_ich
 	modprobe -q i2c_i801
 	if modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ]; then
@@ -51,13 +39,12 @@ mkdir -p "$state"
 mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
 	die "convergent: the state volume did not mount"
 
-# This release's /var: its own, or on its first boot a snapshot of the good release's. Made under
-# a temporary name and renamed when complete, so an interrupted first boot starts over.
+# Prepare this release's /var atomically from the good release.
 if [ ! -d "$state/var-$release" ]; then
 	new="$state/var-$release.new"
 	[ ! -d "$new" ] || btrfs -q subvolume delete "$new"
 	good=$(cat "$state/good" 2>/dev/null)
-	# An update has snapshot ancestry; only a fresh install (no good at all) starts from the image.
+	# Only a fresh install starts /var from the image.
 	[ -z "$good" ] || [ -d "$state/var-$good" ] ||
 		die "convergent: /var of the good release $good is missing; not starting release $release from the image"
 	if [ -n "$good" ]; then
@@ -80,7 +67,7 @@ mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var
 	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec tmpfs "$NEWROOT/tmp" ||
 	die "convergent: could not mount the writable places"
 
-# The writable /etc entries: the image's list, the image's file as the first copy.
+# Seed and bind the image's writable /etc list.
 while read -r entry; do
 	case $entry in '' | '#'*) continue ;; esac
 	dst="$state/etc/$entry"
@@ -93,7 +80,6 @@ while read -r entry; do
 		die "convergent: could not bind /etc/$entry"
 done <"$NEWROOT/usr/lib/convergent/etc-state"
 
-# A machine identity of its own, made on the first boot (dbus and others need one).
 [ -s "$state/etc/machine-id" ] || tr -d - </proc/sys/kernel/random/uuid >"$state/etc/machine-id"
 
 umount "$state"

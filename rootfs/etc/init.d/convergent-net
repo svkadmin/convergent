@@ -1,7 +1,5 @@
 #!/sbin/openrc-run
-# Convergent: the host has no network of its own before Incus. Wi-Fi belongs to the wan VM and
-# every bridge, with the host's one address on it, is Incus' (ARCHITECTURE section 4.4). So
-# "net", which Incus and others need, means the loopback interface and the host firewall.
+# ARCHITECTURE 4.4; Incus owns the bridges.
 description="The host's network before Incus: loopback and the host firewall"
 
 depend() {

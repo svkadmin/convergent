@@ -1,5 +1,3 @@
-# Convergent wan: helpers shared by wan-check and wan-portal. Sourced, not run.
-
 # ip2int A.B.C.D: the address as a number.
 ip2int() {
 	(
@@ -27,7 +25,6 @@ is_ipv4() {
 	)
 }
 
-# overlaps_internal ADDR PREFIXLEN: does ADDR/PREFIXLEN share any address with INTERNAL_NET?
 overlaps_internal() {
 	_a=$(ip2int "$1")
 	_b=$(ip2int "${INTERNAL_NET%/*}")

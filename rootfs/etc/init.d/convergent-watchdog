@@ -1,9 +1,5 @@
 #!/sbin/openrc-run
-# Convergent: feeds the hardware watchdog that the initramfs armed (ARCHITECTURE section 5.2),
-# until `slot bless` stops this service (the magic close disarms it), or until the deadline.
-# A short sh loop under start-stop-daemon: no extra package, and the deadline and the magic
-# close are two lines of it. After the deadline it stops feeding, so the board resets in under
-# 180 s and a hung-but-alive boot counts as a failed try. Enabled in the sysinit runlevel.
+# ARCHITECTURE 5.2; bless disarms, deadline leaves watchdog armed.
 
 description="Feeds the hardware watchdog until the boot is blessed"
 command=/bin/sh

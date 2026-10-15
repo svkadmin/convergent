@@ -25,9 +25,7 @@ umask=0027
 
 depend() { need net; use syslog; }
 start_pre() {
-    # Injected BEFORE first start by host, never baked into a release:
-    # Incus metrics-only client cert/key, server CA/cert; server SAN must
-    # include DNS:host (see scrape.yaml). Trust this client as type=metrics.
+    # Inject metrics-only client cert/key and CA; server SAN DNS:host.
     for file in incus-ca.crt incus-client.crt incus-client.key; do
         /usr/local/sbin/svc-secret-check vmmetrics "/etc/victoria-metrics/tls/$file" || {
             eerror "missing/insecure host-injected Incus TLS file: $file"; return 1;
