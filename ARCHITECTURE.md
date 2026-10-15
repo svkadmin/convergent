@@ -6,7 +6,8 @@ repository: everything it runs is built from here, verified at boot, and replace
 whole on update.
 
 This document describes the design. [DECISIONS.md](DECISIONS.md) records the choices
-behind it and their status.
+behind it and their status. Section 13 maps what Convergent keeps, improves and drops from
+its predecessor, Archer.
 
 ---
 
@@ -40,16 +41,16 @@ behind it and their status.
             +-----------------+-----------------+
             |                                   |
     +-------+-------+     sync link     +-------+-------+
-    |  fw1    (VM)  |-------------------|  fw2    (VM)  |  OpenBSD. pf, CARP, pfsync.
-    +-------+-------+                   +-------+-------+  Route between all segments.
-            |  one CARP gateway address per segment     |
+    |  fw1    (VM)  |-------------------|  fw2    (VM)  |  OpenBSD. pf, CARP, pfsync,
+    +-------+-------+                   +-------+-------+  unbound. Route all segments.
+            |  one CARP gateway address per segment     |  The gateway is the resolver.
   +---------+--------+-----------+------------+----------+-----------+
   | host             | svc       | web        | admin    | guests    |
  HOST              svc (ct)    browsers     admin       user containers
  Gentoo, OpenRC,   Alpine:     (Incus ct)   browser     and VMs (Incus)
- Sway, Incus;      DNS,        web, tmp     (Incus ct)
- its only address  metrics,                 for
- is on "host"      logs, alerts             Grafana
+ Sway, Incus;      metrics,    web, tmp,    (Incus ct)
+ its only address  logs,       portal       for
+ is on "host"      alerts                   Grafana
 ```
 
 Segments are Layer-2 bridges on the host. The host holds an IP address only on the `host`
@@ -65,17 +66,24 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 | Area | Design |
 |---|---|
 | Base | Gentoo, hardened profile, OpenRC, glibc |
-| Kernel | Gentoo distribution kernel, hardened configuration plus a Convergent fragment: confidentiality lockdown; every module signed with a key that exists only during the build; no kexec; no hibernation; DM, DM_INIT, DM_VERITY, EROFS and the storage drivers built in |
+| Kernel | Gentoo distribution kernel, hardened configuration plus a Convergent fragment: confidentiality lockdown; every module signed with a key that exists only during the build; no kexec; no hibernation; DM, DM_INIT, DM_VERITY, EROFS and the storage drivers built in; drivers for unused protocols, filesystems and buses (FireWire, legacy network protocols) left out of the build rather than blacklisted; the Wi-Fi driver left out, so the host cannot take the radio back |
+| Kernel settings | One sysctl file, carried from Archer: ptrace, perf, BPF and kernel-pointer restrictions, dmesg restricted, protected links and FIFOs, TIOCSTI and line-discipline loading off, strict network settings (no redirects, no source routing, martians logged, reverse-path filtering), no core dumps |
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection verified at boot; every NVIDIA function bound to vfio-pci before any driver probes it and left powered down; the Wi-Fi function must sit alone in its IOMMU group, with no ACS override |
-| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), signed with the owner's key; one signed unified kernel image (UKI) per slot, plus a signed recovery UKI |
+| Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
+| Audit | auditd with immutable rules for identity files, authentication, privilege changes, boot files, keys, module loading, policy changes and commands run as root; records forwarded to svc |
+| Accounts | root locked; the owner in `wheel` only; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt; faillock after 5 failures for 15 minutes; restrictive umask |
+| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled, signed with the owner's key; one signed unified kernel image (UKI) per slot, plus a signed recovery UKI |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the signed UKI command line; the root hash is covered by the Secure Boot signature |
-| State | One LUKS2 volume with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus storage pool |
-| Seat and session | seatd; Sway, foot, fuzzel, mako, swaylock, swayidle; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
+| State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
+| Memory | zram swap capped at 4 GiB; zswap off; no disk swap |
+| Seat and session | seatd; Sway, foot, fuzzel, mako, swaylock, swayidle, kanshi; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
-| Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices. Thunderbolt PCIe tunnels denied until approved from the menu; DisplayPort over USB-C works without approval |
+| Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels denied until approved from the menu; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
+| Power | Never suspends. CPU energy preference and a 4.2 GHz clock cap set per power source by a small OpenRC service on AC events; runtime power management for idle devices; thermald; a known-noisy ACPI event masked only if it is not the embedded controller's |
 | Host firewall | nftables: input accepted only on the `host` interface and only from the listed sources (section 4.2); forwarding off |
-| Logs | syslog-ng, forwarded to svc over TCP; a small local buffer for when svc is down |
-| Time | chrony with NTS, starting without waiting for the network; serves NTP to the firewalls |
+| Logs | syslog-ng, forwarded to svc over TLS; a bounded local buffer for when svc is down |
+| Crashes | Kernel crash records from pstore archived at boot by an OpenRC service and reported to svc |
+| Time | chrony with NTS from three sources, needing two to agree; starts without waiting for the network; serves NTP to the firewalls |
 | Listening on the host | chrony (UDP 123, from the firewalls only) and node_exporter (TCP 9100, from svc only). Nothing else |
 
 ### 3.2 wan (VM)
@@ -83,32 +91,41 @@ Incus binds to its virtual NIC, so it cannot send as anyone else.
 Alpine with its LTS kernel. Owns the Wi-Fi card by VFIO passthrough, joins networks with iwd,
 takes the upstream address by DHCP and performs the only NAT in the system.
 
-- Reaches only the transit segment. Answers SSH from the host (key only, on its transit
-  address), node_exporter scrapes from svc, and sends syslog to svc.
-- No Incus agent and no guest API: the host manages it over SSH through the firewalls.
-  Wi-Fi credentials are sent over that SSH session on standard input and live only in wan.
-- Refuses an upstream lease that overlaps the internal range (section 4.1) and raises an alert.
-- Captive portals: a DNS forwarder to the upstream resolver on its transit address, which pf
-  opens only for the portal browser and only while portal mode is on (section 9).
-- Time from the host clock (PTP over KVM, disciplined by chrony in the VM).
-- Memory capped at 512 MiB; the emulated HPET off and free page reporting on, both measured on
-  Archer.
+- **Privacy on the air:** a random MAC address per network, the regulatory country set,
+  protected management frames where the network offers them, a DHCP client that sends no host
+  name, no mDNS or LLMNR.
+- **Networks:** join, forget, hidden networks and roaming between known networks, all from the
+  menu. Credentials are sent over SSH on standard input and live only in wan.
+- **Wired uplink:** a USB network adapter approved in USBGuard can be passed to wan as an
+  uplink. No other role.
+- **Egress:** wan's own traffic is limited to DHCP and the NAT; it starts nothing toward the
+  inside except syslog to svc.
+- **Management:** no Incus agent and no guest API; SSH from the host only, on its transit address.
+- **Overlap:** refuses an upstream lease that overlaps the internal range and raises an alert.
+- **Captive portals:** a DNS forwarder to the upstream resolver on its transit address, which pf
+  opens only for the portal browser and only while portal mode is on.
+- **Time:** from the host clock (PTP over KVM, disciplined by chrony in the VM).
+- **Size:** memory capped at 512 MiB; the emulated HPET off and free page reporting on, both
+  measured on Archer.
 
 ### 3.3 fw1, fw2 (VMs)
 
 OpenBSD. Each has one interface per segment and a dedicated sync link to the other.
 
 - **CARP:** one virtual host ID per segment, the same on both; fw1 with skew 0, fw2 with skew
-  100; `net.inet.carp.preempt=1`, so all addresses move together; advertisements unicast to
-  the peer (`carppeer`), so the Linux bridges' multicast handling plays no part.
+  100; `net.inet.carp.preempt=1`, so all addresses move together; advertisements unicast to the
+  peer (`carppeer`), so the Linux bridges' multicast handling plays no part.
 - **pfsync** on the sync link, with `defer`, so a failover keeps established connections.
 - **ifstated** demotes the whole CARP group when the wan VM stops answering (a probe of wan's
   transit address, not the interface's carrier, which a virtual NIC never loses).
+- **pf** routes and filters between all segments (section 4.2), with state limits per source,
+  MSS clamping toward wan, and a ruleset hash the checker compares with the release.
+- **unbound**, from OpenBSD's base system, answers DNS on every segment's gateway address, so a
+  failover carries DNS with it (section 4.5).
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
-- **pf** routes and filters between all segments (section 4.2).
-- Also: an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
-- No DHCP: every address is static (section 4.1).
-- 256 MiB each.
+- **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
+- **No DHCP:** every address is static (section 4.1).
+- **Size:** 384 MiB each.
 
 Either firewall can be updated, rebooted or broken while the other carries everything. Each has
 its own kernel: a firewall kernel bug is not a host kernel bug, and the reverse. A silent
@@ -120,15 +137,13 @@ Alpine in an unprivileged Incus container on its own segment.
 
 | Service | Role | Bounds |
 |---|---|---|
-| unbound | The only resolver for the system. DNS-over-TLS to forwarders given by address and certificate name; DNSSEC; RPZ blocklist | Cache sizes fixed in its configuration |
-| VictoriaMetrics | Metrics; scrapes the host, the firewalls and wan | Cache and query concurrency capped |
-| VictoriaLogs | Logs; receives syslog from the host, the firewalls and wan | Cache and query concurrency capped |
-| vmalert | Evaluates the alert rules; the status bar reads its alerts API | |
+| VictoriaMetrics | Metrics; scrapes the host, the firewalls and wan | Cache, retention and query concurrency capped |
+| VictoriaLogs | Logs; receives syslog over TLS from the host, the firewalls and wan | Cache, retention and query concurrency capped |
+| vmalert | Evaluates the alert rules (section 8); the status bar reads its alerts API | |
 | Grafana | Dashboards. Started only while viewed, bound to svc's address, login required, anonymous access off | Stopped when not in use |
 
-svc is a single point for DNS, metrics and logs. While it restarts or is replaced, names do not
-resolve (seconds for a restart, tens of seconds for an image replacement), the status bar shows
-the alert counts as unknown rather than stale, and the host buffers its logs.
+While svc restarts or is replaced, the status bar shows the alert counts as unknown rather than
+stale, and the host buffers its logs. DNS does not depend on svc.
 
 ### 3.5 Browsers
 
@@ -136,20 +151,32 @@ Firefox runs in unprivileged Incus containers built from one browser image:
 
 - **web:** the everyday browser, with a persistent profile volume.
 - **tmp:** an ephemeral container from the same image, gone when closed.
-- **portal:** an ephemeral container used only for captive portals (section 9).
+- **portal:** an ephemeral container used only for captive portals.
 - **admin:** a persistent container on the `admin` segment, the only browser that reaches Grafana.
 
 Each container gets: the GPU render node, a Wayland socket created through Sway's security
 context (no screen capture, no input injection, no other Wayland socket, no Sway IPC, no X11),
 a PipeWire socket restricted by WirePlumber rules (playback; microphone only for modes that ask
-for it), and its own download directory. No D-Bus, so no portals and no screen sharing. Its
-network is pf's decision, like every other compartment's.
+for it), and its own download directory. No D-Bus, so no portals and no screen sharing.
+
+Firefox policies are part of the image: DNS-over-HTTPS off (the gateway resolves), telemetry,
+studies and captive-portal probes off, and each mode labelled in its window title so the owner
+always knows which browser is in front. Links opened from other programs go to `tmp` by default.
 
 ### 3.6 User guests
 
-Incus containers and VMs on the `guests` segment, each with a fixed address bound to its NIC,
-port-isolated from each other. What a guest may reach is pf's decision; the default is the
-resolver and the internet on web ports. A guest that needs a VPN runs it inside itself.
+Incus containers and VMs on the `guests` segment, in the owner's own Incus project, so the
+owner's guests never touch the infrastructure's instances, networks or profiles.
+
+- Each guest has a fixed address bound to its NIC and is port-isolated from the others; what it
+  may reach is pf's decision, by default the resolver and the internet on web ports.
+- Containers run unprivileged with their own ID range and a process limit; every guest has a
+  memory limit.
+- VMs use UEFI with a virtual TPM; the menu creates them from an installer image and opens their
+  console.
+- Infrastructure instances (fw1, fw2, wan, svc, the browsers) are protected from deletion and
+  started in order at boot; a crashed one is restarted.
+- A guest that needs a VPN runs it inside itself.
 
 ---
 
@@ -159,9 +186,9 @@ resolver and the internet on web ports. A guest that needs a VPN runs it inside 
 
 Internal addresses come from one /16, set in one place: 100.80.0.0/16 by default. It lies in the
 shared address space of RFC 6598, which carrier-grade NAT also uses; wan refuses an upstream
-lease that overlaps it (section 3.2), and the range can be changed in one file.
+lease that overlaps it, and the range can be changed in one file.
 
-| Segment | Prefix | Gateway (CARP) | fw1 | fw2 | Members |
+| Segment | Prefix | Gateway and resolver (CARP) | fw1 | fw2 | Members |
 |---|---|---|---|---|---|
 | transit | 100.80.0.0/28 | .1 | .2 | .3 | wan .10 |
 | sync | 100.80.0.16/30 | none | .17 | .18 | none |
@@ -178,20 +205,21 @@ everywhere.
 
 ### 4.2 Flows
 
-Everything not listed is dropped.
+Everything not listed is dropped. DNS to a segment's own gateway address is allowed on every
+segment except transit and sync; it is not repeated below.
 
 | From | To | Ports | Why |
 |---|---|---|---|
 | host | internet | NTP 123, NTS-KE 4460 | Time |
 | host | update source | HTTPS 443 | Releases (the build host's address) |
-| host | svc | DNS 53, syslog 6514, vmalert 8880 | Names, logs, alert counts for the bar |
-| host | fw1, fw2, wan | SSH 22 | Management, Wi-Fi credentials |
+| host | blocklist source | HTTPS 443 | Weekly blocklist download |
+| host | svc | syslog 6514, vmalert 8880, VictoriaLogs query 9428 | Logs, alert counts, the menu's log view |
+| host | fw1, fw2, wan | SSH 22 | Management, Wi-Fi credentials, blocklist and record pushes |
 | fw1, fw2 | host | NTP 123 | Time |
+| fw1, fw2 | internet | DoT 853 to the forwarders | Resolution |
 | svc | host, fw1, fw2, wan | 9100 | Metrics scrape |
 | fw1, fw2, wan | svc | syslog 6514 | Logs |
-| svc | internet | DoT 853 to the forwarders, HTTPS 443 | Resolution, blocklist refresh |
 | web (web, tmp) | internet | 80, 443 (TCP and UDP) | Browsing |
-| web, admin, guests | svc | DNS 53 | Names |
 | web | upstream LAN | IPP 631, only when printing is switched on | Printing |
 | web (portal) | wan | DNS 53, only in portal mode | Captive portal resolution |
 | web (portal) | upstream LAN | 80, 443, only in portal mode | The portal page |
@@ -205,14 +233,28 @@ Everything not listed is dropped.
 
 The active firewall answers on every CARP address. If it stops, the other takes every address
 within about three seconds and already holds the connection state. NAT happens only in wan, so
-the outside address never changes during a failover. If both stop, every segment is cut off.
+the outside address never changes during a failover. The resolver moves with the gateway. If
+both stop, every segment is cut off.
 
 ### 4.4 The host and the bridges
 
 A bridge without an address is still an interface of the host, so the host is made to ignore
 them explicitly: nftables drops input on every interface but the `host` one, ARP is ignored on
-the other bridges, reverse-path filtering is strict, and forwarding is off. The host is never
-a router; the firewalls are.
+the other bridges, reverse-path filtering is strict, and forwarding is off. The host is never a
+router; the firewalls are.
+
+### 4.5 DNS
+
+- **Resolution:** unbound on both firewalls forwards over DNS-over-TLS to forwarders given by
+  address and certificate name, validates DNSSEC, and answers only internal segments.
+- **IPv4 only:** AAAA answers are suppressed; the DNS-over-HTTPS canary domain answers "no",
+  so applications fall back to the system resolver.
+- **Local names:** every compartment's name and reverse record come from the address table of
+  section 4.1, plus a file of the owner's own records, validated before it is pushed to both
+  firewalls together.
+- **Blocklist:** an RPZ zone. The host downloads it weekly, retries on failure, validates it,
+  and pushes the same file to both firewalls over SSH; the last good copy stays in force until
+  a new one validates. A short allow-list file holds the owner's exceptions.
 
 ---
 
@@ -224,7 +266,10 @@ a router; the firewalls are.
 |---|---|
 | ESP | systemd-boot, the UKIs of both slots, the signed recovery UKI |
 | slot A, slot B | EROFS images with their dm-verity hash trees |
-| state | LUKS2, Btrfs: `/var` (with a snapshot per slot generation), `/home`, `/etc` entries, the Incus pool |
+| state | LUKS2 (Argon2id), Btrfs: `/var` (with a snapshot per slot generation), `/home`, `/etc` entries, the Incus pool |
+
+Btrfs is trimmed weekly and scrubbed monthly. The Incus pool has a quota, so guests and logs
+cannot fill the space `/var` and `/home` need.
 
 ### 5.2 Boot
 
@@ -232,12 +277,12 @@ a router; the firewalls are.
 2. systemd-boot picks the slot (section 7.3) and starts its signed UKI.
 3. The kernel creates the dm-verity device for the slot from the UKI command line.
 4. The initramfs mounts the verity device read-only as the new root, asks for the LUKS
-   passphrase and opens the state volume. It selects the `/var` that belongs to this slot
-   (section 7.3), takes a cold snapshot of it on the first boot of a new slot, mounts `/var`
-   and `/home`, bind-mounts the listed `/etc` entries, mounts `/run` and `/tmp` as tmpfs, arms
-   the hardware watchdog, and switches to the real root.
-5. OpenRC starts the host, then Incus, then the guests: fw1, fw2, wan, svc. Before svc answers,
-   the host resolves nothing; nothing in the start sequence needs a name.
+   passphrase and opens the state volume. It selects the `/var` that belongs to this slot,
+   takes a cold snapshot of it on the first boot of a new slot, mounts `/var` and `/home`,
+   bind-mounts the listed `/etc` entries, mounts `/run` and `/tmp` as tmpfs, arms the hardware
+   watchdog, and switches to the real root.
+5. OpenRC starts the host, then Incus, then the guests: fw1, fw2, wan, svc. Nothing in the start
+   sequence needs a name before the firewalls' resolvers answer.
 
 Verity checks every block when it is read: a tampered block fails to read, at boot or later.
 
@@ -262,15 +307,16 @@ The build host is a dedicated machine (a VM today) that does nothing else. It ho
 - the outputs of each release.
 
 The owner's Secure Boot signing key is not kept on the build host: it lives on a hardware token
-or offline media, and is attached only to sign a release. Backups of the key and of the laptop's
-LUKS header live on encrypted offline media. A compromised build host can produce a malicious
-release that the laptop would accept; signing on the owner's token, and the owner checking the
-manifest before signing, are the controls. Signatures prove origin, not that a build is benign.
+or offline media, and is attached only to sign a release. A compromised build host can produce a
+malicious release that the laptop would accept; signing on the owner's token, and the owner
+checking the manifest before signing, are the controls. Signatures prove origin, not that a
+build is benign.
 
 One command builds a release:
 
 1. Sync the pinned snapshot; refuse an unsigned one.
-2. Build the `@convergent` set into a staging root, from binaries where possible.
+2. Build the `@convergent` set, and the owner's `@convergent-apps` set, into a staging root,
+   from binaries where possible.
 3. Copy `rootfs/` from this repository over it.
 4. Build the kernel and initramfs, the EROFS image, the dm-verity tree, and the UKIs.
 5. Build the guest images: wan (Alpine), fw (OpenBSD), svc (Alpine), browser (Alpine).
@@ -280,14 +326,16 @@ One command builds a release:
 
 ---
 
-## 7. Install, update, roll back
+## 7. Install, update, roll back, recover
 
 ### 7.1 Install
 
-From a USB stick carrying one signed release. Partition, create LUKS and Btrfs, write slot A,
-install systemd-boot and the UKIs, create the owner's account, import the guest images, assign
-the static addresses. No network needed. The same stick is the recovery path when nothing on
-the laptop boots.
+From a USB stick carrying one signed release. If the firmware is in Setup Mode, enrol the owner's
+keys and the option ROM hashes; otherwise verify that the owner's keys are the ones enrolled.
+Partition, create LUKS and Btrfs, write slot A, install systemd-boot and the UKIs, register the
+boot entry (and the removable-media fallback path), create the owner's account, import the guest
+images, assign the static addresses. No network needed. The same stick is the recovery path when
+nothing on the laptop boots.
 
 ### 7.2 Update
 
@@ -296,10 +344,15 @@ the laptop boots.
 3. Install its UKI with a boot counter: systemd-boot gives it three tries.
 4. Reboot. The initramfs snapshots `/var` cold before anything starts.
 5. After the health checks pass (both firewalls answer, wan, svc, the session), the slot is
-   marked good, and becomes the default.
+   marked good and becomes the default.
 
-Guest images are updated only on a host slot already marked good, one guest at a time; each keeps
-its state volume. The firewalls go one at a time: fw2, check, fail over, fw1.
+Guests are updated only on a host slot already marked good, one at a time, each after a snapshot
+of its state volume; the last three snapshots per guest are kept. The firewalls go one at a time:
+fw2 first, checked (CARP state, pfsync, pf ruleset hash, a resolution through it, traffic over it
+for a short soak), then a failover to it, then fw1. A firewall that fails its checks is put back
+to its previous image before the other is touched.
+
+Firmware updates use signed capsules only, applied from the menu.
 
 ### 7.3 Roll back
 
@@ -309,32 +362,76 @@ its state volume. The firewalls go one at a time: fw2, check, fail over, fw1.
 - **By hand, after a slot was marked good:** the boot menu offers the previous slot. Its `/var`
   snapshot is from before the update, so changes since then are rolled back with it; the menu says
   so before booting, and refuses when the guests were updated in between.
-- `/home` is never rolled back; it has its own snapshots.
+- `/home` is never rolled back; it has its own snapshots, kept daily for a week and weekly for a
+  month.
+
+### 7.4 Recovery and backups
+
+- **Keys:** a second LUKS passphrase, the recovery key, kept offline with the LUKS header backup and
+  the Secure Boot key backup on encrypted media. The menu reminds the owner to refresh the header
+  backup after any keyslot change.
+- **Backups:** from the menu, an encrypted export of `/home`, the owner's guests and the writable
+  `/etc` entries to external media.
+- **Recovery:** RECOVERY.md covers: booting the other slot or the recovery UKI; booting from the
+  install stick and unlocking the state volume by hand; restoring a guest snapshot; a firewall that
+  will not come back; DNS that does not answer; a lock screen that rejects the password; a clock
+  far wrong; a full state volume; reading a crash record; restoring from the offline backups.
 
 ---
 
 ## 8. Observability
 
-- **Metrics:** node_exporter on the host, the firewalls and wan; VictoriaMetrics in svc scrapes them.
-- **Logs:** syslog over TCP from every compartment to VictoriaLogs.
+- **Metrics:** node_exporter on the host, the firewalls and wan; VictoriaMetrics scrapes them.
+  Small collectors on the host add what node_exporter lacks: Incus instance state, NVMe SMART,
+  release and guest-image currency, the pf and CARP state of each firewall, the resolvers, time
+  and NTS state, Secure Boot and lockdown state, the LUKS header hash, crash records, and their
+  own freshness.
+- **Logs:** syslog over TLS from every compartment, plus the audit records, to VictoriaLogs.
+  Retention is bounded by size and age.
 - **Alerts:** vmalert evaluates the rules; the status bar shows the counts, or "unknown" when svc
-  does not answer; the menu shows the details.
-- **Dashboards:** Grafana, opened from the menu in the admin browser and stopped afterwards.
+  does not answer; the menu shows the details. Rules, carried from Archer and adapted:
+
+| Area | Alerts |
+|---|---|
+| Path | FirewallDown, CarpSplit (both masters or none), CarpFlapping, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, WanReservedLeak, UpstreamOverlap |
+| DNS | ResolverDown, ResolverStale, BlocklistStale |
+| Compartments | GuestStopped, GuestRestarted, ServiceDown, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected |
+| Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, IncusPoolHigh |
+| Currency | ReleaseOld, GuestImageOld, GuestReleaseEOL |
+| Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
+| Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale |
+
+- **Dashboards:** four views (overview, compartments, network path, security), with update and
+  failover events marked on the timelines; opened from the menu in the admin browser.
+- **Checker:** runs after every boot, after every update and daily; it compares the running system
+  with the release (verity, pf ruleset hashes, Incus settings, the writable `/etc` entries, device
+  ownership) and knows when the laptop is offline. Its results become the CheckerFailed and
+  CheckerStale alerts.
 
 ---
 
 ## 9. Daily use
 
-- **Status bar:** CPU, memory, network, the path (wan, which firewall is active, svc), alert counts,
-  battery, clock.
-- **Menu:** guests, firewalls (which is active, fail over, update one), updates, Wi-Fi, printing,
-  Thunderbolt devices, logs, dashboards.
-- **Wi-Fi and roaming:** joined from the menu; iwd in wan roams between known networks.
+- **Status bar:** CPU use and clocks, temperatures, memory and zram, network throughput, the path
+  (wan state, which firewall is active, svc), alert counts or "unknown", the idle-lock state,
+  keyboard layout, uptime, battery, clock.
+- **Locking:** after 10 minutes idle, and when the lid closes; the session locks before the screen
+  turns off; a lock that fails to start raises a notification and blanks the screen; the lock
+  screen shows the keyboard layout, Caps Lock and failed attempts; notifications hide their
+  content while locked. The idle lock can be paused from the bar until the next lock.
+- **Input and keys:** keyboard layouts and Compose, media, brightness and screenshot keys,
+  clipboard cleared after a while; settings persist across sessions.
+- **Displays:** kanshi profiles per set of connected displays, saved from the menu; the panel's
+  Panel Self Refresh quirk switch carried from Archer.
+- **Menu:** guests (create, start, stop, console, snapshots, file transfer), firewalls (which is
+  active, fail over, update one), updates and rollback, Wi-Fi, printing, Bluetooth, USB and
+  Thunderbolt devices, displays, keyboard, audio, power profile, logs, dashboards, the checker,
+  backups, lock, log out. Every action shows the command it will run.
 - **Captive portals:** the menu's portal mode starts the portal browser and opens its two pf rules;
-  turning it off, or passing the portal, closes them. The only time DNS goes anywhere but svc.
+  turning it off, or passing the portal, closes them. The only time DNS goes anywhere but the
+  firewalls.
 - **Printing:** off by default; switching it on lets the web browsers reach IPP printers on the
   upstream network.
-- **Files between host and guests:** through Incus file transfer, from the menu.
 - **Never suspends;** closing the lid locks the session.
 
 ---
@@ -343,22 +440,24 @@ its state volume. The firewalls go one at a time: fw2, check, fail over, fw1.
 
 | Threat | Defence |
 |---|---|
-| Hostile network, rogue access point | The radio and Wi-Fi stack run in wan; the host never parses Wi-Fi frames or upstream DHCP |
+| Hostile network, rogue access point | The radio and Wi-Fi stack run in wan, with a random MAC per network; the host never parses Wi-Fi frames or upstream DHCP |
 | Network attacks on the host | The host answers only chrony and node_exporter, only on its own segment, only to the firewalls and svc |
-| Malicious website | The browser runs in an unprivileged container on its own segment, with a restricted Wayland socket, restricted audio and no D-Bus |
-| Compromised guest | Its own fixed address bound to its NIC, port isolation, pf; the host ignores its bridge |
+| Malicious website | The browser runs in an unprivileged container under AppArmor, on its own segment, with a restricted Wayland socket, restricted audio and no D-Bus |
+| Compromised guest | Its own fixed address bound to its NIC, port isolation, pf, AppArmor; the host ignores its bridge |
 | Compromised wan | Reaches only transit; the firewalls trust nothing from it; no Incus agent or guest API in it |
+| Local privilege escalation on the host | Hardened kernel settings, AppArmor, sudo policy, audit records shipped off the host |
 | DMA from devices | IOMMU strict; Thunderbolt PCIe tunnels only after approval; the NVIDIA card held by vfio-pci |
 | Malicious USB device | USBGuard, default deny |
 | Tampered operating system on disk | dm-verity under a signed UKI: a changed block fails to read |
-| Stolen laptop, powered off | LUKS2; Secure Boot with the owner's keys |
+| Stolen laptop, powered off | LUKS2 with Argon2id; Secure Boot with the owner's keys |
 | Bad update | A/B slots, boot counting, watchdog after unlock, automatic fallback with matching `/var` |
 | Supply chain | Signed stage3 and snapshots pinned by date; releases signed on the owner's token |
 
 Not defended: a compromised host (it controls every compartment, both firewalls included); a
 compromised build host whose release the owner signs; an attacker with physical access while the
 laptop is unlocked; firmware below Secure Boot. Persistence remains possible in `/home`, the
-writable `/etc` entries and guest volumes; the checker watches them.
+writable `/etc` entries and guest volumes; the checker watches them. Logs are shipped to svc as
+they are written, so an attacker on the host cannot quietly rewrite what was already sent.
 
 Option ROMs: the firmware's own GPU driver is part of the firmware, and add-in option ROMs (the
 NVIDIA card, Thunderbolt devices) are allowed by their exact hashes taken from the TPM event log,
@@ -373,9 +472,9 @@ not by enrolling Microsoft's third-party certificate.
 | Host: kernel, Sway, PipeWire, status bar | 700 |
 | incusd | 200 |
 | wan (512 cap, plus QEMU overhead) | 500 |
-| fw1 + fw2 (256 each, plus QEMU overhead) | 750 |
-| svc | 450 |
-| Total, idle, browsers closed | about 2 600 |
+| fw1 + fw2 (384 each, plus QEMU overhead, unbound with the blocklist) | 1 000 |
+| svc | 350 |
+| Total, idle, browsers closed | about 2 750 |
 
 ---
 
@@ -384,13 +483,43 @@ not by enrolling Microsoft's third-party certificate.
 ```
 README.md  ARCHITECTURE.md  DECISIONS.md  USAGE.md  RECOVERY.md
 build/        the release build: build environment, kernel fragment, image and UKI steps
-portage/      make.conf, package.use, package.accept_keywords, sets/convergent
+portage/      make.conf, package.use, package.accept_keywords, sets/convergent, sets/convergent-apps
 rootfs/       the host's /etc and /usr/local, as plain files
 initramfs/    the boot steps of section 5.2
 guests/wan/   Alpine image definition and configuration
-guests/fw/    OpenBSD install.conf, site set, pf.conf, CARP, pfsync, ifstated
-guests/svc/   Alpine image definition, unbound, VictoriaMetrics, VictoriaLogs, vmalert rules
-guests/browser/  Alpine image with Firefox
+guests/fw/    OpenBSD install.conf, site set, pf.conf, CARP, pfsync, ifstated, unbound
+guests/svc/   Alpine image definition, VictoriaMetrics, VictoriaLogs, vmalert rules, dashboards
+guests/browser/  Alpine image with Firefox and its policies
 install/      the installer
-tools/        menu, status bar, update, slot blessing, checker
+tools/        menu, status bar, collectors, update, slot blessing, checker
 ```
+
+---
+
+## 13. From Archer
+
+**Kept or improved:** the radio in a VM; the firewall pair (now with its own kernels, shared
+connection state and DNS that fails over with it); the hardened kernel, signed boot and lockdown;
+IOMMU and DMA rules; AppArmor, audit, account and sudo policy; USBGuard; LUKS2 and offline
+header backups; NTS time; the alert set; the status bar, menu, locking and power behaviour;
+browser modes with a restricted Wayland socket; the owner's Incus project and VM support; the
+checker; the recovery recipes. Stronger: verified root and A/B updates instead of package-level
+rollback; static bound addresses instead of DHCP inside; one policy point instead of firewalld
+zones on the host; one monitoring copy instead of two.
+
+**Dropped, and why:**
+
+| Archer item | Why it goes |
+|---|---|
+| BIRD and BFD routing; ActiveFirewallMismatch, BFDFlapping | CARP and pfsync replace them |
+| The WAN handover at install and its rollback | wan owns the radio from the first boot |
+| firewalld zones and policies | pf on the firewalls; nftables on the host for its own input |
+| snapper and kernel-keep | The previous slot is a complete previous system |
+| LVM thin pool and XFS tiers; ThinPoolHigh, VgFreeLow | Btrfs with a quota on the Incus pool |
+| Weekly host file-integrity scans; HostFilesModified, UKIChanged | dm-verity checks every block; the UKI is signed |
+| DHCP lease names in DNS | Static addresses; names come from the address table |
+| Second svc copy; TwinDown, PeerDown | DNS moved to the firewall pair; one monitoring copy |
+| TuneD | A small OpenRC service sets the same values |
+| journald and its sealing | syslog-ng shipping records off the host as they are written |
+| Developer mode, management VLAN, branch staging, re-runs, pacman hooks | The build host and signed releases replace them |
+| HTTP/3 blocking | No longer needed with the browser on its own segment |
