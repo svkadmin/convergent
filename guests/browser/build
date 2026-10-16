@@ -1,34 +1,31 @@
 #!/bin/sh
 # ARCHITECTURE 3.5, 6
-# Requires native x86_64 Linux, root and separately trusted ALPINE_KEYS.
+# Requires native x86_64 Linux and root.
 set -eu
 umask 022
 here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+. "$here/../alpine.sh"
 die() { echo "browser/build: $*" >&2; exit 1; }
-[ "$#" = 0 ] || die "usage: ALPINE_KEYS=/trusted/keys guests/browser/build"
+[ "$#" = 0 ] || die "usage: guests/browser/build"
 [ "$(id -u)" = 0 ] || die "root required"
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || die "native x86_64 Linux required"
-for tool in apk tar chroot jq sha256sum; do
+for tool in curl tar chroot jq sha256sum mount umount; do
     command -v "$tool" >/dev/null || die "missing tool: $tool"
 done
-keys=${ALPINE_KEYS:-/usr/share/apk/keys}
-case $keys in /*) ;; *) die "ALPINE_KEYS must be absolute" ;; esac
-set -- "$keys"/*.pub
-[ -f "$1" ] || die "provision trusted Alpine signing keys first"
 mkdir -p "$here/out"
-work=$(mktemp -d "$here/out/.build.XXXXXXXX")
+work=$(mktemp -d /var/tmp/convergent-browser.XXXXXXXX)   # outside the tree: it holds live mounts
 cleanup() {
-    case $work in "$here/out"/.build.*) rm -rf -- "$work" ;; esac
+    trap '' HUP INT TERM
+    alpine_cleanup || return
+    case $work in /var/tmp/convergent-browser.*) rm -rf -- "$work" ;; esac
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-root=$work/rootfs
-mkdir -p "$root/etc/apk/keys"
-cp "$keys"/*.pub "$root/etc/apk/keys/"
-cp "$here/repositories" "$root/etc/apk/repositories"
-apk_root() { apk --root "$root" --arch x86_64 --no-cache "$@"; }
+alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
+root=$mini/target
+alpine_prepare
 
-apk_root --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
+alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
     ifupdown-ng ca-certificates firefox-esr=140.12.0-r0 font-dejavu \
     pipewire-libs pipewire-alsa mesa-egl mesa-dri-gallium
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
@@ -44,9 +41,8 @@ chmod 755 "$root/usr/local/bin/browser-launch" "$root/usr/local/sbin/browser-set
     "$root/etc/init.d/browser-setup"
 chroot "$root" /bin/sh -eu <<'SETUP'
 addgroup -g 1000 browser
-adduser -D -u 1000 -G browser -h /home/browser -s /sbin/nologin browser
+adduser -D -u 1000 -G browser -h /home/browser -s /sbin/nologin browser   # -D: locked
 passwd -l root
-passwd -l browser
 mkdir -p /home/browser/profile /home/browser/Downloads /mnt/browser /usr/lib/firefox-esr/distribution
 touch /mnt/browser/wayland-0 /mnt/browser/pipewire-0
 chown -R 1000:1000 /home/browser
@@ -59,11 +55,11 @@ for service in killprocs savecache; do rc-update add "$service" shutdown; done
 find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} \;
 SETUP
 # Keep libraries, never a D-Bus broker/autolauncher or PipeWire daemon.
-if apk_root info --exists apk-tools >/dev/null 2>&1; then apk_root del apk-tools; fi
+if alpine_apk info --exists apk-tools >/dev/null 2>&1; then alpine_apk del apk-tools; fi
 for package in incus-agent dbus dbus-daemon dbus-x11 pipewire pipewire-pulse wireplumber; do
-    if apk_root info --exists "$package" >/dev/null 2>&1; then die "unexpected server: $package"; fi
+    if alpine_apk info --exists "$package" >/dev/null 2>&1; then die "unexpected server: $package"; fi
 done
-apk_root info -v | LC_ALL=C sort >"$work/packages.txt"
+alpine_apk info -v | LC_ALL=C sort >"$work/packages.txt"
 cp "$work/packages.txt" "$root/usr/share/convergent-browser/packages.txt"
 : >"$root/etc/apk/repositories"
 rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
@@ -83,6 +79,7 @@ properties:
   description: Convergent Firefox ESR (Alpine 3.24, x86_64)
 EOF
 tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
+alpine_cleanup
 tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
 (cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
 for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do

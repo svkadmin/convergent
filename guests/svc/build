@@ -1,50 +1,45 @@
 #!/bin/sh
 # ARCHITECTURE 3.4, 6
-# Requires native x86_64 Linux, root and separately trusted ALPINE_KEYS.
+# Requires native x86_64 Linux and root.
 set -eu
 umask 022
 here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+. "$here/../alpine.sh"
 die() { echo "svc/build: $*" >&2; exit 1; }
-[ "$#" = 0 ] || die "usage: ALPINE_KEYS=/trusted/alpine/keys guests/svc/build"
+[ "$#" = 0 ] || die "usage: guests/svc/build"
 [ "$(id -u)" = 0 ] || die "run on the build host as root"
 [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || die "native x86_64 Linux required"
-for tool in apk tar curl sha256sum chroot; do
+for tool in tar curl sha256sum chroot mount umount; do
     command -v "$tool" >/dev/null || die "missing build tool: $tool"
 done
-keys=${ALPINE_KEYS:-/usr/share/apk/keys}
-case $keys in /*) ;; *) die "ALPINE_KEYS must be absolute" ;; esac
-[ -d "$keys" ] || die "provision Alpine's trusted signing keys first"
-set -- "$keys"/*.pub
-[ -f "$1" ] || die "no trusted Alpine public keys in $keys"
 mkdir -p "$here/out"
-work=$(mktemp -d "$here/out/.build.XXXXXXXX")
+work=$(mktemp -d /var/tmp/convergent-svc.XXXXXXXX)   # outside the tree: it holds live mounts
 cleanup() {
-    case $work in "$here/out"/.build.*) rm -rf -- "$work" ;; esac
+    trap '' HUP INT TERM
+    alpine_cleanup || return
+    case $work in /var/tmp/convergent-svc.*) rm -rf -- "$work" ;; esac
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-root=$work/rootfs
-mkdir -p "$root/etc/apk/keys" "$work/apks"
-cp "$keys"/*.pub "$root/etc/apk/keys/"
-cp "$here/repositories" "$root/etc/apk/repositories"
-
-apk_root() {
-    apk --root "$root" --arch x86_64 --no-cache "$@"
-}
+alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
+root=$mini/target
+alpine_prepare
+mkdir -p "$mini/apks"
 # No kernel, SSH, cron, DHCP client, exporter, compiler or Incus agent.
-apk_root --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc ifupdown-ng ca-certificates
+alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc ifupdown-ng ca-certificates
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "bootstrap is not Alpine 3.24" ;; esac
-apk_root update
-while read -r name version repository rest; do
+alpine_apk update
+while read -r name repository rest; do
     case $name in ''|'#'*) continue ;; esac
-    if apk_root search --exact --quiet "$name" | grep -q .; then
-        apk_root add "$name"
+    if alpine_apk search --exact --quiet "$name" | grep -q .; then
+        alpine_apk add "$name"
     else
-        # Signed leaf fallback only; dependencies must resolve from 3.24.
-        apk --arch x86_64 --keys-dir "$keys" --repositories-file /dev/null \
-            --repository "https://dl-cdn.alpinelinux.org/alpine/edge/$repository" \
-            --no-cache fetch --output "$work/apks" "$name=$version"
-        apk_root add "$work/apks/$name-$version.apk"
+        # Not in 3.24: the current signed edge build; dependencies from 3.24.
+        chroot "$mini" /sbin/apk --repositories-file /dev/null \
+            --repository "$ALPINE_MIRROR/edge/$repository" \
+            --no-cache fetch --output /apks "$name"
+        set -- "$mini"/apks/"$name"-[0-9]*.apk
+        alpine_apk add "/apks/${1##*/}"
     fi
 done <"$here/packages"
 
@@ -114,8 +109,8 @@ done
 SETUP
 
 # Retain package provenance; remove the package manager.
-if apk_root info --exists apk-tools >/dev/null 2>&1; then apk_root del apk-tools; fi
-apk_root info -v >"$work/packages.txt"
+if alpine_apk info --exists apk-tools >/dev/null 2>&1; then alpine_apk del apk-tools; fi
+alpine_apk info -v >"$work/packages.txt"
 # The tools package also carries clients this image never runs.
 rm -f "$root/usr/bin/vmagent" "$root/usr/bin/vmctl"
 
@@ -144,6 +139,7 @@ properties:
 EOF
 tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
 
+alpine_cleanup
 tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
 (cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
 for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do

@@ -6,11 +6,12 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
+. "$here/../alpine.sh"
 
 die() { echo "build: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
-for t in curl sha256sum tar xz truncate chroot mount umount losetup sfdisk mkfs.vfat mkfs.ext4 qemu-img \
-	ssh-keygen awk sed grep tac blkid; do
+for t in curl sha256sum tar xz truncate chroot mount umount losetup sfdisk mkfs.vfat mkfs.ext4 \
+	ssh-keygen awk sed grep blkid; do
 	command -v "$t" >/dev/null 2>&1 || die "$t is missing on the build host"
 done
 
@@ -21,7 +22,6 @@ case $WAN_COUNTRY in
 [A-Z][A-Z]) ;;
 *) die "set WAN_COUNTRY to the two-letter regulatory country (for example from the environment)" ;;
 esac
-[ "$MINIROOTFS_SHA256" != unset ] || die "pin MINIROOTFS and MINIROOTFS_SHA256 in build.conf"
 [ -r "$HOST_SSH_PUBKEY_FILE" ] || die "HOST_SSH_PUBKEY_FILE is not a readable file"
 [ -r "$SVC_CA_FILE" ] || die "SVC_CA_FILE is not a readable file"
 grep -q 'BEGIN CERTIFICATE' "$SVC_CA_FILE" || die "SVC_CA_FILE is not a PEM certificate"
@@ -35,18 +35,15 @@ grep -q "^define internal    = $net\$" "$here/rootfs/etc/nftables.nft" ||
 	die "INTERNAL_NET in wan.conf and 'internal' in nftables.nft disagree"
 
 PACKAGES="alpine-baselayout busybox busybox-openrc busybox-mdev-openrc mdev-conf openrc mkinitfs
-	linux-lts linux-firmware-intel wireless-regdb grub grub-efi
+	linux-lts linux-firmware-intel wireless-regdb
 	iwd dbus nftables flock openssh-server chrony syslog-ng acpid prometheus-node-exporter"
 
 work=$(mktemp -d /var/tmp/wan-build.XXXXXX)
-mounts=$work/mounts
-: > "$mounts"
 loop=
 cleanup() {
+	trap '' HUP INT TERM
 	set +e
-	if [ -s "$mounts" ]; then
-		tac "$mounts" | while read -r m; do umount "$m"; done
-	fi
+	alpine_cleanup || return
 	[ -n "$loop" ] && losetup -d "$loop"
 	# Never remove a tree that still has something mounted in it.
 	if grep -q " $work" /proc/mounts; then
@@ -55,27 +52,15 @@ cleanup() {
 		rm -rf "$work"
 	fi
 }
-trap cleanup EXIT INT TERM
-
-mountrec() { mount "$@"; for _last; do :; done; echo "$_last" >> "$mounts"; }
-bind() { mkdir -p "$2"; mountrec --bind "$1" "$2"; }
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
 
 # 2. The bootstrap: download, verify the pin, unpack.
-mkdir -p "$CACHE_DIR"
-mini_tar=$CACHE_DIR/$MINIROOTFS
-if [ ! -f "$mini_tar" ]; then
-	curl -fsSL -o "$mini_tar.part" "$ALPINE_MIRROR/$ALPINE_BRANCH/releases/x86_64/$MINIROOTFS"
-	mv "$mini_tar.part" "$mini_tar"
-fi
-echo "$MINIROOTFS_SHA256  $mini_tar" | sha256sum -c - >/dev/null || die "$MINIROOTFS does not match its pin"
-mini=$work/mini
-mkdir -p "$mini"
-tar -xzf "$mini_tar" -C "$mini"
-cp /etc/resolv.conf "$mini/etc/resolv.conf"
+alpine_bootstrap "$work/mini" "$CACHE_DIR"
 
 # 3. The disk: GPT, ESP, ext4 root.
 mkdir -p "$out"
-raw=$work/wan.raw
+raw=$mini/wan.raw
 truncate -s "$IMAGE_SIZE" "$raw"
 printf 'label: gpt\n,32M,U\n,,L\n' | sfdisk -q "$raw"
 loop=$(losetup --find --show --partscan "$raw")
@@ -88,28 +73,19 @@ done
 uuid=$(cat /proc/sys/kernel/random/uuid)
 mkfs.vfat -F 32 -n WANESP "${loop}p1" >/dev/null
 mkfs.ext4 -q -L wanroot -U "$uuid" "${loop}p2"
-target=$work/target
+target=$mini/target
 mkdir -p "$target"
-mountrec -t ext4 "${loop}p2" "$target"
+alpine_mount -t ext4 "${loop}p2" "$target"
 mkdir -p "$target/boot/efi"
-mountrec -t vfat "${loop}p1" "$target/boot/efi"
+alpine_mount -t vfat "${loop}p1" "$target/boot/efi"
 
-mkdir -p "$target/etc/apk/keys" "$target/etc/mkinitfs" "$target/dev" "$target/proc" "$target/sys"
-cp "$mini"/etc/apk/keys/* "$target/etc/apk/keys/"
-printf '%s\n' "$ALPINE_MIRROR/$ALPINE_BRANCH/main" "$ALPINE_MIRROR/$ALPINE_BRANCH/community" \
-	> "$target/etc/apk/repositories"
+alpine_prepare
+mkdir -p "$target/etc/mkinitfs"
 cp "$here/rootfs/etc/mkinitfs/mkinitfs.conf" "$target/etc/mkinitfs/mkinitfs.conf"
-bind /dev "$mini/dev"
-bind /proc "$mini/proc"
-bind "$target" "$mini/target"
-bind /dev "$mini/target/dev"
-bind /proc "$mini/target/proc"
-bind /sys "$mini/target/sys"
-bind /dev "$target/dev"
-bind /proc "$target/proc"
-bind /sys "$target/sys"
 # shellcheck disable=SC2086
-chroot "$mini" /sbin/apk --root /target --initdb --no-cache add $PACKAGES
+alpine_apk --initdb add $PACKAGES
+# Build tools stay in the disposable Alpine chroot.
+chroot "$mini" /sbin/apk add --no-cache qemu-img grub grub-efi
 
 inchroot() { chroot "$target" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "$@"; }
 inchroot sh -c 'command -v flock' >/dev/null || die "flock is missing after install"
@@ -161,23 +137,24 @@ search --no-floppy --fs-uuid --set=root $uuid
 set prefix=(\$root)/boot/grub
 configfile \$prefix/grub.cfg
 EOF
-inchroot grub-mkimage -O x86_64-efi -o /boot/efi/EFI/BOOT/BOOTX64.EFI -c /tmp/embed.cfg -p /boot/grub \
+chroot "$mini" grub-mkimage -O x86_64-efi -o /target/boot/efi/EFI/BOOT/BOOTX64.EFI -c /target/tmp/embed.cfg -p /boot/grub \
 	part_gpt ext2 fat normal configfile linux search search_fs_uuid echo
 [ -s "$target/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || die "no boot loader was written"
 
-inchroot apk info -v | sort > "$work/packages"
+alpine_apk info -v | sort > "$work/packages"
 : > "$target/etc/apk/repositories"
 rm -rf "$target"/var/cache/apk/* "$target"/tmp/* "$target"/root/.ash_history
-du -sm "$target" | awk '{ print "build: root filesystem " $1 " MiB" }'
+du -smx "$target" | awk '{ print "build: root filesystem " $1 " MiB" }'
 sync
 fstrim "$target" 2>/dev/null || true
 
 # 11. Close everything and write the outputs.
-tac "$mounts" | while read -r m; do umount "$m"; done
-: > "$mounts"
+alpine_cleanup
 losetup -d "$loop"
 loop=
-qemu-img convert -c -O qcow2 "$raw" "$out/wan.qcow2"
+alpine_mount --bind /dev "$mini/dev"
+chroot "$mini" qemu-img convert -c -O qcow2 /wan.raw /wan.qcow2
+mv "$mini/wan.qcow2" "$out/wan.qcow2"
 epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
 mkdir -p "$work/meta"
 cat > "$work/meta/metadata.yaml" <<EOF
