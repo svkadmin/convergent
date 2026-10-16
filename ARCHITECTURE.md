@@ -308,9 +308,9 @@ The build host is a dedicated machine (a VM today) that does nothing else. It ho
   builds where USE flags differ;
 - the outputs of each release.
 
-The owner's Secure Boot signing key is not kept on the build host: it lives on a hardware token
-or offline media, and is attached only to sign a release. A compromised build host can produce a
-malicious release that the laptop would accept; signing on the owner's token, and the owner
+The owner's Secure Boot signing key is not kept on the build host: it is an encrypted file on offline
+media, attached only to sign a release. A compromised build host can produce a
+malicious release that the laptop would accept; signing with the owner's offline key, and the owner
 checking the manifest before signing, are the controls. Signatures prove origin, not that a
 build is benign.
 
@@ -324,7 +324,7 @@ One command builds a release:
 5. Build the guest images: wan (Alpine), fw (OpenBSD), svc (Alpine), browser (Alpine).
 6. Write the manifest: versions, hashes, the Incus database version, the oldest release it may
    update from.
-7. Sign the UKIs and the manifest on the owner's token.
+7. Sign the UKIs and the manifest with the owner's offline key.
 
 ---
 
@@ -471,7 +471,7 @@ Firmware updates use signed capsules only, applied from the menu.
 | Tampered operating system on disk | dm-verity under a signed UKI: a changed block fails to read |
 | Stolen laptop, powered off | LUKS2 with Argon2id; Secure Boot with the owner's keys |
 | Bad update | A/B slots, boot counting, watchdog after unlock, automatic fallback with matching `/var` |
-| Supply chain | Signed stage3 and snapshots pinned by date; releases signed on the owner's token |
+| Supply chain | Signed stage3 and snapshots pinned by date; releases signed with the owner's offline key |
 
 Not defended: a compromised host (it controls every compartment, both firewalls included); a
 compromised build host whose release the owner signs; an attacker with physical access while the

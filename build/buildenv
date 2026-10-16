@@ -44,6 +44,11 @@ for d in package.use package.accept_keywords package.license sets; do
 	cp -r "$repo/portage/$d/." "$etc/$d/"
 done
 cp "$here/builder.use" "$etc/package.use/zz-builder"
+# Our one-package overlay (DECISIONS 41).
+rm -rf "$BUILDER/var/db/repos/convergent"
+cp -r "$repo/portage/overlay" "$BUILDER/var/db/repos/convergent"
+mkdir -p "$etc/repos.conf"
+printf '[convergent]\nlocation = /var/db/repos/convergent\n' >"$etc/repos.conf/convergent.conf"
 # Use the builder's keyring when installing into /staging.
 printf '%s\n' '#!/bin/sh' 'ROOT=/ EROOT=/ exec /usr/bin/getuto "$@"' >"$BUILDER/usr/local/bin/getuto-builder"
 chmod 755 "$BUILDER/usr/local/bin/getuto-builder"

@@ -5,6 +5,7 @@
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --guests <release> <guests-dir>
+#   build/test --guests-update <release> <guests-dir> <broken-svc-dir>
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -12,14 +13,21 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --guests <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
---guests)
-	mode=guests; shift; [ $# = 2 ] || usage
+--guests | --guests-update)
+	mode=${1#--}; shift
+	if [ "$mode" = guests-update ]; then
+		[ $# = 3 ] || usage
+		broken=$3
+		[ ! -e "$broken" ] && [ ! -L "$broken" ] || die "broken svc output must not exist: $broken"
+	else
+		[ $# = 2 ] || usage
+	fi
 	guests=$2
 	[ -d "$guests" ] || die "no guests directory: $guests"
 	guests=$(cd "$guests" && pwd)
@@ -77,7 +85,7 @@ detach() {
 }
 
 make_disk() {
-	if [ "$mode" = guests ]; then truncate -s 48G "$disk"; else truncate -s 16G "$disk"; fi
+	case $mode in guests*) truncate -s 48G "$disk" ;; *) truncate -s 16G "$disk" ;; esac
 	slot_mib=$(( (size >> 20) + 64 ))
 	bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 		-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
@@ -133,15 +141,92 @@ close_state() {
 	detach
 }
 
+make_broken_svc() {
+	# Break only the service script, leaving the good svc output intact.
+	mkdir -p "$broken" "$BUILDER$work/broken-root"
+	broken=$(cd "$broken" && pwd)
+	cp -a "$guests/svc/." "$broken/"
+	tar --numeric-owner -xpf "$guests/svc/rootfs.tar.gz" -C "$BUILDER$work/broken-root"
+	service="$BUILDER$work/broken-root/etc/init.d/victoria-metrics"
+	[ -f "$service" ] || die 'svc image has no victoria-metrics service'
+	rm "$service"
+	printf '#!/bin/sh\nexit 1\n' >"$service"
+	chmod 0755 "$service"
+	tar --numeric-owner -czf "$broken/rootfs.tar.gz" -C "$BUILDER$work/broken-root" .
+	(cd "$broken" && sha256sum metadata.tar.gz rootfs.tar.gz >SHA256SUMS)
+	rm -rf "$BUILDER$work/broken-root"
+}
+
+inject_guest_update() {
+	cp -a "$broken" "$var/lib/convergent/test-release/broken-svc"
+	cat >"$var/lib/convergent/test-release/update-test" <<'EOF'
+#!/bin/sh
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+release=/var/lib/convergent/test-release
+state=/var/lib/convergent/guests
+result=0
+ic() { incus --force-local --project default "$@"; }
+[ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
+before=$(ic config get svc volatile.base_image) || result=1
+service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
+[ -n "$before" ] && [ -n "$service" ] || result=1
+sh -x /usr/local/sbin/guests update fw "$release/guests/fw" 2>/var/log/guests-update-fw.log
+fw=$?
+echo CV-UPDATE fw "$fw"
+[ "$fw" = 0 ] || result=1
+# Same-image replacements must still traverse both firewalls and the failover soak.
+awk '/^\+ replace fw2$/ && n == 0 {n++}
+    /^\+ soak fw2 fw1$/ && n == 1 {n++}
+    /^\+ replace fw1$/ && n == 2 {n++}
+    /^\+ soak fw1 fw2$/ && n == 3 {n++}
+    END {exit !(n == 4)}' /var/log/guests-update-fw.log || result=1
+for f in fw1 fw2; do
+	case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || result=1
+	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || result=1
+	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || result=1
+	[ "$demote" = 'carp: carp demote count 0' ] || result=1
+done
+sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
+svc=$?
+echo CV-UPDATE svc "$svc"
+[ "$svc" != 0 ] || result=1
+# Require a rebuilt candidate to reach health checks and then restore its snapshot.
+awk '/^\+ ic rebuild candidate-svc svc$/ && n == 0 {n++}
+    /^\+ healthy svc$/ && n == 1 {n++}
+    /^guests: restoring svc\/guests-/ && n == 2 {n++}
+    END {exit !(n == 3)}' /var/log/guests-update-svc.log || result=1
+[ ! -e "$state/pending" ] && [ ! -e "$state/seeds/svc.img" ] || result=1
+after=$(ic config get svc volatile.base_image) || result=1
+restored=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
+[ "$after" = "$before" ] && [ "$restored" = "$service" ] || result=1
+ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || result=1
+curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || result=1
+curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || result=1
+timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
+	-verify_ip 100.80.2.10 -verify_return_error </dev/null >/var/log/guests-update-tls.log 2>&1 || result=1
+/usr/local/sbin/guests status
+status=$?
+echo CV-UPDATE status "$status"
+[ "$status" = 0 ] || result=1
+tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
+sync
+echo CV-UPDATE-RESULT "$result"
+EOF
+}
+
 inject_guests() {
 	open_state rw
 	var="$state/var-$release"
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
+	[ "$mode" != guests-update ] || inject_guest_update
 	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
 	cat >"$var/spool/cron/crontabs/root" <<'EOF'
-@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; } >/dev/console 2>&1
+@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
 EOF
 	chown 0:0 "$var/spool/cron/crontabs/root"
 	chmod 0600 "$var/spool/cron/crontabs/root"
@@ -181,7 +266,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	if [ "$goal" = guests ]; then memory=8192; limit=2400; fi
+	case $goal in guests) memory=8192; limit=2400 ;; guests-update) memory=8192; limit=4200 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -198,6 +283,8 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
+guest_test = goal in ("guests", "guests-update")
+marker = b"CV-UPDATE-RESULT" if goal == "guests-update" else b"CV-GUESTS-RESULT"
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -266,13 +353,13 @@ try:
                 else:
                     log.write(chunk); log.flush()
                     seen = (seen + chunk)[-8192:]
-                    if goal == "guests" and result is None:
-                        match = re.search(rb"(?:^|\n)CV-GUESTS-RESULT ([0-9]+)\r?\n", seen)
+                    if guest_test and result is None:
+                        match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
                         if match:
                             result = int(match[1])
                     if not sent and b"Convergent passphrase" in seen:
                         qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
-            done = result is not None if goal == "guests" else re.search(rb"convergent: release [0-9]+ is good\r?\n", seen)
+            done = result is not None if guest_test else re.search(rb"convergent: release [0-9]+ is good\r?\n", seen)
             if ready and not quitting and done:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
@@ -281,8 +368,8 @@ try:
             qemu.wait(timeout=max(0.1, deadline - time.monotonic()))
             if qemu.returncode == 0:
                 ended = "blessed" if quitting else "poweroff" if powered_off else "stopped"
-                if quitting and goal == "guests":
-                    ended = f"guests-{result}"
+                if quitting and guest_test:
+                    ended = f"{goal}-{result}"
 finally:
     if qemu.poll() is None:
         qemu.kill()
@@ -299,7 +386,7 @@ EOF
 		driver=''
 	else
 		driver=''
-		[ "$goal" = guests ] && return 1
+		case $goal in guests*) return 1 ;; esac
 		die "QEMU driver failed; see $log"
 	fi
 	ended=$(cat "$BUILDER$work/ended-$runs")
@@ -314,6 +401,7 @@ refused() {
 		grep -Eq 'verity:.*(data|metadata) block [0-9]+ is corrupted' "$log"
 }
 
+[ "$mode" != guests-update ] || make_broken_svc
 make_disk
 write_slot "$release" 2
 make_state
@@ -327,21 +415,22 @@ umount "$esp"
 detach
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | guests) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | guests | guests-update) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 run_vm
 case $mode in
 boot) blessed || die "release $release did not bless; see $log" ;;
 corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
-guests)
+guests | guests-update)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	deadline=$(($(date +%s) + 2400))
+	if [ "$mode" = guests-update ]; then budget=4200; else budget=2400; fi
+	deadline=$(($(date +%s) + budget))
 	vm_ok=1
-	run_vm guests || vm_ok=0
+	run_vm "$mode" || vm_ok=0
 	guest_logs
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
-	[ "$ended" = guests-0 ] || die "guests init failed ($ended); see $log"
+	[ "$ended" = "$mode-0" ] || die "$mode failed ($ended); see $log"
 	;;
 fallback | interrupt)
 	blessed || die "initial release $release did not bless; see $log"

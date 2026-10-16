@@ -14,7 +14,8 @@ repo=${here%/build}
 conf="$BUILDER/image-config/etc/portage"
 rm -rf "$BUILDER/image-config"
 mkdir -p "$conf"
-cp -r "$BUILDER/etc/portage/make.conf" "$BUILDER/etc/portage/binrepos.conf" "$BUILDER/etc/portage/gnupg" "$conf/"
+cp -r "$BUILDER/etc/portage/make.conf" "$BUILDER/etc/portage/binrepos.conf" "$BUILDER/etc/portage/gnupg" \
+	"$BUILDER/etc/portage/repos.conf" "$conf/"
 for d in package.use package.accept_keywords package.license sets profile; do
 	mkdir -p "$conf/$d"
 	cp -r "$repo/portage/$d/." "$conf/$d/"
