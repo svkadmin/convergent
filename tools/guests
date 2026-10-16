@@ -25,9 +25,11 @@ ic() {
 }
 rsh() { timeout 30 ssh -F "$conf" "$@" 9>&- 8>&- 7>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 retry() {
-    deadline=$(($(date +%s) + boot_timeout))
+    # VMs boot slowly; the svc container is up in seconds.
+    case "$*" in *' svc'*) wait=300 ;; *) wait=$boot_timeout ;; esac
+    deadline=$(($(date +%s) + wait))
     until "$@"; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fail "$* timed out after ${boot_timeout}s"; return 1; }
+        [ "$(date +%s)" -lt "$deadline" ] || { fail "$* timed out after ${wait}s"; return 1; }
         sleep 2
     done
 }

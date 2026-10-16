@@ -13,14 +13,19 @@ chroot_mount() {
 }
 
 chroot_umount() {
-	# Stop Portage's gpg-agent before unmounting /dev.
+	# Nothing rooted in the builder may outlive it (gpg-agent, keyboxd, dirmngr).
 	chroot "$BUILDER" gpgconf --kill all 2>/dev/null || true
-	# Kill only agents rooted in this builder.
-	for p in $(pgrep -x gpg-agent); do
-		[ "$(readlink "/proc/$p/root")" = "$BUILDER" ] && kill "$p"
+	for try in 1 2 3; do
+		for p in $(pgrep .); do
+			[ "$(readlink "/proc/$p/root" 2>/dev/null)" = "$BUILDER" ] && kill "$p" 2>/dev/null
+		done
+		sleep 1
+		busy=
+		for d in run dev sys proc; do
+			mountpoint -q "$BUILDER/$d" && { umount -R "$BUILDER/$d" 2>/dev/null || busy=1; }
+		done
+		[ -z "$busy" ] && return 0
 	done
-	for d in run dev sys proc; do
-		mountpoint -q "$BUILDER/$d" && umount -R "$BUILDER/$d"
-	done
-	return 0
+	echo "chroot: $BUILDER still has busy mounts" >&2
+	return 1
 }

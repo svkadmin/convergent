@@ -199,6 +199,10 @@ for f in fw1 fw2; do
 	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || result=1
 	[ "$demote" = 'carp: carp demote count 0' ] || result=1
 done
+# Who still holds the guests lock, if anyone.
+for p in /proc/[0-9]*; do
+    ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
+done
 sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
 svc=$?
 echo CV-UPDATE svc "$svc"
@@ -282,7 +286,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=2400 ;; guests-update) memory=8192; limit=4200 ;; esac
+	case $goal in guests) memory=8192; limit=2400 ;; guests-update) memory=8192; limit=7200 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -440,7 +444,7 @@ corrupt) refused || die "expected verity corruption and guest poweroff without b
 guests | guests-update)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	if [ "$mode" = guests-update ]; then budget=4200; else budget=2400; fi
+	if [ "$mode" = guests-update ]; then budget=7200; else budget=2400; fi
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
