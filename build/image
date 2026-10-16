@@ -40,7 +40,7 @@ cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
 # The kernel as it was really built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
 for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y \
-	CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y CONFIG_VFIO_PCI=y \
+	CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y CONFIG_VFIO_PCI=y CONFIG_KVM_INTEL=y \
 	'# CONFIG_KEXEC is not set' '# CONFIG_KEXEC_FILE is not set' '# CONFIG_HIBERNATION is not set' \
 	'# CONFIG_IWLWIFI is not set' '# CONFIG_DRM_NOUVEAU is not set'; do
 	grep -qxF "$want" "$config" || die "the kernel was not built with: $want (rebuild sys-kernel/gentoo-kernel)"
