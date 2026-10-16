@@ -64,7 +64,7 @@ curl -fsS --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/op
 seen=$(sha256sum "$dl/key.pub" | awk '{print $1}')
 [ "$seen" = "${OPENBSD_KEY_SHA256:-}" ] ||
 	die "openbsd-$v-base.pub has SHA256 $seen, pinned: '${OPENBSD_KEY_SHA256:-}'; check it, then set OPENBSD_KEY_SHA256 in pins"
-files="bsd bsd.mp bsd.rd base$v.tgz BOOTX64.EFI"
+files="BUILDINFO bsd bsd.mp bsd.rd base$v.tgz BOOTX64.EFI"
 for f in SHA256 SHA256.sig $files; do
 	curl -fsS --proto =https --tlsv1.2 -o "$dl/$f" "$base/$f"
 done
@@ -80,7 +80,7 @@ set tty com0
 boot tftp:/bsd.rd
 BOOTCONF
 
-cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/bsd" "$dl/bsd.mp" "$dl/base$v.tgz" "$www/sets/"
+cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/BUILDINFO" "$dl/bsd" "$dl/bsd.mp" "$dl/base$v.tgz" "$www/sets/"
 
 # Fetch release packages and dependencies; pkg_add verifies signatures.
 pkgbase=$OPENBSD_MIRROR/$ver/packages/amd64
@@ -119,7 +119,7 @@ tar -C "$site" -czf "$www/sets/site$v.tgz" --owner=0 --group=0 --numeric-owner .
 key=$(cat "$ROOT_SSH_PUBKEY")
 for n in $nodes; do
 	sed -e "s|@HOSTNAME@|$n.$domain|" -e "s|@DOMAIN@|$domain|" \
-		-e "s|@ROOT_SSH_KEY@|$key|" "$here/install.conf" >"$www/$n-install.conf"
+		-e "s|@V@|$v|" -e "s|@ROOT_SSH_KEY@|$key|" "$here/install.conf" >"$www/$n-install.conf"
 done
 
 python3 -I -m http.server 80 --bind 127.0.0.1 --directory "$www" >"$work/http.log" 2>&1 &
@@ -129,7 +129,7 @@ kill -0 "$httppid" 2>/dev/null || die "cannot serve on 127.0.0.1:80 ($(tail -n 1
 
 # Unattended install; reboot ends QEMU.
 for n in $nodes; do
-	log=$work/$n.console.log
+	log=$out/$n.console.log
 	img=$out/$n.qcow2
 	rm -f "$img"
 	qemu-img create -q -f qcow2 "$img" "$FW_DISK"
@@ -148,7 +148,7 @@ done
 
 # Smoke-boot overlays with the seven production NICs.
 for n in $nodes; do
-	log=$work/$n.boot.log
+	log=$out/$n.boot.log
 	: >"$log"
 	qemu-img create -q -f qcow2 -b "$out/$n.qcow2" -F qcow2 "$work/$n.smoke.qcow2"
 	cp "$ovmf_vars" "$work/$n.smoke.vars.fd"

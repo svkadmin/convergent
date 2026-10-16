@@ -54,14 +54,23 @@ chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/
 PKG_PATH="$PKG_URL" pkg_add -I $PKGS
 install -d -m 0755 -o root -g wheel /var/node_exporter /var/node_exporter/textfile
 
-grep -q fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab
+grep -qs fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab   # 7.8 has none yet
+chmod 600 /etc/crontab
 
 # Check what can be checked without the interfaces and the other node.
 ssh-keygen -A >/dev/null
+# The DNSSEC root anchor unbound expects; built-in if the fetch fails.
+unbound-anchor -a /var/unbound/db/root.key || [ -s /var/unbound/db/root.key ] || die "no DNSSEC root anchor"
+chown _unbound /var/unbound/db/root.key
 unbound-checkconf /var/unbound/etc/unbound.conf >/dev/null || die "unbound-checkconf failed"
 ifstated -nf /etc/ifstated.conf || die "ifstated.conf does not parse"
 sh -n /usr/local/libexec/convergent/fw-facts || die "fw-facts does not parse"
 sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
+
+. ./net
+echo "$node.$DOMAIN" >/etc/myname
+# fw_update and syspatch need the internet; firewalls are updated as images.
+rm -f /etc/rc.firsttime
 
 # The host key's fingerprint, for the build log, so the host can pin it.
 echo "CONVERGENT-HOSTKEY $node $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)"
