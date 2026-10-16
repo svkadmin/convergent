@@ -1,0 +1,35 @@
+#!/bin/sh
+# Read CVSEED only until its successful installation is recorded.
+set -eu
+umask 077
+state=/var/lib/convergent
+announce() { printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan $(cat "$state/seeded") $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console; }
+[ ! -f "$state/seeded" ] || { announce; exit 0; }
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+device=$(blkid -L CVSEED || true)
+if [ -z "$device" ]; then
+    printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan unseeded $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console
+    echo 'convergent: no CVSEED; management remains unconfigured' >&2
+    exit 1
+fi
+seed=/mnt/cvseed
+mkdir -p "$seed" "$state"
+mount -t vfat -o ro,nodev,nosuid,noexec "$device" "$seed"
+trap 'umount "$seed"' 0
+trap 'exit 1' HUP INT TERM
+for file in seed-id management.pub syslog-ca.crt; do [ -s "$seed/$file" ]; done
+id=$(cat "$seed/seed-id")
+[ "${#id}" = 32 ]
+case $id in *[!0-9a-f]*) exit 1 ;; esac
+ssh-keygen -lf "$seed/management.pub" >/dev/null
+openssl x509 -in "$seed/syslog-ca.crt" -noout >/dev/null
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+printf 'restrict,from="100.80.1.10",command="/usr/local/sbin/wan-ssh" %s\n' "$(cat "$seed/management.pub")" >/root/.ssh/authorized_keys
+cp "$seed/syslog-ca.crt" /etc/syslog-ng/svc-ca.pem
+chmod 644 /etc/syslog-ng/svc-ca.pem
+umount "$seed"
+trap - 0
+printf '%s\n' "$id" >"$state/seeded"
+sync
+announce

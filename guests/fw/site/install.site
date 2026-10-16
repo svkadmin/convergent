@@ -9,7 +9,6 @@ cd /etc/convergent
 node=$(sed 's/\..*//' /etc/myname)
 [ -f "node.$node" ] || die "no node.$node for host '$node'"
 for f in net build "node.$node"; do [ -f "$f" ] || die "missing /etc/convergent/$f"; done
-[ -s /etc/ssl/convergent-ca.pem ] || die "missing /etc/ssl/convergent-ca.pem (the CA of svc's log receiver)"
 
 # Restore files the installer rewrites after unpacking sets.
 for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
@@ -23,7 +22,6 @@ for f in net build "node.$node"; do
 	done >>"$subst"
 done
 . ./build
-[ -n "${CARPPASS:-}" ] || die "no CARPPASS in /etc/convergent/build"
 
 templates="
 	/etc/pf.conf /etc/ifstated.conf /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
@@ -38,17 +36,31 @@ for f in $templates; do
 	[ -f "$f" ] || die "missing template $f"
 	sed -f "$subst" "$f" >"$f.new"
 	mv "$f.new" "$f"
-	if grep -qE '@[A-Z0-9_]+@' "$f"; then die "unfilled value in $f"; fi
+	if sed 's/@CARPPASS@//g' "$f" | grep -qE '@[A-Z0-9_]+@'; then die "unfilled value in $f"; fi
 done
 rm -f "$subst"
 
 # Modes: the secrets private, the rest as the system expects.
 chown root:wheel /etc/pf.conf /etc/hostname.* /etc/ssh/sshd_config /etc/ifstated.conf
 chmod 0600 /etc/pf.conf /etc/hostname.* /etc/ifstated.conf
-chmod 0644 /etc/ssh/sshd_config /etc/ssl/convergent-ca.pem /etc/convergent/update_src
+chmod 0644 /etc/ssh/sshd_config /etc/convergent/update_src
 chmod 0640 /etc/convergent/pf.guests
 chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
-chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch
+chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch /usr/local/libexec/convergent/fw-seed
+
+# No CARP interfaces or dependent daemons until the seed is installed.
+mkdir -p /etc/convergent/carp
+mv /etc/hostname.carp* /etc/convergent/carp/
+for f in /etc/convergent/carp/hostname.carp*; do
+	ln -s "convergent/seeded/${f##*/}" "/etc/${f##*/}"
+done
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+ln -sf /etc/convergent/seeded/management.pub /root/.ssh/authorized_keys
+ln -sf /etc/convergent/seeded/syslog-ca.crt /etc/ssl/convergent-ca.pem
+ln -s /etc/convergent/seeded/seed-id /var/db/convergent-seeded
+rcctl disable unbound ifstated sshd
+rcctl set syslogd flags ''
 
 # pkg_add verifies packages from the build host.
 PKG_PATH="$PKG_URL" pkg_add -I $PKGS
@@ -58,7 +70,7 @@ grep -qs fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab   #
 chmod 600 /etc/crontab
 
 # Check what can be checked without the interfaces and the other node.
-ssh-keygen -A >/dev/null
+rm -f /etc/ssh/ssh_host_*
 # The DNSSEC root anchor unbound expects; built-in if the fetch fails.
 unbound-anchor -a /var/unbound/db/root.key || [ -s /var/unbound/db/root.key ] || die "no DNSSEC root anchor"
 chown _unbound /var/unbound/db/root.key
@@ -71,9 +83,12 @@ sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
 echo "$node.$DOMAIN" >/etc/myname
 # fw_update and syspatch need the internet; firewalls are updated as images.
 rm -f /etc/rc.firsttime
-
-# The host key's fingerprint, for the build log, so the host can pin it.
-echo "CONVERGENT-HOSTKEY $node $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)"
+cat >/etc/rc.local <<'FIRSTBOOT'
+#!/bin/sh
+/usr/local/libexec/convergent/fw-seed
+echo "CONVERGENT-HASH pf $(sha256 -q /etc/pf.conf)"
+echo "CONVERGENT-HASH rules $(pfctl -sr | sha256 -q)"
+FIRSTBOOT
 
 # What is left is only for the build.
 cp "node.$node" node

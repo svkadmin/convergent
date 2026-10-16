@@ -1,0 +1,133 @@
+# ARCHITECTURE 4.1, 5; /var/lib/incus-pool is the installer's Btrfs state subvolume.
+config: {}
+storage_pools:
+  - name: default
+    driver: btrfs
+    config:
+      source: /var/lib/incus-pool
+networks:
+  - name: transit
+    type: bridge
+    config: &bridge
+      ipv4.address: none
+      ipv4.dhcp: "false"
+      ipv4.nat: "false"
+      ipv4.routing: "false"
+      ipv4.firewall: "false"
+      ipv6.address: none
+      ipv6.dhcp: "false"
+      ipv6.nat: "false"
+      ipv6.routing: "false"
+      ipv6.firewall: "false"
+      dns.mode: none
+      raw.dnsmasq: "port=0"
+  - name: sync
+    type: bridge
+    config: *bridge
+  - name: host
+    type: bridge
+    config:
+      <<: *bridge
+      ipv4.address: 100.80.1.10/28
+  - name: svc
+    type: bridge
+    config: *bridge
+  - name: web
+    type: bridge
+    config: *bridge
+  - name: admin
+    type: bridge
+    config: *bridge
+  - name: guests
+    type: bridge
+    config: *bridge
+profiles:
+  - name: default
+    config: {}
+    devices: {}
+  - name: fw
+    config:
+      limits.cpu: "1"
+      limits.memory: 384MiB
+      security.secureboot: "false"
+      security.protection.delete: "true"
+      boot.autostart: "true"
+      boot.autostart.delay: "5"
+    devices:
+      root:
+        type: disk
+        path: /
+        pool: default
+      eth0:
+        type: nic
+        nictype: bridged
+        parent: transit
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth1:
+        type: nic
+        nictype: bridged
+        parent: sync
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth2:
+        type: nic
+        nictype: bridged
+        parent: host
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth3:
+        type: nic
+        nictype: bridged
+        parent: svc
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth4:
+        type: nic
+        nictype: bridged
+        parent: web
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth5:
+        type: nic
+        nictype: bridged
+        parent: admin
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth6:
+        type: nic
+        nictype: bridged
+        parent: guests
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+  - name: wan
+    config:
+      limits.cpu: "1"
+      limits.memory: 512MiB
+      security.secureboot: "false"
+      security.protection.delete: "true"
+      boot.autostart: "true"
+      boot.autostart.priority: "20"
+      boot.autostart.delay: "5"
+      raw.qemu: -machine hpet=off -global virtio-balloon-pci.free-page-reporting=on
+    devices:
+      root:
+        type: disk
+        path: /
+        pool: default
+      eth0:
+        type: nic
+        nictype: bridged
+        parent: transit
+        name: eth0
+        hwaddr: "00:16:3e:80:00:10"
+        security.ipv4_filtering: "false"
+        security.mac_filtering: "true"
+        security.port_isolation: "true"

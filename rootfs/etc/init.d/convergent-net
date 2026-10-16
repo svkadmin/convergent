@@ -8,5 +8,6 @@ depend() {
 }
 
 start() {
-	return 0
+	start-stop-daemon --start --background --make-pidfile --pidfile /run/convergent-net.pid \
+		--exec /bin/sh -- /usr/lib/convergent/incus/host-net
 }

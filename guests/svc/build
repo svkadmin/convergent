@@ -73,6 +73,8 @@ for account in vmmetrics vmlogs vmalert vmauth grafana; do
 done
 passwd -l root
 mkdir -p /var/lib/victoria-metrics /var/lib/victoria-logs /var/lib/grafana
+mkdir -p /var/lib/convergent/seed
+chmod 700 /var/lib/convergent
 chown vmmetrics:vmmetrics /var/lib/victoria-metrics
 chown vmlogs:vmlogs /var/lib/victoria-logs
 chown grafana:grafana /var/lib/grafana
@@ -90,6 +92,7 @@ rc-update add dmesg sysinit
 rc-update add sysfs sysinit
 rc-update add hostname boot
 rc-update add bootmisc boot
+rc-update add convergent-seed boot
 rc-update add sysctl boot
 rc-update add networking boot
 rc-update add syslog boot
@@ -145,4 +148,4 @@ tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
 for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz packages.txt SHA256SUMS; do
     mv "$work/$artifact" "$here/out/$artifact"
 done
-echo "svc/build: image in $here/out (private credentials still required)"
+echo "svc/build: image in $here/out (credentials arrive on CVSEED)"

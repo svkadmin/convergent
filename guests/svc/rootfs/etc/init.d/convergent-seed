@@ -1,0 +1,4 @@
+#!/sbin/openrc-run
+description="Install the laptop seed once"
+depend() { after bootmisc; before victoria-logs victoria-metrics grafana; }
+start() { /usr/local/sbin/svc-seed; }

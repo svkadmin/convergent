@@ -1,0 +1,55 @@
+#!/bin/sh
+# FAT16 CVSEED is a whole disk; CARP templates stay inactive without it.
+set -eu
+umask 077
+node=$(hostname -s)
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+announce() { echo; echo "CONVERGENT-HOSTKEY $node $(cat /var/db/convergent-seeded) $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')"; }
+[ ! -f /var/db/convergent-seeded ] || { announce; exit 0; }
+seed=/mnt/cvseed
+mkdir -p "$seed"
+found=
+for disk in $(sysctl -n hw.disknames | tr ',' ' '); do
+    disk=${disk%%:*}
+    case $disk in sd*|wd*) ;; *) continue ;; esac
+    [ "$(dd if="/dev/r${disk}c" bs=512 count=1 2>/dev/null | dd bs=1 skip=43 count=11 2>/dev/null | tr -d ' ')" = CVSEED ] || continue
+    mount_msdos -o ro,nodev,nosuid "/dev/${disk}c" "$seed"
+    found=1
+    break
+done
+if [ -z "$found" ]; then
+    echo; echo "CONVERGENT-HOSTKEY $node unseeded $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')"
+    echo 'convergent: no CVSEED; CARP remains disabled'
+    exit 0
+fi
+stage=$(mktemp -d /etc/convergent/seed.XXXXXXXX)
+trap 'umount "$seed"; rm -rf "$stage"' 0
+trap 'exit 1' HUP INT TERM
+for file in seed-id management.pub syslog-ca.crt carp-pass; do [ -s "$seed/$file" ]; done
+id=$(cat "$seed/seed-id")
+pass=$(cat "$seed/carp-pass")
+[ "${#id}" = 32 ] && [ "${#pass}" = 32 ]
+case $id$pass in *[!0-9a-f]*) exit 1 ;; esac
+ssh-keygen -lf "$seed/management.pub" >/dev/null
+openssl x509 -in "$seed/syslog-ca.crt" -noout >/dev/null
+for file in seed-id management.pub syslog-ca.crt; do install -m 600 "$seed/$file" "$stage/$file"; done
+[ ! -f "$seed/demote" ] || touch "$stage/demote"
+for file in /etc/convergent/carp/hostname.carp*; do
+    {
+        echo 'group upgrade'
+        [ "${file##*/}" != hostname.carp0 ] || echo '!test ! -f /etc/convergent/seeded/demote || ifconfig -g upgrade carpdemote 128'
+        sed "s/@CARPPASS@/$pass/g" "$file"
+    } >"$stage/${file##*/}"
+    if grep -q '@' "$stage/${file##*/}"; then exit 1; fi
+done
+set -- "$stage"/hostname.carp*
+[ "$#" = 6 ]
+rcctl enable unbound ifstated sshd
+rcctl set syslogd flags -C /etc/ssl/convergent-ca.pem
+sync
+mv "$stage" /etc/convergent/seeded
+sync
+sh /etc/netstart carp0 carp1 carp2 carp3 carp4 carp5
+rcctl restart syslogd
+rcctl start unbound ifstated sshd
+announce

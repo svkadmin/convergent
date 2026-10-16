@@ -2,6 +2,9 @@
 # ARCHITECTURE 3.2; allow only the exact SSH commands below.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 case ${SSH_ORIGINAL_COMMAND:-} in
+"seed-status")
+	exec cat /var/lib/convergent/seeded
+	;;
 "wifi list" | "wifi scan" | "wifi status" | "wifi auto" | "wifi disconnect" | \
 "wifi connect" | "wifi connect-hidden" | "wifi add" | "wifi add-hidden" | "wifi forget")
 	exec /usr/local/sbin/wan-wifi "${SSH_ORIGINAL_COMMAND#wifi }"

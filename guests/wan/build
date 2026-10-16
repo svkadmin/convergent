@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 3.2, 6
-# WAN_COUNTRY=XX HOST_SSH_PUBKEY_FILE=... SVC_CA_FILE=... guests/wan/build [outdir]
+# WAN_COUNTRY=XX guests/wan/build [outdir]
 # Run as root on the build host; requires loop devices.
 set -eu
 
@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 die() { echo "build: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 for t in curl sha256sum tar xz truncate chroot mount umount losetup sfdisk mkfs.vfat mkfs.ext4 \
-	ssh-keygen awk sed grep blkid; do
+	awk sed grep blkid; do
 	command -v "$t" >/dev/null 2>&1 || die "$t is missing on the build host"
 done
 
@@ -22,12 +22,6 @@ case $WAN_COUNTRY in
 [A-Z][A-Z]) ;;
 *) die "set WAN_COUNTRY to the two-letter regulatory country (for example from the environment)" ;;
 esac
-[ -r "$HOST_SSH_PUBKEY_FILE" ] || die "HOST_SSH_PUBKEY_FILE is not a readable file"
-[ -r "$SVC_CA_FILE" ] || die "SVC_CA_FILE is not a readable file"
-grep -q 'BEGIN CERTIFICATE' "$SVC_CA_FILE" || die "SVC_CA_FILE is not a PEM certificate"
-hostkey=$(awk 'NR == 1 { print $1 " " $2 }' "$HOST_SSH_PUBKEY_FILE")
-printf '%s\n' "$hostkey" | grep -Eq '^ssh-ed25519 [A-Za-z0-9+/]+=*$' ||
-	die "HOST_SSH_PUBKEY_FILE must hold an ssh-ed25519 public key"
 
 # Require matching internal ranges in script and filter config.
 net=$(sed -n 's/^INTERNAL_NET=//p' "$here/rootfs/etc/wan/wan.conf")
@@ -36,7 +30,7 @@ grep -q "^define internal    = $net\$" "$here/rootfs/etc/nftables.nft" ||
 
 PACKAGES="alpine-baselayout busybox busybox-openrc busybox-mdev-openrc mdev-conf openrc mkinitfs
 	linux-lts linux-firmware-intel wireless-regdb
-	iwd dbus nftables flock openssh-server chrony syslog-ng acpid prometheus-node-exporter"
+	iwd dbus nftables flock openssh-server openssl blkid chrony syslog-ng acpid prometheus-node-exporter"
 
 work=$(mktemp -d /var/tmp/wan-build.XXXXXX)
 loop=
@@ -71,7 +65,7 @@ while [ ! -b "${loop}p2" ]; do
 	sleep 0.2
 done
 uuid=$(cat /proc/sys/kernel/random/uuid)
-mkfs.vfat -F 32 -n WANESP "${loop}p1" >/dev/null
+mkfs.vfat -n WANESP "${loop}p1" >/dev/null
 mkfs.ext4 -q -L wanroot -U "$uuid" "${loop}p2"
 target=$mini/target
 mkdir -p "$target"
@@ -102,26 +96,22 @@ grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's d
 # Overlay and fill placeholders; set checkout-independent modes below.
 tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner -cf - . | tar -C "$target" -xf -
 sed -i "s|@ROOT_UUID@|$uuid|g; s|@WAN_COUNTRY@|$WAN_COUNTRY|g" "$target/boot/grub/grub.cfg" "$target/etc/fstab"
-sed -i "s|@HOST_SSH_KEY@|$hostkey|" "$target/root/.ssh/authorized_keys"
-install -m 0644 "$SVC_CA_FILE" "$target/etc/syslog-ng/svc-ca.pem"
-if grep -rIl '@[A-Z_][A-Z_]*@' "$target/boot/grub" "$target/etc/fstab" "$target/root/.ssh" "$target/etc/wan" \
+if grep -rIl '@[A-Z_][A-Z_]*@' "$target/boot/grub" "$target/etc/fstab" "$target/etc/wan" \
 	"$target/etc/ssh" "$target/etc/network" "$target/etc/syslog-ng/syslog-ng.conf"; then
 	die "placeholders left in the files above"
 fi
 
 chmod 755 "$target"/usr/local/sbin/wan-* "$target/usr/sbin/resolvconf" \
-	"$target/etc/init.d/wan-firewall" "$target/etc/local.d/10-wan.start" \
+	"$target/etc/init.d/wan-firewall" "$target/etc/init.d/convergent-seed" "$target/etc/local.d/10-wan.start" \
 	"$target/etc/udhcpc/post-bound/wan-dns" "$target/etc/udhcpc/post-renew/wan-dns" "$target/etc/udhcpc/post-deconfig/wan-dns"
 chmod 644 "$target/usr/local/lib/wan-lib.sh" "$target/etc/udhcpc/udhcpc.conf" "$target/etc/wan/wan.conf" "$target/etc/nftables.nft"
-chmod 700 "$target/root" "$target/root/.ssh"
-chmod 600 "$target/root/.ssh/authorized_keys" "$target/etc/crontabs/root"
+chmod 700 "$target/root"
+chmod 600 "$target/etc/crontabs/root"
 chmod 644 "$target/etc/ssh/sshd_config" "$target/etc/syslog-ng/syslog-ng.conf"
 # Lock root; host-key SSH only.
 sed -i 's/^root:[^:]*:/root:*:/' "$target/etc/shadow"
 
 rm -f "$target"/etc/ssh/ssh_host_*
-ssh-keygen -q -t ed25519 -N '' -C wan -f "$target/etc/ssh/ssh_host_ed25519_key"
-cp "$target/etc/ssh/ssh_host_ed25519_key.pub" "$out/ssh_host_ed25519_key.pub"
 
 rm -f "$target"/etc/runlevels/*/*
 while read -r lvl svc; do
@@ -175,7 +165,6 @@ tar -C "$work/meta" -cJf "$out/wan-metadata.tar.xz" metadata.yaml
 	echo "country=$WAN_COUNTRY"
 	echo "image_sha256=$(sha256sum "$out/wan.qcow2" | awk '{ print $1 }')"
 	echo "metadata_sha256=$(sha256sum "$out/wan-metadata.tar.xz" | awk '{ print $1 }')"
-	echo "ssh_host_key=$(cat "$out/ssh_host_ed25519_key.pub")"
 	sed 's/^/package=/' "$work/packages"
 } > "$out/wan.manifest"
 echo "build: wrote $out"

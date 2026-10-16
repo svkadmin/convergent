@@ -1,0 +1,539 @@
+#!/bin/sh
+# ARCHITECTURE 4.1, 5.2, 7.1, 7.2, 13.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+lib=/usr/lib/convergent/incus
+state=/var/lib/convergent/guests
+keys=/var/lib/convergent/ssh
+tls=$state/tls
+conf=/etc/convergent/ssh_config
+pool=/var/lib/incus/storage-pools/default
+boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
+work= loop= mounted= pending= demoted= starting= probes= initializing=
+
+die() { echo "guests: $*" >&2; exit 1; }
+ic() { case $1 in query) incus --force-local "$@" ;; *) incus --force-local --project default "$@" ;; esac; }   # query takes no --project
+rsh() { timeout 30 ssh -F "$conf" "$@"; }
+retry() {
+    deadline=$(($(date +%s) + boot_timeout))
+    until "$@"; do
+        [ "$(date +%s)" -lt "$deadline" ] || return 1
+        sleep 2
+    done
+}
+running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running ]; }
+volumes() {
+    case $1 in
+    svc) echo 'svc-metrics svc-logs svc-grafana' ;;
+    web|admin) echo "browser-$1-state" ;;
+    esac
+}
+unmount_root() {
+    if [ -n "$mounted" ]; then umount "$work/root" || return; mounted=; fi
+    if [ -n "$loop" ]; then losetup -d "$loop" || return; loop=; fi
+}
+clear_probes() {
+    for address in $probes; do ip route del "$address/32" via 100.80.1.3 dev host || return; done
+    probes=
+}
+rollback() {
+    read -r guest snap <"$state/pending"
+    echo "guests: restoring $guest/$snap" >&2
+    if running "$guest"; then ic stop "$guest" --force || return; fi
+    seed_remove "$guest" || return
+    ic snapshot restore "$guest" "$snap" || return
+    for volume in $(volumes "$guest"); do
+        ic storage volume snapshot restore default "$volume" "$snap" || return
+    done
+    cp "$state/known_hosts.before" "$keys/known_hosts" || return
+    case $guest in web|admin) ;; *) ic start "$guest" || return; retry healthy "$guest" || return ;; esac
+    rm "$state/pending"
+    pending=
+}
+cleanup() {
+    result=$?
+    trap - 0
+    trap '' HUP INT TERM
+    unmount_root || { echo "guests: mount remains at $work/root" >&2; exit 1; }
+    clear_probes || result=1
+    if [ -n "$pending" ]; then rollback || { result=1; demoted=; }; fi
+    if [ -n "$starting" ]; then ic start "$starting" || result=1; fi
+    if [ -n "$demoted" ]; then rsh "$demoted" 'rm -f /etc/convergent/seeded/demote; ifconfig -g carp -carpdemote 128' || result=1; fi
+    [ -z "$work" ] || rm -rf "$work"
+    exit "$result"
+}
+
+# Secrets are generated once on this laptop, never on the build host.
+credentials() {
+    mkdir -p "$tls" "$keys"
+    [ -f "$state/carp-pass" ] || openssl rand -hex 16 >"$state/carp-pass"
+    [ -f "$keys/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C convergent -f "$keys/id_ed25519"
+    if [ ! -f "$tls/ca.crt" ]; then
+        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "$tls/ca.key" -out "$tls/ca.crt" -days 3650 -subj /CN=Convergent \
+            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+    fi
+    for cert in server incus-server incus-client; do
+        [ ! -f "$tls/$cert.crt" ] || continue
+        case $cert in
+        server) san='IP:100.80.2.10,DNS:svc'; purpose=serverAuth ;;
+        incus-server) san='DNS:host,IP:100.80.1.10'; purpose=serverAuth ;;
+        incus-client) san='DNS:svc'; purpose=clientAuth ;;
+        esac
+        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "$tls/$cert.key" -out "$work/request" -subj "/CN=$cert"
+        printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
+            "$purpose" "$san" >"$work/extensions"
+        openssl x509 -req -in "$work/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
+            -set_serial "0x$(openssl rand -hex 16)" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt"
+    done
+    for secret in admin-password secret-key; do
+        [ -f "$tls/$secret" ] || openssl rand -hex 32 >"$tls/$secret"
+    done
+}
+import_image() {
+    case $1 in
+    fw1|fw2)
+        cp "$lib/fw-metadata.yaml" "$work/metadata.yaml"
+        TZ=UTC touch -t 197001010000 "$work/metadata.yaml"
+        tar -C "$work" -czf "$work/metadata.tar.gz" metadata.yaml
+        set -- "$1" "$work/metadata.tar.gz" "$image_dir/$1.qcow2"
+        ;;
+    wan) set -- "$1" "$image_dir/wan-metadata.tar.xz" "$image_dir/wan.qcow2" ;;
+    *) set -- "$1" "$image_dir/metadata.tar.gz" "$image_dir/rootfs.tar.gz" ;;
+    esac
+    fingerprint=$(cat "$2" "$3" | sha256sum | awk '{print $1}')
+    ic image list --format json >"$work/images"
+    jq -e --arg fp "$fingerprint" '.[] | select(.fingerprint == $fp)' "$work/images" >/dev/null || ic image import "$2" "$3"
+    ic image alias list --format json >"$work/aliases"
+    target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases")
+    [ "$target" != "$fingerprint" ] || return 0
+    [ -z "$target" ] || ic image alias delete "candidate-$1"
+    ic image alias create "candidate-$1" "$fingerprint"
+}
+pin() {
+    case $1 in
+    fw1) address=100.80.1.2 ;;
+    fw2) address=100.80.1.3 ;;
+    wan) address=100.80.0.10 ;;
+    esac
+    ic console "$1" --show-log >"$work/console" || return 1
+    expected=$(tr -d '\r' <"$work/console" | awk -v n="$1" -v id="$(cat "$state/seeds/$1.id")" \
+        '{ i = index($0, "CONVERGENT-HOSTKEY "); if (!i) next; split(substr($0, i), f, " ") } f[2] == n && f[3] == id { key = f[4] } END { print key }')   # console lines interleave
+    [ -n "$expected" ] || return 1
+    ssh-keyscan -T 5 -t ed25519 "$address" >"$work/scan" 2>/dev/null || return 1
+    [ "$(ssh-keygen -E sha256 -lf "$work/scan" | awk '{print $2}')" = "$expected" ] || return 1
+    awk -v n="$1" '{print n, $2, $3}' "$work/scan" >"$work/pin"
+    [ -f "$keys/known_hosts" ] || : >"$keys/known_hosts"
+    awk -v n="$1" '$1 != n' "$keys/known_hosts" >"$work/known_hosts"
+    cat "$work/pin" >>"$work/known_hosts"
+    mv "$work/known_hosts" "$keys/known_hosts"
+}
+healthy() {
+    case $1 in
+    fw1|fw2) rsh "$1" true ;;
+    wan) rsh wan check ;;
+    svc)
+        ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health &&
+        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null &&
+        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null &&
+        timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
+            -verify_ip 100.80.2.10 -verify_return_error </dev/null >"$work/tls-check" 2>&1
+        ;;
+    esac
+}
+carp() {
+    rsh "$1" 'ifconfig' | awk -v want="$2" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}'
+}
+pair() { carp "$1" MASTER && carp "$2" BACKUP; }
+fw_check() {
+    rsh "$1" 'ifconfig pfsync0' >"$work/pfsync"
+    grep -q RUNNING "$work/pfsync" && grep -q 'defer: on' "$work/pfsync" || return 1
+    rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || return 1
+    [ "$(rsh "$1" 'sha256 -q /etc/pf.conf')" = "$(cat "$image_dir/$1.pf.sha256")" ] || return 1
+    if [ "${2:-}" = release ]; then
+        [ "$(rsh "$1" 'pfctl -sr | sha256 -q')" = "$(cat "$image_dir/$1.rules.sha256")" ] || return 1
+    fi
+    rsh "$1" 'pfctl -nf /etc/pf.conf' || return 1
+    rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1' | grep -q '100.80.2.10' || return 1
+}
+soak() {
+    count=0
+    while [ "$count" -lt 6 ]; do
+        pair "$1" "$2" && healthy wan && healthy svc || return 1
+        count=$((count + 1))
+        sleep 5
+    done
+}
+backup_soak() {
+    for address in 100.80.0.10 100.80.2.10; do
+        ip route add "$address/32" via 100.80.1.3 dev host
+        probes="$probes $address"
+    done
+    soak fw1 fw2
+    clear_probes
+}
+
+# The persistent seed survives errors until verified or the replacement is rolled back.
+seed_create() {
+    mkdir -p "$state/seeds" "$work/root"
+    if [ -e "$state/seeds/$1.img" ]; then
+        [ "$(sha256sum "$state/seeds/$1.img" | awk '{print $1}')" = "$(cat "$state/seeds/$1.sha256")" ] || die "seed for $1 differs"
+        return
+    fi
+    truncate -s 16M "$work/seed.img"
+    mkfs.vfat -F 16 -n CVSEED "$work/seed.img" >/dev/null
+    loop=$(losetup --find --show "$work/seed.img")
+    mount -t vfat -o nodev,nosuid,noexec,umask=077 "$loop" "$work/root"
+    mounted=1
+    openssl rand -hex 16 >"$state/seeds/$1.id"
+    cp "$state/seeds/$1.id" "$work/root/seed-id"
+    case $1 in
+    fw1|fw2|wan)
+        cp "$keys/id_ed25519.pub" "$work/root/management.pub"
+        cp "$tls/ca.crt" "$work/root/syslog-ca.crt"
+        case $1 in fw1|fw2) cp "$state/carp-pass" "$work/root/carp-pass" ;; esac
+        if [ "$1" = fw1 ] && [ -n "$pending" ]; then touch "$work/root/demote"; fi
+        ;;
+    svc)
+        for file in server.crt server.key ca.crt incus-client.crt incus-client.key admin-password secret-key; do
+            cp "$tls/$file" "$work/root/$file"
+        done
+        ;;
+    esac
+    unmount_root
+    sha256sum "$work/seed.img" | awk '{print $1}' >"$state/seeds/$1.sha256"
+    sync
+    mv "$work/seed.img" "$state/seeds/$1.img"
+    sync
+}
+seed_attach() {
+    seed_create "$1"
+    ic query "/1.0/instances/$1" >"$work/instance"
+    if jq -e '.devices.seed' "$work/instance" >/dev/null; then ic config device remove "$1" seed; fi
+    seed_source=$state/seeds/$1.img
+    case $1 in
+    svc)
+        [ -f "$state/seeds/svc.autostart" ] || ic config get svc boot.autostart >"$state/seeds/svc.autostart"
+        ic config set svc boot.autostart false
+        for seed_loop in $(losetup -j "$seed_source" | cut -d: -f1); do losetup -d "$seed_loop"; done
+        seed_source=$(losetup --find --show --read-only "$seed_source")
+        uid=$(jq -er '.config["volatile.idmap.next"] | fromjson[] | select(.Isuid and .Nsid == 0) | .Hostid' "$work/instance")
+        gid=$(jq -er '.config["volatile.idmap.next"] | fromjson[] | select(.Isgid and .Nsid == 0) | .Hostid' "$work/instance")
+        ic config device add "$1" seed disk source="$seed_source" readonly=true \
+            path=/var/lib/convergent/seed raw.mount.options="uid=$uid,gid=$gid,dmask=077,fmask=177,nodev,nosuid,noexec"
+        ;;
+    *) ic config device add "$1" seed disk source="$seed_source" readonly=true ;;
+    esac
+}
+seed_applied() {
+    case $1 in
+    fw1|fw2) applied=$(rsh "$1" 'cat /var/db/convergent-seeded') || return 1 ;;
+    wan) applied=$(rsh wan seed-status) || return 1 ;;
+    svc) applied=$(ic exec svc -- cat /var/lib/convergent/seeded) || return 1 ;;
+    esac
+    [ "$applied" = "$(cat "$state/seeds/$1.id")" ]
+}
+seed_remove() {
+    [ -f "$state/seeds/$1.img" ] || return 0
+    ic config device show "$1" >"$work/devices" || return
+    if grep -q '^seed:' "$work/devices"; then ic config device remove "$1" seed || return; fi
+    if [ "$1" = svc ]; then
+        for seed_loop in $(losetup -j "$state/seeds/$1.img" | cut -d: -f1); do losetup -d "$seed_loop" || return; done
+        if [ -f "$state/seeds/svc.autostart" ]; then
+            ic config set svc boot.autostart "$(cat "$state/seeds/svc.autostart")" || return
+            rm "$state/seeds/svc.autostart" || return
+        fi
+    fi
+    rm -f "$state/seeds/$1.img"
+}
+boot_ready() {
+    case $1 in fw1|fw2|wan) pin "$1" || return 1 ;; esac
+    seed_applied "$1" && healthy "$1"
+}
+seed_start() {
+    if [ -z "$initializing" ] || [ -f "$state/seeds/$1.img" ] || [ ! -f "$state/init/seed-$1" ]; then
+        if running "$1"; then ic stop "$1" --timeout 60; fi
+        seed_attach "$1"
+    fi
+    running "$1" || ic start "$1"
+    retry boot_ready "$1"
+    [ -z "$initializing" ] || init_done "seed-$1"
+    seed_remove "$1"
+}
+init_done() { touch "$state/init/$1"; sync; }
+volume_create() {
+    if ic storage volume list default --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null; then
+        ic query "/1.0/storage-pools/default/volumes/custom/$1" |
+            jq -e --arg s "$2" '.config.size == $s and .config["security.shifted"] == "true"' >/dev/null || die "volume $1 differs"
+    else
+        ic storage volume create default "$1" size="$2" security.shifted=true
+    fi
+    init_done "volume-$1"
+}
+profile() {
+    ic profile list --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null || ic profile create "$1"
+    ic profile edit "$1" <"$2"
+    init_done "profile-$1"
+}
+init_guest() {
+    node=$1
+    shift
+    instance_type=container
+    instance_profile=$node
+    case $node in fw1|fw2) instance_type=virtual-machine; instance_profile=fw ;; wan) instance_type=virtual-machine ;; esac
+    import_image "$node"
+    fingerprint=$(ic query "/1.0/images/aliases/candidate-$node" | jq -er .target)
+    if ic list --format json | jq -e --arg n "$node" '.[] | select(.name == $n)' >/dev/null; then
+        ic query "/1.0/instances/$node" | jq -e --arg id "$init_id" --arg fp "$fingerprint" --arg t "$instance_type" --arg p "$instance_profile" \
+            '.config["user.convergent.init"] == $id and .config["volatile.base_image"] == $fp and .type == $t and .profiles == [$p]' >/dev/null || die "$node differs from initialization"
+    else
+        ic init "candidate-$node" "$node" -c "user.convergent.init=$init_id" -c boot.autostart=false "$@"
+    fi
+    init_done "instance-$node"
+}
+radio() {
+    radio_device=
+    for device in /sys/bus/pci/devices/*; do
+        [ "$(cat "$device/vendor")" = 0x8086 ] && [ "$(cat "$device/class")" = 0x028000 ] || continue
+        [ -z "$radio_device" ] || die 'multiple Intel radios; select hardware outside guests'
+        radio_device=$device
+    done
+    if [ -z "$radio_device" ]; then
+        echo 'guests: no Intel Wi-Fi device; wan has no radio (SSH and internal checks remain available)' >&2
+        return
+    fi
+    [ -d "$radio_device/iommu_group" ] || die 'radio has no IOMMU group'
+    set -- "$radio_device"/iommu_group/devices/*
+    [ "$#" = 1 ] || die 'radio is not alone in its IOMMU group; no ACS override'
+    [ "$(basename "$(readlink "$radio_device/driver")")" = vfio-pci ] || die 'radio must already be bound to vfio-pci'
+    ic query /1.0/instances/wan | jq -e '.devices.radio' >/dev/null || ic config device add wan radio pci address="${radio_device##*/}"
+    [ "$(ic config device get wan radio address)" = "${radio_device##*/}" ] || die 'wan radio differs'
+}
+
+# Incus Btrfs VM disks are raw; only mount partition 2 of a stopped wan.
+wan_mount() {
+    running wan && die 'refusing to mount a running wan disk'
+    [ -f "$pool/virtual-machines/wan/root.img" ] || die 'unexpected Incus Btrfs VM disk layout'
+    mkdir -p "$work/root"
+    loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img")
+    retry test -b "${loop}p2"
+    mount -t ext4 -o nodev,nosuid,noexec "${loop}p2" "$work/root"
+    mounted=1
+}
+prune() {
+    ic query "/1.0/instances/$1/snapshots?recursion=1" |
+        jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' | sort -r | sed '1,3d' >"$work/prune"
+    while read -r old; do
+        for volume in $(volumes "$1"); do ic storage volume snapshot delete default "$volume" "$old"; done
+        ic snapshot delete "$1" "$old"
+    done <"$work/prune"
+}
+replace() {
+    guest=$1
+    snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$
+    import_image "$guest"
+    cp "$keys/known_hosts" "$state/known_hosts.before"
+    case $guest in
+    fw1|fw2)
+        rsh "$guest" 'tar -czf - -C / var/unbound/etc/blocklist.rpz var/unbound/etc/local-owner.conf etc/convergent/pf.guests etc/convergent/update_src' >"$work/fw-state.tar.gz"
+        ;;
+    esac
+    if running "$guest"; then starting=$guest; ic stop "$guest" --timeout 60; fi
+    ic snapshot create "$guest" "$snap" --no-expiry
+    for volume in $(volumes "$guest"); do ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
+    printf '%s %s\n' "$guest" "$snap" >"$state/pending"
+    pending=1
+    starting=
+    sync
+    if [ "$guest" = wan ]; then
+        wan_mount
+        if [ -d "$work/root/var/lib/iwd" ]; then
+            tar -C "$work/root" -cf "$work/wan-state.tar" var/lib/iwd
+        else
+            tar -cf "$work/wan-state.tar" -T /dev/null
+        fi
+        unmount_root
+    fi
+    ic rebuild "candidate-$guest" "$guest"
+    case $guest in
+    wan)
+        wan_mount
+        tar -C "$work/root" -xf "$work/wan-state.tar"
+        unmount_root
+        ;;
+    web|admin)
+        ic file pull "$guest/usr/local/bin/browser-launch" "$work/browser-launch"
+        sh -n "$work/browser-launch"
+        ;;
+    esac
+    case $guest in
+    web|admin) ;;
+    *)
+        seed_start "$guest"
+        case $guest in
+        fw1|fw2)
+            fw_check "$guest" release
+            rsh "$guest" 'tar -xzf - -C / && unbound-checkconf /var/unbound/etc/unbound.conf && pfctl -nf /etc/pf.conf && unbound-control reload && pfctl -f /etc/pf.conf' <"$work/fw-state.tar.gz"
+            ;;
+        esac
+        ;;
+    esac
+}
+commit_update() {
+    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates"
+    sync
+    rm "$state/pending"
+    pending=
+    prune "$guest"
+}
+good_slot() {
+    slot status >"$work/slot"
+    awk '$1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "highest" {h=$2}
+        $1 == "slot" {release[$2]=$3; status[$2]=$4}
+        END {exit !(r ~ /^[0-9]+$/ && r == g && r <= h && release[s] == r && status[s] == "good")}' "$work/slot" ||
+        die 'booted host slot is not marked good'
+}
+
+init() {
+    [ ! -e "$state/initialized" ] || die 'already initialized'
+    rc-service incus status >/dev/null || rc-service incus start
+    retry ic query /1.0 >/dev/null
+    release=$(cd "$1" && pwd)
+    if [ ! -f "$state/init/release" ]; then
+        [ "$(ic list --format json | jq length)" = 0 ] || die 'init needs an empty default project or its recovery journal'
+        mkdir -p "$state/init"
+        printf '%s\n' "$release" >"$work/release"
+        mv "$work/release" "$state/init/release"
+        sync
+    fi
+    [ "$(cat "$state/init/release")" = "$release" ] || die 'resume init with the original release directory'
+    if [ ! -f "$state/init/id" ]; then
+        openssl rand -hex 16 >"$work/init-id"
+        mv "$work/init-id" "$state/init/id"
+        sync
+    fi
+    init_id=$(cat "$state/init/id")
+    initializing=1
+    credentials
+    btrfs subvolume show /var/lib/incus-pool >/dev/null || die 'installer must create /var/lib/incus-pool on Btrfs'
+    ic admin init --preseed <"$lib/preseed.yaml"
+    init_done preseed
+    if [ ! -f "$state/init/server" ]; then
+        rc-service incus stop
+        install -m 600 "$tls/incus-server.key" /var/lib/incus/server.key
+        install -m 644 "$tls/incus-server.crt" /var/lib/incus/server.crt
+        rc-service incus start
+        retry ic query /1.0 >/dev/null
+        init_done server
+    fi
+    sh "$lib/host-net"
+    trust=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
+    ic config trust list --format json | jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' >/dev/null ||
+        ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
+    ic config set core.metrics_address 100.80.1.10:8444
+    ic config set core.metrics_authentication true
+    profile svc "$release/guests/svc/incus.yaml"
+    for role in base web tmp portal admin; do profile "browser-$role" "$release/guests/browser/incus/$role.yaml"; done
+    volume_create svc-metrics 2GiB
+    volume_create svc-logs 6GiB
+    volume_create svc-grafana 512MiB
+    volume_create browser-web-state 4GiB
+    volume_create browser-admin-state 512MiB
+    image_dir=$release/guests/browser
+    import_image browser
+    fingerprint=$(ic query /1.0/images/aliases/candidate-browser | jq -er .target)
+    ic image alias list --format json | jq -e '.[] | select(.name == "browser")' >/dev/null && ic image alias delete browser
+    ic image alias create browser "$fingerprint"
+    image_dir=$release/guests/fw
+    for node in fw1 fw2; do
+        init_guest "$node" --vm --profile fw
+    done
+    ic config set fw1 boot.autostart.priority 40
+    ic config set fw2 boot.autostart.priority 30
+    image_dir=$release/guests/wan
+    init_guest wan --vm --profile wan
+    radio
+    image_dir=$release/guests/svc
+    init_guest svc --profile svc
+    ic config set svc security.idmap.isolated true
+    image_dir=$release/guests/fw
+    for node in fw1 fw2; do seed_start "$node"; done
+    retry pair fw1 fw2
+    seed_start wan
+    retry pair fw1 fw2
+    seed_start svc
+    mkdir -p /var/lib/convergent/syslog-ng.d /var/lib/syslog-ng
+    install -m 600 "$lib/syslog.conf" /var/lib/convergent/syslog-ng.d/svc.conf
+    rc-service syslog-ng reload
+    for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart true; done
+    sync
+    touch "$state/initialized"
+}
+update() {
+    good_slot
+    [ -f "$state/initialized" ] || die 'init has not completed'
+    [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+    image_dir=$2
+    case $1 in
+    fw)
+        [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+        for node in fw1 fw2; do
+            for suffix in qcow2 pf.sha256 rules.sha256; do
+                [ -s "$image_dir/$node.$suffix" ] || die "missing $node.$suffix"
+            done
+            actual=$(rsh "$node" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
+            [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
+        done
+        retry pair fw1 fw2
+        replace fw2
+        retry pair fw1 fw2
+        fw_check fw2
+        backup_soak
+        demoted=fw1
+        rsh fw1 'ifconfig -g carp carpdemote 128'
+        retry pair fw2 fw1
+        soak fw2 fw1
+        commit_update
+        replace fw1
+        fw_check fw1
+        retry pair fw2 fw1
+        rsh fw1 'rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128'
+        demoted=
+        retry pair fw1 fw2
+        soak fw1 fw2
+        commit_update
+        ;;
+    wan|svc)
+        [ "$1" != wan ] || ic profile device set wan eth0 security.ipv4_filtering=false
+        replace "$1"
+        commit_update
+        ;;
+    web|admin)
+        running "$1" && die 'close this browser with tools/browser before updating it'
+        replace "$1"
+        commit_update
+        ;;
+    *) die 'update accepts fw (the pair), wan, svc, web or admin' ;;
+    esac
+}
+
+case ${1:-}:$# in init:2|update:3|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | status' ;; esac
+[ "$(id -u)" = 0 ] || die 'run as root'
+if [ "$1" = status ]; then
+    ic list --format json | jq -r 'sort_by(.name)[] | "\(.name) \(.status | ascii_downcase)"'
+    exit
+fi
+mkdir -p "$state" /run/convergent
+exec 9>/run/convergent/guests.lock
+flock -n 9 || die 'another guests operation is running'
+exec 8>/run/convergent/dns-push.lock
+flock -w 120 8 || die 'a DNS push is still running'
+exec 7>/run/convergent/portal.lock
+flock -w 60 7 || die 'a portal change is still running'
+work=$(mktemp -d "$state/work.XXXXXX")
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+case $1 in init) init "$2" ;; update) update "$2" "$3" ;; esac

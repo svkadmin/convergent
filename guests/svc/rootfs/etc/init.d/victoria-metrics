@@ -23,7 +23,7 @@ output_logger="logger -t victoria-metrics"
 error_logger="logger -t victoria-metrics"
 umask=0027
 
-depend() { need net; use syslog; }
+depend() { need net convergent-seed; use syslog; }
 start_pre() {
     # Inject metrics-only client cert/key and CA; server SAN DNS:host.
     for file in incus-ca.crt incus-client.crt incus-client.key; do

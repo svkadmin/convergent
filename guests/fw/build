@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 6
-# ROOT_SSH_PUBKEY=<file> SVC_CA=<file> guests/fw/build <output-dir>
+# guests/fw/build <output-dir>
 # Requires KVM, OVMF and loopback port 80.
 set -eu
 
@@ -12,15 +12,9 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed"; }
 
 out=${1:-}
 [ -n "$out" ] || die "usage: build <output-dir>"
-[ -f "${ROOT_SSH_PUBKEY:-}" ] || die "set ROOT_SSH_PUBKEY to the host's SSH public key file"
-[ -s "${SVC_CA:-}" ] || die "set SVC_CA to the CA certificate of svc's syslog receiver"
-for t in qemu-system-x86_64 qemu-img curl python3 tar openssl sha256sum awk timeout; do need "$t"; done
+for t in qemu-system-x86_64 qemu-img curl python3 tar sha256sum awk timeout; do need "$t"; done
 signify=$(command -v signify || command -v signify-openbsd || true)
 [ -n "$signify" ] || die "signify is needed"
-grep -q '^ssh-' "$ROOT_SSH_PUBKEY" || die "ROOT_SSH_PUBKEY does not look like an SSH public key"
-[ "$(wc -l <"$ROOT_SSH_PUBKEY")" -le 1 ] || die "ROOT_SSH_PUBKEY must be a single line"
-case $(cat "$ROOT_SSH_PUBKEY") in *'|'* | *'&'* | *'\'*) die "ROOT_SSH_PUBKEY holds a character the response file cannot take (| & \\)" ;; esac
-openssl x509 -in "$SVC_CA" -noout 2>/dev/null || die "SVC_CA is not a PEM certificate"
 
 # UEFI firmware.
 ovmf_code=${OVMF_CODE:-}
@@ -105,21 +99,16 @@ cp -R "$here/site" "$site"
 find "$site" -type d -exec chmod 755 {} +
 find "$site" -type f -exec chmod 644 {} +
 chmod 755 "$site/install.site" "$site/usr/local/libexec/convergent/fw-facts"
-mkdir -p "$site/etc/ssl"
-cp "$SVC_CA" "$site/etc/ssl/convergent-ca.pem"
-carppass=$(openssl rand -hex 16)
 cat >"$site/etc/convergent/build" <<BUILDVARS
-CARPPASS=$carppass
 PKG_URL=http://10.0.2.2/pkg
 PKGS="${pkgnames# }"
 BUILDVARS
 tar -C "$site" -czf "$www/sets/site$v.tgz" --owner=0 --group=0 --numeric-owner .
 (cd "$www/sets" && ls -l >index.txt)
 
-key=$(cat "$ROOT_SSH_PUBKEY")
 for n in $nodes; do
 	sed -e "s|@HOSTNAME@|$n.$domain|" -e "s|@DOMAIN@|$domain|" \
-		-e "s|@V@|$v|" -e "s|@ROOT_SSH_KEY@|$key|" "$here/install.conf" >"$www/$n-install.conf"
+		-e "s|@V@|$v|" "$here/install.conf" >"$www/$n-install.conf"
 done
 
 python3 -I -m http.server 80 --bind 127.0.0.1 --directory "$www" >"$work/http.log" 2>&1 &
@@ -143,7 +132,6 @@ for n in $nodes; do
 		-netdev "user,id=n0,net=10.0.2.0/24,ipv6=off,hostname=$n,tftp=$tftp,bootfile=auto_install" \
 		-device virtio-net-pci,netdev=n0 || die "$n: QEMU failed or timed out; see $log"
 	grep -q "CONVERGENT-INSTALL-SITE-OK $n" "$log" || die "$n: install.site did not finish; see $log"
-	grep "^CONVERGENT-HOSTKEY $n " "$log" | tail -n 1 | tr -d '\r' >"$out/$n.hostkey"
 done
 
 # Smoke-boot overlays with the seven production NICs.
@@ -179,10 +167,14 @@ for n in $nodes; do
 	if grep -E 'pf\.conf:[0-9]+|pfctl: |hostname\.[a-z0-9]+: ' "$log" >/dev/null; then
 		die "$n: configuration errors at boot; see $log"
 	fi
+	for kind in pf rules; do
+		awk -v k="$kind" '$1 == "CONVERGENT-HASH" && $2 == k {gsub(/\r/, ""); print $3}' "$log" >"$out/$n.$kind.sha256"
+		[ "$(wc -l <"$out/$n.$kind.sha256")" = 1 ] || die "$n: missing $kind digest"
+	done
 	echo "build: $n boots"
 done
 
 for n in $nodes; do
 	(cd "$out" && sha256sum "$n.qcow2" >"$n.qcow2.sha256")
 done
-echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2 (host keys in $out/*.hostkey)"
+echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2"

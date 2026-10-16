@@ -1,0 +1,27 @@
+#!/bin/sh
+# Incus mounts CVSEED read-only inside this unprivileged container.
+set -eu
+umask 077
+state=/var/lib/convergent
+[ ! -f "$state/seeded" ] || exit 0
+seed=$state/seed
+[ -s "$seed/seed-id" ] || { echo 'convergent: no CVSEED; services remain unconfigured' >&2; exit 1; }
+id=$(cat "$seed/seed-id")
+[ "${#id}" = 32 ]
+case $id in *[!0-9a-f]*) exit 1 ;; esac
+for file in server.crt server.key ca.crt incus-client.crt incus-client.key admin-password secret-key; do
+    [ -s "$seed/$file" ]
+done
+for entry in 'vmlogs server.crt victoria-logs/tls/server.crt' \
+    'vmlogs server.key victoria-logs/tls/server.key' \
+    'vmmetrics ca.crt victoria-metrics/tls/incus-ca.crt' \
+    'vmmetrics incus-client.crt victoria-metrics/tls/incus-client.crt' \
+    'vmmetrics incus-client.key victoria-metrics/tls/incus-client.key' \
+    'grafana admin-password grafana/admin-password' 'grafana secret-key grafana/secret-key'; do
+    set -- $entry
+    cp "$seed/$2" "/etc/$3"
+    chown "root:$1" "/etc/$3"
+    chmod 640 "/etc/$3"
+done
+printf '%s\n' "$id" >"$state/seeded"
+sync

@@ -1,13 +1,13 @@
 # ARCHITECTURE 3.4, 4.2
 # Create persistent svc-{metrics,logs,grafana} volumes (2GiB/6GiB/512MiB).
-# Inject root:SERVICE 0640 TLS files and Grafana secrets before start.
+# First boot installs root:SERVICE 0640 credentials from CVSEED.
 # Incus client: type=metrics, server SAN DNS:host.
 # Syslog server SAN: IP:100.80.2.10, DNS:svc; senders verify the CA/SAN.
 # grafana raises the idle 350MiB cap to 768MiB while viewed.
 config:
   security.privileged: "false"
   security.nesting: "false"
-  security.devlxd: "false"
+  security.guestapi: "false"
   security.protection.delete: "true"
   limits.cpu: "1"
   limits.memory: 350MiB
@@ -45,6 +45,5 @@ devices:
     hwaddr: 00:16:3e:80:02:10
     ipv4.address: 100.80.2.10
     security.ipv4_filtering: "true"
-    security.ipv6_filtering: "true"
     security.mac_filtering: "true"
     security.port_isolation: "true"

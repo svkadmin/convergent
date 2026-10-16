@@ -1,0 +1,6 @@
+#!/bin/sh
+# Wait for Incus without delaying the net provider it needs.
+set -eu
+until ip -4 address show dev host 2>/dev/null | grep -q 'inet 100.80.1.10/28 '; do sleep 1; done
+sysctl -qw net.ipv4.conf.host.arp_ignore=0 net.ipv4.ip_forward=0
+ip route replace default via 100.80.1.1 dev host

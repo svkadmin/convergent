@@ -1,0 +1,4 @@
+#!/sbin/openrc-run
+description="Install the laptop seed once"
+depend() { need localmount; after bootmisc; before sshd syslog-ng; }
+start() { /usr/local/sbin/wan-seed; }

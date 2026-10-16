@@ -21,3 +21,14 @@ table inet host {
 		type filter hook output priority filter; policy accept;
 	}
 }
+
+# No IPv6 on any bridge: guests cannot reach each other over IPv6 past the firewalls.
+table bridge host-l2
+delete table bridge host-l2
+
+table bridge host-l2 {
+	chain forward {
+		type filter hook forward priority filter; policy accept;
+		ether type ip6 drop
+	}
+}

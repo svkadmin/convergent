@@ -33,7 +33,7 @@ chmod 0440 "$root"/etc/sudoers.d/*
 chmod 0600 "$root"/etc/audit/rules.d/*
 # The tools of ARCHITECTURE section 12.
 install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
-chmod 0755 "$root"/etc/init.d/convergent-*
+chmod 0755 "$root"/etc/init.d/convergent-* "$root"/usr/lib/convergent/health.d/*
 kver=$(ls "$root/lib/modules")
 [ "$(echo "$kver" | wc -l)" = 1 ] || die "expected one kernel in the image, found: $kver"
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"

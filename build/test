@@ -4,6 +4,7 @@
 #   build/test --corrupt <release>
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
+#   build/test --guests <release> <guests-dir>
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -11,12 +12,19 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new>"; }
+usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --guests <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
+--guests)
+	mode=guests; shift; [ $# = 2 ] || usage
+	guests=$2
+	[ -d "$guests" ] || die "no guests directory: $guests"
+	guests=$(cd "$guests" && pwd)
+	set -- "$1"
+	;;
 *) [ $# = 1 ] || usage ;;
 esac
 release=$1
@@ -38,6 +46,7 @@ rm -rf "$BUILDER$work"
 mkdir -p "$BUILDER$work/esp"
 disk="$BUILDER$work/disk.img"
 esp="$BUILDER$work/esp"
+state="$BUILDER$work/state"
 loop=''
 driver=''
 cleanup() {
@@ -45,6 +54,7 @@ cleanup() {
 	# Reap QEMU through its driver before touching the disk or chroot mounts.
 	if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || :; wait "$driver" 2>/dev/null || :; fi
 	if mountpoint -q "$esp"; then umount "$esp" || :; fi
+	if mountpoint -q "$state"; then umount "$state" || :; fi
 	bld cryptsetup close cvtest-state 2>/dev/null || :
 	if [ -n "$loop" ]; then losetup -d "$loop" || :; fi
 	chroot_umount
@@ -67,7 +77,7 @@ detach() {
 }
 
 make_disk() {
-	truncate -s 16G "$disk"
+	if [ "$mode" = guests ]; then truncate -s 48G "$disk"; else truncate -s 16G "$disk"; fi
 	slot_mib=$(( (size >> 20) + 64 ))
 	bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 		-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
@@ -109,6 +119,46 @@ make_state() {
 	bld cryptsetup close cvtest-state
 }
 
+open_state() {   # mount options
+	attach
+	pass=$(cat "$BUILDER$work/passphrase")
+	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
+	mkdir -p "$state"
+	mount -t btrfs -o "subvolid=5,$1" /dev/mapper/cvtest-state "$state"
+}
+
+close_state() {
+	umount "$state"
+	bld cryptsetup close cvtest-state
+	detach
+}
+
+inject_guests() {
+	open_state rw
+	var="$state/var-$release"
+	[ -d "$var" ] || die "no var-$release after blessing"
+	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
+	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
+	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
+	cat >"$var/spool/cron/crontabs/root" <<'EOF'
+@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; } >/dev/console 2>&1
+EOF
+	chown 0:0 "$var/spool/cron/crontabs/root"
+	chmod 0600 "$var/spool/cron/crontabs/root"
+	close_state
+}
+
+guest_logs() {
+	open_state ro
+	for file in "$state/var-$release/log/incus/incusd.log" \
+		"$state/var-$release/log/incus/"*/console.log "$state/var-$release/log/incus/"*/qemu.log; do
+		[ -f "$file" ] || continue
+		echo "test: tail of /var/${file#"$state/var-$release/"}"
+		tail -n 80 "$file"
+	done
+	close_state
+}
+
 make_esp() {
 	bld mkfs.vfat -F 32 -n CV-ESP "${loop}p1" >/dev/null
 	mount "${loop}p1" "$esp"
@@ -128,20 +178,26 @@ install_uki() {   # release slot counter
 }
 
 run_vm() {
+	goal=${1:-bless}
+	memory=4096
+	limit=300
+	if [ "$goal" = guests ]; then memory=8192; limit=2400; fi
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
-	[ "$remaining" -le 300 ] || remaining=300
+	[ "$remaining" -le "$limit" ] || remaining=$limit
 	log="$BUILDER$work/console-$runs.log"
 	ln -sfn "console-$runs.log" "$BUILDER$work/console.log"
 	echo "test: boot $runs ($mode), console: $log"
 	# chroot execs Python, so the cleanup trap can reap its QEMU child.
 	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
+		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" \
 		chroot "$BUILDER" python3 - <<'EOF' &
 import json, os, re, select, signal, socket, subprocess, time
 
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
+goal = os.environ["CVTEST_GOAL"]
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -154,7 +210,7 @@ def interrupted(signum, frame):
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
-    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", "4096",
+    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
     "-drive", f"file={work}/disk.img,if=virtio,format=raw",
@@ -165,6 +221,7 @@ qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
 sent = ready = quitting = powered_off = False
 ended = "stopped"
+result = None
 
 def command(name):
     qmp.sendall(json.dumps({"execute": name}).encode() + b"\n")
@@ -209,16 +266,23 @@ try:
                 else:
                     log.write(chunk); log.flush()
                     seen = (seen + chunk)[-8192:]
+                    if goal == "guests" and result is None:
+                        match = re.search(rb"(?:^|\n)CV-GUESTS-RESULT ([0-9]+)\r?\n", seen)
+                        if match:
+                            result = int(match[1])
                     if not sent and b"Convergent passphrase" in seen:
                         qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
-            if ready and not quitting and re.search(rb"convergent: release [0-9]+ is good\r?\n", seen):
-                # Bless syncs good/highest and the ESP; quit flushes QEMU's disk writes.
+            done = result is not None if goal == "guests" else re.search(rb"convergent: release [0-9]+ is good\r?\n", seen)
+            if ready and not quitting and done:
+                # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
                 quitting = True
         if ended != "timeout":
             qemu.wait(timeout=max(0.1, deadline - time.monotonic()))
             if qemu.returncode == 0:
                 ended = "blessed" if quitting else "poweroff" if powered_off else "stopped"
+                if quitting and goal == "guests":
+                    ended = f"guests-{result}"
 finally:
     if qemu.poll() is None:
         qemu.kill()
@@ -231,7 +295,13 @@ finally:
 print(f"test: VM ended: {ended}")
 EOF
 	driver=$!
-	if wait "$driver"; then driver=''; else driver=''; die "QEMU driver failed; see $log"; fi
+	if wait "$driver"; then
+		driver=''
+	else
+		driver=''
+		[ "$goal" = guests ] && return 1
+		die "QEMU driver failed; see $log"
+	fi
 	ended=$(cat "$BUILDER$work/ended-$runs")
 }
 
@@ -257,12 +327,22 @@ umount "$esp"
 detach
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | guests) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 run_vm
 case $mode in
 boot) blessed || die "release $release did not bless; see $log" ;;
 corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
+guests)
+	blessed || die "initial release $release did not bless; see $log"
+	inject_guests
+	deadline=$(($(date +%s) + 2400))
+	vm_ok=1
+	run_vm guests || vm_ok=0
+	guest_logs
+	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
+	[ "$ended" = guests-0 ] || die "guests init failed ($ended); see $log"
+	;;
 fallback | interrupt)
 	blessed || die "initial release $release did not bless; see $log"
 	# A has now made good, highest and var-<release> through the real boot path.

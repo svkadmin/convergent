@@ -339,6 +339,16 @@ boot entry (and the removable-media fallback path), create the owner's account, 
 images, assign the static addresses. No network needed. The same stick is the recovery path when
 nothing on the laptop boots.
 
+`guests init RELEASE` creates the management key, TLS credentials and one shared CARP password
+on the laptop; `/var/lib/convergent/guests/` retains the latter two across guest replacements.
+Images contain none of these credentials or SSH host keys. Each guest receives only its own
+credentials on a read-only FAT16 disk labelled `CVSEED`, records successful installation once,
+and ignores the seed thereafter. The host verifies that record, pins fw/wan's first-boot SSH
+fingerprints from the Incus console, checks health, then detaches the disk. svc has no SSH;
+Incus mounts its seed for the unprivileged container. Without a seed, fw leaves CARP templates
+inactive and its dependent daemons disabled; Alpine leaves credential-dependent services stopped.
+The fw build smoke-boots disposable overlays without seeds, so the release stays unpersonalised.
+
 ### 7.2 Update
 
 1. Fetch a release from the build host or a USB stick; verify the manifest. Refused: an update
@@ -541,6 +551,12 @@ guests/browser/  Alpine image with Firefox and its policies
 install/      the installer
 tools/        the pieces of section 12
 ```
+
+Release inputs (already verified by the caller; YAML copied from the guest sources):
+- `RELEASE/guests/fw/`: `fw{1,2}.qcow2`, `fw{1,2}.{pf,rules}.sha256`.
+- `RELEASE/guests/wan/`: `wan.qcow2`, `wan-metadata.tar.xz`.
+- `RELEASE/guests/svc/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus.yaml`.
+- `RELEASE/guests/browser/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus/{base,web,tmp,portal,admin}.yaml`.
 
 ---
 
