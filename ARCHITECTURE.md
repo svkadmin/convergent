@@ -364,8 +364,8 @@ The fw build smoke-boots disposable overlays without seeds, so the release stays
    boot runs the checks, a release already good included; until they pass the watchdog keeps
    counting.
 
-Guests are updated only on a host slot already marked good, one at a time, each after a snapshot
-of its state volume; the last three snapshots per guest are kept. The firewalls go one at a time:
+Guests are updated only on a host slot already marked good, one at a time, each after an instance
+export and snapshots of its custom state volumes; the last three backups per guest are kept. The firewalls go one at a time:
 fw2 first, checked (CARP state, pfsync, pf ruleset hash, a resolution through it, traffic over it
 for a short soak), then a failover to it, then fw1. A firewall that fails its checks is put back
 to its previous image before the other is touched.

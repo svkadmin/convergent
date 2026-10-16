@@ -41,7 +41,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 		/^[^ \t]/ { c = 0 }
 		c && $2 ~ /^[0-9]+$/ { printf "convergent_pf_counter_total{name=\"%s\"} %s\n", $1, $2 }'
 	pfctl -sm 2>/dev/null | awk '/^states/ { print "convergent_pf_state_limit " $4 }'
-	echo "convergent_pf_ruleset_info{loaded=\"$(pfctl -sr 2>/dev/null | sha256)\",file=\"$(sha256 -q /etc/pf.conf)\"} 1"
+	echo "convergent_pf_ruleset_info{loaded=\"$(pfctl -sr 2>/dev/null | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256)\",file=\"$(sha256 -q /etc/pf.conf)\"} 1"
 
 	# Default route.
 	route -n show -inet 2>/dev/null | awk '

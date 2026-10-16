@@ -50,7 +50,7 @@ fi
 
 bld() { chroot "$BUILDER" "$@"; }
 work=/test/$release
-rm -rf "$BUILDER$work"
+rm -rf "$BUILDER"/test/*   # one run's disk at a time: each holds tens of GB
 mkdir -p "$BUILDER$work/esp"
 disk="$BUILDER$work/disk.img"
 esp="$BUILDER$work/esp"
@@ -172,8 +172,18 @@ ic() { incus --force-local --project default "$@"; }
 before=$(ic config get svc volatile.base_image) || result=1
 service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
 [ -n "$before" ] && [ -n "$service" ] || result=1
-sh -x /usr/local/sbin/guests update fw "$release/guests/fw" 2>/var/log/guests-update-fw.log
+# Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
+( while sleep 20; do
+    date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
+    timeout 15 ssh -vv -F /etc/convergent/ssh_config fw1 true 2>&1 | grep -E 'Connecting|connect to|Connection|Authenticated|Exit status|timed out|refused|reset|closed' | tail -n 4
+done ) >/var/log/fw1-probe.log 2>&1 &
+probe=$!
+{
+    sha256sum /usr/local/sbin/guests >&2
+    sh -x /usr/local/sbin/guests update fw "$release/guests/fw"
+} 2>/var/log/guests-update-fw.log
 fw=$?
+kill "$probe" 2>/dev/null
 echo CV-UPDATE fw "$fw"
 [ "$fw" = 0 ] || result=1
 # Same-image replacements must still traverse both firewalls and the failover soak.
@@ -235,6 +245,12 @@ EOF
 
 guest_logs() {
 	open_state ro
+	# The console tails can contain only rollback, hiding the original failure.
+	for file in "$state/var-$release/log/guests-trace.log" "$state/var-$release/log/guests-update-"*.log; do
+		[ -f "$file" ] || continue
+		echo "test: full /var/${file#"$state/var-$release/"}"
+		cat "$file"
+	done
 	for file in "$state/var-$release/log/incus/incusd.log" \
 		"$state/var-$release/log/incus/"*/console.log "$state/var-$release/log/incus/"*/qemu.log; do
 		[ -f "$file" ] || continue

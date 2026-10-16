@@ -87,7 +87,7 @@ cat >/etc/rc.local <<'FIRSTBOOT'
 #!/bin/sh
 /usr/local/libexec/convergent/fw-seed
 echo "CONVERGENT-HASH pf $(sha256 -q /etc/pf.conf)"
-echo "CONVERGENT-HASH rules $(pfctl -sr | sha256 -q)"
+echo "CONVERGENT-HASH rules $(pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q)"
 FIRSTBOOT
 
 # What is left is only for the build.
