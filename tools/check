@@ -1,0 +1,190 @@
+#!/bin/sh
+# ARCHITECTURE 5.3, 8, 10, 12; accept only from a trusted release after reviewing changes.
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+state=/var/lib/convergent/check
+out=/var/lib/node_exporter
+list=/usr/lib/convergent/etc-state
+work=
+die() { echo "check: $*" >&2; exit 1; }
+bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+rsh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@"; }
+[ "$(id -u)" = 0 ] || die 'run as root'
+if [ "${1:-}:$#" = status:1 ]; then
+    umask 022
+    status=/run/convergent/status
+    install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
+    exec 9>"$status/lock"; flock -n 9 || exit 0
+    if wifi=$(rsh wan wifi status 2>/dev/null); then
+        printf '%s\n' "$wifi" | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
+    else echo '?' >"$status/.wifi"; fi
+    portal=$(timeout 25 portal status 2>/dev/null) || portal='portal: unknown'
+    printf '%s\n' "$portal" | awk '$1 == "portal:" {print $2}' >"$status/.portal"
+    chmod 644 "$status/.wifi" "$status/.portal" &&
+        mv "$status/.wifi" "$status/wifi" && mv "$status/.portal" "$status/portal"
+    exit $?
+fi
+case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
+mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
+exec 9>/run/convergent/check.lock
+flock -n 9 || die 'another checker is running'
+exec 8>/run/convergent/guests.lock
+case ${1:-} in accept|accept-fw) lock=-x ;; *) lock=-s ;; esac
+flock "$lock" -n 8 || { [ "${1:-}" = auto ] && exit 0; die 'a guest operation is running'; }
+if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
+    last=$(stat -c %Y "$state/last")
+    interval=300
+    grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
+    boot=$(awk '$1 == "btime" {print $2}' /proc/stat)
+    if [ "$last" -ge "$boot" ] && [ "$(($(date +%s) - last))" -lt "$interval" ] &&
+        [ ! /var/lib/convergent/guests/updates -nt "$state/last" ] &&
+        [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ]; then exit 0; fi
+fi
+work=$(mktemp -d "$state/.run.XXXXXX") || die 'cannot create scratch directory'
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+ok=1
+date -u '+%FT%TZ' >"$work/report"
+
+# The manifest is retained explicitly; never learn an accepted baseline during a check.
+baseline=$state/accepted
+manifest=$baseline/manifest
+[ "${1:-}" != accept ] || manifest=$2/manifest
+slot status >"$work/slot" 2>>"$work/report" || bad 'slot status failed'
+release=$(cat /usr/lib/convergent/release)
+awk -v r="$release" '$1 == "booted" {b=($2 == r && $4 ~ /^[ab]$/); s=$4}
+    $1 == "slot" {v[$2]=$3} END {exit !(b && v[s] == r)}' "$work/slot" || bad 'booted slot/release mismatch'
+[ "$(awk '$1 == "release" {print $2}' "$manifest" 2>/dev/null)" = "$release" ] || bad 'manifest release mismatch or missing manifest'
+root_hash=$(dmsetup table vroot 2>>"$work/report" | awk '$3 == "verity" {print $12}')
+[ "$(uname -r)" = "$(awk '$1 == "kernel" {print $2}' "$manifest" 2>/dev/null)" ] || bad 'kernel differs from manifest'
+[ -n "$root_hash" ] && [ "$root_hash" = "$(awk '$1 == "roothash" {print $2}' "$manifest" 2>/dev/null)" ] || bad 'verity root hash differs from manifest'
+findmnt -nro FSTYPE,OPTIONS / | grep -Eq '^erofs ro(,|$)' || bad 'root is not read-only EROFS'
+dmsetup status vroot 2>>"$work/report" | grep -Eq ' verity V$' || bad 'verity is not healthy'
+[ "$(readlink -f "$(findmnt -nro SOURCE /)")" = "$(readlink -f /dev/mapper/vroot)" ] || bad 'root does not use vroot'
+boot_slot=$(awk '$1 == "booted" {print $4}' "$work/slot")
+partition=$(lsblk -dnro MAJ:MIN "/dev/disk/by-partlabel/cv-slot-$boot_slot" 2>>"$work/report")
+dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $6 == p)}' || bad 'verity does not use the booted slot partition'
+
+# Track content, including non-executable desktop files and shell startup scripts.
+autostart() {
+    find -L /home -type f \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
+        -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
+        -o -path '*/.config/environment.d/*' -o -name .profile -o -name .shrc -o -name .bashrc \
+        -o -name .bash_profile -o -name .bash_login -o -name .zshrc -o -name .zshenv -o -name .zprofile \
+        -o -name .zlogin -o -path '*/.config/fish/*' -o -path '*/.config/autostart-scripts/*' \
+        -o -path '*/.config/plasma-workspace/env/*' -o -path '*/.local/share/autostart/*' \
+        -o -name .xprofile -o -name .xinitrc -o -path '*/.ssh/rc' \) \
+        -exec sha256sum '{}' + >"$work/autostart.raw" && sort "$work/autostart.raw" >"$work/autostart"
+}
+suid() {
+    find /home /var /tmp -type f -perm -4000 -printf '%m %U %G %p\n' >"$work/suid.raw" &&
+        sort "$work/suid.raw" >"$work/suid"
+}
+autostart 2>>"$work/report" || bad 'autostart scan failed'
+suid 2>>"$work/report" || bad 'SUID scan failed'
+incus --force-local list --all-projects --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
+jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc)$")) |
+    {name, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
+    devices: .expanded_devices}) | sort_by(.name)' "$work/instances" >"$work/incus" || bad 'Incus settings unreadable'
+
+if [ "${1:-}" = accept ]; then
+    [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'refusing acceptance: host verification failed'; }
+    mkdir -p "$work/accepted/etc" "$work/accepted/fw" || die 'cannot prepare acceptance'
+    cp "$manifest" "$work/accepted/manifest" || die 'cannot retain manifest'
+    for node in fw1 fw2; do
+        for kind in pf rules; do
+            cp "$2/guests/fw/$node.$kind.sha256" "$work/accepted/fw/" || die "missing release hash: $node.$kind"
+        done
+    done
+    while IFS= read -r entry; do
+        case $entry in ''|'#'*) continue ;; esac
+        cp -a --parents "/etc/$entry" "$work/accepted/" || die "cannot accept /etc/$entry"
+    done <"$list"
+    cp "$work/autostart" "$work/suid" "$work/incus" "$work/accepted/" || die 'cannot retain inventories'
+    baseline=$work/accepted
+fi
+if [ "${1:-}" = accept-fw ]; then
+    [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'host verification failed'; }
+    cp -a "$state/accepted" "$work/accepted" || die 'cannot stage acceptance'
+    baseline=$work/accepted
+    for node in fw1 fw2; do
+        for kind in pf rules; do
+            cp "$2/$node.$kind.sha256" "$baseline/fw/" || die "missing release hash: $node.$kind"
+        done
+    done
+fi
+
+# Keep diffs private: account databases can contain password hashes.
+while IFS= read -r entry; do
+    case $entry in ''|'#'*) continue ;; esac
+    diff -ruN -- "$baseline/etc/$entry" "/etc/$entry" >>"$work/report" 2>&1 || bad "/etc/$entry differs from last acceptance"
+    [ ! -L "/etc/$entry" ] || bad "/etc/$entry is a symlink"
+    [ -e "$baseline/etc/$entry" ] && [ -e "/etc/$entry" ] || bad "missing /etc/$entry or accepted copy"
+    [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"
+done <"$list"
+for inventory in autostart suid incus; do
+    diff -u "$baseline/$inventory" "$work/$inventory" >>"$work/report" 2>&1 || bad "$inventory inventory changed or missing"
+done
+radio=$(jq -r '.[] | select((.project // "default") == "default" and .name == "wan") |
+    .expanded_devices.radio.address // empty' "$work/instances")
+if [ -n "$radio" ]; then
+    [ "$(basename "$(readlink "/sys/bus/pci/devices/$radio/driver")")" = vfio-pci ] || bad 'wan radio is not owned by vfio-pci'
+    [ "$(find "/sys/bus/pci/devices/$radio/iommu_group/devices" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] || bad 'wan radio does not have a private IOMMU group'
+fi
+
+# These facts are also exported by facts boot; do not duplicate its metric series.
+efi=/sys/firmware/efi/efivars
+guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
+sb=$(od -An -tu1 -j4 -N1 "$efi/SecureBoot-$guid" 2>>"$work/report" | tr -d ' \n')
+setup=$(od -An -tu1 -j4 -N1 "$efi/SetupMode-$guid" 2>>"$work/report" | tr -d ' \n')
+[ "$sb:$setup" = 1:0 ] || bad 'Secure Boot disabled or unverifiable'
+grep -q '\[confidentiality\]' /sys/kernel/security/lockdown 2>>"$work/report" || bad 'confidentiality lockdown absent'
+
+guests status >"$work/guests" 2>>"$work/report" || bad 'guest inventory failed'
+for node in fw1 fw2 wan svc; do
+    grep -qx "$node running" "$work/guests" || bad "$node is not running"
+done
+jq -r '.[] | (.project // "default") as $p |
+    select(.expanded_config["boot.autostart"] == "true") |
+    "cv_guest_expected_running{project=\"\($p)\",name=\"\(.name)\"} 1"' "$work/instances" >>"$work/metrics" || bad 'guest metrics failed'
+jq -e 'all(.[]; .expanded_config["boot.autostart"] != "true" or .status == "Running")' \
+    "$work/instances" >/dev/null || bad 'an autostart guest is stopped'
+
+# Match the exporter hash prefix exactly, while comparing the raw digest locally.
+for node in fw1 fw2; do
+    for kind in pf rules; do
+        expected=$(cat "$baseline/fw/$node.$kind.sha256" 2>/dev/null) || expected=
+        printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$' || { bad "$node $kind release hash missing or malformed"; continue; }
+        case $kind in pf) cmd='sha256 -q /etc/pf.conf' ;; rules) cmd="pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q" ;; esac
+        actual=$(rsh "$node" "$cmd" 2>>"$work/report") || bad "$node $kind query failed"
+        [ -n "$expected" ] && [ "$actual" = "$expected" ] || bad "$node $kind hash differs from release"
+        if [ "$kind" = rules ]; then
+            printf 'cv_firewall_ruleset_expected_info{firewall="%s",loaded="SHA256 (stdin) = %s"} 1\n' "$node" "$expected" >>"$work/metrics"
+        fi
+    done
+    rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed"
+    rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
+done
+awk '/^carp[0-9]+:/ {iface=$1} /carp: / {n++; if ($2 == "MASTER") m++; else if ($2 != "BACKUP") bad=1
+    for (i=3;i<NF;i++) if ($i == "vhid") {key=iface ":" $(i+1); count[key]++; if ($2 == "MASTER") masters[key]++}}
+    END {for (key in count) {pairs++; if (count[key] != 2 || masters[key] != 1) bad=1}
+    exit !(n == 12 && m == 6 && pairs == 6 && !bad)}' "$work/fw1" "$work/fw2" || bad 'CARP interfaces/VHIDs lack exactly one master each'
+for node in fw1 fw2; do
+    awk '/carp: / {if (!s) s=$2; if (s != $2) bad=1; n++} END {exit !(n == 6 && !bad)}' "$work/$node" || bad "$node has mixed or incomplete CARP state"
+done
+
+if [ "$ok" = 1 ] && [ "$baseline" = "$work/accepted" ]; then
+    rm -rf "$state/previous" && { [ ! -e "$state/accepted" ] || mv "$state/accepted" "$state/previous"; } &&
+        mv "$baseline" "$state/accepted" || die 'cannot promote acceptance'
+    logger -t check "accepted ${1} baselines for $release"
+fi
+printf 'cv_checker_success %s\ncv_checker_last_run_seconds %s\n' "$ok" "$(date +%s)" >>"$work/metrics"
+[ "$ok" != 1 ] || echo 'OK release, writable state, firewalls, guests and boot security' >>"$work/report"
+mv "$work/report" "$state/last" || die 'cannot publish report'
+tmp=$(mktemp "$out/.checker.XXXXXX") || die 'cannot create metric file'
+cat "$work/metrics" >"$tmp" && chmod 644 "$tmp" && mv "$tmp" "$out/checker.prom" || { rm -f "$tmp"; die 'cannot publish metrics'; }
+logger -t check "success=$ok; report: $state/last"
+cat "$state/last"
+[ "$ok" = 1 ]

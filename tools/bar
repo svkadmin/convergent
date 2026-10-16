@@ -1,0 +1,76 @@
+#!/bin/sh
+# ARCHITECTURE 8, 9, 12
+# swaybar status_command; alerts every 30 seconds, display every five.
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+vmalert=http://100.80.2.10:8880
+tick=5
+ps=/sys/class/power_supply
+st=/run/convergent/status
+
+# The booted release, from the kernel command line.
+rel=?
+read -r cmdline </proc/cmdline
+for w in $cmdline; do
+	case $w in convergent.release=*) rel=${w#convergent.release=} ;; esac
+done
+
+# The first battery, if any.
+bat=
+for b in "$ps"/*; do
+	[ -r "$b/type" ] && read -r ty <"$b/type" && [ "$ty" = Battery ] && { bat=$b; break; }
+done
+
+# Failed requests or unhealthy rules leave the count unknown.
+poll_alerts() {
+    alerts=$(curl -sf --connect-timeout 2 -m 4 "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules?type=alert" |
+        jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
+        select(.[0].data.alerts | type == "array") |
+        select(.[1].data.groups | type == "array") |
+        select(all(.[1].data.groups[].rules[]; .health == "ok")) |
+        [.[0].data.alerts[] | select(.state == "firing")] |
+        (map(select(.labels.severity == "critical")) | length) as $c |
+        if length == 0 then "0" else "\($c)c \(length - $c)w" end') || alerts='?'
+}
+
+read -r _ u n s i w q sq _ </proc/stat
+pt=$((u + n + s + i + w + q + sq)) pi=$((i + w))
+poll_alerts
+k=0
+while :; do
+	read -r _ u n s i w q sq _ </proc/stat
+	t=$((u + n + s + i + w + q + sq)) idle=$((i + w))
+	cpu=$(( (t - pt) > 0 ? 100 * ((t - pt) - (idle - pi)) / (t - pt) : 0 ))
+	pt=$t pi=$idle
+
+	mt=0 ma=0
+	while read -r key val _; do
+		case $key in MemTotal:) mt=$val ;; MemAvailable:) ma=$val; break ;; esac
+	done </proc/meminfo
+
+	k=$((k + 1))
+	[ $((k % 6)) = 0 ] && poll_alerts
+
+	line=
+	if [ -n "$bat" ]; then
+		read -r cap <"$bat/capacity"; read -r bs <"$bat/status"
+		case $bs in Charging) bs=+ ;; Discharging) bs=- ;; *) bs= ;; esac
+		line="bat $cap%$bs | "
+	fi
+	line="${line}cpu $cpu% | mem $(( (mt - ma) / 1024 ))M"
+
+	# Root refreshes authoritative status once a minute.
+	wf=?
+	[ -r "$st/wifi" ] && read -r wf <"$st/wifi"
+	wf=${wf:-?}
+	line="$line | wifi $wf | alerts $alerts"
+	if [ -r "$st/portal" ] && read -r ps0 <"$st/portal"; then
+		case $ps0 in on) line="$line | PORTAL" ;; off) ;; *) line="$line | portal ?" ;; esac
+	fi
+
+	# Blessed once the OpenRC service has started.
+	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
+	printf '%s | rel %s %s | %s\n' "$line" "$rel" "$bl" "$(date +%H:%M)"
+	sleep "$tick"
+done

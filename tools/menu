@@ -1,0 +1,84 @@
+#!/bin/sh
+# ARCHITECTURE 9, 12
+# menu: wmenu over /usr/lib/convergent/menu/*, each file "label<TAB>command".
+# Prefix commands with "-" to run directly; others run in foot.
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+dir=/usr/lib/convergent/menu
+tab=$(printf '\t')
+ssh_conf=/etc/convergent/ssh_config
+
+die() { echo "menu: $*" >&2; exit 1; }
+usage() { echo "usage: menu | confirm TEXT | wifi status|scan|connect|forget | device" >&2; exit 2; }
+
+# wan CMD...: a Wi-Fi command in wan, over SSH as root.
+wan() { sudo /usr/bin/ssh -F "$ssh_conf" wan "$@"; }
+
+ask() { printf '%s' "$1"; IFS= read -r a || a=; }
+
+wifi() {
+	case ${1:-} in
+	status) wan wifi status </dev/null ;;
+	scan) wan wifi scan </dev/null ;;
+	connect)
+		wan wifi list </dev/null
+		ask "SSID: "; [ -n "$a" ] || die "no SSID"
+		ssid=$a
+		printf 'Passphrase (empty for a known or open network): '
+		stty -echo 2>/dev/null; IFS= read -r pass || pass=; stty echo 2>/dev/null; echo
+		if [ -n "$pass" ]; then printf '%s\n%s\n' "$ssid" "$pass" | wan wifi add
+		else printf '%s\n' "$ssid" | wan wifi connect; fi ;;
+	forget)
+		wan wifi list </dev/null
+		ask "SSID to forget: "; [ -n "$a" ] || die "no SSID"
+		printf '%s\n' "$a" | wan wifi forget ;;
+	*) usage ;;
+	esac
+}
+
+# device: list what is blocked, then approve one device by number or "tb ID".
+device() {
+	sudo /usr/local/sbin/devices list || return
+	ask 'Approve: USB device number, or "tb" and the Thunderbolt id: '
+	set -f; set -- $a; set +f
+	case $# in
+	1) sudo /usr/local/sbin/devices allow "$1" ;;
+	2) sudo /usr/local/sbin/devices allow "$1" "$2" ;;
+	*) die "nothing approved" ;;
+	esac
+}
+
+confirm() { printf '%s? [type yes] ' "$1"; IFS= read -r a || a=; [ "$a" = yes ]; }
+
+# run LABEL COMMAND
+run() {
+	case $2 in
+	-*) exec sh -c "${2#-}" ;;
+	*) exec foot -T "$1" -e sh -c 'printf "+ %s\n" "$1"; sh -c "$1"; printf "\n[exit %s] Enter to close " "$?"; read -r _' sh "$2" ;;
+	esac
+}
+
+pick() {
+	_list=
+	for f in "$dir"/*; do
+		[ -f "$f" ] || continue
+		IFS=$tab read -r l c <"$f" || continue
+		_list="$_list$l
+"
+	done
+	_p=$(printf '%s' "$_list" | wmenu -i -l 16 -p menu) || exit 0
+	for f in "$dir"/*; do
+		[ -f "$f" ] || continue
+		IFS=$tab read -r l c <"$f" || continue
+		[ "$l" = "$_p" ] && run "$l" "$c"
+	done
+}
+
+case ${1:-} in
+'') pick ;;
+confirm) [ $# = 2 ] || usage; confirm "$2" ;;
+wifi) [ $# = 2 ] || usage; wifi "$2" ;;
+device) [ $# = 1 ] || usage; device ;;
+*) usage ;;
+esac

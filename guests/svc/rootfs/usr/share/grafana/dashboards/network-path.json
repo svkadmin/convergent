@@ -16,21 +16,6 @@
   "annotations": {
     "list": [
       {
-        "name": "Release update",
-        "expr": "changes(cv_release_built_seconds[1m]) > 0",
-        "titleFormat": "Release update",
-        "textFormat": "Host release build date changed",
-        "iconColor": "#3b82f6",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "metrics"
-        },
-        "enable": true,
-        "hide": false,
-        "step": "30s",
-        "useValueForTime": false
-      },
-      {
         "name": "Firewall failover",
         "expr": "changes(convergent_carp_state{node=\"fw1\",vhid=\"3\"}[1m]) > 0",
         "titleFormat": "CARP transition",
@@ -255,7 +240,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cv_default_route_ok or convergent_default_route_present",
+          "expr": "convergent_default_route_present",
           "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
         }
       ],

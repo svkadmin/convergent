@@ -16,21 +16,6 @@
   "annotations": {
     "list": [
       {
-        "name": "Release update",
-        "expr": "changes(cv_release_built_seconds[1m]) > 0",
-        "titleFormat": "Release update",
-        "textFormat": "Host release build date changed",
-        "iconColor": "#3b82f6",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "metrics"
-        },
-        "enable": true,
-        "hide": false,
-        "step": "30s",
-        "useValueForTime": false
-      },
-      {
         "name": "Firewall failover",
         "expr": "changes(convergent_carp_state{node=\"fw1\",vhid=\"3\"}[1m]) > 0",
         "titleFormat": "CARP transition",
@@ -157,102 +142,6 @@
       }
     },
     {
-      "id": 4,
-      "title": "Services expected up",
-      "type": "table",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cv_service_up",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "No data"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true
-      }
-    },
-    {
-      "id": 5,
-      "title": "Required device ownership",
-      "type": "table",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cv_passthrough_device_present",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "No data"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true
-      }
-    },
-    {
-      "id": 6,
-      "title": "Guest routes match policy",
-      "type": "table",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cv_guest_route_expected",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "No data"
-        },
-        "overrides": []
-      },
-      "options": {
-        "showHeader": true
-      }
-    },
-    {
       "id": 7,
       "title": "Recent infrastructure logs",
       "type": "logs",
@@ -262,7 +151,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 16,
         "w": 24,
         "h": 8
       },

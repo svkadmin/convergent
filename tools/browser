@@ -1,0 +1,206 @@
+#!/bin/sh
+# ARCHITECTURE 3.5, 4.1, 4.2, 9, 10, 12; install root:root 0755 as /usr/local/sbin/browser.
+# Narrow sudo is smaller than a certificate/project setup and grants no general Incus access.
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH LC_ALL=C
+umask 077
+die() { echo "browser: $*" >&2; exit 1; }
+
+if [ "$(id -u)" != 0 ]; then
+    case $# in 1|2) ;; *) die 'usage: browser web|tmp|portal|admin [url]' ;; esac
+    [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${SWAYSOCK:-}" ] || die 'run in the owner Sway session'
+    exec sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$@"
+fi
+case ${SUDO_UID:-} in ''|0|*[!0-9]*) die 'run as the owner, not root' ;; esac
+if [ "${1:-}" = --session ]; then
+    shift
+    exec env -i PATH="$PATH" LC_ALL=C SUDO_UID="$SUDO_UID" /usr/local/sbin/browser --privileged "$@"
+fi
+[ "${1:-}" = --privileged ] || die 'run as the owner in Sway'
+shift
+case $# in 3|4) ;; *) die 'invalid session arguments' ;; esac
+display=$1 ipc=$2 role=$3
+shift 3
+case $role in web|tmp|portal|admin) ;; *) die 'role must be web, tmp, portal or admin' ;; esac
+for url do case $url in http://?*|https://?*) ;; *) die 'URL must be HTTP(S)' ;; esac; done
+case $role in
+    admin) [ $# = 0 ] || [ "$1" = http://100.80.2.10:3000/ ] || die 'admin only opens Grafana'; set -- ;;
+    portal) [ $# = 1 ] || set -- http://neverssl.com/ ;;
+esac
+uid=$SUDO_UID
+gid=$(id -g "$uid")
+runtime=/run/user/$uid
+case $display in /*) ;; *) display=$runtime/$display ;; esac
+[ -S "$display" ] && [ -S "$ipc" ] && [ -S "$runtime/pipewire-0" ] || die 'missing session sockets'
+cd /
+ic() { incus --force-local --project default "$@"; }
+owner() {
+    set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs env -i \
+        PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" \
+        XDG_CONFIG_HOME=/nonexistent XDG_STATE_HOME="$run/state" \
+        WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"
+    if [ "${background:-}" = yes ]; then exec "$@"; fi
+    "$@"
+}
+device() {
+    dev=$1; shift
+    settings=$(incus --force-local query "/1.0/instances/$name?project=default")
+    if printf '%s\n' "$settings" | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
+        ic config device set "$name" "$dev" "$@"
+    else
+        ic config device override "$name" "$dev" "$@"
+    fi
+}
+stop_container() {
+    snapshot=$(ic list --format json) || return
+    state=$(printf '%s\n' "$snapshot" | jq -r --arg n "$name" '.[] | select(.name == $n) | .status') || return
+    case $state in '') return ;; Stopped) ;; *) ic stop "$name" --force || return ;; esac
+    case $role in
+        tmp|portal)
+            snapshot=$(ic list --format json) || return
+            if printf '%s\n' "$snapshot" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+                ic delete "$name" || return
+            fi ;;
+    esac
+}
+portal_on() { /usr/local/sbin/portal status | grep -qx 'portal: on'; }
+wait_socket() {
+    attempts=0
+    until [ -S "$1" ] && [ ! -L "$1" ]; do
+        kill -0 "$2" 2>/dev/null || die "socket provider exited: $1"
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 50 ] || die "socket timed out: $1"
+        sleep .1
+    done
+}
+
+mkdir -p /run/convergent/browser
+chmod 711 /run/convergent/browser
+# Share the guests lock for the session so image/profile updates cannot race a launch.
+exec 9>/run/convergent/guests.lock
+flock -s -n 9 || die 'guest update in progress'
+name=$role
+if [ "$role" = tmp ]; then
+    octet=20
+    while :; do
+        [ "$octet" -le 99 ] || die 'all temporary browser slots are busy'
+        name=tmp-$octet
+        exec 8>"/run/convergent/browser/$name.lock"
+        flock -n 8 && break
+        octet=$((octet + 1))
+    done
+else
+    exec 8>"/run/convergent/browser/$name.lock"
+    flock -n 8 || die "$role is already open; close it before reopening"
+fi
+run=/run/convergent/browser/$name
+children= active= grafana= portal= browser=
+cleanup() {
+    result=$?
+    trap - 0
+    trap '' HUP INT TERM
+    set +e
+    if [ -n "$active" ]; then
+        stop_container || result=1
+    fi
+    if [ -n "$grafana" ]; then ic exec svc -- rc-service grafana stop || result=1; fi
+    if [ -n "$portal" ]; then /usr/local/sbin/portal off || result=1; fi
+    if [ -n "$browser" ]; then kill "$browser" 2>/dev/null; wait "$browser" 2>/dev/null; fi
+    for child in $children; do kill "$child" 2>/dev/null; done
+    for child in $children; do wait "$child" 2>/dev/null; done
+    if [ "$result" != 0 ]; then
+        for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" >&2; done
+    fi
+    rm -rf -- "$run" || result=1
+    exit "$result"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+# Only fixed, root-owned paths are touched by the privileged half.
+rm -rf -- "$run"
+install -d -o root -g "$gid" -m 0750 "$run"
+install -d -o root -g "$gid" -m 0730 "$run/sockets"
+install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
+if [ "$role" = portal ]; then portal_on || die 'portal mode is not on'; portal=1; fi
+owner swaymsg "for_window [app_id=\"^convergent-$role\$\"] title_format \"[$role] %title\"" |
+    jq -e 'all(.[]; .success)' >/dev/null || die 'cannot label Sway windows'
+background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
+wayland=$!; children="$children $wayland"
+wait_socket "$run/sockets/wayland-0" "$wayland"
+# Only the Pulse socket crosses into the guest; all recording and module loading are denied.
+cat >"$run/pulse.conf" <<EOF
+context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }
+context.modules = [
+  { name = libpipewire-module-protocol-native }
+  { name = libpipewire-module-client-node }
+  { name = libpipewire-module-adapter }
+  { name = libpipewire-module-metadata }
+  { name = libpipewire-module-protocol-pulse }
+]
+pulse.properties = {
+  server.address = [ "unix:$run/sockets/pulse-0" ]
+  pulse.allow-module-loading = false
+}
+pulse.rules = [ { matches = [ { } ] actions = { quirks = [ block-record-stream ] } } ]
+EOF
+chmod 644 "$run/pulse.conf"
+background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
+    pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+audio=$!; children="$children $audio"
+wait_socket "$run/sockets/pulse-0" "$audio"
+chmod 0710 "$run/sockets"
+for socket in wayland-0 pulse-0; do
+    [ ! -L "$run/sockets/$socket" ] && [ -S "$run/sockets/$socket" ] || die 'invalid socket inode'
+done
+
+instances=$(ic list --format json)
+if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+    printf '%s\n' "$instances" | jq -e --arg n "$name" --arg r "$role" \
+        '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
+        >/dev/null || die 'existing instance is not this browser role'
+    stop_container
+fi
+active=1
+if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+    case $role in
+        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" ;;
+        *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" ;;
+    esac
+fi
+if [ "$role" = tmp ]; then
+    ic config set "$name" environment.BROWSER_IPV4 "100.80.3.$octet"
+    device eth0 "ipv4.address=100.80.3.$octet" "hwaddr=00:16:3e:80:03:$octet"
+fi
+device wayland "source=$run/sockets/wayland-0"
+# Retain the image socket mount path; its wire protocol is now Pulse.
+device pipewire "source=$run/sockets/pulse-0"
+ic start "$name"
+mapping=$(ic config get "$name" volatile.idmap.current)
+guest_uid=$(printf '%s\n' "$mapping" | jq -er '.[] | select(.Isuid and .Nsid <= 1000 and (.Nsid + .Maprange) > 1000) | .Hostid + 1000 - .Nsid')
+setfacl -m "u:$guest_uid:rw" "$run/sockets/wayland-0" "$run/sockets/pulse-0"
+attempts=0
+until ic exec "$name" -- test -f /run/browser-ready; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 30 ] || die 'browser setup timed out'
+    sleep 1
+done
+ic exec "$name" -- sh -eu -c '
+    sed -i "/media.cubeb.backend/s/\"alsa\"/\"pulse\"/" /usr/lib/firefox-esr/distribution/policies.json
+    mkdir -p /etc/pulse
+    printf "default-server = unix:/mnt/browser/pipewire-0\\nautospawn = no\\n" >/etc/pulse/client.conf
+'
+if [ "$role" = admin ]; then grafana=1; ic exec svc -- rc-service grafana start; fi
+[ "$role" != portal ] || portal_on || die 'portal mode ended during startup'
+incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
+    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" &
+browser=$!
+tick=0
+while kill -0 "$browser" 2>/dev/null; do
+    for child in $children; do kill -0 "$child" 2>/dev/null || die 'socket or audio provider exited'; done
+    if [ "$role" = portal ] && [ "$tick" = 0 ]; then portal_on || die 'portal mode ended'; fi
+    tick=$(( (tick + 1) % 5 ))
+    sleep 2
+done
+wait "$browser"

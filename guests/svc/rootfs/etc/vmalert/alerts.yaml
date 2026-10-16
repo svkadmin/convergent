@@ -1,8 +1,8 @@
 # ARCHITECTURE 8
 # cv_* booleans: 0/1; timestamps: Unix seconds; atomic textfiles, no sample times.
-# Producers: host boot/daily/release/checker.prom; fw convergent_fw.prom; wan wan.prom.
-# Expected pf hash: pfctl -sr | sha256, including its prefix.
-# Checker supplies running inventory; closed on-demand browsers are not expected.
+# Producers: host boot/daily/checker.prom; fw convergent_fw.prom; wan wan.prom.
+# Expected pf hash: pfctl -sr with __automatic_<id> table names normalised, | sha256, including its prefix.
+# Checker supplies autostart expectations; closed on-demand browsers are not expected.
 # Host forwards Incus lifecycle logs with app_name incus-event.
 groups:
   - name: path
@@ -24,10 +24,10 @@ groups:
         labels: {severity: warning}
         annotations: {summary: 'Repeated CARP transitions on {{ $labels.node }} / {{ $labels.interface }}'}
       - alert: NoDefaultRoute
-        expr: (cv_default_route_ok == 0) or (convergent_default_route_present{node=~"fw1|fw2"} == 0)
+        expr: (convergent_default_route_present{node=~"fw1|fw2"} == 0)
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Expected default route absent: {{ $labels.compartment }}'}
+        annotations: {summary: 'Expected firewall default route absent: {{ $labels.node }}'}
       - alert: FirewallRulesetDrift
         expr: convergent_pf_ruleset_info{node=~"fw1|fw2"} unless on (node,loaded) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")
         labels: {severity: critical}
@@ -41,10 +41,6 @@ groups:
         expr: (max(convergent_wan_upstream_overlap{node="wan"}) > 0) or (max(cv_wan_overlap_events) > 0)
         labels: {severity: critical, compartment: wan, tag: convergent-alert}
         annotations: {summary: 'wan refused an upstream lease overlapping the internal /16'}
-      - alert: WanReservedLeak
-        expr: cv_wan_reserved_leak != 0
-        labels: {severity: critical}
-        annotations: {summary: 'Reserved-address leak detected toward wan'}
   - name: dns
     interval: 30s
     concurrency: 1
@@ -73,23 +69,10 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'Expected guest missing from Incus metrics: {{ $labels.project }}/{{ $labels.name }}'}
       - alert: ServiceDown
-        expr: (up == 0) or (cv_service_up == 0) or (convergent_pf_enabled{node=~"fw1|fw2"} == 0)
+        expr: (up == 0) or (convergent_pf_enabled{node=~"fw1|fw2"} == 0)
         for: 1m
         labels: {severity: critical}
         annotations: {summary: 'Scrape or expected service failed; inspect labels'}
-      - alert: PassthroughDeviceMissing
-        expr: cv_passthrough_device_present == 0
-        for: 1m
-        labels: {severity: critical}
-        annotations: {summary: 'Required passed-through device absent: {{ $labels.device }}'}
-      - alert: HostNetdevUnexpected
-        expr: cv_host_netdev_expected == 0
-        labels: {severity: critical}
-        annotations: {summary: 'Unexpected host network device/address: {{ $labels.device }}'}
-      - alert: GuestRouteInjected
-        expr: cv_guest_route_expected == 0
-        labels: {severity: critical}
-        annotations: {summary: 'Unexpected route in {{ $labels.project }}/{{ $labels.name }}: {{ $labels.route }}'}
   - name: hardware-capacity
     interval: 30s
     concurrency: 1
@@ -112,27 +95,6 @@ groups:
         for: 10m
         labels: {severity: warning}
         annotations: {summary: 'State filesystem over 85% full'}
-      - alert: IncusPoolHigh
-        expr: cv_incus_pool_used_bytes / cv_incus_pool_limit_bytes > 0.85
-        for: 10m
-        labels: {severity: warning}
-        annotations: {summary: 'Incus pool over 85% of quota: {{ $labels.pool }}'}
-  - name: currency
-    interval: 30s
-    concurrency: 1
-    rules:
-      - alert: ReleaseOld
-        expr: time() - cv_release_built_seconds > 2592000
-        labels: {severity: warning}
-        annotations: {summary: 'Host release over 30 days old'}
-      - alert: GuestImageOld
-        expr: time() - cv_guest_image_built_seconds > 2592000
-        labels: {severity: warning}
-        annotations: {summary: 'Guest image over 30 days old: {{ $labels.project }}/{{ $labels.name }}'}
-      - alert: GuestReleaseEOL
-        expr: cv_guest_release_eol_seconds < time()
-        labels: {severity: critical}
-        annotations: {summary: 'Guest operating system past upstream EOL: {{ $labels.project }}/{{ $labels.name }}'}
   - name: security-time
     interval: 30s
     concurrency: 1
@@ -184,7 +146,6 @@ groups:
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*convergent_fw.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*boot.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*daily.prom"})
-          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*release.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*checker.prom"})
           or (node_textfile_mtime_seconds{node="host",file=~".*boot.prom"} < on (node) group_left node_boot_time_seconds{node="host"})
         for: 2m
@@ -210,27 +171,15 @@ groups:
           or (up{job="node",node="host"} == 1 unless on (node) cv_crash_records)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nts_authenticated_sources)
           or (up{job="node",node="host"} == 1 unless on (node) cv_certificate_not_after_seconds)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_release_built_seconds)
           or (up{job="node",node="host"} == 1 unless on (node) cv_guest_expected_running)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_default_route_ok)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_wan_reserved_leak)
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)"))
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_default_route_present)
           or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_overlap)
           or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_up)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_service_up)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_passthrough_device_present)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_host_netdev_expected)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_guest_route_expected)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_incus_pool_used_bytes)
-          or (cv_incus_pool_limit_bytes <= 0)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_incus_pool_limit_bytes)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_percent)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_threshold_percent)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_media_errors_total)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_critical_warning)
-          or (cv_guest_expected_running unless on (project,name) cv_guest_image_built_seconds)
-          or (cv_guest_expected_running unless on (project,name) cv_guest_release_eol_seconds)
           or (up{job="node",node="host"} == 1 unless on (node) node_sysctl_kernel_tainted)
           or (up{job="node",node=~"host|wan"} == 1 unless on (node) node_timex_offset_seconds)
           or (up{job="node"} == 1 unless on (node) node_time_seconds)

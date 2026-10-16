@@ -1,0 +1,113 @@
+#!/bin/sh
+# ARCHITECTURE 7.4, 12; mounted LUKS external media, no new encryption package.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+work= snapshot=
+die() { echo "backup: $*" >&2; exit 1; }
+ic() { incus --force-local --project "$project" "$@"; }
+[ "$(id -u)" = 0 ] || die 'run as root'
+if [ $# = 0 ]; then
+    [ -t 0 ] || die 'run in a terminal or supply mountpoint and owner project'
+    printf 'Mounted encrypted external disk: '; IFS= read -r dest
+    printf 'Owner Incus project: '; IFS= read -r owner
+    set -- "$dest" "$owner"
+fi
+[ $# = 2 ] || die 'usage: backup <LUKS-external-mountpoint> <owner-project>'
+dest=$(cd "$1" && pwd -P) || die 'no destination directory'
+[ "$(stat -c %u "$dest")" = 0 ] && [ -z "$(find "$dest" -maxdepth 0 -perm /022)" ] || die 'mountpoint must be root-owned and not writable by others'
+owner=$2
+case $owner in ''|default|*[!a-zA-Z0-9_-]*) die 'supply the separate owner project, not default' ;; esac
+dev=$(findmnt -nro SOURCE --mountpoint "$dest") || die 'destination must be a mountpoint'
+dev=${dev%%\[*}
+case $dev in /dev/mapper/*|/dev/dm-*) ;; *) die 'destination is not a LUKS mapping' ;; esac
+cryptsetup status "$dev" | grep -Eq 'type: *LUKS[12]$' || die 'destination must use LUKS'
+lsblk -snro TRAN "$dev" | grep -qx usb || die 'destination must be on an external USB disk'
+state=$(cryptsetup status cv-state | awk '$1 == "device:" {print $2}')
+[ -b "$state" ] || die 'cannot identify the state disk'
+for disk in $(lsblk -snrpo NAME,TYPE "$state" | awk '$2 == "disk" {print $1}'); do
+    lsblk -snrpo NAME "$dev" | grep -qx "$disk" && die 'destination shares the state disk'
+done
+mkdir -p /run/convergent
+exec 9>/run/convergent/backup.lock
+flock -n 9 || die 'another backup is running'
+exec 8>/run/convergent/guests.lock
+flock -n 8 || die 'a guest operation is running'
+base=$dest/convergent-backups
+[ ! -L "$base" ] || die 'backup directory is a symlink'
+mkdir -p "$base"
+[ "$(stat -c '%u:%a' "$base")" = 0:700 ] || die 'backup directory must be root-owned mode 700'
+work=$(mktemp -d "$base/.partial.XXXXXX")
+cleanup() {
+    result=$?
+    trap - 0
+    trap '' HUP INT TERM
+    if [ -n "$snapshot" ]; then
+        [ ! -d "$snapshot/home" ] || btrfs subvolume delete "$snapshot/home" || result=1
+        rmdir "$snapshot" || result=1
+    fi
+    rm -rf "$work"
+    exit "$result"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+# Snapshot home on the same Btrfs filesystem; archive writable /etc separately.
+[ "$(findmnt -nro FSTYPE -T /home)" = btrfs ] &&
+    [ "$(findmnt -nro UUID -T /home)" = "$(findmnt -nro UUID -T /var)" ] || die '/home and /var must share Btrfs'
+snapshot=$(mktemp -d /var/.backup.XXXXXX)
+btrfs subvolume snapshot -r /home "$snapshot/home"
+tar --one-file-system --acls --xattrs --numeric-owner -C "$snapshot" -cpf "$work/home.tar" home
+grep -v '^#' /usr/lib/convergent/etc-state | sed '/^$/d;s|^|etc/|' >"$work/etc.list"
+tar --one-file-system --acls --xattrs --numeric-owner -C / -cpf "$work/etc.tar" -T "$work/etc.list"
+rm "$work/etc.list"
+for project in default "$owner"; do
+    mkdir "$work/$project"
+    if [ "$project" = "$owner" ]; then
+        ic list --format csv -c n >"$work/instances"
+        while IFS= read -r name; do
+            ic export "$name" "$work/$project/instance-$name.tar.gz" --compression gzip
+        done <"$work/instances"
+        rm "$work/instances"
+    fi
+    ic storage list --format csv -c n >"$work/pools"
+    [ "$project" != default ] || grep -qx default "$work/pools" || die 'missing default storage pool'
+    while IFS= read -r pool; do
+        mkdir "$work/$project/$pool"
+        ic storage volume list "$pool" --format json >"$work/volumes.json"
+        jq -r '.[] | select(.type == "custom") | .name' "$work/volumes.json" >"$work/volumes"
+        if [ "$project:$pool" = default:default ]; then
+            for volume in svc-metrics svc-logs svc-grafana browser-web-state browser-admin-state; do
+                grep -qx "$volume" "$work/volumes" || die "missing required custom volume $volume"
+            done
+        fi
+        while IFS= read -r volume; do
+            case $volume in */*) continue ;; esac
+            suffix=tar.gz
+            if jq -e --arg n "$volume" '.[] | select(.name == $n and .content_type == "iso")' "$work/volumes.json" >/dev/null; then suffix=iso; fi
+            ic storage volume export "$pool" "$volume" "$work/$project/$pool/$volume.$suffix" --compression gzip
+        done <"$work/volumes"
+    done <"$work/pools"
+    rm "$work/pools" "$work/volumes" "$work/volumes.json"
+done
+
+# Read every written byte back before publishing or pruning a generation.
+(cd "$work" && find . -type f ! -name SHA256SUMS -exec sha256sum '{}' + >SHA256SUMS)
+sync
+(cd "$work" && sha256sum -c SHA256SUMS) || die 'backup readback differs'
+find "$work" -type f \( -name '*.tar' -o -name '*.tar.gz' \) >"$work/archives"
+while IFS= read -r archive; do tar -xOf "$archive" >/dev/null || die "unreadable archive: $archive"; done <"$work/archives"
+rm "$work/archives"
+generation=$base/backup-$(date -u +%Y%m%dT%H%M%SZ)
+[ ! -e "$generation" ] || die 'generation already exists'
+mv "$work" "$generation"
+work=
+sync
+# Three generations, following the existing guest-backup retention count in 7.2.
+find "$base" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' | sort -r | sed '1,3d' >"$generation/prune"
+while IFS= read -r old; do rm -rf "$old"; done <"$generation/prune"
+rm "$generation/prune"
+sync
+logger -t backup "verified export: $generation"
+echo "backup: verified $generation (keep 3); unmount and close the external LUKS disk before unplugging"
