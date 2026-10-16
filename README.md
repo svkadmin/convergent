@@ -25,9 +25,11 @@ Proven in QEMU on the build host:
   browser container (Alpine).
 - `guests init` provisions the firewalls, wan and svc inside the test host: seeded, host keys
   pinned, CARP up with fw1 master and fw2 backup.
+- `guests update` replaces the firewalls one after the other with failover, and a broken
+  svc image is rolled back by itself.
 
-Not yet: release signing, the browsers started on a desktop, the daily-use tools (`check`,
-`bar`, `menu`, `backup`), and anything on the laptop itself.
+Written and built, not yet used on a desktop: `browser`, `check`, `backup`, `bar`, `menu`.
+Not yet: release signing, errata in the firewall images, anything on the laptop itself.
 
 ## Build and test
 
