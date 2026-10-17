@@ -9,6 +9,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 die() { echo "build: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed"; }
+console_value() {
+	awk -v tag="$1" '$1 == tag { sub(/\r$/, ""); sub(/^[^ ]+ /, ""); print; n++ } END { if (n != 1) exit 1 }' "$2"
+}
 
 out=${1:-}
 [ -n "$out" ] || die "usage: build <output-dir>"
@@ -103,6 +106,7 @@ cat >"$site/etc/convergent/build" <<BUILDVARS
 PKG_URL=http://10.0.2.2/pkg
 PKGS="${pkgnames# }"
 BUILDVARS
+printf '%s\n' "$OPENBSD_MIRROR" >"$site/etc/installurl"
 tar -C "$site" -czf "$www/sets/site$v.tgz" --owner=0 --group=0 --numeric-owner .
 (cd "$www/sets" && ls -l >index.txt)
 
@@ -132,6 +136,18 @@ for n in $nodes; do
 		-netdev "user,id=n0,net=10.0.2.0/24,ipv6=off,hostname=$n,tftp=$tftp,bootfile=auto_install" \
 		-device virtio-net-pci,netdev=n0 || die "$n: QEMU failed or timed out; see $log"
 	grep -q "CONVERGENT-INSTALL-SITE-OK $n" "$log" || die "$n: install.site did not finish; see $log"
+
+	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
+	log=$out/$n.syspatch.log
+	echo "build: patching $n (console log: $log)"
+	timeout 3600 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+		-display none -monitor none -serial "file:$log" -no-reboot \
+		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
+		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
+		-drive "file=$img,if=virtio,format=qcow2" \
+		-netdev user,id=patch,net=10.0.2.0/24,ipv6=off \
+		-device e1000,netdev=patch || die "$n: patch boot failed or timed out; see $log"
+	[ "$(console_value CONVERGENT-SYSPATCH-OK "$log")" = "$n" ] || die "$n: syspatch did not finish; see $log"
 done
 
 # Smoke-boot overlays with the seven production NICs.
@@ -167,6 +183,23 @@ for n in $nodes; do
 	if grep -E 'pf\.conf:[0-9]+|pfctl: |hostname\.[a-z0-9]+: ' "$log" >/dev/null; then
 		die "$n: configuration errors at boot; see $log"
 	fi
+	patchlog=$out/$n.syspatch.log
+	patches=$(console_value CONVERGENT-SYSPATCH "$patchlog") || die "$n: missing patch inventory"
+	bootpatches=$(console_value CONVERGENT-SYSPATCH "$log") || die "$n: missing boot patch inventory"
+	[ "$patches" = "$bootpatches" ] || die "$n: boot patch inventory differs"
+	for required in 018 054 062; do
+		case " $patches " in
+			*" ${required}_"*) ;;
+			*) die "$n: missing required 7.8 erratum $required" ;;
+		esac
+	done
+	kernel=$(console_value CONVERGENT-KERNEL-SHA256 "$patchlog") || die "$n: missing patched kernel digest"
+	bootkernel=$(console_value CONVERGENT-KERNEL-SHA256 "$log") || die "$n: missing booted kernel digest"
+	[ "$kernel" = "$bootkernel" ] || die "$n: did not boot the patched kernel"
+	oldversion=$(console_value CONVERGENT-KERNEL "$patchlog") || die "$n: missing original kernel version"
+	version=$(console_value CONVERGENT-KERNEL "$log") || die "$n: missing booted kernel version"
+	[ "$version" != "$oldversion" ] || die "$n: kernel version did not change"
+	printf '%s\n' "$patches" >"$out/$n.syspatch"
 	for kind in pf rules; do
 		awk -v k="$kind" '$1 == "CONVERGENT-HASH" && $2 == k {gsub(/\r/, ""); print $3}' "$log" >"$out/$n.$kind.sha256"
 		[ "$(wc -l <"$out/$n.$kind.sha256")" = 1 ] || die "$n: missing $kind digest"

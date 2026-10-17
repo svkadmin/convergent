@@ -112,6 +112,7 @@ takes the upstream address by DHCP and performs the only NAT in the system.
 ### 3.3 fw1, fw2 (VMs)
 
 OpenBSD. Each has one interface per segment and a dedicated sync link to the other.
+The image build applies signify-verified syspatches on a temporary DHCP boot, verifies the patched kernel on the offline smoke boot, and records each node's installed patches in `<node>.syspatch`.
 
 - **CARP:** one virtual host ID per segment, the same on both; fw1 with skew 0, fw2 with skew
   100; `net.inet.carp.preempt=1`, so all addresses move together; advertisements unicast to the

@@ -81,10 +81,67 @@ sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
 
 . ./net
 echo "$node.$DOMAIN" >/etc/myname
-# fw_update and syspatch need the internet; firewalls are updated as images.
-rm -f /etc/rc.firsttime
+# syspatch selects the running kernel; bsd.rd cannot relink the installed /bsd.
+cat >/etc/rc.firsttime <<'SYSPATCH'
+#!/bin/sh
+set -eu
+exec >/dev/console 2>&1
+trap 'echo CONVERGENT-SYSPATCH-FAILED; halt -p' 0
+trap 'exit 1' HUP INT TERM
+echo "CONVERGENT-KERNEL $(sysctl -n kern.version | sed -n '1p')"
+cp -p /etc/resolv.conf /etc/resolv.conf.syspatch
+pfctl -d
+route -n delete default || true
+dhcpleased
+ifconfig em0 inet autoconf
+t=0
+until ifconfig em0 | grep -q 'inet 10\.0\.2\.'; do
+	t=$((t + 1))
+	[ "$t" -le 60 ]
+	sleep 1
+done
+echo 'nameserver 10.0.2.3' >/etc/resolv.conf
+# Unpack KARL objects if the installer's initial relink did not finish.
+[ ! -f /usr/share/relink/kernel.tgz ] || /usr/libexec/reorder_kernel
+# Exit 2 also requests a retry after syspatch updates itself.
+while :; do
+	before=$(syspatch -l)
+	rc=0
+	syspatch || rc=$?
+	case $rc in
+		0) break ;;
+		2) after=$(syspatch -l); [ "$after" != "$before" ] || break ;;
+		*) exit "$rc" ;;
+	esac
+done
+missing=$(syspatch -c)
+[ -z "$missing" ]
+patches=$(syspatch -l)
+for required in 018 054 062; do
+	printf '%s\n' "$patches" | grep -q "^${required}_"
+done
+# Finish KARL synchronously before recording the next boot's kernel.
+/usr/libexec/reorder_kernel
+kernel=$(sha256 -q /bsd)
+echo "CONVERGENT-KERNEL-SHA256 $kernel"
+echo "CONVERGENT-SYSPATCH $(printf '%s\n' "$patches" | paste -sd ' ' -)"
+pkill -x dhcpleased
+mv /etc/resolv.conf.syspatch /etc/resolv.conf
+rm -f /var/db/dhcpleased/em0 /etc/rc.firsttime /etc/rc.firsttime.run
+rm -f /etc/ssh/ssh_host_* /etc/isakmpd/private/local.key /etc/iked/private/local.key /etc/soii.key
+sync
+echo "CONVERGENT-SYSPATCH-OK $(hostname -s)"
+trap - 0
+halt -p
+SYSPATCH
 cat >/etc/rc.local <<'FIRSTBOOT'
 #!/bin/sh
+set -eu
+echo "CONVERGENT-KERNEL $(sysctl -n kern.version | sed -n '1p')"
+kernel=$(sha256 -q /bsd.booted)
+echo "CONVERGENT-KERNEL-SHA256 $kernel"
+patches=$(syspatch -l)
+echo "CONVERGENT-SYSPATCH $(printf '%s\n' "$patches" | paste -sd ' ' -)"
 /usr/local/libexec/convergent/fw-seed
 echo "CONVERGENT-HASH pf $(sha256 -q /etc/pf.conf)"
 echo "CONVERGENT-HASH rules $(pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q)"
