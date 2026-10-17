@@ -29,7 +29,7 @@ Proven in QEMU on the build host:
   svc image is rolled back by itself.
 
 Written and built, not yet used on a desktop: `browser`, `check`, `backup`, `bar`, `menu`.
-Not yet: release signing, errata in the firewall images, anything on the laptop itself.
+Not yet: release signing and anything on the laptop itself.
 
 ## Build and test
 
