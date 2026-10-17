@@ -1,6 +1,7 @@
 #!/bin/sh
 # Apply this node's templates after installing the sets.
 set -eu
+export LC_ALL=C
 umask 022
 
 die() { echo "install.site: $*" >&2; exit 1; }
@@ -8,7 +9,7 @@ die() { echo "install.site: $*" >&2; exit 1; }
 cd /etc/convergent
 node=$(sed 's/\..*//' /etc/myname)
 [ -f "node.$node" ] || die "no node.$node for host '$node'"
-for f in net build "node.$node"; do [ -f "$f" ] || die "missing /etc/convergent/$f"; done
+for f in net packages "node.$node"; do [ -f "$f" ] || die "missing /etc/convergent/$f"; done
 
 # Restore files the installer rewrites after unpacking sets.
 for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
@@ -16,12 +17,11 @@ for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
 # One KEY=value per line becomes one sed rule.
 subst=/tmp/convergent.sed
 : >"$subst"
-for f in net build "node.$node"; do
+for f in net "node.$node"; do
 	grep -E '^[A-Z0-9_]+=' "$f" | while IFS== read -r k v; do
 		printf 's|@%s@|%s|g\n' "$k" "$v"
 	done >>"$subst"
 done
-. ./build
 
 templates="
 	/etc/pf.conf /etc/ifstated.conf /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
@@ -63,10 +63,19 @@ rcctl disable unbound ifstated sshd
 rcctl set syslogd flags ''
 
 # pkg_add verifies packages from the build host.
-PKG_PATH="$PKG_URL" pkg_add -I $PKGS
+set --
+while IFS= read -r pkg; do
+	case $pkg in
+		*[!A-Za-z0-9._+-]*|.tgz) die "invalid package basename" ;;
+		*.tgz) set -- "$@" "http://10.0.2.2/pkg/$pkg" ;;
+		*) die "invalid package basename" ;;
+	esac
+done <packages
+[ "$#" -gt 0 ] || die "empty package list"
+PKG_PATH=http://10.0.2.2/pkg pkg_add -I "$@"
 install -d -m 0755 -o root -g wheel /var/node_exporter /var/node_exporter/textfile
 
-grep -qs fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab   # 7.8 has none yet
+grep -qs fw-facts /etc/crontab || cat /etc/convergent/crontab >>/etc/crontab   # none on a fresh install
 chmod 600 /etc/crontab
 
 # Check what can be checked without the interfaces and the other node.
@@ -116,10 +125,7 @@ while :; do
 done
 missing=$(syspatch -c)
 [ -z "$missing" ]
-patches=$(syspatch -l)
-for required in 018 054 062; do
-	printf '%s\n' "$patches" | grep -q "^${required}_"
-done
+patches=$(syspatch -l)   # the build checks the release's required errata (pins)
 # Finish KARL synchronously before recording the next boot's kernel.
 /usr/libexec/reorder_kernel
 kernel=$(sha256 -q /bsd)
@@ -149,6 +155,6 @@ FIRSTBOOT
 
 # What is left is only for the build.
 cp "node.$node" node
-rm -rf /etc/convergent/late /etc/convergent/build /etc/convergent/crontab /etc/convergent/node.fw1 \
+rm -rf /etc/convergent/late /etc/convergent/packages /etc/convergent/crontab /etc/convergent/node.fw1 \
 	/etc/convergent/node.fw2 /install.site
 echo "CONVERGENT-INSTALL-SITE-OK $node"

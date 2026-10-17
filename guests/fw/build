@@ -3,6 +3,7 @@
 # guests/fw/build <output-dir>
 # Requires KVM, OVMF and loopback port 80.
 set -eu
+export LC_ALL=C
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins"
@@ -84,6 +85,11 @@ pkgbase=$OPENBSD_MIRROR/$ver/packages/amd64
 curl -fsS --proto =https --tlsv1.2 -o "$dl/pkg-index.txt" "$pkgbase/index.txt"
 pkgnames=
 fetchpkg() {
+	case $1 in
+		*[!A-Za-z0-9._+-]*|.tgz) die "invalid package basename" ;;
+		*.tgz) ;;
+		*) die "invalid package basename" ;;
+	esac
 	[ ! -f "$www/pkg/$1" ] || return 0
 	curl -fsS --proto =https --tlsv1.2 -o "$www/pkg/$1" "$pkgbase/$1"
 	tar -xzOf "$www/pkg/$1" +CONTENTS | awk -F: '/^@depend/ { print $3 ".tgz" }' |
@@ -93,7 +99,7 @@ for p in $FW_PACKAGES; do
 	f=$(awk -v p="$p" '{ n = $NF } n ~ ("^" p "-[0-9][^/]*\\.tgz$") { print n }' "$dl/pkg-index.txt" | sort | tail -n 1)
 	[ -n "$f" ] || die "package $p not found in $pkgbase"
 	fetchpkg "$f"
-	pkgnames="$pkgnames ${f%.tgz}"
+	pkgnames="$pkgnames $f"
 done
 
 # 3. The site set: this tree, plus what is made fresh for this build.
@@ -102,10 +108,7 @@ cp -R "$here/site" "$site"
 find "$site" -type d -exec chmod 755 {} +
 find "$site" -type f -exec chmod 644 {} +
 chmod 755 "$site/install.site" "$site/usr/local/libexec/convergent/fw-facts"
-cat >"$site/etc/convergent/build" <<BUILDVARS
-PKG_URL=http://10.0.2.2/pkg
-PKGS="${pkgnames# }"
-BUILDVARS
+printf '%s\n' $pkgnames >"$site/etc/convergent/packages"
 printf '%s\n' "$OPENBSD_MIRROR" >"$site/etc/installurl"
 tar -C "$site" -czf "$www/sets/site$v.tgz" --owner=0 --group=0 --numeric-owner .
 (cd "$www/sets" && ls -l >index.txt)
@@ -120,8 +123,9 @@ httppid=$!
 sleep 1
 kill -0 "$httppid" 2>/dev/null || die "cannot serve on 127.0.0.1:80 ($(tail -n 1 "$work/http.log"))"
 
-# Unattended install; reboot ends QEMU.
-for n in $nodes; do
+# Unattended install, then the patch boot; reboot ends QEMU. A node is redone from scratch
+# up to three times: the unpatched kernel has panicked mid-syspatch in nested test VMs.
+install_node() {
 	log=$out/$n.console.log
 	img=$out/$n.qcow2
 	rm -f "$img"
@@ -134,8 +138,8 @@ for n in $nodes; do
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
 		-drive "file=$img,if=virtio,format=qcow2" \
 		-netdev "user,id=n0,net=10.0.2.0/24,ipv6=off,hostname=$n,tftp=$tftp,bootfile=auto_install" \
-		-device virtio-net-pci,netdev=n0 || die "$n: QEMU failed or timed out; see $log"
-	grep -q "CONVERGENT-INSTALL-SITE-OK $n" "$log" || die "$n: install.site did not finish; see $log"
+		-device virtio-net-pci,netdev=n0 || { echo "build: $n: install failed or timed out; see $log" >&2; return 1; }
+	grep -q "CONVERGENT-INSTALL-SITE-OK $n" "$log" || { echo "build: $n: install.site did not finish; see $log" >&2; return 1; }
 
 	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
 	log=$out/$n.syspatch.log
@@ -146,8 +150,15 @@ for n in $nodes; do
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
 		-drive "file=$img,if=virtio,format=qcow2" \
 		-netdev user,id=patch,net=10.0.2.0/24,ipv6=off \
-		-device e1000,netdev=patch || die "$n: patch boot failed or timed out; see $log"
-	[ "$(console_value CONVERGENT-SYSPATCH-OK "$log")" = "$n" ] || die "$n: syspatch did not finish; see $log"
+		-device e1000,netdev=patch || { echo "build: $n: patch boot failed or timed out; see $log" >&2; return 1; }
+	[ "$(console_value CONVERGENT-SYSPATCH-OK "$log")" = "$n" ] || { echo "build: $n: syspatch did not finish; see $log" >&2; return 1; }
+}
+for n in $nodes; do
+	try=1
+	until install_node; do
+		[ "$try" -lt 3 ] || die "$n: install and patch failed three times"
+		try=$((try + 1))
+	done
 done
 
 # Smoke-boot overlays with the seven production NICs.
@@ -187,10 +198,10 @@ for n in $nodes; do
 	patches=$(console_value CONVERGENT-SYSPATCH "$patchlog") || die "$n: missing patch inventory"
 	bootpatches=$(console_value CONVERGENT-SYSPATCH "$log") || die "$n: missing boot patch inventory"
 	[ "$patches" = "$bootpatches" ] || die "$n: boot patch inventory differs"
-	for required in 018 054 062; do
+	for required in $REQUIRED_ERRATA; do
 		case " $patches " in
 			*" ${required}_"*) ;;
-			*) die "$n: missing required 7.8 erratum $required" ;;
+			*) die "$n: missing required $OPENBSD_VERSION erratum $required" ;;
 		esac
 	done
 	kernel=$(console_value CONVERGENT-KERNEL-SHA256 "$patchlog") || die "$n: missing patched kernel digest"
@@ -210,4 +221,5 @@ done
 for n in $nodes; do
 	(cd "$out" && sha256sum "$n.qcow2" >"$n.qcow2.sha256")
 done
+(cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 >SHA256SUMS)
 echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2"
