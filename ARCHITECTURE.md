@@ -5,9 +5,8 @@ with no trade of one for the other. The machine converges on the state declared 
 repository: everything it runs is built from here, verified at boot, and replaced as a
 whole on update.
 
-This document describes the design. [DECISIONS.md](DECISIONS.md) records the choices
-behind it and their status. Section 14 maps what Convergent keeps, improves and drops from
-its predecessor, Archer.
+This document describes the design and the reasons for it. Section 14 maps what Convergent
+keeps, improves and drops from its predecessor, Archer.
 
 ---
 
@@ -149,7 +148,7 @@ stale, and the host buffers its logs. DNS does not depend on svc.
 
 ### 3.5 Browsers
 
-Firefox runs in unprivileged Incus containers built from one browser image:
+Chromium runs in unprivileged Incus containers built from one browser image:
 
 - **web:** the everyday browser, with a persistent profile volume.
 - **tmp:** an ephemeral container from the same image, gone when closed.
@@ -161,7 +160,7 @@ context (no screen capture, no input injection, no other Wayland socket, no Sway
 a PipeWire socket restricted by WirePlumber rules (playback; microphone only for modes that ask
 for it), and its own download directory. No D-Bus, so no portals and no screen sharing.
 
-Firefox policies are part of the image: DNS-over-HTTPS off (the gateway resolves), telemetry,
+Chromium policies are part of the image: DNS-over-HTTPS off (the gateway resolves), telemetry,
 studies and captive-portal probes off, and each mode labelled in its window title so the owner
 always knows which browser is in front. Links opened from other programs go to `tmp` by default.
 
@@ -308,6 +307,10 @@ The build host is a dedicated machine (a VM today) that does nothing else. It ho
 - a binary package cache: Gentoo's official hardened binary packages where they match, our own
   builds where USE flags differ;
 - the outputs of each release.
+
+`portage/overlay` holds the two packages Gentoo does not offer as needed: `aa-exec` alone, with
+which Incus confines its image unpacker (the stock apparmor-utils would bring Python into the
+image), and `way-secure`, which gives each browser a restricted Wayland security context.
 
 The owner's Secure Boot signing key is not kept on the build host: it is an encrypted file on offline
 media, attached only to sign a release. A compromised build host can produce a
@@ -540,15 +543,15 @@ Convergent writes as little as it can. The rules:
 ## 13. Repository layout
 
 ```
-README.md  ARCHITECTURE.md  DECISIONS.md  USAGE.md  RECOVERY.md
-build/        the release build: build environment, kernel fragment, image and UKI steps
-portage/      make.conf, package.use, package.accept_keywords, sets/convergent, sets/convergent-apps
+README.md  ARCHITECTURE.md  USAGE.md
+build/        the release build: build environment, kernel fragment, image and UKI steps, the test
+portage/      make.conf, package.use, package.accept_keywords, sets, the image profile, the overlay
 rootfs/       the host's /etc and /usr/local, as plain files
 initramfs/    the boot steps of section 5.2
 guests/wan/   Alpine image definition and configuration
 guests/fw/    OpenBSD install.conf, site set, pf.conf, CARP, pfsync, ifstated, unbound
 guests/svc/   Alpine image definition, VictoriaMetrics, VictoriaLogs, vmalert rules, dashboards
-guests/browser/  Alpine image with Firefox and its policies
+guests/browser/  Alpine image with Chromium and its policies
 install/      the installer
 tools/        the pieces of section 12
 ```
