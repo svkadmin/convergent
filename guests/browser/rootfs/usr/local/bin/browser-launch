@@ -2,7 +2,7 @@
 # ARCHITECTURE 3.5
 # Host supplies filtered socket inodes accessible to guest UID 1000.
 # Wayland: deny capture, input injection, other surfaces and privileged globals.
-# PipeWire: playback; microphone only when requested; no monitor capture.
+# Pulse: playback only; no recording or monitor capture.
 # Host waits for exit, stops/reaps instances, closes portal rules/Grafana.
 set -eu
 umask 077
@@ -24,13 +24,13 @@ case $role in
         done ;;
 esac
 [ -S /mnt/browser/wayland-0 ] || die "missing restricted Wayland socket"
-[ -S /mnt/browser/pipewire-0 ] || die "missing restricted PipeWire socket"
+[ -S /mnt/browser/pipewire-0 ] || die "missing restricted Pulse socket"
 cd /home/browser
 
 exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LOGNAME=browser \
     LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
-    PIPEWIRE_REMOTE=/mnt/browser/pipewire-0 MOZ_ENABLE_WAYLAND=1 GDK_BACKEND=wayland \
-    GTK_USE_PORTAL=0 NO_AT_BRIDGE=1 \
+    PULSE_SERVER=unix:/mnt/browser/pipewire-0 GTK_USE_PORTAL=0 NO_AT_BRIDGE=1 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent \
-    /usr/bin/firefox-esr --no-remote --name="convergent-$role" --class="convergent-$role" \
-    --profile /home/browser/profile "$@"
+    /usr/bin/chromium --ozone-platform=wayland --class="convergent-$role" \
+    --user-data-dir=/home/browser/profile --password-store=basic --no-first-run \
+    --disable-background-networking --disable-component-update --disable-breakpad "$@"

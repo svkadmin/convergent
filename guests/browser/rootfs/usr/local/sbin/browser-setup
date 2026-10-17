@@ -15,12 +15,13 @@ case $role in
     *) die "BROWSER_ROLE must be web, tmp, portal or admin" ;;
 esac
 rm -f /run/browser-ready
-cp "/usr/share/convergent-browser/$role/policies.json" /usr/lib/firefox-esr/distribution/policies.json
+cp "/usr/share/convergent-browser/$role/policies.json" /etc/chromium/policies/managed/browser.json
 printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n    address %s/%s\n    gateway %s\n' \
     "$address" "$prefix" "$gateway" >/etc/network/interfaces
 printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$resolver" >/etc/resolv.conf
-mkdir -p /run/user/1000 /home/browser/profile /home/browser/Downloads
-chown 1000:1000 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads
-chmod 700 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads
+downloads=/home/browser/Downloads/$role
+mkdir -p /run/user/1000 /home/browser/profile "$downloads"
+chown 1000:1000 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads "$downloads"
+chmod 700 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads "$downloads"
 printf '%s\n' "$role" >/run/browser-role
 touch /run/browser-ready

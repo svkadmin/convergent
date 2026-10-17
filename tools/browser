@@ -104,7 +104,9 @@ cleanup() {
     if [ -n "$active" ]; then
         stop_container || result=1
     fi
-    if [ -n "$grafana" ]; then ic exec svc -- rc-service grafana stop || result=1; fi
+    if [ -n "$grafana" ]; then
+        if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory 350MiB || result=1; else result=1; fi
+    fi
     if [ -n "$portal" ]; then /usr/local/sbin/portal off || result=1; fi
     if [ -n "$browser" ]; then kill "$browser" 2>/dev/null; wait "$browser" 2>/dev/null; fi
     for child in $children; do kill "$child" 2>/dev/null; done
@@ -186,12 +188,10 @@ until ic exec "$name" -- test -f /run/browser-ready; do
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
 done
-ic exec "$name" -- sh -eu -c '
-    sed -i "/media.cubeb.backend/s/\"alsa\"/\"pulse\"/" /usr/lib/firefox-esr/distribution/policies.json
-    mkdir -p /etc/pulse
-    printf "default-server = unix:/mnt/browser/pipewire-0\\nautospawn = no\\n" >/etc/pulse/client.conf
-'
-if [ "$role" = admin ]; then grafana=1; ic exec svc -- rc-service grafana start; fi
+if [ "$role" = admin ]; then
+    ic config set svc limits.memory 768MiB
+    grafana=1; ic exec svc -- rc-service grafana start
+fi
 [ "$role" != portal ] || portal_on || die 'portal mode ended during startup'
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
     --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" &

@@ -26,15 +26,14 @@ root=$mini/target
 alpine_prepare
 
 alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
-    ifupdown-ng ca-certificates firefox-esr=140.12.0-r0 font-dejavu \
-    pipewire-libs pipewire-alsa mesa-egl mesa-dri-gallium
+    ifupdown-ng ca-certificates chromium=155.0.8059.39-r0 mesa-egl mesa-dri-gallium
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
 cp -R "$here/rootfs/." "$root/"
 for role in web tmp portal admin; do
     mkdir -p "$root/usr/share/convergent-browser/$role"
     jq -s '.[0] * .[1]' "$here/policies.json" "$here/roles/$role/policies.json" \
         >"$root/usr/share/convergent-browser/$role/policies.json"
-    jq -e '.policies | type == "object"' \
+    jq -e 'type == "object"' \
         "$root/usr/share/convergent-browser/$role/policies.json" >/dev/null
 done
 chmod 755 "$root/usr/local/bin/browser-launch" "$root/usr/local/sbin/browser-setup" \
@@ -43,7 +42,7 @@ chroot "$root" /bin/sh -eu <<'SETUP'
 addgroup -g 1000 browser
 adduser -D -u 1000 -G browser -h /home/browser -s /sbin/nologin browser   # -D: locked
 passwd -l root
-mkdir -p /home/browser/profile /home/browser/Downloads /mnt/browser /usr/lib/firefox-esr/distribution
+mkdir -p /home/browser/profile /home/browser/Downloads /mnt/browser /etc/chromium/policies/managed
 touch /mnt/browser/wayland-0 /mnt/browser/pipewire-0
 chown -R 1000:1000 /home/browser
 chmod 700 /home/browser /home/browser/profile /home/browser/Downloads
@@ -76,7 +75,7 @@ properties:
   os: Alpine
   release: '3.24'
   variant: convergent-browser
-  description: Convergent Firefox ESR (Alpine 3.24, x86_64)
+  description: Convergent Chromium (Alpine 3.24, x86_64)
 EOF
 tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
 alpine_cleanup
