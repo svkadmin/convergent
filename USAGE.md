@@ -3,6 +3,46 @@
 The tools are in `/usr/local/sbin`. Most need root and run with `sudo` (wheel only, password
 asked, ticket valid for 5 minutes). If `sudo` does not find a tool, give its full path.
 
+Contents: [Coming from Arch](#coming-from-arch) · [Keys](#keys) · [The menu](#the-menu) ·
+[Browsers](#browsers) · [Wi-Fi](#wi-fi) · [Captive portals](#captive-portals) ·
+[Devices](#devices) · [DNS](#dns-blocklist-and-own-records) · [Backups](#backups) ·
+[Health and alerts](#health-and-alerts) · [Releases and guests](#releases-and-guests) ·
+[Power and locking](#power-and-locking). When something breaks: [RECOVERY.md](RECOVERY.md).
+
+## Coming from Arch
+
+| On Arch | Here |
+|---|---|
+| `pacman -Syu` | No package manager on the laptop. An update is a whole new release: `sudo slot write` (README) |
+| `systemctl status`, `restart` | `rc-status` lists every service; `sudo rc-service <name> status`, `restart` |
+| `systemctl enable` | Services are fixed in the release |
+| `journalctl` | `/var/log/messages` (warnings and up), `/var/log/incus/`, Grafana; see RECOVERY 8 |
+| Editing `/etc` | `/etc` is read-only. Only accounts, `machine-id` and `/etc/usbguard/rules.conf` are kept; other changes come with a release |
+| Your files | `/home` is on the encrypted state volume and survives updates |
+| `incus` | Guests are managed with `guests`; the owner's own Incus project is not set up yet |
+| A network manager | Wi-Fi is in the menu; the radio lives in the `wan` VM |
+
+The firewalls run OpenBSD. You do not log in to them for daily use; for a look,
+`sudo ssh -F /etc/convergent/ssh_config fw1` gives a shell (`pfctl -sr` shows the rules,
+`ifconfig carp` the failover state).
+
+## Keys
+
+Sway's stock bindings, plus the menu. Super is the Windows key.
+
+| Key | Does |
+|---|---|
+| Super+m | Convergent menu |
+| Super+Enter | terminal (foot) |
+| Super+d | run a program by name |
+| Super+Shift+q | close the window |
+| Super+1 … 9, Super+Shift+1 … 9 | go to a workspace, move the window there |
+| Super+f | fullscreen |
+| Super+Shift+c | reload the sway configuration |
+| Super+Shift+e | exit sway |
+| Volume and mute keys | work through PipeWire |
+
+
 ## The menu
 
 Super+m opens the menu: one action per file in `/usr/lib/convergent/menu`. An action runs in a

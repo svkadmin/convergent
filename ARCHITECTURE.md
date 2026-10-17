@@ -5,8 +5,10 @@ with no trade of one for the other. The machine converges on the state declared 
 repository: everything it runs is built from here, verified at boot, and replaced as a
 whole on update.
 
-This document describes the design and the reasons for it. Section 14 maps what Convergent
-keeps, improves and drops from its predecessor, Archer.
+This document describes the design and the reasons for it: the target, including parts not
+built yet (signing, the recovery UKI, network updates). What runs today is in the README's
+Status table. Section 14 maps what Convergent keeps, improves and drops from its predecessor,
+Archer.
 
 ---
 
@@ -394,10 +396,9 @@ Firmware updates use signed capsules only, applied from the menu.
   backup after any keyslot change.
 - **Backups:** from the menu, an encrypted export of `/home`, the owner's guests and the writable
   `/etc` entries to external media.
-- **Recovery:** RECOVERY.md covers: booting the other slot or the recovery UKI; booting from the
-  install stick and unlocking the state volume by hand; restoring a guest snapshot; a firewall that
-  will not come back; DNS that does not answer; a lock screen that rejects the password; a clock
-  far wrong; a full state volume; reading a crash record; restoring from the offline backups.
+- **Recovery:** RECOVERY.md, numbered recipes for the failures known so far; each failure found on
+  the laptop adds one. Still to come with their tools: the recovery UKI, restoring a guest
+  snapshot, restoring from the offline backups.
 
 ---
 
@@ -543,7 +544,7 @@ Convergent writes as little as it can. The rules:
 ## 13. Repository layout
 
 ```
-README.md  ARCHITECTURE.md  USAGE.md
+README.md  USAGE.md  RECOVERY.md  ARCHITECTURE.md
 build/        the release build: build environment, kernel fragment, image and UKI steps, the test
 portage/      make.conf, package.use, package.accept_keywords, sets, the image profile, the overlay
 rootfs/       the host's /etc and /usr/local, as plain files
