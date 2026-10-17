@@ -98,8 +98,11 @@ build/test --corrupt <release>                        # one flipped block: must 
 build/test --fallback <good> <newer>                  # broken newer slot: the good one returns
 build/test --interrupt <good> <newer>                 # update cut off half-way: still boots
 build/test --guests <release> $g                      # plus guests init: firewalls, wan, svc
-build/test --guests-update <release> $g <new-dir>     # plus guest updates and a rollback
+build/test --guests-update <release> $g <broken-dir>  # plus guest updates and a rollback
 ```
+
+`<broken-dir>` is a new path: the test builds a deliberately broken svc image there and checks
+that the update is rolled back.
 
 ## Install
 
@@ -131,10 +134,10 @@ CONVERGENT_UNSIGNED=1 convergent-install /path/to/release
 ```
 
 It lists the disks and refuses the boot disk, mounted disks and anything under 49 GiB, asks you
-to type the disk again (or `ERASE` and its serial), then the owner name, password and LUKS
-passphrase, each twice. It writes and verifies slot A, sets up the boot entry `Convergent` and
-powers off. Remove the USB disk before booting. The guests are not copied: run `guests init`
-with a guest directory (first boot step 3).
+to type the disk again (or `ERASE` and its serial), then the owner name, and the password and
+LUKS passphrase twice each. It writes and verifies slot A, sets up the boot entry `Convergent`
+and powers off. Remove the USB disk before booting. The guest images are not copied: put the
+guest directory at `/var/lib/convergent/release-guests/guests`, then do first boot step 3.
 
 ## First boot
 
@@ -159,31 +162,36 @@ a Slovak keyboard `@` is Shift+2, and `y` and `z` are swapped).
    ```
 5. Run `sway`. Super+m opens the menu: **Wi-Fi: scan**, then **Wi-Fi: connect**.
 
-Until signing exists the bar always counts one alert: Secure Boot off.
+Until signing exists the bar always counts two alerts: Secure Boot off, and the health checker
+that fails because of it.
 
 ## Update
 
-Copy the release directory to the laptop (for example on a USB disk), then:
+Copy the release directory (`manifest`, `slot.img`, both `.efi` files; about 1 GB) to a USB
+stick, FAT32 or exFAT. On the laptop allow the stick (`sudo devices list`, `sudo devices allow
+<number>`) and mount it under `/run`, since the root is read-only:
 
 ```sh
-sudo env CONVERGENT_UNSIGNED=1 slot write /path/to/release
-sudo reboot
+sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb
+sudo env CONVERGENT_UNSIGNED=1 slot write /run/usb/<release>
+sudo umount /run/usb && sudo reboot
 ```
 
 `slot write` checks every hash, refuses a release that is not newer than the booted one and the
 highest ever marked good, writes the other slot, reads it back and gives it three boot tries.
 After the reboot the release runs its health checks and marks itself good; `sudo slot status`
-shows both slots. If it fails three times (a hang is reset by the watchdog after ten minutes),
-the previous slot boots again with its own `/var`.
+shows both slots. If it fails three times, the previous slot boots again with its own `/var`. A
+hang after unlock is reset by the hardware watchdog after ten minutes, if the laptop has one;
+otherwise hold the power button.
 
-Guests update separately, on a slot already marked good. Each guest is exported first and
-restored if the new one fails its checks:
+Guests update separately, on a slot already marked good, with every browser closed. Copy the new
+guest images to the laptop; `$g` is that directory. Each guest is exported first and restored if
+the new one fails its checks:
 
 ```sh
 sudo guests update fw  $g/fw      # fw2 first, then failover, then fw1
 sudo guests update wan $g/wan
 sudo guests update svc $g/svc
-sudo check accept-fw $g/fw        # after a firewall update
 ```
 
 To go back by hand, pick the other slot in the boot menu: see [RECOVERY.md](RECOVERY.md).

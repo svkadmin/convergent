@@ -562,6 +562,7 @@ Release inputs (already verified by the caller; YAML copied from the guest sourc
 - `RELEASE/guests/wan/`: `wan.qcow2`, `wan-metadata.tar.xz`.
 - `RELEASE/guests/svc/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus.yaml`.
 - `RELEASE/guests/browser/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus/{base,web,tmp,portal,admin}.yaml`.
+- Each of these directories also holds the `SHA256SUMS` that `guests` checks first.
 
 ---
 

@@ -28,15 +28,18 @@ sessions bring the previous release back (recipe 2).
 
 ## 2. A new release does not boot or does not become good
 
-After `slot write` the new release gets three boot tries. A boot that hangs is reset by the
-hardware watchdog after ten minutes; a boot whose health checks fail does not mark itself good.
-After the third try the previous slot boots by itself, with the `/var` it had.
+After `slot write` the new release gets three boot tries. A boot that hangs after unlock is reset
+by the hardware watchdog after ten minutes, if the laptop has one (otherwise hold the power
+button); a boot whose health checks fail does not mark itself good. After the third try the
+previous slot boots by itself, with the `/var` it had.
 
-Check, once back:
+Once back, the failed release's log is in its own `/var`, not in the one you are running:
 
 ```sh
-sudo slot status                         # booted release, slot, good, highest
-sudo grep ' slot:' /var/log/messages     # why the new release was not marked good
+sudo slot status                                     # booted release, slot, good, highest
+sudo mkdir -p /run/st && sudo mount -o ro,subvolid=5 /dev/mapper/cv-state /run/st
+sudo grep ' slot:' /run/st/var-<failed release>/log/messages
+sudo umount /run/st
 ```
 
 Send that output with the release number. Nothing else needs undoing: write the next release

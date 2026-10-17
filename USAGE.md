@@ -78,8 +78,8 @@ playback-only audio; the window title starts with `[role]`.
 | portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; starts only while portal mode is on |
 | admin | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
 
-A role already open refuses a second start. Downloads stay in the container; no action moves a
-file out. Policies: DNS-over-HTTPS off, no sync, no password manager, no telemetry; admin and
+web, admin and portal refuse a second start while open; tmp can run many at once. Downloads stay
+in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no sync, no password manager, no telemetry; admin and
 portal allow no extensions. The admin browser starts Grafana in svc and stops it on close. Log in
 as `owner` with the password in `/var/lib/convergent/guests/tls/admin-password` (`sudo cat`).
 A handler that sends links from other programs to `tmp` is not built.
@@ -156,6 +156,9 @@ sudo check accept <dir>     # accept a trusted release as the baseline
 sudo check accept-fw <dir>  # accept new firewall hashes after a firewall update
 ```
 
+With Secure Boot off the checker always fails, so `accept` and `accept-fw` cannot complete until
+release signing exists.
+
 The checker compares the running system with the release: verity, the writable `/etc` files,
 autostart and SUID inventories, the guests' Incus settings, the radio's VFIO binding, CARP and pf
 on both firewalls. Cron runs it after boot and updates, and daily once it passes. It fails until
@@ -183,9 +186,9 @@ sudo guests status                    # one line per instance: name and state
 sudo guests update fw|wan|svc|web|admin <image-dir>
 ```
 
-Writing a release, updating guests and rolling back are in the README. `guests update web` and
-`admin` need that browser closed. One guest operation runs at a time; browsers, `check` and
-`backup` refuse to start while one runs.
+Writing a release, updating guests and rolling back are in the README. Close every browser
+first: an open browser makes guest operations wait, then fail after ten minutes. One guest
+operation runs at a time; browsers, `check` and `backup` refuse to start while one runs.
 
 ## Power and locking
 
