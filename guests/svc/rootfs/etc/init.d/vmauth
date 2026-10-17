@@ -1,13 +1,13 @@
 #!/sbin/openrc-run
-# Stock loopback router for MetricsQL and LogsQL.
-description="Loopback query router for mixed MetricsQL and LogsQL rules"
+# Query-only router for local rules and host log queries.
+description="Query router for MetricsQL and LogsQL"
 supervisor=supervise-daemon
 pidfile="/run/$RC_SVCNAME.pid"
 retry="TERM/60/KILL/5"
 no_new_privs=true
 command=/usr/bin/vmauth
 command_user=vmauth:vmauth
-command_args="-httpListenAddr=127.0.0.1:8427 -auth.config=/etc/vmauth.yaml"
+command_args="-httpListenAddr=127.0.0.1:8427 -httpListenAddr=100.80.2.10:9428 -auth.config=/etc/vmauth.yaml"
 export GOMEMLIMIT=16MiB GOMAXPROCS=1
 respawn_delay=5
 respawn_max=5

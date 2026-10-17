@@ -1,4 +1,4 @@
-# Convergent: AppArmor's aa-exec alone, for Incus (DECISIONS 41); apparmor-utils brings Python.
+# Convergent: AppArmor's aa-exec alone, for Incus (ARCHITECTURE 6); apparmor-utils brings Python.
 EAPI=8
 
 inherit toolchain-funcs

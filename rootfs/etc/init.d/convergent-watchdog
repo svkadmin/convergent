@@ -7,7 +7,7 @@ pidfile=/run/convergent-watchdog.pid
 
 # 20 feeds, 30 s apart: ten minutes from the start of this service.
 loop='
-exec 3>/dev/watchdog || exit 1
+trap "rm -f /run/convergent-watchdog.pid" 0
 s=
 trap "printf V >&3; kill \$s 2>/dev/null; exit 0" TERM
 n=0
@@ -26,7 +26,17 @@ depend() {
 
 start() {
 	ebegin "Feeding the watchdog"
-	start-stop-daemon --start --quiet --background --make-pidfile --pidfile "$pidfile" \
-		--exec "$command" -- -c "$loop"
-	eend $?
+	if [ ! -c /dev/watchdog ] || ! command exec 3>/dev/watchdog; then
+		logger -t convergent-watchdog "cannot open /dev/watchdog; continuing without a watchdog"
+		ewarn "No usable hardware watchdog"
+		return 0
+	fi
+	nohup "$command" -c "$loop" </dev/null >/dev/null 2>&1 &
+	printf '%s\n' "$!" >"$pidfile"
+	exec 3>&-
+	eend 0
+}
+
+stop() {
+	[ ! -s "$pidfile" ] || start-stop-daemon --stop --quiet --oknodo --retry TERM/5 --pidfile "$pidfile" --exec "$command"
 }

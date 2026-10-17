@@ -69,7 +69,7 @@ dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $
 
 # Track content, including non-executable desktop files and shell startup scripts.
 autostart() {
-    find -L /home -type f \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
+    find /home -xdev -type f \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
         -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
         -o -path '*/.config/environment.d/*' -o -name .profile -o -name .shrc -o -name .bashrc \
         -o -name .bash_profile -o -name .bash_login -o -name .zshrc -o -name .zshenv -o -name .zprofile \
@@ -79,7 +79,7 @@ autostart() {
         -exec sha256sum '{}' + >"$work/autostart.raw" && sort "$work/autostart.raw" >"$work/autostart"
 }
 suid() {
-    find /home /var /tmp -type f -perm -4000 -printf '%m %U %G %p\n' >"$work/suid.raw" &&
+    find /home /var /tmp -xdev -type f -perm -4000 -printf '%m %U %G %p\n' >"$work/suid.raw" &&
         sort "$work/suid.raw" >"$work/suid"
 }
 autostart 2>>"$work/report" || bad 'autostart scan failed'

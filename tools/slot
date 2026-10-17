@@ -99,7 +99,6 @@ prune() {
 accept() {
 	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] || put good "$release"
 	prune
-	disarm
 	log "release $release in slot $slot is good"
 	echo "convergent: release $release is good" 2>/dev/null >/dev/console || :
 }
@@ -113,7 +112,8 @@ bless() {
 	uki=$1
 	case ${uki##*/} in
 	convergent-"$release"-"$slot".efi)
-		# Uncounted UKI; state may still need updating.
+		disarm
+		log "release $release is already uncounted; watchdog disarmed before health checks"
 		;;
 	convergent-"$release"-"$slot"+*) ;;
 	*) die "the UKI of slot $slot is not release $release" ;;
@@ -129,6 +129,7 @@ bless() {
 	case ${uki##*/} in
 	*+*) mv "$uki" "$esp/$linux/convergent-$release-$slot.efi" && sync || die "could not rename the UKI" ;;
 	esac
+	disarm
 	accept
 }
 

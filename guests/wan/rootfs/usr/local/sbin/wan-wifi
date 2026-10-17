@@ -15,7 +15,7 @@ esc=$(printf '\033')
 run() {
 	_out=$(timeout "$@" 2>&1)
 	_rc=$?
-	printf '%s\n' "$_out" | sed "s/${esc}\[[0-9;]*[A-Za-z]//g"
+	printf '%s\n' "$_out" | sed "s/${esc}\[[0-9;]*[A-Za-z]//g" | tr -d '\000-\010\013-\037\177'
 	return $_rc
 }
 

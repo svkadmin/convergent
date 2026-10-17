@@ -13,7 +13,12 @@ die() { echo "menu: $*" >&2; exit 1; }
 usage() { echo "usage: menu | confirm TEXT | wifi status|scan|connect|forget | device" >&2; exit 2; }
 
 # wan CMD...: a Wi-Fi command in wan, over SSH as root.
-wan() { sudo /usr/bin/ssh -F "$ssh_conf" wan "$@"; }
+wan() {
+	_out=$(sudo /usr/bin/ssh -F "$ssh_conf" wan "$@" 2>&1)
+	_rc=$?
+	printf '%s\n' "$_out" | LC_ALL=C tr -d '\000-\010\013-\037\177'
+	return "$_rc"
+}
 
 ask() { printf '%s' "$1"; IFS= read -r a || a=; }
 

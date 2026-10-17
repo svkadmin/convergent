@@ -1,0 +1,79 @@
+#!/bin/sh
+# stick <release> <guests-dir> <out.img> [size]: build USB media with the real installer.
+# Set CONVERGENT_INSTALL_OWNER for unattended use; stdin is password then LUKS passphrase.
+set -eu
+set +ax
+umask 077
+export LC_ALL=C
+
+here=$(cd "$(dirname "$0")" && pwd -P)
+. "$here/build.conf"
+. "$here/chroot.sh"
+die() { echo "stick: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 56G: fits a 64 GB stick]"
+release=$1
+case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
+[ -s "$BUILDER/releases/$release/slot.img" ] || die "no release $release; run build/image first"
+guests=$(cd "$2" && pwd -P) || die "no guests directory"
+for file in fw/fw1.qcow2 fw/fw2.qcow2 wan/wan.qcow2 wan/wan-metadata.tar.xz \
+	fw/fw1.pf.sha256 fw/fw2.pf.sha256 fw/fw1.rules.sha256 fw/fw2.rules.sha256 \
+	svc/metadata.tar.gz svc/rootfs.tar.gz svc/incus.yaml browser/metadata.tar.gz browser/rootfs.tar.gz \
+	browser/incus/base.yaml browser/incus/web.yaml browser/incus/tmp.yaml browser/incus/portal.yaml browser/incus/admin.yaml; do
+	[ -s "$guests/$file" ] || die "missing guest artifact: $file"
+done
+outdir=$(cd "$(dirname "$3")" && pwd -P) || die "no output directory"
+out=$outdir/$(basename "$3")
+[ ! -e "$out" ] && [ ! -L "$out" ] || die "output already exists: $out"
+size=${4:-56G}
+case ${size%[KMGT]} in '' | *[!0-9]*) die "size must be bytes or an integer with K, M, G or T suffix" ;; esac
+owner=${CONVERGENT_INSTALL_OWNER:-}
+if [ -z "$owner" ]; then
+	printf 'Owner login name: ' >/dev/tty
+	IFS= read -r owner </dev/tty || die "set CONVERGENT_INSTALL_OWNER without a terminal"
+fi
+case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;; esac
+[ "${#owner}" -le 32 ] || die "login name is too long"
+
+bld() { chroot "$BUILDER" "$@"; }
+work= loop= guest_mounted= chroot_ready=
+cleanup() {
+	status=$?
+	trap - 0
+	if [ -n "$guest_mounted" ]; then umount "$work/guests" || status=1; fi
+	if [ -n "$loop" ]; then losetup -d "$loop" || status=1; fi
+	if [ -n "$chroot_ready" ]; then chroot_umount || status=1; fi
+	if [ -n "$work" ] && ! mountpoint -q "$work/guests"; then rm -rf "$work" || status=1; fi
+	[ "$status" = 0 ] || echo "stick: build failed; any output image is incomplete" >&2
+	exit "$status"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+exec 4<&0
+exec </dev/null
+chroot_ready=1
+chroot_mount
+work=$(mktemp -d "$BUILDER/tmp/cv-stick.XXXXXX")
+inside=${work#"$BUILDER"}
+cp "$here/../install/install" "$work/install"
+mkdir "$work/guests"
+mount --bind "$guests" "$work/guests"
+guest_mounted=1
+mount -o remount,bind,ro "$work/guests"
+# Noclobber also refuses an output created since the existence check.
+(set -C; : >"$out") || die "cannot create output: $out"
+truncate -s "$size" "$out"
+loop=$(losetup --find --show --partscan "$out")
+CONVERGENT_UNSIGNED=1 CONVERGENT_INSTALL_DISK="$loop" CONVERGENT_INSTALL_OWNER="$owner" \
+	CONVERGENT_INSTALL_GUESTS="$inside/guests" bld sh "$inside/install" "/releases/$release" <&4 4<&-
+exec 4<&-
+sync
+losetup -d "$loop"
+loop=
+printf 'Image: %s (%s bytes)\n' "$out" "$(stat -c %s "$out")"
+sha256sum "$out"
+printf 'Check /dev/sdX carefully: this overwrites the entire device; it must fit the image.\n'
+quoted=$(printf '%s' "$out" | sed "s/'/'\\\\''/g")
+printf "dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
+printf 'Boot with Secure Boot OFF; unlock LUKS and log in as %s.\n' "$owner"
+printf 'Run: sudo guests init /var/lib/convergent/release-guests\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'

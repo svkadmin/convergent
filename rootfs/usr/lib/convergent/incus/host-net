@@ -1,6 +1,46 @@
 #!/bin/sh
 # Wait for Incus without delaying the net provider it needs.
 set -eu
+
+die() { logger -t host-net "$*"; echo "host-net: $*" >&2; exit 1; }
+vfio_bind() {
+	for address do
+		device=/sys/bus/pci/devices/$address
+		[ -d "$device/iommu_group" ] || die "$address has no IOMMU group"
+		for peer in "$device"/iommu_group/devices/*; do
+			case " $* " in *" ${peer##*/} "*) continue ;; esac
+			[ ! -L "$peer/driver" ] || [ "$(basename "$(readlink "$peer/driver")")" = vfio-pci ] ||
+				die "$address shares its IOMMU group with host device ${peer##*/}; no ACS override"
+		done
+	done
+	# Reserve all selected functions before releasing any current driver.
+	for address do printf '%s\n' vfio-pci >"/sys/bus/pci/devices/$address/driver_override"; done
+	for address do
+		device=/sys/bus/pci/devices/$address
+		if [ -L "$device/driver" ] && [ "$(basename "$(readlink "$device/driver")")" != vfio-pci ]; then
+			printf '%s\n' "$address" >"$device/driver/unbind"
+		fi
+	done
+	for address do
+		printf '%s\n' "$address" >/sys/bus/pci/drivers_probe
+		[ "$(basename "$(readlink "/sys/bus/pci/devices/$address/driver")")" = vfio-pci ] ||
+			die "$address did not bind to vfio-pci"
+	done
+}
+
+case ${1:-} in
+vfio) shift; vfio_bind "$@"; exit ;;
+nvidia)
+	set --
+	for device in /sys/bus/pci/devices/*; do
+		[ "$(cat "$device/vendor")" = 0x10de ] || continue
+		case $(cat "$device/class") in 0x03*|0x040300) set -- "$@" "${device##*/}" ;; esac
+	done
+	vfio_bind "$@"
+	exit
+	;;
+esac
+
 until ip -4 address show dev host 2>/dev/null | grep -q 'inet 100.80.1.10/28 '; do sleep 1; done
 sysctl -qw net.ipv4.conf.host.arp_ignore=0 net.ipv4.ip_forward=0
 ip route replace default via 100.80.1.1 dev host

@@ -1,4 +1,4 @@
-# Convergent: sway security contexts for the browsers (ARCHITECTURE 3.5, DECISIONS 41).
+# Convergent: sway security contexts for the browsers (ARCHITECTURE 3.5 and 6).
 EAPI=8
 
 CRATES="

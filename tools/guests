@@ -117,7 +117,24 @@ credentials() {
         [ -f "$tls/$secret" ] || openssl rand -hex 32 >"$tls/$secret"
     done
 }
+verify_image() {
+    step="verify $1"
+    case $1 in
+    fw) set -- fw1.qcow2 fw2.qcow2 fw1.pf.sha256 fw2.pf.sha256 fw1.rules.sha256 fw2.rules.sha256 ;;
+    fw1|fw2) set -- "$1.qcow2" "$1.pf.sha256" "$1.rules.sha256" ;;
+    wan) set -- wan-metadata.tar.xz wan.qcow2 ;;
+    *) set -- metadata.tar.gz rootfs.tar.gz ;;
+    esac
+    : >"$work/checksums"
+    for artifact do
+        awk -v name="$artifact" '($2 == name || $2 == "*" name) && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {print; n++}
+            END {if (n != 1) exit 1}' "$image_dir/SHA256SUMS" >>"$work/checksums" ||
+            die "missing or invalid SHA256SUMS entry: $artifact"
+    done
+    (cd "$image_dir" && sha256sum -c "$work/checksums") || die 'guest artifact checksum mismatch'
+}
 import_image() {
+    verify_image "$1"
     step="import $1"
     case $1 in
     fw1|fw2)
@@ -165,7 +182,7 @@ healthy() {
     svc)
         ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || { fail 'VictoriaMetrics health check failed'; return 1; }
         curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null 9>&- 8>&- 7>&- || { fail 'metrics proxy health check failed'; return 1; }
-        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null 9>&- 8>&- 7>&- || { fail 'VictoriaLogs health check failed'; return 1; }
+        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null 9>&- 8>&- 7>&- || { fail 'VictoriaLogs query check failed'; return 1; }
         timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
             -verify_ip 100.80.2.10 -verify_return_error </dev/null >"$work/tls-check" 2>&1 9>&- 8>&- 7>&- ||
             { fail "syslog TLS check failed: $(tr '\n' ' ' <"$work/tls-check")"; return 1; }
@@ -343,10 +360,7 @@ radio() {
         echo 'guests: no Intel Wi-Fi device; wan has no radio (SSH and internal checks remain available)' >&2
         return
     fi
-    [ -d "$radio_device/iommu_group" ] || die 'radio has no IOMMU group'
-    set -- "$radio_device"/iommu_group/devices/*
-    [ "$#" = 1 ] || die 'radio is not alone in its IOMMU group; no ACS override'
-    [ "$(basename "$(readlink "$radio_device/driver")")" = vfio-pci ] || die 'radio must already be bound to vfio-pci'
+    /bin/sh "$lib/host-net" vfio "${radio_device##*/}" || die 'cannot bind radio to vfio-pci'
     ic query /1.0/instances/wan | jq -e '.devices.radio' >/dev/null || ic config device add wan radio pci address="${radio_device##*/}"
     [ "$(ic config device get wan radio address)" = "${radio_device##*/}" ] || die 'wan radio differs'
 }
@@ -449,6 +463,10 @@ init() {
     rc-service incus status >/dev/null 9>&- 8>&- 7>&- || rc-service incus start 9>&- 8>&- 7>&-
     retry ic query /1.0 >/dev/null
     release=$(cd "$1" && pwd)
+    for kind in fw wan svc browser; do
+        image_dir=$release/guests/$kind
+        verify_image "$kind"
+    done
     if [ ! -f "$state/init/release" ]; then
         [ "$(ic list --format json | jq length)" = 0 ] || die 'init needs an empty default project or its recovery journal'
         mkdir -p "$state/init"
@@ -512,8 +530,9 @@ init() {
     seed_start wan
     retry pair fw1 fw2
     seed_start svc
-    mkdir -p /var/lib/convergent/syslog-ng.d /var/lib/syslog-ng
-    install -m 600 "$lib/syslog.conf" /var/lib/convergent/syslog-ng.d/svc.conf
+    mkdir -p /var/lib/convergent/syslog-ca /var/lib/syslog-ng
+    ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
+    install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0"
     rc-service syslog-ng reload 9>&- 8>&- 7>&-
     for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart true; done
     sync
@@ -525,6 +544,7 @@ update() {
     [ -f "$state/initialized" ] || die 'init has not completed'
     [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
     image_dir=$2
+    verify_image "$1"
     case $1 in
     fw)
         [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
@@ -583,7 +603,8 @@ if [ "$1" = status ]; then
 fi
 mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
-flock -n 9 || die 'another guests operation is running'
+# Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
+flock -w 600 9 || die 'another guests operation is running'
 exec 8>/run/convergent/dns-push.lock
 flock -w 120 8 || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
