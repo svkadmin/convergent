@@ -2,15 +2,17 @@
 # Wait for Incus without delaying the net provider it needs.
 set -eu
 
-die() { logger -t host-net "$*"; echo "host-net: $*" >&2; exit 1; }
+die() { logger -p user.err -t host-net "$*"; echo "host-net: $*" >&2; exit 1; }
 vfio_bind() {
 	for address do
 		device=/sys/bus/pci/devices/$address
 		[ -d "$device/iommu_group" ] || die "$address has no IOMMU group"
 		for peer in "$device"/iommu_group/devices/*; do
 			case " $* " in *" ${peer##*/} "*) continue ;; esac
-			[ ! -L "$peer/driver" ] || [ "$(basename "$(readlink "$peer/driver")")" = vfio-pci ] ||
-				die "$address shares its IOMMU group with host device ${peer##*/}; no ACS override"
+			# The kernel's own rule: root ports (pcieport) and pci-stub may share the group.
+			[ ! -L "$peer/driver" ] && continue
+			case $(basename "$(readlink "$peer/driver")") in vfio-pci | pcieport | pci-stub) continue ;; esac
+			die "$address shares its IOMMU group with host device ${peer##*/}; no ACS override"
 		done
 	done
 	# Reserve all selected functions before releasing any current driver.
@@ -37,6 +39,10 @@ nvidia)
 		case $(cat "$device/class") in 0x03*|0x040300) set -- "$@" "${device##*/}" ;; esac
 	done
 	vfio_bind "$@"
+	# The kernel default "on" keeps the idle card powered (about 20 W).
+	for address do
+		printf auto >"/sys/bus/pci/devices/$address/power/control" || die "$address: runtime PM"
+	done
 	exit
 	;;
 esac

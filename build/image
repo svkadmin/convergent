@@ -86,7 +86,7 @@ chmod 0600 "$root/etc/audit/audit.rules"
 rl="$root/etc/runlevels"
 rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
 for s in boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
-	default/cronie default/acpid default/dbus default/seatd default/node_exporter default/lxcfs default/incus \
+	default/cronie default/acpid default/dbus default/bluetooth default/seatd default/node_exporter default/lxcfs default/incus \
 	sysinit/convergent-watchdog default/convergent-bless boot/convergent-net; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"

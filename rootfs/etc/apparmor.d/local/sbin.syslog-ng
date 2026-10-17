@@ -1,0 +1,6 @@
+# Site-specific additions and overrides for 'sbin.syslog-ng'
+# Sender details for each message; denied, every message became an audit event fed back to syslog-ng.
+@{PROC}/uptime r,
+@{PROC}/@{pid}/{cmdline,loginuid,sessionid} r,
+# svc's CA for the TLS destination.
+/var/lib/convergent/syslog-ca/{,**} r,

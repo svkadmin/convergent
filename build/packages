@@ -22,6 +22,17 @@ for d in package.use package.accept_keywords package.license sets profile; do
 done
 ln -s "../../../var/db/repos/gentoo/profiles/$PROFILE" "$conf/make.profile"
 
+# The 23.0 profiles are merged-usr: a new root gets the links before its first package.
+s="$BUILDER/staging"
+if [ ! -e "$s" ]; then
+	mkdir -p "$s/usr/bin" "$s/usr/lib" "$s/usr/lib64"
+	ln -s usr/bin "$s/bin"; ln -s usr/bin "$s/sbin"; ln -s bin "$s/usr/sbin"
+	ln -s usr/lib "$s/lib"; ln -s usr/lib64 "$s/lib64"
+fi
+for d in bin sbin lib lib64 usr/sbin; do
+	[ -L "$s/$d" ] || { echo "packages: $s/$d is not a merged-usr link; remove $s and rerun" >&2; exit 1; }
+done
+
 sets="@system @convergent @convergent-apps"
 emerge="env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse"
 chroot_mount

@@ -215,7 +215,7 @@ fi
 # Prepare account hashes in /run before erasing.
 [ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
 work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
-run mkdir "$work/image" "$work/accounts" "$work/accounts/etc" "$work/esp" "$work/state"
+run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state"
 loop=$(losetup --find --show --read-only "$dir/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 image_mounted=1
@@ -238,6 +238,7 @@ case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;
 for f in passwd shadow group gshadow subuid subgid; do
 	if grep -q "^$owner:" "$work/accounts/etc/$f"; then die "account name already exists"; fi
 done
+printf 'CREATE_MAIL_SPOOL=no\n' >"$work/accounts/etc/default/useradd" || die "cannot write useradd defaults"
 # Gentoo's OpenRC seatd service owns its socket with -g seat.
 for group in wheel seat audio; do
 	if ! grep -q "^$group:" "$work/accounts/etc/group"; then
@@ -245,7 +246,7 @@ for group in wheel seat audio; do
 	fi
 done
 run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio \
-	-K CREATE_MAIL_SPOOL=no -K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
+	-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
 run usermod -P "$work/accounts" -L root
 
 secret 'Owner password'
@@ -267,6 +268,7 @@ if [ -n "$image_install" ]; then
 	cat >"$work/usb.rules" <<'EOF'
 # Regenerate on the laptop with only trusted devices attached, including this stick.
 allow with-interface match-all { 03:*:* 08:*:* }
+allow with-interface 09:*:*
 block
 EOF
 else

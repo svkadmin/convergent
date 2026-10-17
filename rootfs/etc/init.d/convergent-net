@@ -8,7 +8,8 @@ depend() {
 }
 
 start() {
-	/bin/sh /usr/lib/convergent/incus/host-net nvidia || return 1
+	# A failed bind leaves the card powered, not the host without Incus.
+	/bin/sh /usr/lib/convergent/incus/host-net nvidia || ewarn "NVIDIA functions not on vfio-pci; see /var/log/messages"
 	nohup /bin/sh /usr/lib/convergent/incus/host-net </dev/null >/dev/null 2>&1 &
 }
 

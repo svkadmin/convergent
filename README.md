@@ -93,8 +93,8 @@ build/stick <release> <guests-dir> <out.img> [size]
 build/stick 202610170000 $g /var/tmp/convergent.img 56G
 ```
 
-The size defaults to `32G`, but the installer needs at least 50 GiB and refuses less, so always
-pass one. It asks for `Owner login name:` (lowercase; or set `CONVERGENT_INSTALL_OWNER`), then
+The size defaults to `56G`, which fits a 64 GB stick; the installer refuses less than about
+50 GiB. It asks for `Owner login name:` (lowercase; or set `CONVERGENT_INSTALL_OWNER`), then
 `Owner password:` and `LUKS passphrase:`, 12 characters or more each, typed once, not shown. It
 runs the real installer on the image through a loop device, then prints the image path, its
 SHA-256 and the write command:
@@ -110,15 +110,15 @@ laptop from the stick (UEFI, Secure Boot off); it then runs from the stick.
 
 ### b) The laptop's own disk
 
-As root, from a UEFI-booted system with the tools `install/install` checks for (it names any
-missing) and a release directory (`manifest`, `slot.img`, both `.efi` files):
+As root, from a booted Convergent stick, with a release directory (`manifest`, `slot.img`, both
+`.efi` files):
 
 ```sh
-CONVERGENT_UNSIGNED=1 sh install/install /path/to/release
+CONVERGENT_UNSIGNED=1 convergent-install /path/to/release
 ```
 
-`install/install` is not in the image, and `sgdisk` and `efibootmgr` are in no package set, so it
-cannot run from the stick as built. It has not run on the laptop. It asks, in order: the target
+It is `install/install` in this repository, shipped as `convergent-install`. It has not run on
+the laptop yet. It asks, in order: the target
 disk path, after listing the disks (it refuses the boot stick, mounted disks and anything under
 49 GiB); `Type <disk> again, or ERASE followed by a space and serial <serial>:`; the owner login
 name; the owner password and the LUKS passphrase, each entered twice.
@@ -131,18 +131,30 @@ stick before booting. The guests are not installed.
 
 ### First boot
 
+Before it: in the firmware setup (Dell: F2) turn Secure Boot off and leave VT-d on; plug the stick
+into a port of the laptop itself, not a hub or dock; choose it in the one-time boot menu (Dell: F12).
+
+The passphrase prompt and the console use the US keyboard layout, whatever the keys show (on a
+Slovak keyboard `@` is Shift+2, and `y` and `z` are swapped).
+
 1. `Convergent passphrase [1/3]:` appears on the console: three tries, then the machine powers off.
-2. Log in on the console as the owner.
-3. Create the guests (a stick image carries their images):
+2. Log in on the console as the owner. Within a few minutes the console prints
+   `convergent: release <release> is good`.
+3. Create the guests (a stick image carries their images). This takes several minutes per guest; if
+   it stops, run the same command again:
    ```sh
    sudo guests init /var/lib/convergent/release-guests
    ```
-4. With only trusted devices attached (the stick included), regenerate the USBGuard policy:
+4. With only trusted devices attached (the stick included), regenerate the USBGuard policy. Built-in
+   devices (camera, Bluetooth, fingerprint reader) are always attached, so they are allowed too:
    ```sh
-   sudo sh -c 'usbguard generate-policy -p > /etc/usbguard/rules.conf'
+   sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
    sudo rc-service usbguard restart
    ```
-5. Start the session with `sway`. Super+m opens the menu.
+5. Start the session with `sway`. Super+m opens the menu: **Wi-Fi: scan**, then **Wi-Fi: connect**.
+   Wi-Fi exists only after step 3; each Wi-Fi action asks for the sudo password.
+
+Until release signing exists, `check` reports Secure Boot off, so the bar always counts that alert.
 
 ## Update and roll back
 

@@ -5,8 +5,7 @@ bar bar-0 {
     status_command /usr/local/sbin/bar
 }
 bindsym Mod4+m exec /usr/local/sbin/menu
-exec pipewire
-exec wireplumber
-exec pipewire-pulse
+# Gentoo's launcher starts WirePlumber and pipewire-pulse once PipeWire is up.
+exec gentoo-pipewire-launcher
 exec swayidle -w timeout 600 'swaylock -f' before-sleep 'swaylock -f'
 bindswitch --locked lid:on exec swaylock -f

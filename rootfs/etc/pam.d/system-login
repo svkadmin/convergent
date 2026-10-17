@@ -1,0 +1,16 @@
+auth		required	pam_nologin.so
+auth		include		system-auth
+account		required	pam_access.so
+account		required	pam_nologin.so
+account		required	pam_time.so
+account		include		system-auth
+password	include		system-auth
+session		optional	pam_loginuid.so
+session		required	pam_env.so envfile=/etc/profile.env
+session		include		system-auth
+session		optional	pam_motd.so motd=/etc/motd
+session		optional	pam_lastlog.so never showfailed
+session		optional	pam_mail.so
+# Gentoo's file plus pam_xdg: sway, PipeWire and browser need XDG_RUNTIME_DIR.
+session		optional	pam_xdg.so runtime notroot
+-session	optional	pam_openrc.so
