@@ -7,7 +7,6 @@ pidfile=/run/convergent-watchdog.pid
 
 # 20 feeds, 30 s apart: ten minutes from the start of this service.
 loop='
-trap "rm -f /run/convergent-watchdog.pid" 0
 s=
 trap "printf V >&3; kill \$s 2>/dev/null; exit 0" TERM
 n=0
@@ -38,5 +37,6 @@ start() {
 }
 
 stop() {
-	[ ! -s "$pidfile" ] || start-stop-daemon --stop --quiet --oknodo --retry TERM/5 --pidfile "$pidfile" --exec "$command"
+	# No --oknodo: in OpenRC it reports failure when the feeder exits during the retry.
+	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile"
 }

@@ -1,8 +1,8 @@
 #!/bin/sh
 # image: assemble a release from the staging root (ARCHITECTURE section 6, steps 3 to 6):
 # the image root, the EROFS image with its dm-verity tree, the initramfs, and one UKI per slot.
-# Runs as root on the build host after build/packages. The UKIs are left unsigned; signing on
-# the owner's token is the last step of a release (section 6, step 7).
+# Runs as root on the build host after build/packages. The UKIs are left unsigned; signing with
+# the owner's offline key is the last step of a release (section 6, step 7).
 #   build/image [release]      release defaults to the UTC date and time
 set -eu
 
@@ -148,10 +148,14 @@ for slot in a b; do
 		" init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
+	# The boot menu title tells the two slots apart.
+	sed "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Convergent $release (slot $slot)\"/" \
+		"$root/usr/lib/os-release" >"$out/os-release-$slot"
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" \
 		--initrd "$rel/initramfs.img" --cmdline "@$rel/cmdline-$slot" \
-		--os-release @/image-root/usr/lib/os-release --uname "$kver" \
+		--os-release "@$rel/os-release-$slot" --uname "$kver" \
 		--output "$rel/convergent-$release-$slot.efi" >/dev/null
+	rm "$out/os-release-$slot"
 done
 
 # 6. The manifest: what the release is made of.

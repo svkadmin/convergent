@@ -487,7 +487,12 @@ init() {
     ic admin init --preseed <"$lib/preseed.yaml"
     init_done preseed
     if [ ! -f "$state/init/server" ]; then
-        rc-service incus stop 9>&- 8>&- 7>&-
+        if ! rc-service incus stop 9>&- 8>&- 7>&-; then
+            # Right after the preseed the power-off stop (SIGPWR, 40 s) can run out. No instance
+            # exists yet, so a plain stop loses nothing.
+            start-stop-daemon --stop --retry TERM/60/KILL/5 --pidfile /run/incus.pid || die 'incus did not stop'
+            rc-service incus zap 9>&- 8>&- 7>&-
+        fi
         install -m 600 "$tls/incus-server.key" /var/lib/incus/server.key
         install -m 644 "$tls/incus-server.crt" /var/lib/incus/server.crt
         rc-service incus start 9>&- 8>&- 7>&-
