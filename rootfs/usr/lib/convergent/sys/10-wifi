@@ -1,0 +1,51 @@
+title=Wi-Fi
+actions='status	Show Wi-Fi status	root
+scan	Scan Wi-Fi networks	root
+connect	Connect to Wi-Fi [SSID]	root
+hidden	Connect to hidden Wi-Fi [SSID]	root
+disconnect	Disconnect Wi-Fi	root
+forget	Forget a Wi-Fi network [SSID]	root confirm
+test	Test DNS and the uplink	root'
+
+wifi_state() { printf 'Wi-Fi: %s\n' "$(cached /run/convergent/status/wifi)"; }
+wifi_reply() {
+	_reply=$(run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan "$@" 2>&1)
+	_result=$?
+	printf '%s\n' "$_reply" | tr -d '\000-\010\013-\037\177'
+	return "$_result"
+}
+wifi_wan() { wifi_reply wifi "$@"; }
+wifi_status() { noargs "$@"; page wifi_wan status </dev/null; }
+wifi_scan() { noargs "$@"; page wifi_wan scan </dev/null; }
+wifi_connect() { wifi_join '' "$@"; }
+wifi_hidden() { wifi_join -hidden "$@"; }
+wifi_disconnect() { noargs "$@"; wifi_wan disconnect </dev/null; }
+wifi_join() {
+	suffix=$1; shift
+	[ "$#" -le 1 ] || usage
+	page wifi_wan scan </dev/null || return
+	onearg SSID "$@"; ssid_valid "$answer"; ssid=$answer
+	pass=$(secret) || return
+	text_valid "$pass"
+	if [ -n "$pass" ]; then
+		[ "${#pass}" -ge 8 ] && [ "${#pass}" -le 63 ] || die 'passphrase must be 8-63 bytes'
+		printf '%s\n%s\n' "$ssid" "$pass" | wifi_wan "add$suffix"
+	else
+		printf '%s\n' "$ssid" | wifi_wan "connect$suffix"
+	fi
+}
+wifi_forget() {
+	[ "$#" -le 1 ] || usage
+	page wifi_wan list </dev/null || return
+	onearg 'SSID to forget' "$@"; ssid_valid "$answer"
+	printf '%s\n' "$answer" | wifi_wan forget
+}
+wifi_test() {
+	noargs "$@"
+	# The host itself has no web access by design (pf); browsers do. So: the host's DNS, which goes
+	# through the firewalls' DNS over TLS, then wan's own view of its uplink.
+	dns=0
+	if run timeout -k 1 10 getent hosts example.com; then echo 'DNS: ok'; else echo 'DNS: failed'; dns=1; fi
+	wifi_reply diag || return
+	return "$dns"
+}

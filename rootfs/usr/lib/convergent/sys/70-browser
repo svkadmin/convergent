@@ -1,5 +1,7 @@
 title=Browser
-actions='web	Open the persistent web browser	
+alias=br
+actions='status	Show running browsers	root
+web	Open the persistent web browser	
 tmp	Open a temporary browser	
 admin	Open the admin browser	
 portal	Open the portal browser	'
@@ -9,3 +11,9 @@ browser_web() { noargs "$@"; run setsid -f /usr/local/sbin/browser web; }
 browser_tmp() { noargs "$@"; run setsid -f /usr/local/sbin/browser tmp; }
 browser_admin() { noargs "$@"; run setsid -f /usr/local/sbin/browser admin; }
 browser_portal() { noargs "$@"; run setsid -f /usr/local/sbin/browser portal; }
+
+browser_status() {
+	noargs "$@"
+	instances=$(run sudo /usr/local/sbin/guests status) || return
+	printf '%s\n' "$instances" | page awk '$1 ~ /^(web|admin|portal|tmp-[0-9]+)$/ && $2 == "running" {print; n++} END {if (!n) print "No running browsers"}'
+}

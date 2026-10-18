@@ -8,7 +8,7 @@ dir=/usr/lib/convergent/sys
 tab=$(printf '\t')
 ui=0
 die() { echo "sys: $*" >&2; exit 1; }
-usage() { echo 'usage: sys [help | --pick ["area action"] | AREA ACTION [ARGS]]' >&2; exit 2; }
+usage() { echo 'usage: sys [help | --pick ["area action"] | AREA [ACTION] [ARGS]]' >&2; exit 2; }
 
 trace() {
 	printf '+' >&2
@@ -110,21 +110,24 @@ for module in "$dir"/[0-9][0-9]-*; do
 	[ -f "$module" ] || continue
 	area=${module##*/}; area=${area#*-}
 	case $area in ''|*[!a-z]*) die 'invalid module name' ;; esac
-	title= actions=
+	title= actions= alias=
 	. "$module"
 	[ -n "$title" ] && [ -n "$actions" ] || die "incomplete module: $area"
-	areas="${areas}${area}${tab}${title}
+	case $alias in *[!a-z]*) die "invalid alias: $area" ;; esac
+	# Names and aliases are one namespace.
+	for n in $area $alias; do
+		printf '%s' "$areas" | awk -F '	' -v n="$n" '$1 == n || $3 == n { f = 1 } END { exit !f }' && die "name used twice: $n"
+	done
+	areas="${areas}${area}${tab}${title}${tab}${alias}
 "
 done
 
 load() {
 	case $1 in ''|*[!a-z]*) usage ;; esac
-	for module in "$dir"/[0-9][0-9]-"$1"; do
-		[ -f "$module" ] || continue
-		. "$module"
-		return
-	done
-	die "unknown area: $1"
+	area=$(printf '%s' "$areas" | awk -F '\t' -v a="$1" '$1 == a || $3 == a {print $1}')
+	[ -n "$area" ] || usage
+	alias=
+	. "$dir"/[0-9][0-9]-"$area"
 }
 lookup() {
 	label=$(printf '%s\n' "$actions" | awk -F '\t' -v a="$1" '$1 == a {print $2}')
@@ -132,16 +135,16 @@ lookup() {
 	[ -n "$label" ]
 }
 help() {
-	printf 'usage: sys AREA ACTION [ARGS]\n       sys | sys help | sys --pick ["area action"]\n\n'
-	printf '%s' "$areas" | while IFS="$tab" read -r area title; do
+	printf 'usage: sys AREA [ACTION] [ARGS]\n       sys | sys help | sys --pick ["area action"]\n\nFirst action is the default; other words are its arguments.\n\n'
+	printf '%s' "$areas" | while IFS="$tab" read -r area title alias; do
 		load "$area"
 		printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
-			printf '  %-30s %s: %s\n' "$area $action" "$title" "$label"
+			printf '  %-30s %s: %s\n' "$area${alias:+ ($alias)} $action" "$title" "$label"
 		done
 	done
 }
 pick_list() {
-	printf '%s' "$areas" | while IFS="$tab" read -r area title; do
+	printf '%s' "$areas" | while IFS="$tab" read -r area title alias; do
 		load "$area"
 		printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
 			printf '%s %s\t%s: %s\n' "$area" "$action" "$title" "$label"
@@ -149,16 +152,16 @@ pick_list() {
 	done
 }
 dispatch() (
-	[ "$#" -ge 2 ] || usage
-	area=$1; action=$2; shift 2
-	load "$area"
-	if ! lookup "$action"; then
-		[ "$#" -gt 0 ] || usage
-		action=$action-$1; shift
+	[ "$#" -ge 1 ] || usage
+	load "$1"; shift
+	if [ "$#" -gt 0 ] && lookup "$1"; then
+		action=$1; shift
+	else
+		action=${actions%%"$tab"*}
 		lookup "$action" || usage
 	fi
 	case " $flags " in *' confirm '*) confirm "$title: $label" || exit 1 ;; esac
-	function=${area}_$(printf '%s' "$action" | tr - _)
+	function=${area}_$action
 	"$function" "$@"
 )
 state() {
@@ -204,7 +207,7 @@ case ${1:-} in
 '') [ "$#" = 0 ] || usage
 	if [ -t 0 ] && command -v dialog >/dev/null 2>&1; then tui; else help; fi ;;
 help) [ "$#" = 1 ] || usage; help ;;
---state) [ "$#" = 2 ] || usage; load "$2"; "${2}_state" ;;
+--state) [ "$#" = 2 ] || usage; load "$2"; "${area}_state" ;;
 --pick)
 	case $# in
 	1) pick_list ;;

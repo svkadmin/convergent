@@ -65,7 +65,7 @@ yet. The next `slot write` must be newer than the highest release ever marked go
 ## 4. `guests init` or `guests update` stopped
 
 On a disk image the first boot runs `guests init` by itself (bar: `SETUP`; log
-`/var/log/guests-setup.log`). Both print the step that failed. Run `sys system setup` (it uses
+`/var/log/guests-setup.log`). Both print the step that failed. Run `sys guests setup` (it uses
 `/var/lib/convergent/release-guests`) or `sudo guests init <dir>` with the same directory as
 before: finished steps are skipped. `guests update` restores the old guest by itself when the
 new one fails its checks; run it again once the cause is fixed. Works when: `SETUP` is gone and
@@ -82,9 +82,9 @@ as it is.
 ## 5. No Wi-Fi
 
 The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Works when:
-`sys network wifi-status` shows the network and an address.
+`sys wifi status` shows the network and an address.
 
-1. `sys network wifi-status`. "not found" or no answer means wan or its radio is not up.
+1. `sys wifi status`. "not found" or no answer means wan or its radio is not up.
 2. Is the card handed to wan?
    ```sh
    lspci -nnk | grep -A3 -i network          # "Kernel driver in use: vfio-pci" is right
@@ -103,15 +103,15 @@ itself cannot browse, by design: pf lets it resolve names through the firewalls 
 list of update servers. Browsers have Internet, so try one (`browser web`) to tell the two apart.
 
 ```sh
-sys network wifi-status        # connected, with an address
-sys network test               # "DNS: ok" or "DNS: failed", then wan diag: addresses, routes, NAT, upstream DNS, DHCP
-sys selftest run               # among its checks: fw1 reaches 9.9.9.9:853 (DNS over TLS)
-sys system guests              # fw1, fw2, wan, svc running
+sys wifi status        # connected, with an address
+sys wifi test               # "DNS: ok" or "DNS: failed", then wan diag: addresses, routes, NAT, upstream DNS, DHCP
+sys selftest                   # among its checks: fw1 reaches 9.9.9.9:853 (DNS over TLS)
+sys guests status              # fw1, fw2, wan, svc running
 sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MASTER here, BACKUP on fw2
 ```
 
-No address or default route in wan diag: check Wi-Fi (`sys network wifi-status`) and the upstream
-network; a captive portal (hotel, train) needs `sys network portal-on` first. fw1 cannot reach
+No address or default route in wan diag: check Wi-Fi (`sys wifi status`) and the upstream
+network; a captive portal (hotel, train) needs `sys portal on` first. fw1 cannot reach
 9.9.9.9:853: fw1, wan or routing is down, or the upstream blocks DNS over TLS. Anything else: send
 the output.
 
@@ -133,9 +133,9 @@ first boot step 4).
 
 | What | Where |
 |---|---|
-| Warnings and errors of the host | `/var/log/messages`; `sys system logs` reads it |
+| Warnings and errors of the host | `/var/log/messages`; `sys logs` reads it |
 | Release checks, boot tries | `sudo slot status`; `slot:` lines in `/var/log/messages` |
-| Self-test of this boot | `sys selftest run` writes `~/selftest-YYYYmmdd-HHMMSS.txt` (PASS, FAIL or SKIP per check) |
+| Self-test of this boot | `sys selftest` writes `~/selftest-YYYYmmdd-HHMMSS.txt` (PASS, FAIL or SKIP per check) |
 | Services | `rc-status -a` (all runlevels); `sudo rc-service <name> status`, `restart` |
 | Guests | `/var/log/incus/<guest>/console.log` and `qemu.log`; `/var/log/incus/incusd.log` |
 | Security audit | `/var/log/audit/audit.log` |
@@ -180,7 +180,7 @@ with `incus import`.
 
 ## 12. An online update fails
 
-`sys system update` stops with the reason. Running it again resumes the download.
+`sys update install` stops with the reason. Running it again resumes the download.
 
 | Message | Do |
 |---|---|
@@ -190,5 +190,5 @@ with `incus import`.
 | `this release has no online updates` | the image lacks its release key or update URL: update from USB |
 | `not enough free space in /var` | make room in `/var`: what is still missing, plus 1 GiB |
 
-Works when: `sys system release` shows the new release with `+3`; then reboot (recipe 2 if it
+Works when: `sys update` shows the new release with `+3`; then reboot (recipe 2 if it
 does not become good).

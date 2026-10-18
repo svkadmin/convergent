@@ -35,6 +35,9 @@ CHECK
 	check watchdog 5 <<'CHECK'
 [ -e /dev/watchdog ] || { echo 'no /dev/watchdog; firmware may lock it'; exit 77; }; echo '/dev/watchdog exists'
 CHECK
+	check nested 5 <<'CHECK'
+n=$(cat /sys/module/kvm_intel/parameters/nested 2>/dev/null); echo "kvm_intel nested: ${n:-unknown}"; [ "$n" = N ] || [ "$n" = 0 ]
+CHECK
 	check graphics 10 <<'CHECK'
 s=$(lspci -Dnnk -d 8086:); printf '%s\n' "$s" | awk '/^[^ \t]/ {gpu=($0 ~ /\[03(00|02)\]/); if (gpu) n++} gpu && /Kernel driver in use:/ {if ($NF == "i915" || $NF == "xe") good++}
 END {print good+0 "/" n+0 " Intel VGA/3D functions on i915 or xe"; exit !(n > 0 && good == n)}'
@@ -52,7 +55,7 @@ CHECK
 s=$(sudo -n /usr/local/sbin/guests status); printf '%s\n' "$s" | awk '$1 ~ /^(fw1|fw2|wan|svc)$/ {state[$1]=$2} END {n=split("fw1 fw2 wan svc", names, " "); for(i=1;i<=n;i++) {s=state[names[i]]; print names[i] ": " (s == "" ? "missing" : s); if(s != "running") bad=1} exit bad}'
 CHECK
 	check wifi 15 <<'CHECK'
-s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi status); printf '%s\n' "$s" | grep -Eq '^[[:space:]]*State[[:space:]]+connected[[:space:]]*$' || { echo 'not connected; run sys network wifi-connect'; exit 77; }; echo 'State connected'
+s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi status); printf '%s\n' "$s" | grep -Eq '^[[:space:]]*State[[:space:]]+connected[[:space:]]*$' || { echo 'not connected; run sys wifi connect'; exit 77; }; echo 'State connected'
 CHECK
 	check uplink 20 <<'CHECK'
 s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan diag 2>&1) || { case $s in *'wan-ssh: command refused'*) echo 'diag refused; older wan image'; exit 77 ;; *) printf '%s\n' "$s"; exit 1 ;; esac; }
@@ -83,7 +86,7 @@ CHECK
 for d in /sys/class/power_supply/*; do [ "$(cat "$d/type")" = Battery ] || continue; c=$(cat "$d/capacity"); case $c in ''|*[!0-9]*) continue ;; esac; [ "$c" -le 100 ] || continue; echo "${d##*/}: $c%"; exit 0; done; echo 'no battery with capacity'; exit 1
 CHECK
 	check usb 10 <<'CHECK'
-s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys devices usb-list:\n%s\n' "$s"
+s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys usb status:\n%s\n' "$s"
 CHECK
 	check firmware 10 <<'CHECK'
 # Drivers probe optional files ("Direct firmware load ... error -2") and fall back; only other failures count.

@@ -1,0 +1,13 @@
+title=Portal
+actions='status	Show portal status	root
+on	Open portal and its browser	root
+off	Close portal	root'
+
+portal_state() { printf 'Portal: %s\n' "$(cached /run/convergent/status/portal)"; }
+portal_on() {
+	noargs "$@"
+	run sudo /usr/local/sbin/portal on || return
+	run setsid -f /usr/local/sbin/browser portal
+}
+portal_off() { noargs "$@"; run sudo /usr/local/sbin/portal off; }
+portal_status() { noargs "$@"; page run sudo /usr/local/sbin/portal status; }

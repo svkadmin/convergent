@@ -17,7 +17,8 @@ case $role in
         set -- http://100.80.2.10:3000/ ;;
     portal)
         [ "$#" = 1 ] || die "portal requires the captive page URL"
-        case $1 in http://*|https://*) ;; *) die "portal requires HTTP(S)" ;; esac ;;
+        case $1 in http://*|https://*) ;; *) die "portal requires HTTP(S)" ;; esac
+        set -- --disable-gpu "$1" ;;
     *)
         for url do
             case $url in http://*|https://*) ;; *) die "expected HTTP(S) URL" ;; esac

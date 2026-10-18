@@ -1,0 +1,26 @@
+title=Bluetooth
+alias=bt
+actions='status	Show Bluetooth power and known devices	
+on	Turn Bluetooth on	
+off	Turn Bluetooth off	
+scan	Scan Bluetooth for 10 seconds	
+pair	Pair Bluetooth MAC	
+connect	Connect Bluetooth MAC	
+disconnect	Disconnect Bluetooth MAC	
+forget	Forget Bluetooth MAC	confirm'
+
+bluetooth_state() { echo Bluetooth; }
+bluetooth_status() { noargs "$@"; page bluetooth_show; }
+bluetooth_show() { run bluetoothctl show && run bluetoothctl devices; }
+bluetooth_on() { noargs "$@"; run bluetoothctl power on; }
+bluetooth_off() { noargs "$@"; run bluetoothctl power off; }
+bluetooth_scan() { noargs "$@"; run bluetoothctl --timeout 10 scan on; }
+bluetooth_device() {
+	operation=$1; shift
+	onearg 'Bluetooth MAC' "$@"; mac "$answer"
+	run bluetoothctl "$operation" "$answer"
+}
+bluetooth_pair() { bluetooth_device pair "$@" && run bluetoothctl trust "$answer"; }
+bluetooth_connect() { bluetooth_device connect "$@"; }
+bluetooth_disconnect() { bluetooth_device disconnect "$@"; }
+bluetooth_forget() { bluetooth_device remove "$@"; }

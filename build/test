@@ -53,8 +53,13 @@ if [ -n "$other" ]; then
 fi
 
 bld() { chroot "$BUILDER" "$@"; }
-work=/test/$release
-rm -rf "$BUILDER"/test/*   # one run's disk at a time: each holds tens of GB
+# One directory per test: several may run at once.
+work=/test/$release-$mode
+map=cvtest-$$
+mkdir -p "$BUILDER/test"
+exec 7>"$BUILDER$work.lock"
+flock -n 7 || die "the same test is already running"
+rm -rf "${BUILDER:?}$work"
 mkdir -p "$BUILDER$work/esp"
 disk="$BUILDER$work/disk.img"
 esp="$BUILDER$work/esp"
@@ -69,7 +74,7 @@ cleanup() {
 	if mountpoint -q "$esp"; then umount "$esp" || :; fi
 	if mountpoint -q "$root"; then umount "$root" || :; fi
 	if mountpoint -q "$state"; then umount "$state" || :; fi
-	bld cryptsetup close cvtest-state 2>/dev/null || :
+	bld cryptsetup close "$map" 2>/dev/null || :
 	if [ -n "$loop" ]; then losetup -d "$loop" || :; fi
 	chroot_umount
 }
@@ -128,28 +133,29 @@ make_state() {
 	(umask 077; echo "$pass" >"$BUILDER$work/passphrase")
 	printf '%s' "$pass" | bld cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
 		--pbkdf-memory 65536 --iter-time 200 --key-file - "${loop}p4"
-	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
-	bld mkfs.btrfs -q /dev/mapper/cvtest-state
-	bld cryptsetup close cvtest-state
+	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" "$map"
+	bld mkfs.btrfs -q "/dev/mapper/$map"
+	bld cryptsetup close "$map"
 }
 
 open_state() {   # mount options
 	attach
 	pass=$(cat "$BUILDER$work/passphrase")
-	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" cvtest-state
+	printf '%s' "$pass" | bld cryptsetup open --key-file - "${loop}p4" "$map"
 	mkdir -p "$state"
-	mount -t btrfs -o "subvolid=5,$1" /dev/mapper/cvtest-state "$state"
+	mount -t btrfs -o "subvolid=5,$1" "/dev/mapper/$map" "$state"
 }
 
 close_state() {
 	umount "$state"
-	bld cryptsetup close cvtest-state
+	bld cryptsetup close "$map"
 	detach
 }
 
 make_broken_svc() {
 	# Break only the service script, leaving the good svc output intact.
-	mkdir -p "$broken" "$BUILDER$work/broken-root"
+	mkdir "$broken" || die "$broken exists; give a new path"
+	mkdir -p "$BUILDER$work/broken-root"
 	broken=$(cd "$broken" && pwd)
 	cp -a "$guests/svc/." "$broken/"
 	tar --numeric-owner -xpf "$guests/svc/rootfs.tar.gz" -C "$BUILDER$work/broken-root"
@@ -365,6 +371,15 @@ t sh -c 'XDG_RUNTIME_DIR=/tmp/smoke-run timeout 4 /usr/local/sbin/bar </dev/null
 	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8" >/dev/null'
 t su -s /bin/sh nobody -c '/usr/local/sbin/sys help >/dev/null'
 t su -s /bin/sh nobody -c '[ "$(/usr/local/sbin/sys --pick | wc -l)" -ge 30 ]'
+t su -s /bin/sh nobody -c '
+	for module in /usr/lib/convergent/sys/[0-9][0-9]-*; do
+		area=${module##*/}; area=${area#*-}
+		. "$module"
+		command -v "${area}_state" >/dev/null || exit 1
+		for action in $(printf "%s\n" "$actions" | cut -f1); do
+			command -v "${area}_$action" >/dev/null || exit 1
+		done
+	done'
 echo CV-DESKTOP-RESULT "$r"
 EOF
 	cat >"$var/spool/cron/crontabs/root" <<'EOF'
@@ -405,8 +420,11 @@ install_uki() {   # release slot counter
 	# Serial replaces quiet, ahead of init=, as in the single-release test.
 	sed 's/ quiet / console=ttyS0,115200 /' "$BUILDER$rel/cmdline-$2" >"$BUILDER$work/cmdline"
 	kver=$(awk '/^kernel / { print $2 }' "$BUILDER$rel/manifest")
+	# The release's own metadata; older releases did not keep it.
+	osr=$rel/os-release-$2
+	[ -f "$BUILDER$osr" ] || osr=/image-root/usr/lib/os-release
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
-		--cmdline "@$work/cmdline" --os-release @/image-root/usr/lib/os-release --uname "$kver" \
+		--cmdline "@$work/cmdline" --os-release "@$osr" --uname "$kver" \
 		--output "$work/esp/EFI/Linux/convergent-$1-$2$3.efi" >/dev/null
 }
 

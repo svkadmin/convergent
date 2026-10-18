@@ -53,7 +53,10 @@ have() { [ -f "$dir/$1" ] && stat -c %s "$dir/$1" || echo 0; }
 [ $# -le 1 ] || die "usage: fetch-release [check]"
 mode=${1:-write}
 case $mode in write | check) ;; *) die "usage: fetch-release [check]" ;; esac
-[ -f "$conf" ] && [ -f "$key" ] || die "this release has no online updates; update from USB"
+if [ ! -f "$conf" ] || [ ! -f "$key" ]; then
+	[ "$mode" != check ] || { echo 'this release has no online updates'; exit 0; }
+	die 'this release has no online updates; run sys update usb'
+fi
 . "$conf"
 url=${UPDATE_URL:-}
 case $url in https://[A-Za-z0-9]*) ;; *) die "UPDATE_URL in $conf must start with https://" ;; esac

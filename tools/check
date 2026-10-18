@@ -122,7 +122,7 @@ suid() {
 autostart 2>>"$work/report" || bad 'autostart scan failed'
 suid 2>>"$work/report" || bad 'SUID scan failed'
 incus --force-local list --all-projects --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
-jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc)$")) |
+jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|web|admin)$")) |
     {name, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
     devices: .expanded_devices}) | sort_by(.name)' "$work/instances" >"$work/incus" || bad 'Incus settings unreadable'
 

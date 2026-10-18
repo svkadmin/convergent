@@ -453,10 +453,10 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 |---|---|
 | Path | FirewallDown, CarpSplit (both masters or none), CarpFlapping, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, WanReservedLeak, UpstreamOverlap |
 | DNS | ResolverDown, ResolverStale, BlocklistStale |
-| Compartments | GuestStopped, GuestRestarted, ServiceDown, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected |
+| Compartments | GuestStopped, GuestRestarted *(planned)*, ServiceDown, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected |
 | Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, IncusPoolHigh |
 | Currency | ReleaseOld, GuestImageOld, GuestReleaseEOL |
-| Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
+| Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, AuditRecordsLost, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
 | Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale |
 
 *(Planned:* WanReservedLeak, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected,
@@ -482,7 +482,8 @@ How the owner uses it is in USAGE.md. The design points:
   release state, the idle-lock state, and the usual system figures.
 - **Locking:** after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes;
   the idle lock can be paused from the bar. Never suspends.
-- **Menu (`sys`):** one place for every owner action; each prints the command it runs.
+- **Menu (`sys`):** `sys AREA [ACTION] [ARGS]`; each area's first action is its default.
+  Short aliases work at the command line; menus use long names. Each action prints its commands.
 - **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.
@@ -556,7 +557,7 @@ Convergent writes as little as it can:
 | `install/install` | from a Convergent USB disk | Installs a release (section 7.1) |
 | `initramfs/` | at every boot | Section 5.2, step 4 |
 | `slot` | by hand; once after each boot | Writes a release to the inactive slot; after the health checks, marks the booted slot good |
-| `fetch-release` | from the menu (`sys system update`) | Downloads the newest signed release of the image's channel and hands it to `slot write` |
+| `fetch-release` | from the menu (`sys update install`) | Downloads the newest signed release of the image's channel and hands it to `slot write` |
 | `guests` | at first boot; by hand | Creates the guests; updates one guest, or the firewall pair in order, with checks and rollback |
 | `check` | cron: after boot and updates, daily | The checker (section 8) |
 | `bar` | in the session | The status bar; asks vmalert every 30 seconds |

@@ -1,5 +1,6 @@
 title=Keyboard
-actions='layouts	Show active and configured layouts	
+alias=kb
+actions='status	Show active and configured layouts	
 set	Apply and save comma-separated LAYOUTS	
 next	Switch to the next keyboard layout	'
 
@@ -8,7 +9,7 @@ keyboard_state() {
 	value=$(timeout -k 0.2 1 swaymsg -r -t get_inputs 2>/dev/null) || { echo unknown; return; }
 	printf '%s\n' "$value" | jq -er '[.[] | select(.type == "keyboard") | .xkb_active_layout_name] | unique | if length > 0 then join(", ") else "unknown" end' || echo unknown
 }
-keyboard_layouts() {
+keyboard_status() {
 	noargs "$@"; sway
 	json=$(run swaymsg -r -t get_inputs) || return
 	printf '%s\n' "$json" | page jq -r '.[] | select(.type == "keyboard") | "\(.identifier): active=\(.xkb_active_layout_name); configured=\(.xkb_layout_names | join(", "))"'

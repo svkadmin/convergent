@@ -17,15 +17,15 @@ When something breaks: [RECOVERY.md](RECOVERY.md).
 
 | On Arch | Here |
 |---|---|
-| `pacman -Syu` | No package manager on the laptop. An update is a whole new signed release: `sys system update` downloads and writes it (README, Update) |
+| `pacman -Syu` | No package manager on the laptop. An update is a whole new signed release: `sys update install` downloads and writes it (README, Update) |
 | `systemctl status`, `restart` | `rc-status -a` lists all runlevels; `sudo rc-service <name> status`, `restart` |
 | `systemctl enable` | Services are fixed in the release |
-| `journalctl` | `/var/log/messages` (warnings and up; `sys system logs`), `/var/log/incus/`, Grafana; see RECOVERY 8 |
+| `journalctl` | `/var/log/messages` (warnings and up; `sys logs`), `/var/log/incus/`, Grafana; see RECOVERY 8 |
 | Editing `/etc` | `/etc` is read-only. Only accounts, `machine-id` and `/etc/usbguard/rules.conf` are kept; other changes come with a release |
 | `passwd` | `sys security password` (or `sudo account password [user]`); plain `passwd` cannot replace `/etc/shadow`, which is a bind mount |
 | Your files | `/home` is on the encrypted state volume and survives updates |
 | `incus` | Guests are managed with `guests`; the owner's own Incus project is not set up yet |
-| A network manager | Wi-Fi is in `sys network`; the radio lives in the `wan` VM |
+| A network manager | Wi-Fi is in `sys wifi`; the radio lives in the `wan` VM |
 
 The firewalls run OpenBSD. You do not log in to them for daily use; for a look,
 `sudo ssh -F /etc/convergent/ssh_config fw1` gives a shell (`pfctl -sr` shows the rules,
@@ -52,39 +52,37 @@ Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 | Print | select an area and copy it to the clipboard (Escape cancels) |
 | Shift+Print | copy the focused screen to the clipboard |
 | Volume, mute and mic-mute keys | `wpctl` on PipeWire |
-| Brightness keys | `sys display brightness -5` / `+5` (5 % steps) |
+| Brightness keys | `sys display bright -5` / `+5` (5 % steps) |
 
 ## The sys tool
 
-`sys` is the one menu for the laptop. Super+m runs it in a terminal: pick an area, then an
-action. `sys AREA ACTION [ARGS]` runs one action without the menu. An action run with no
-arguments asks for what it needs; a partial list (for example `display set` or `system backup`
-with one argument) is a usage error. `sys help` lists every action with its label, and Super+a
-picks one action by name. Each command is printed before it runs. Actions marked `*` ask first:
-a Yes/No dialog in the menu (default No), or type `yes` on the command line.
+Use `sys AREA [ACTION] [ARGS]`; the first action in each row is the default. An unrecognized
+second word becomes an argument to that default: `sys backup /mnt/x proj` works;
+`sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
+errors. `sys` (Super+m) opens the terminal menu; `sys help` lists actions and aliases;
+Super+a picks an action. Menus use long area names. Commands print before running;
+`*` asks for confirmation (default No).
 
-```sh
-sys                                  # the menu (needs a terminal)
-sys network wifi-scan                # one action
-sys help                             # all actions
-```
-
-| Area | Actions |
+| Area (alias) | Actions, default first |
 |---|---|
-| `network` | `wifi-status`, `wifi-scan`, `wifi-connect [SSID]`, `wifi-connect-hidden [SSID]`, `wifi-disconnect`, `wifi-forget [SSID]` \*, `portal-on`, `portal-off`, `portal-status`, `test` |
-| `devices` | `usb-list`, `usb-allow N`, `thunderbolt-allow ID`, `bluetooth-power on\|off`, `bluetooth-scan`, `bluetooth-pair MAC`, `bluetooth-connect MAC`, `bluetooth-disconnect MAC`, `bluetooth-remove MAC` \*, `bluetooth-list` |
-| `audio` | `list`, `output ID`, `volume PERCENT` (0-150), `mute`, `mic-mute` |
-| `display` | `list`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]`, `save`, `reset` \*, `brightness PERCENT\|+N\|-N` (first writable backlight, group video; never below about 5 %) |
-| `keyboard` | `layouts`, `set LAYOUTS` (for example `us,hu`), `next` |
-| `screenshot` | `area`, `screen` (saves to `~/Pictures`) |
-| `browser` | `web`, `tmp`, `admin`, `portal` |
-| `security` | `status`, `check`, `report`, `password` |
-| `system` | `release`, `update` \*, `update-usb [MOUNTPOINT\|DEVICE]` \*, `guests`, `setup`, `backup [MOUNTPOINT PROJECT]`, `logs`, `services` |
-| `power` | `profile ac\|battery`, `lock`, `logout` \*, `reboot` \*, `poweroff` \* |
+| `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
+| `portal` | `status`, `on`, `off` |
+| `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair MAC`, `connect MAC`, `disconnect MAC`, `forget MAC` * |
+| `usb` | `status`, `allow N\|ID` |
+| `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `micmute` |
+| `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]`, `save`, `reset` * |
+| `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
+| `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures`) |
+| `browser` (`br`) | `status`, `web`, `tmp`, `admin`, `portal` |
+| `security` (`sec`) | `status`, `check`, `report`, `password` |
+| `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
+| `guests` | `status`, `setup` |
+| `power` | `status`, `ac`, `battery`, `lock`, `logout` *, `reboot` *, `off` * |
+| `backup` | `run [MOUNTPOINT PROJECT]` |
+| `logs` | `host` (`/var/log/messages`), `services` (`rc-status -a`) |
 | `selftest` | `run` |
 
-Not built in `sys`: owner guest management (`system guests` shows status only), firewall
-failover and printing.
+Not built in `sys`: owner guest management, firewall failover and printing.
 
 ## Browsers
 
@@ -93,7 +91,9 @@ browser web|tmp|portal|admin [url]
 ```
 
 Run it as the owner in the Sway session; it needs no password. `sys browser web|tmp|admin|portal`
-(or the menu) opens one without a URL. Only HTTP and HTTPS URLs are accepted. Each browser is
+(or the menu) opens one without a URL. `sys browser` lists running browser containers via
+the existing `sudo guests status` tool.
+Only HTTP and HTTPS URLs are accepted. Each browser is
 Chromium in its own container with a restricted Wayland socket and playback-only audio; the
 window title starts with `[role]`.
 
@@ -113,24 +113,24 @@ other programs to `tmp` is not built.
 
 ## Wi-Fi
 
-The radio belongs to wan; `sys network` runs the commands in it over SSH.
+The radio belongs to wan; `sys wifi` runs the commands in it over SSH.
 
-- `sys network wifi-status`: the connection and address. `sys network wifi-scan`: networks in
+- `sys wifi status`: the connection and address. `sys wifi scan`: networks in
   range, after a few seconds.
-- `sys network wifi-connect`: lists the networks in range, then asks `SSID:` and `Passphrase
+- `sys wifi connect`: lists the networks in range, then asks `SSID:` and `Passphrase
   (empty for a known or open network):` (8 to 63 bytes; it goes to wan on standard input
   and stays there). An empty passphrase connects to a known network.
-- `sys network wifi-forget`: lists known networks, asks `SSID to forget:`.
-- `sys network wifi-disconnect`: drops the current connection.
+- `sys wifi forget`: lists known networks, asks `SSID to forget:`.
+- `sys wifi disconnect`: drops the current connection.
 
-Hidden networks: `sys network wifi-connect-hidden`. An upstream network that overlaps
+Hidden networks: `sys wifi hidden`. An upstream network that overlaps
 100.80.0.0/16 is refused and raises UpstreamOverlap.
 
 ## Captive portals
 
-`sys network portal-on` runs `sudo portal on` and then the portal browser. It opens two pf rules
+`sys portal on` runs `sudo portal on` and then the portal browser. It opens two pf rules
 on both firewalls and wan's DNS pass-through, for the portal browser only; the bar shows `PORTAL`.
-It ends when the browser closes, with `sys network portal-off`, or after 30 minutes.
+It ends when the browser closes, with `sys portal off`, or after 30 minutes.
 
 ```sh
 sudo portal on [A.B.C.D/LEN]   # upstream network, taken from wan's address if omitted
@@ -142,9 +142,9 @@ sudo portal status             # wan, fw1, fw2; verdict on, off, mixed or unknow
 
 USBGuard blocks every device not in the allow-list. A disk image starts with a policy by class
 (input, storage, hubs); replace it with a per-device one after the first boot (README, First boot
-step 4; there is no `sys` action for it). `sys devices usb-list` shows the blocked USB and
-unauthorized Thunderbolt devices; `sys devices usb-allow N` and `sys devices thunderbolt-allow
-ID` allow them. The `bluetooth-*` actions in the same area drive Bluetooth. By hand:
+step 4; there is no `sys` action for it). `sys usb status` shows the blocked USB and
+unauthorized Thunderbolt devices; `sys usb allow N|ID` allows a USB number or Thunderbolt ID.
+`sys bluetooth` shows power and known devices. By hand:
 
 ```sh
 sudo devices list
@@ -174,7 +174,7 @@ sudo dns-push local    # push the stored blocklist with the current files
 sudo backup [<mountpoint> <owner-project>]
 ```
 
-`sys system backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks `Mounted encrypted
+`sys backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks `Mounted encrypted
 external disk:` and `Owner Incus project:`. It needs an external USB disk with LUKS, unlocked and
 mounted at a root-owned directory, not on the laptop's own disk, and an Incus project for the
 owner's guests (not `default`; nothing creates one yet). It writes `convergent-backups/backup-<UTC>`:
@@ -202,7 +202,7 @@ The checker fails until a baseline is accepted (`<release-dir>` holds `manifest`
 and out of Setup Mode. `check` does not verify the manifest's signature, so check the release
 yourself before accepting it.
 
-`sys selftest run` checks this boot (sudo once, at the start) and writes a report to
+`sys selftest` checks this boot (sudo once, at the start) and writes a report to
 `~/selftest-YYYYmmdd-HHMMSS.txt`. Each check prints PASS, FAIL or SKIP with its detail. Every check
 has a time limit, so the run cannot hang.
 
@@ -221,16 +221,16 @@ rel 202610170000 good | US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 |---|---|---|
 | `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | |
 | `RAM`, `SWP` | used/total GiB | |
-| `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys network test` |
-| Topology | wan, both firewalls, svc and browsers (below) | `sys system guests`; RECOVERY 5, 6 |
+| `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
+| Topology | wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
-| `wifi` | network name, `-` if none, `?` if wan does not answer; every minute | `sys network wifi-status` |
+| `wifi` | network name, `-` if none, `?` if wan does not answer; every minute | `sys wifi status` |
 | `alerts` | `0` (green), `1c 2w` (critical, warning; red with any critical, yellow otherwise), `?` (grey) when svc cannot be read; every 30 s | details in Grafana: `sys browser admin` |
-| `PORTAL` | portal mode on (orange) | `sys network portal-off` |
-| `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys system setup` |
-| `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys system release` |
+| `PORTAL` | portal mode on (orange) | `sys portal off` |
+| `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
+| `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
-| `BAT` | capacity, `+` charging or `-` discharging; orange below 30 %, red below 15 % discharging; `AC` without a battery | `sys power profile` |
+| `BAT` | capacity, `+` charging or `-` discharging; orange below 30 %, red below 15 % discharging; `AC` without a battery | `sys power status` |
 
 Topology: `WAN` green when Wi-Fi is connected, orange without a network, red when wan is down.
 Each firewall is bold bright green as CARP master, dim green as standby, orange when its CARP
@@ -241,8 +241,8 @@ turns grey. The idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid l
 ## Releases and guests
 
 ```sh
-sys system release                    # slot state on disk: booted, both slots, good, highest (slot status)
-sys system guests                     # one line per instance: name and state (guests status)
+sys update                           # release slots; `sys update check` asks whether a newer one is published
+sys guests status                     # one line per instance: name and state (guests status)
 sudo guests update fw|wan|svc|web|admin <image-dir>
 ```
 
@@ -257,5 +257,5 @@ operation runs at a time; browsers, `check` and `backup` refuse to start while o
   (swayidle, swaylock).
   `sys power lock` locks now. Pause or resume the idle lock with the `NL` block in the bar.
 - `power` sets the CPU energy preference and a clock cap for AC or battery (4.2 GHz by default,
-  `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power profile ac` or
-  `sys power profile battery` (`sudo power [ac|battery]`).
+  `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
+  `sys power battery` (`sudo power [ac|battery]`).

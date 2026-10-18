@@ -1,41 +1,19 @@
-title=System
-actions='release	Show release slots	root
-update	Download and write the newest release	root confirm
-update-usb	Write a release from USB [MOUNTPOINT|DEVICE]	root confirm
-guests	Show guest status	root
-setup	Create the guests now (first boot does it; resumes)	root
-backup	Back up to encrypted USB [MOUNTPOINT PROJECT]	root
-logs	Read host logs	root
-services	Show OpenRC services	'
+title=Update
+alias=up
+actions='status	Show release slots	root
+check	Check for a newer release online	root
+install	Download and write the newest release	root confirm
+usb	Write a release from USB [MOUNTPOINT|DEVICE]	root confirm'
 
-system_state() {
+update_state() {
 	value=$(timeout -k 0.2 1 cat /proc/cmdline 2>/dev/null) || value=
 	release=$(printf '%s\n' "$value" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^convergent.release=/) {sub(/^[^=]*=/,"",$i); print $i; exit}}')
 	printf 'Release: %s\n' "${release:-unknown}"
-	case $(cached /run/convergent/status/setup) in
-	running) echo 'Setup: creating the guests' ;;
-	failed) echo 'Setup: failed; run setup' ;;
-	esac
 }
-system_release() { noargs "$@"; page run sudo /usr/local/sbin/slot status; }
-system_guests() { noargs "$@"; page run sudo /usr/local/sbin/guests status; }
-system_setup() { noargs "$@"; run sudo /usr/local/sbin/guests init /var/lib/convergent/release-guests; }
-system_logs() { noargs "$@"; root_page /var/log/messages; }
-system_services() { noargs "$@"; page run rc-status -a; }
-system_backup() {
-	case $# in
-	0) ask 'Mounted encrypted external disk'; dest=$answer; ask 'Owner Incus project'; project=$answer ;;
-	2) dest=$1; project=$2 ;;
-	*) usage ;;
-	esac
-	path "$dest"
-	dest=$(realpath -e -- "$dest") || die 'no destination directory'
-	path "$dest"
-	[ -d "$dest" ] && mountpoint -q -- "$dest" || die 'destination must be a mountpoint'
-	case $project in ''|default|*[!a-zA-Z0-9_-]*) die 'invalid owner project' ;; esac
-	run sudo /usr/local/sbin/backup "$dest" "$project"
-}
-system_update_media() (
+update_status() { noargs "$@"; page run sudo /usr/local/sbin/slot status; }
+# Opens the firewalls' update path while it runs: never part of status.
+update_check() { noargs "$@"; run sudo /usr/local/sbin/fetch-release check; }
+update_media() (
 	onearg 'USB mountpoint or block device' "$@"; path "$answer"
 	source=$(realpath -e -- "$answer") || die 'source does not exist'
 	path "$source"
@@ -92,8 +70,8 @@ reboot_new() {
 	run sudo /usr/local/sbin/slot status | grep -q ' +[0-9]$' || return 0
 	if confirm 'Reboot into the new release'; then run sudo reboot; fi
 }
-system_update() { noargs "$@"; run sudo /usr/local/sbin/fetch-release && reboot_new; }
-system_update_usb() {
+update_install() { noargs "$@"; run sudo /usr/local/sbin/fetch-release && reboot_new; }
+update_usb() {
 	[ "$#" -le 1 ] || usage
-	system_update_media "$@" && reboot_new
+	update_media "$@" && reboot_new
 }
