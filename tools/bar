@@ -1,20 +1,38 @@
 #!/bin/sh
 # ARCHITECTURE 8, 9, 12
-# swaybar status_command; alerts every 30 seconds, display every five.
+# swaybar status_command; slow probes never delay the clock.
 set -u
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
 
 vmalert=http://100.80.2.10:8880
-tick=5
 ps=/sys/class/power_supply
 st=/run/convergent/status
+uid=$(id -u)
+# swayidle's timeout skips the lock while this file exists (sway config).
+hold=$XDG_RUNTIME_DIR/nolock
+work=$(mktemp -d "$XDG_RUNTIME_DIR/convergent-bar.XXXXXX") || exit 1
+reader= alerts_pid= inputs_pid=
+cleanup() {
+	trap - 0
+	for child in $reader $alerts_pid $inputs_pid; do kill "$child" 2>/dev/null || :; done
+	for child in $reader $alerts_pid $inputs_pid; do wait "$child" 2>/dev/null || :; done
+	rm -rf "$work"
+}
+trap cleanup 0
+trap 'exit 0' HUP INT TERM
 
-# The booted release, from the kernel command line.
-rel=?
-read -r cmdline </proc/cmdline
-for w in $cmdline; do
-	case $w in convergent.release=*) rel=${w#convergent.release=} ;; esac
-done
+# An explicit descriptor keeps stdin available to the background reader.
+exec 3<&0
+(
+	while IFS= read -r event; do
+		case $event in *'{'*) ;; *) continue ;; esac
+		printf '%s\n' "${event#,}" | jq -e 'select(.name == "nolock" and .button == 1)' >/dev/null 2>&1 || continue
+		if [ -e "$hold" ]; then rm -f "$hold"; else : >"$hold"; fi
+	done
+) <&3 &
+reader=$!
+exec 3<&-
 
 # The first battery, if any.
 bat=
@@ -32,45 +50,152 @@ poll_alerts() {
         [.[0].data.alerts[] | select(.state == "firing")] |
         (map(select(.labels.severity == "critical")) | length) as $c |
         if length == 0 then "0" else "\($c)c \(length - $c)w" end') || alerts='?'
+    printf '%s\n' "$alerts" >"$work/.alerts" && mv "$work/.alerts" "$work/alerts"
 }
 
-read -r _ u n s i w q sq _ </proc/stat
-pt=$((u + n + s + i + w + q + sq)) pi=$((i + w))
-poll_alerts
-k=0
+poll_inputs() {
+	timeout -k 1 2 ip -4 route show default 2>/dev/null |
+		awk '{for (i=1;i<NF;i++) if ($i == "dev") {print $(i+1); exit}}' >"$work/.route"
+	mv "$work/.route" "$work/route"
+	layout=$(timeout -k 1 2 swaymsg -t get_inputs 2>/dev/null |
+		jq -er '[.[] | select(.type == "keyboard")][0].xkb_active_layout_name |
+		select(type == "string") | if test("\\(US\\)") then "US" else .[0:2] | ascii_upcase end') || layout='?'
+	printf '%s\n' "$layout" >"$work/.layout" && mv "$work/.layout" "$work/layout"
+}
+
+printf '{"version":1,"click_events":true}\n[\n'
+next_alerts=0 next_inputs=0 comma=
 while :; do
-	read -r _ u n s i w q sq _ </proc/stat
-	t=$((u + n + s + i + w + q + sq)) idle=$((i + w))
-	cpu=$(( (t - pt) > 0 ? 100 * ((t - pt) - (idle - pi)) / (t - pt) : 0 ))
-	pt=$t pi=$idle
-
-	mt=0 ma=0
-	while read -r key val _; do
-		case $key in MemTotal:) mt=$val ;; MemAvailable:) ma=$val; break ;; esac
-	done </proc/meminfo
-
-	k=$((k + 1))
-	[ $((k % 6)) = 0 ] && poll_alerts
-
-	line=
-	if [ -n "$bat" ]; then
-		read -r cap <"$bat/capacity"; read -r bs <"$bat/status"
-		case $bs in Charging) bs=+ ;; Discharging) bs=- ;; *) bs= ;; esac
-		line="bat $cap%$bs | "
+	stamp=$(date '+%s %a %m/%d %H:%M:%S')
+	now=${stamp%% *}
+	if [ "$now" -ge "$next_alerts" ]; then
+		if [ -z "$alerts_pid" ] || ! kill -0 "$alerts_pid" 2>/dev/null; then
+			poll_alerts & alerts_pid=$!
+			next_alerts=$((now + 30))
+		fi
 	fi
-	line="${line}cpu $cpu% | mem $(( (mt - ma) / 1024 ))M"
-
-	# Root refreshes authoritative status once a minute.
-	wf=?
-	[ -r "$st/wifi" ] && read -r wf <"$st/wifi"
-	wf=${wf:-?}
-	line="$line | wifi $wf | alerts $alerts"
-	if [ -r "$st/portal" ] && read -r ps0 <"$st/portal"; then
-		case $ps0 in on) line="$line | PORTAL" ;; off) ;; *) line="$line | portal ?" ;; esac
+	if [ "$now" -ge "$next_inputs" ]; then
+		if [ -z "$inputs_pid" ] || ! kill -0 "$inputs_pid" 2>/dev/null; then
+			poll_inputs & inputs_pid=$!
+			next_inputs=$((now + 5))
+		fi
 	fi
-
-	# Blessed once the OpenRC service has started.
+	nl=off
+	[ ! -e "$hold" ] || nl=on
+	pkill -0 -u "$uid" -x swayidle 2>/dev/null || nl=missing
+	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
-	printf '%s | rel %s %s | %s\n' "$line" "$rel" "$bl" "$(date +%H:%M)"
-	sleep "$tick"
+	# One formatter per frame; procfs/sysfs reads need no helper processes.
+	awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
+		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" '
+	function get(path, value) {
+		if ((getline value < path) <= 0) value=""
+		close(path)
+		return value
+	}
+	function json(s, out, i, c) {
+		out="\""
+		for (i=1;i<=length(s);i++) {
+			c=substr(s,i,1)
+			if (c == "\"" || c == "\\") out=out "\\" c
+			else if (c in control) out=out control[c]
+			else out=out c
+		}
+		return out "\""
+	}
+	function block(text, color, name, markup) {
+		printf "%s{\"full_text\":%s", sep, json(text)
+		if (color != "") printf ",\"color\":%s", json(color)
+		if (name != "") printf ",\"name\":%s", json(name)
+		if (markup) printf ",\"markup\":\"pango\""
+		printf "}"
+		sep=","
+	}
+	function span(text, state, color) {
+		gsub(/&/, "\\&amp;", text); gsub(/</, "\\&lt;", text); gsub(/>/, "\\&gt;", text)
+		color=grey
+		if (fresh) {
+			if (state == "up") color=green
+			else if (state == "master") {color="#00ff00"; text="<b>" text "</b>"}
+			else if (state == "backup") color="#5f8f5f"
+			else if (state == "down") color=red
+			else if (state == "nolink" || state == "degraded") color=orange
+		}
+		return "<span foreground=\"" color "\">" text "</span>"
+	}
+	BEGIN {
+		grey="#888888"; green="#00cc00"; red="#ff0000"; orange="#ff8c00"
+		for (i=1;i<32;i++) control[sprintf("%c",i)]=sprintf("\\u%04x",i)
+		split(get(work "/previous"), prev, " ")
+		split(get("/proc/stat"), cpu, " ")
+		total=0; for (i=2;i<=8;i++) total+=cpu[i]
+		idle=cpu[5]+cpu[6]; busy="-"
+		if (prev[1] != "" && total>prev[1]) busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
+		lo=""; hi=""; package="-"; hottest="-"
+		for (i=1;i<ARGC;i++) {
+			path=ARGV[i]; value=get(path)
+			if (value !~ /^[0-9]+$/) continue
+			if (path ~ /scaling_cur_freq$/) {
+				if (lo == "" || value+0<lo) lo=value+0
+				if (hi == "" || value+0>hi) hi=value+0
+			} else {
+				if (hottest == "-" || value+0>hottest) hottest=value+0
+				label=path; sub(/_input$/, "_label", label)
+				dir=path; sub(/\/[^/]+$/, "", dir)
+				if (get(dir "/name") == "coretemp" && get(label) == "Package id 0") package=value+0
+			}
+		}
+		freq=lo == "" ? "-" : sprintf("%.1f-%.1f",lo/1000000,hi/1000000)
+		if (package != "-") package=sprintf("%.0f",package/1000)
+		if (hottest != "-") hottest=sprintf("%.0f",hottest/1000)
+		printf "%s[", comma
+		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
+		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
+		close("/proc/meminfo")
+		block(sprintf("RAM %.1f/%.0fG SWP %.1f/%.0fG",(mem["MemTotal:"]-mem["MemAvailable:"])/1048576,
+			mem["MemTotal:"]/1048576,(mem["SwapTotal:"]-mem["SwapFree:"])/1048576,mem["SwapTotal:"]/1048576), "")
+		iface=get(work "/route"); tx=""; rx=""; rate="NET tx- rx- Mb/s"
+		if (iface ~ /^[[:alnum:]_.:-]+$/) {
+			tx=get("/sys/class/net/" iface "/statistics/tx_bytes")
+			rx=get("/sys/class/net/" iface "/statistics/rx_bytes")
+		}
+		split(get("/proc/uptime"), uptime," "); elapsed=uptime[1]-prev[3]
+		if (iface != "" && iface == prev[4] && elapsed>0 && tx ~ /^[0-9]+$/ && rx ~ /^[0-9]+$/ &&
+			prev[5] ~ /^[0-9]+$/ && prev[6] ~ /^[0-9]+$/ && tx+0>=prev[5]+0 && rx+0>=prev[6]+0)
+			rate=sprintf("NET tx%.1f rx%.1f Mb/s",(tx-prev[5])*8/elapsed/1000000,(rx-prev[6])*8/elapsed/1000000)
+		block(rate, "")
+		printf "%.0f %.0f %.2f %s %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
+			tx == "" ? "-" : tx,rx == "" ? "-" : rx > (work "/previous")
+		close(work "/previous")
+		fresh=mtime>0 && now-mtime<=180
+		n=split(get(st "/topology"), fields," ")
+		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
+		browsers=topo["browsers"] ~ /^[0-9]+$/ ? topo["browsers"] : "?"
+		block(span("WAN",topo["wan"]) "--[" span("FW1",topo["fw1"]) " " span("FW2",topo["fw2"]) "]--" \
+			span(get("/proc/sys/kernel/hostname"),"up") "--" span("SVC",topo["svc"]) "--" \
+			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : ""), grey, "", 1)
+		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
+		wifi=get(st "/wifi"); block("wifi " (wifi == "" ? "?" : wifi), "")
+		alerts=get(work "/alerts"); if (alerts == "") alerts="?"
+		block("alerts " alerts,alerts == "?" ? grey : alerts == "0" ? green : alerts+0>0 ? red : "#ffd700")
+		portal=get(st "/portal")
+		if (portal != "off") block(portal == "on" ? "PORTAL" : "portal ?",portal == "on" ? orange : grey)
+		rel="?"; n=split(get("/proc/cmdline"),words," ")
+		for (i=1;i<=n;i++) if (words[i] ~ /^convergent.release=/) {rel=words[i]; sub(/^[^=]*=/,"",rel)}
+		block("rel " rel " " bl,bl == "good" ? grey : red)
+		layout=get(work "/layout"); block(layout == "" ? "?" : layout, "")
+		days=int(uptime[1]/86400)
+		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")
+		block(clock, "")
+		if (bat == "") block("AC", "")
+		else {
+			cap=get(bat "/capacity"); bs=get(bat "/status"); color=""
+			if (bs == "Discharging" && cap ~ /^[0-9]+$/) color=cap+0<15 ? red : cap+0<30 ? orange : ""
+			block("BAT " (cap == "" ? "-" : cap) "% " (bs == "Charging" ? "+" : bs == "Discharging" ? "-" : ""),color)
+		}
+		printf "]\n"
+		exit
+	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq /sys/class/hwmon/hwmon*/temp*_input || exit 1
+	comma=,
+	sleep 1
 done

@@ -48,8 +48,8 @@ when it is fixed.
 ## 3. Go back to the previous release by hand
 
 At power-on the boot menu shows for three seconds; press an arrow key to stop it. Each slot is
-an entry named `Convergent <release> (slot A)` or `(slot B)` (the first release shows `Gentoo
-Linux` for both: the top one is the default). Pick the other one.
+an entry named `Gentoo Linux <release> (slot a)` or `(slot b)` (releases before 2026-10-18 show
+only `Gentoo Linux`: the top one is the default). Pick the other one.
 
 That slot uses its own `/var` from before the update, so changes made since are not in it. The
 next `slot write` must be newer than the highest release ever marked good.
@@ -72,11 +72,11 @@ as it is.
 
 The radio belongs to the `wan` VM, so `ip link` on the host does not show it.
 
-1. Menu: **Wi-Fi: status**. "not found" or no answer means wan or its radio is not up.
+1. `sys network wifi-status`. "not found" or no answer means wan or its radio is not up.
 2. Is the card handed to wan?
    ```sh
    lspci -nnk | grep -A3 -i network          # "Kernel driver in use: vfio-pci" is right
-   sudo guests status                        # wan must be RUNNING
+   sudo guests status                        # wan must be running
    ```
 3. What wan saw at boot:
    ```sh
@@ -86,15 +86,19 @@ The radio belongs to the `wan` VM, so `ip link` on the host does not show it.
 
 ## 6. Wi-Fi works, no Internet
 
-The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not.
+The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not. The host
+itself cannot browse, by design: pf lets it resolve names through the firewalls and reach a short
+list of update servers. Browsers have Internet, so try one (`browser web`) to tell the two apart.
 
 ```sh
-sudo guests status                                                   # fw1, fw2, wan, svc RUNNING
+sys network wifi-status                                              # connected, with an address
+sys network test              # "DNS: ok" or "DNS: failed", then wan diag: default route, "853 tls ok" per server
+sys system guests                                                    # fw1, fw2, wan, svc running
 sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MASTER here, BACKUP on fw2
-sudo check                                                           # report: /var/lib/convergent/check/last
+sys security check                                                   # report: /var/lib/convergent/check/last
 ```
 
-A captive portal (hotel, train) needs portal mode first: menu **Portal mode: on**.
+A captive portal (hotel, train) needs portal mode first: `sys network portal-on`.
 
 ## 7. A USB device does not work
 
@@ -114,15 +118,16 @@ first boot step 4).
 
 | What | Where |
 |---|---|
-| Warnings and errors of the host | `/var/log/messages` |
+| Warnings and errors of the host | `/var/log/messages`; `sys system logs` reads it |
 | Release checks, boot tries | `sudo slot status`; `slot:` lines in `/var/log/messages` |
+| Self-test of this boot | `sys selftest run` writes `~/selftest-YYYYmmdd-HHMM.txt` (PASS, FAIL or SKIP per check) |
 | Services | `rc-status` (all); `sudo rc-service <name> status`, `restart` |
 | Guests | `/var/log/incus/<guest>/console.log` and `qemu.log`; `/var/log/incus/incusd.log` |
 | Security audit | `/var/log/audit/audit.log` |
-| Health check report | `/var/lib/convergent/check/last` |
+| Health check report | `sys security report`; `/var/lib/convergent/check/last` |
 | Everything, searchable | Grafana in the admin browser (needs svc) |
 
-All of them need `sudo` to read.
+All of them need `sudo` to read, except the self-test report in the owner's home.
 
 ## 9. Read the encrypted state from another Linux
 

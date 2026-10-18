@@ -1,10 +1,38 @@
-# ARCHITECTURE 9; the stock /etc/sway/config includes this directory last.
-# Reconfigures the stock bar-0 (or creates it) and binds the menu.
+# ARCHITECTURE 9; the stock /etc/sway/config includes this directory last, so lines here win.
+
+# Bar: tools/bar speaks the i3bar protocol with pango markup and click events.
 bar bar-0 {
     position top
+    font pango:DejaVu Sans Mono 10
     status_command /usr/local/sbin/bar
 }
-bindsym Mod4+m exec /usr/local/sbin/menu
+
+# Launcher and the sys tool.
+set $pick bemenu -i -l 15 --fn "DejaVu Sans Mono 11"
+unbindsym Mod4+d
+bindsym Mod4+d exec bemenu-run -i -l 15 --fn 'DejaVu Sans Mono 11' -p run
+bindsym Mod4+m exec foot -T sys -e sys
+# One sys action by name, run in its own terminal.
+unbindsym Mod4+a
+bindsym Mod4+a exec sh -c 'a=$(sys --pick | $pick -p action | cut -f1) && [ -n "$a" ] && sys --pick "$a"'
+
+# Browsers (Archer's keys).
+unbindsym Mod4+b
+bindsym Mod4+b exec browser web
+bindsym Mod4+Shift+t exec browser tmp
+
+# Lock now; after 10 minutes idle unless the bar's NL holds it off (nolock file); lid close.
+# No before-sleep: without logind swayidle exits on it.
+bindsym Mod4+Escape exec swaylock -f
+exec swayidle -w timeout 600 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaylock -f'
+bindswitch --locked lid:on exec swaylock -f
+
+# Screenshots to the clipboard: an area, or the focused output.
+# Escape in slurp leaves the clipboard alone.
+unbindsym Print
+bindsym Print exec sh -c 'g=$(slurp) && grim -g "$g" - | wl-copy -t image/png'
+bindsym Shift+Print exec sh -c 'grim -o "$(swaymsg -t get_outputs | jq -r ".[] | select(.focused).name")" - | wl-copy -t image/png'
+
 # The stock volume keys call pactl, which is not installed; wpctl comes with WirePlumber.
 unbindsym --locked XF86AudioMute
 unbindsym --locked XF86AudioLowerVolume
@@ -14,7 +42,10 @@ bindsym --locked XF86AudioMute exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
 bindsym --locked XF86AudioLowerVolume exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
 bindsym --locked XF86AudioRaiseVolume exec wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
 bindsym --locked XF86AudioMicMute exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
-# Gentoo's launcher starts WirePlumber and pipewire-pulse once PipeWire is up.
+
+# Session services: audio (Gentoo's launcher starts WirePlumber once PipeWire is up), notifications.
 exec gentoo-pipewire-launcher
-exec swayidle -w timeout 600 'swaylock -f' before-sleep 'swaylock -f'
-bindswitch --locked lid:on exec swaylock -f
+exec mako
+
+# The owner's own settings, written by `sys display save` and `sys keyboard set`.
+include ~/.config/sway/config.d/*

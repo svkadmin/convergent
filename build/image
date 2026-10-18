@@ -108,6 +108,13 @@ done
 chroot_mount
 trap chroot_umount EXIT
 bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
+
+# C.UTF-8 (foot and other programs need a UTF-8 locale; the image has no locale-gen) and LANG
+# from rootfs/etc/env.d into profile.env.
+mkdir -p "$root/usr/lib/locale"
+bld localedef --prefix=/image-root -i C -f UTF-8 C.UTF-8 || die "cannot compile C.UTF-8"
+bld env ROOT=/image-root env-update || die "env-update failed"
+grep -q "LANG='C.UTF-8'" "$root/etc/profile.env" || die "LANG is not in profile.env"
 rel=/releases/$release
 
 # 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
@@ -145,11 +152,12 @@ for slot in a b; do
 	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
 		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
 		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma iTCO_wdt.heartbeat=180 quiet" \
-		" init=/sbin/init" >"$out/cmdline-$slot"
+		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
-	# The boot menu title tells the two slots apart.
-	sed "s/^PRETTY_NAME=.*/PRETTY_NAME=\"Convergent $release (slot $slot)\"/" \
+	# The stock name plus release and slot: the boot menu tells the two slots apart.
+	name=$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
+	sed "s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $release (slot $slot)\"/" \
 		"$root/usr/lib/os-release" >"$out/os-release-$slot"
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" \
 		--initrd "$rel/initramfs.img" --cmdline "@$rel/cmdline-$slot" \

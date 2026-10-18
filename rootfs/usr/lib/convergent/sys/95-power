@@ -1,0 +1,19 @@
+title=Power
+actions='profile	Set power profile ac|battery	root
+lock	Lock the sway session	
+logout	Log out of sway	confirm
+reboot	Reboot the host	root confirm
+poweroff	Power off the host	root confirm'
+
+power_state() {
+	printf 'CPU governor: %s\n' "$(cached /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+}
+power_profile() {
+	onearg 'Power profile (ac/battery)' "$@"
+	case $answer in ac|battery) ;; *) usage ;; esac
+	run sudo /usr/local/sbin/power "$answer"
+}
+power_lock() { noargs "$@"; sway; run swaylock -f; }
+power_logout() { noargs "$@"; sway; run swaymsg exit; }
+power_reboot() { noargs "$@"; run sudo reboot; }
+power_poweroff() { noargs "$@"; run sudo poweroff; }

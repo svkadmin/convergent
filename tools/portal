@@ -17,7 +17,7 @@ log() { logger -t portal "$*"; echo "portal: $*"; }
 usage() { echo "usage: portal on [A.B.C.D/LEN] | off | status | expire" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
-# Expiry yields to an active menu action.
+# Expiry yields to an active sys action.
 umask 077
 mkdir -p "$run" || die "could not create $run"
 exec 9>"$run/portal.lock"

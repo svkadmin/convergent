@@ -49,7 +49,7 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | File | Read it when |
 |---|---|
 | this README | you build, test, install or update |
-| [USAGE.md](USAGE.md) | you use the laptop: menu, browsers, Wi-Fi, devices, backups, coming from Arch |
+| [USAGE.md](USAGE.md) | you use the laptop: the sys tool, browsers, Wi-Fi, devices, backups, coming from Arch |
 | [RECOVERY.md](RECOVERY.md) | something is broken: numbered recipes |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | you change the system and need the reasons |
 
@@ -58,7 +58,7 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | | |
 |---|---|
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
-| Built, first laptop test now | graphics, audio, Bluetooth, Wi-Fi in wan, browsers, bar, menu, power |
+| Built, first laptop test now | graphics, audio, Bluetooth, Wi-Fi in wan, browsers, bar, sys, power |
 | Not built | release signing (Secure Boot stays off), updates over the network, a recovery boot entry |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
@@ -95,6 +95,7 @@ Run one test at a time. Each boots the release on a throwaway disk and passes or
 ```sh
 build/test <release>                                  # boots and marks itself good
 build/test --corrupt <release>                        # one flipped block: must refuse to boot
+build/test --desktop <release>                        # sway, bar and sys: the session's programs and config
 build/test --fallback <good> <newer>                  # broken newer slot: the good one returns
 build/test --interrupt <good> <newer>                 # update cut off half-way: still boots
 build/test --guests <release> $g                      # plus guests init: firewalls, wan, svc
@@ -103,6 +104,19 @@ build/test --guests-update <release> $g <broken-dir>  # plus guest updates and a
 
 `<broken-dir>` is a new path: the test builds a deliberately broken svc image there and checks
 that the update is rolled back.
+
+`--guests` and `--guests-update` also check the Internet path. The test gives wan an emulated
+uplink (QEMU user networking, as a second NIC), then checks that fw1 reaches DNS over TLS and
+that the host resolves a name through the firewalls.
+
+## Checks
+
+Run `build/lint` before a push: shell syntax, shellcheck when installed, leaked secrets or session
+and scratch paths, CRLF line endings, and that every path the docs name exists. Once a week, as
+root, run `build/advisories [release-dir] [guests-dir]` (by default the newest release): it reads
+the upstream fixes for the kernel, the OpenBSD firewalls, the Alpine guests and the Gentoo
+packages, and names what to rebuild (`host`, `kernel`, `fw`, `svc`, `browser`, `wan`, or `guests` for the
+pins). Exit status 1 means something needs a rebuild, 2 means a source could not be read.
 
 ## Install
 
@@ -147,9 +161,9 @@ into a port of the laptop itself, not a hub or dock, and pick it in the boot men
 The passphrase prompt and the console use the **US keyboard layout**, whatever the keys show (on
 a Slovak keyboard `@` is Shift+2, and `y` and `z` are swapped).
 
-1. `Convergent passphrase [1/3]:` appears. Three wrong tries power the laptop off.
+1. `Passphrase [1/3]:` appears. Three wrong tries power the laptop off.
 2. Log in as the owner. Within a few minutes the console prints
-   `convergent: release <release> is good`.
+   `release <release> is good`.
 3. Create the guests. Several minutes per guest; if it stops, run it again:
    ```sh
    sudo guests init /var/lib/convergent/release-guests
@@ -160,7 +174,10 @@ a Slovak keyboard `@` is Shift+2, and `y` and `z` are swapped).
    sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
    sudo rc-service usbguard restart
    ```
-5. Run `sway`. Super+m opens the menu: **Wi-Fi: scan**, then **Wi-Fi: connect**.
+5. Run `sway`. Super+m opens `sys`: choose Network, then **Scan Wi-Fi networks** and
+   **Connect to Wi-Fi** (or `sys network wifi-connect` in a terminal).
+6. Run `sys selftest run` and keep the report it writes to `~/selftest-YYYYmmdd-HHMM.txt`. It asks
+   for the owner's password once. Send the report with any FAIL.
 
 Until signing exists the bar always counts two alerts: Secure Boot off, and the health checker
 that fails because of it.
@@ -200,10 +217,10 @@ To go back by hand, pick the other slot in the boot menu: see [RECOVERY.md](RECO
 
 | Path | What |
 |---|---|
-| `build/` | builder chroot, packages, image, QEMU tests, disk image |
+| `build/` | builder chroot, packages, image, QEMU tests, lint, advisories, disk image |
 | `portage/` | make.conf, USE flags, package sets, the image profile, two local ebuilds |
-| `rootfs/` | the host's own files: `/etc`, `/usr/lib/convergent`, menu actions, health checks |
+| `rootfs/` | the host's own files: `/etc`, `/usr/lib/convergent` (the `sys` areas), health checks |
 | `initramfs/` | the dracut module: unlock, `/var` per release, watchdog |
 | `install/` | the installer, shipped as `convergent-install` |
-| `tools/` | `slot`, `guests`, `browser`, `menu`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts` |
+| `tools/` | `slot`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts` |
 | `guests/` | `fw` (OpenBSD), `wan`, `svc` and `browser` (Alpine) |

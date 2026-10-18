@@ -1,0 +1,103 @@
+title=Selftest
+actions='run	Check this boot and save a report to ~/selftest-YYYYmmdd-HHMM.txt	root'
+
+selftest_state() { echo 'Run once after first boot or an update; send the report'; }
+selftest_log() { printf '%s\n' "$@"; printf '%s\n' "$@" >&3; }
+selftest_run() (
+	noargs "$@"; path "$HOME"
+	# Authenticate on this terminal once; checks must never prompt.
+	run timeout --foreground -k 1 120 sudo -v || return
+	report=$HOME/selftest-$(date +%Y%m%d-%H%M).txt
+	set -C
+	exec 3>"$report" || exit 1
+	set +C
+	pass=0 fail=0 skip=0
+	check() {
+		# Only literal check scripts enter sh; all their children share the deadline.
+		result=0; detail=$(timeout -k 1 "$2" sh -eu -c "$(cat)" </dev/null 2>&1) || result=$?
+		case $result in 124|137) detail="timed out after $2 s"; [ "$1" != time ] || result=77 ;; esac
+		case $result in
+		0) verdict=PASS; pass=$((pass + 1)) ;;
+		77) verdict=SKIP; skip=$((skip + 1)) ;;
+		*) verdict=FAIL; fail=$((fail + 1)) ;;
+		esac
+		detail=$(printf '%s\n' "${detail:-check exited $result}" | tr -d '\000-\010\013-\037\177')
+		selftest_log "$verdict $1: $detail"
+	}
+	check release 20 <<'END'
+s=$(sudo -n /usr/local/sbin/slot status); printf '%s\n' "$s" | awk '$1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "slot" {release[$2]=$3; status[$2]=$4}
+END {ok=r ~ /^[0-9]+$/ && r == g && release[s] == r && status[s] == "good"; print "booted " r " slot " s ": " (ok ? "good" : "not marked good"); exit !ok}'
+END
+	check verity 10 <<'END'
+s=$(sudo -n dmsetup status vroot); l=$(cat /sys/kernel/security/lockdown); printf '%s; lockdown %s\n' "$s" "$l"
+printf '%s\n' "$s" | grep -Eq '(^| )verity V$'; printf '%s\n' "$l" | grep -Fq '[confidentiality]'
+END
+	check watchdog 5 <<'END'
+[ -e /dev/watchdog ] || { echo 'no /dev/watchdog; firmware may lock it'; exit 77; }; echo '/dev/watchdog exists'
+END
+	check graphics 10 <<'END'
+s=$(lspci -Dnnk -d 8086:); printf '%s\n' "$s" | awk '/^[^ \t]/ {gpu=($0 ~ /\[03(00|02)\]/); if (gpu) n++} gpu && /Kernel driver in use:/ {if ($NF == "i915" || $NF == "xe") good++}
+END {print good+0 "/" n+0 " Intel VGA/3D functions on i915 or xe"; exit !(n > 0 && good == n)}'
+END
+	check nvidia 10 <<'END'
+n=0; bad=0; early=0; young=$(awk '{print ($1 < 60)}' /proc/uptime)
+for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x10de ] || continue; n=$((n+1)); driver=$(readlink "$d/driver" || :); state=$(cat "$d/power/runtime_status"); echo "${d##*/}: ${driver##*/} $state"; [ "${driver##*/}" = vfio-pci ] || bad=1; case $state:$young in suspended:*) ;; active:1) early=1 ;; *) bad=1 ;; esac; done
+[ "$bad" = 0 ] || exit 1; [ "$n" != 0 ] || { echo 'no NVIDIA functions'; exit 77; }; [ "$early" = 0 ] || { echo 'uptime under 60 s; rerun after idle'; exit 77; }
+END
+	check wifi-radio 10 <<'END'
+n=0; bad=0; for d in /sys/bus/pci/devices/*; do [ "$(cat "$d/vendor")" = 0x8086 ] || continue; case $(cat "$d/class") in 0x0280??) ;; *) continue ;; esac; n=$((n+1)); driver=$(readlink "$d/driver" || :); echo "${d##*/}: ${driver##*/}"; [ "${driver##*/}" = vfio-pci ] || bad=1; done
+[ "$n" != 0 ] || { echo 'no Intel network function (0280)'; exit 1; }; [ "$bad" = 0 ]
+END
+	check guests 15 <<'END'
+s=$(sudo -n /usr/local/sbin/guests status); printf '%s\n' "$s" | awk '$1 ~ /^(fw1|fw2|wan|svc)$/ {state[$1]=$2} END {n=split("fw1 fw2 wan svc", names, " "); for(i=1;i<=n;i++) {s=state[names[i]]; print names[i] ": " (s == "" ? "missing" : s); if(s != "running") bad=1} exit bad}'
+END
+	check wifi 15 <<'END'
+s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi status); printf '%s\n' "$s" | grep -Eq '^[[:space:]]*State[[:space:]]+connected[[:space:]]*$' || { echo 'not connected; run sys network wifi-connect'; exit 77; }; echo 'State connected'
+END
+	check uplink 20 <<'END'
+s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan diag 2>&1) || { case $s in *'wan-ssh: command refused'*) echo 'diag refused; older wan image'; exit 77 ;; *) printf '%s\n' "$s"; exit 1 ;; esac; }
+printf '%s\n' "$s" | grep -q '^default ' || { echo 'wan has no default route (no uplink lease)'; exit 1; }
+# wan forwards but never originates upstream traffic; the firewalls' DNS over TLS does.
+sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config fw1 'nc -z -w 5 9.9.9.9 853' || { echo 'wan has a route, fw1 cannot reach 9.9.9.9:853'; exit 1; }
+echo 'wan default route present; fw1 reaches 9.9.9.9:853'
+END
+	check dns 10 <<'END'
+getent hosts codeberg.org >/dev/null; echo 'codeberg.org resolved through host DNS'
+END
+	check carp 5 <<'END'
+f=/run/convergent/status/topology; stamp=$(stat -c %Y "$f"); now=$(date +%s)
+awk -v now="$now" -v stamp="$stamp" '{for(i=1;i<=NF;i++) {split($i,a,"="); if(a[1] == "fw1") {f1=a[2]; n1++} if(a[1] == "fw2") {f2=a[2]; n2++}}} END {age=now-stamp; print "age " age " s, fw1=" f1 " fw2=" f2; exit !(age >= 0 && age < 180 && n1 == 1 && n2 == 1 && ((f1 == "master" && f2 == "backup") || (f1 == "backup" && f2 == "master")))}' "$f"
+END
+	check time 10 <<'END'
+s=$(chronyc tracking 2>&1) || { printf 'chronyc unavailable: %s\n' "$s"; exit 77; }
+printf '%s\n' "$s" | awk -F ' *: *' '$1 ~ /^Leap status/ {leap=$2} $1 ~ /^Stratum/ {stratum=$2} END {ok=leap == "Normal" && stratum ~ /^[0-9]+$/ && stratum > 0 && stratum < 16; print "stratum " stratum ", leap " leap (ok ? "" : "; source not synchronized yet"); exit (ok ? 0 : 77)}'
+END
+	check audio 10 <<'END'
+grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards || { echo 'no ALSA card'; exit 1; }; echo 'ALSA card present'; [ -S "${XDG_RUNTIME_DIR:-}/pipewire-0" ] || { echo 'PipeWire session absent; hardware only'; exit 0; }
+s=$(wpctl status); printf '%s\n' "$s" | awk '/^Audio/ {audio=1} /^Video/ {audio=0; sinks=0} audio && /Sinks:/ {sinks=1; next} sinks && /(Sources|Filters|Streams):/ {sinks=0} sinks && /\* *[0-9]+\./ {found=1} END {print "PipeWire default sink " (found ? "present" : "missing"); exit !found}'
+END
+	check bluetooth 5 <<'END'
+for d in /sys/class/bluetooth/hci*; do [ ! -e "$d" ] || { echo "${d##*/} present"; exit 0; }; done; echo 'no Bluetooth controller'; exit 1
+END
+	check battery 5 <<'END'
+for d in /sys/class/power_supply/*; do [ "$(cat "$d/type")" = Battery ] || continue; c=$(cat "$d/capacity"); case $c in ''|*[!0-9]*) continue ;; esac; [ "$c" -le 100 ] || continue; echo "${d##*/}: $c%"; exit 0; done; echo 'no battery with capacity'; exit 1
+END
+	check usb 10 <<'END'
+s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys devices usb-list:\n%s\n' "$s"
+END
+	check firmware 10 <<'END'
+s=$(sudo -n dmesg); printf '%s\n' "$s" | awk 'tolower($0) ~ /(firmware|ucode|microcode)/ && tolower($0) ~ /(fail|error|not found|could not|unable to|timed out)/ {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " firmware load errors"; printf "%s", lines; exit (n>0)}'
+END
+	check kernel 10 <<'END'
+s=$(sudo -n dmesg --level=emerg,alert,crit,err); printf '%s\n' "$s" | awk 'NF {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " kernel errors"; printf "%s", lines; exit (n>0)}'
+END
+	# Keep at least three quarters of the audit queue free.
+	check audit 10 <<'END'
+s=$(sudo -n auditctl -s); printf '%s\n' "$s" | awk '$1 == "lost" {lost=$2; l++} $1 == "backlog" {backlog=$2; b++} $1 == "backlog_limit" {limit=$2; m++} END {print "lost " lost ", backlog " backlog "/" limit; exit !(l == 1 && b == 1 && m == 1 && lost == "0" && backlog ~ /^[0-9]+$/ && limit ~ /^[0-9]+$/ && limit > 0 && backlog < limit/4)}'
+END
+	check sudo 2 <<'END'
+read -r start rest </proc/uptime; sudo -n true; read -r stop rest </proc/uptime; awk -v start="$start" -v stop="$stop" 'BEGIN {elapsed=stop-start; printf "sudo -n true: %.2f s\n", elapsed; exit !(elapsed >= 0 && elapsed < 2)}'
+END
+	selftest_log "selftest: $pass pass, $fail fail, $skip skip" "$report"
+	[ "$fail" = 0 ]
+)

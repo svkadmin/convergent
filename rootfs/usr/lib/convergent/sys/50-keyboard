@@ -1,0 +1,28 @@
+title=Keyboard
+actions='layouts	Show active and configured layouts	
+set	Apply and save comma-separated LAYOUTS	
+next	Switch to the next keyboard layout	'
+
+keyboard_state() {
+	[ -n "${SWAYSOCK:-}" ] || { echo 'needs the sway session'; return; }
+	value=$(timeout -k 0.2 1 swaymsg -r -t get_inputs 2>/dev/null) || { echo unknown; return; }
+	printf '%s\n' "$value" | jq -er '[.[] | select(.type == "keyboard") | .xkb_active_layout_name] | unique | if length > 0 then join(", ") else "unknown" end' || echo unknown
+}
+keyboard_layouts() {
+	noargs "$@"; sway
+	json=$(run swaymsg -r -t get_inputs) || return
+	printf '%s\n' "$json" | page jq -r '.[] | select(.type == "keyboard") | "\(.identifier): active=\(.xkb_active_layout_name); configured=\(.xkb_layout_names | join(", "))"'
+}
+keyboard_set() {
+	sway; onearg 'Layouts (for example us,hu)' "$@"; layouts=$answer
+	case $layouts in ''|,*|*,|*,,*|*[!a-zA-Z0-9_,]*) die 'invalid layout list' ;; esac
+	[ "${#layouts}" -le 128 ] || die 'layout list too long'
+	if [ -r /usr/share/X11/xkb/rules/evdev.lst ]; then
+		for layout in $(printf '%s' "$layouts" | tr , ' '); do
+			awk -v code="$layout" '$1 == "!" {section=$2} section == "layout" && $1 == code {found=1} END {exit !found}' /usr/share/X11/xkb/rules/evdev.lst || die "unknown layout: $layout"
+		done
+	fi
+	swayrun input type:keyboard xkb_layout "\"$layouts\"" || return
+	printf 'input type:keyboard xkb_layout "%s"\n' "$layouts" | save_config input
+}
+keyboard_next() { noargs "$@"; sway; swayrun input type:keyboard xkb_switch_layout next; }

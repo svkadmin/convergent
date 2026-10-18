@@ -1,0 +1,30 @@
+title=Screenshot
+actions='area	Save a selected area to Pictures	
+screen	Save focused output in 1 s (Shift+Print: clipboard)	'
+
+screenshot_state() {
+	if [ -n "${SWAYSOCK:-}" ]; then echo 'Save to ~/Pictures'; else echo 'needs the sway session'; fi
+}
+screenshot_path() {
+	sway; path "$HOME"
+	run mkdir -p "$HOME/Pictures" || return
+	shot=$HOME/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png
+	[ ! -e "$shot" ] && [ ! -L "$shot" ] || die 'screenshot already exists; try again in a second'
+}
+screenshot_area() {
+	noargs "$@"; screenshot_path || return
+	geometry=$(run slurp) || return
+	printf '%s\n' "$geometry" | grep -Eq '^-?[0-9]{1,6},-?[0-9]{1,6} [1-9][0-9]{0,5}x[1-9][0-9]{0,5}$' || die 'invalid selection'
+	run grim -g "$geometry" "$shot" || return
+	printf '%s\n' "$shot"
+}
+screenshot_screen() {
+	noargs "$@"; screenshot_path || return
+	json=$(run swaymsg -r -t get_outputs) || return
+	output=$(printf '%s\n' "$json" | jq -er '.[] | select(.focused and .active) | .name') || return
+	token "$output"
+	echo 'Capturing in 1 s; move this terminal away. Shift+Print copies the same output to the clipboard.'
+	sleep 1
+	run grim -o "$output" "$shot" || return
+	printf '%s\n' "$shot"
+}

@@ -12,6 +12,9 @@ case ${SSH_ORIGINAL_COMMAND:-} in
 "portal on" | "portal off" | "portal status")
 	exec /usr/local/sbin/wan-portal "${SSH_ORIGINAL_COMMAND#portal }"
 	;;
+"diag")
+	exec /usr/local/sbin/wan-diag
+	;;
 "check")
 	exec /usr/local/sbin/wan-check
 	;;

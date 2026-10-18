@@ -105,7 +105,7 @@ cleanup() {
         stop_container || result=1
     fi
     if [ -n "$grafana" ]; then
-        if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory 350MiB || result=1; else result=1; fi
+        if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory=350MiB || result=1; else result=1; fi
     fi
     if [ -n "$portal" ]; then /usr/local/sbin/portal off || result=1; fi
     if [ -n "$browser" ]; then kill "$browser" 2>/dev/null; wait "$browser" 2>/dev/null; fi
@@ -172,7 +172,7 @@ if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev
     esac
 fi
 if [ "$role" = tmp ]; then
-    ic config set "$name" environment.BROWSER_IPV4 "100.80.3.$octet"
+    ic config set "$name" environment.BROWSER_IPV4="100.80.3.$octet"
     device eth0 "ipv4.address=100.80.3.$octet" "hwaddr=00:16:3e:80:03:$octet"
 fi
 device wayland "source=$run/sockets/wayland-0"
@@ -189,7 +189,7 @@ until ic exec "$name" -- test -f /run/browser-ready; do
     sleep 1
 done
 if [ "$role" = admin ]; then
-    ic config set svc limits.memory 768MiB
+    ic config set svc limits.memory=768MiB
     grafana=1; ic exec svc -- rc-service grafana start
 fi
 [ "$role" != portal ] || portal_on || die 'portal mode ended during startup'

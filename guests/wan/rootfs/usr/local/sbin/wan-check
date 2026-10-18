@@ -16,6 +16,14 @@ chmod 755 "$d" "$m"
 exec 9> "$d/check.lock"
 flock -n 9 || exit 0
 
+# A wired uplink (USB NIC) has no hotplug handler here: bring it up once it appears, unless
+# its lease was refused; ifup is a no-op for an interface already up.
+for ifc in $UP_IFS; do
+	[ "$ifc" != "$WIFI_IF" ] && [ -e "/sys/class/net/$ifc" ] || continue
+	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
+	ifup "$ifc" >/dev/null 2>&1 || :
+done
+
 good=0
 bad=0
 for ifc in $UP_IFS; do
