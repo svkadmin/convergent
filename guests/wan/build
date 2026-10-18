@@ -141,7 +141,17 @@ chroot "$mini" grub-mkimage -O x86_64-efi -o /target/boot/efi/EFI/BOOT/BOOTX64.E
 	part_gpt ext2 fat normal configfile linux search search_fs_uuid echo
 [ -s "$target/boot/efi/EFI/BOOT/BOOTX64.EFI" ] || die "no boot loader was written"
 
-alpine_apk info -v | sort > "$work/packages"
+awk 'BEGIN {RS=""; FS="\n"}
+    {name=version=origin=""
+     for (i=1; i<=NF; i++) {
+         if ($i ~ /^P:/) name=substr($i,3)
+         if ($i ~ /^V:/) version=substr($i,3)
+         if ($i ~ /^o:/) origin=substr($i,3)
+     }
+     if (name == "" || version == "" || origin == "") exit 1
+     print name "-" version " origin=" origin}
+' "$target/lib/apk/db/installed" >"$work/packages.raw"
+sort "$work/packages.raw" >"$work/packages"
 : > "$target/etc/apk/repositories"
 rm -rf "$target"/var/cache/apk/* "$target"/tmp/* "$target"/root/.ash_history
 du -smx "$target" | awk '{ print "build: root filesystem " $1 " MiB" }'

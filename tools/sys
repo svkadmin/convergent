@@ -186,12 +186,13 @@ status_preview() (
 	cat "$states/$1"
 )
 menu() {
+	. /usr/lib/convergent/theme
 	FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= SHELL=/bin/sh fzf \
 		--layout reverse-list --border rounded --no-sort \
 		--delimiter "$tab" --with-nth 2.. --print-query --prompt 'sys> ' \
 		--header "$1
 Alt+Up/Down: scroll preview" \
-		--color 'dark,bg:#0b0b0b,bg+:#202020,fg:#dddddd,fg+:#ffffff,hl:#78a9ff,hl+:#78a9ff,pointer:#78a9ff,prompt:#78a9ff,info:#999999,header:#999999,border:#555555,spinner:#78a9ff' \
+		--color "dark,bg:$theme_bg,bg+:$theme_surface,fg:$theme_text,fg+:$theme_text,hl:$theme_accent,hl+:$theme_accent,pointer:$theme_accent,prompt:$theme_accent,info:$theme_dim,header:$theme_dim,border:$theme_dim,spinner:$theme_accent" \
 		--preview 'cat -- "$SYS_PREVIEW"/{1}' --preview-window right:55%:wrap \
 		--bind 'enter:accept-non-empty,esc:abort,ctrl-u:clear-query,alt-up:preview-up,alt-down:preview-down' \
 		--bind 'alt-enter:print-query' \

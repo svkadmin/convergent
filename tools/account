@@ -16,7 +16,9 @@ cleanup() {
 	set +e
 	unset pass again
 	[ -z "$saved" ] || stty "$saved" <&3
-	if [ -n "$refresh" ] && ! mountpoint -q /etc/shadow; then
+	if [ -n "$refresh" ] && { ! mountpoint -q /etc/shadow ||
+		[ "$(stat -Lc '%d:%i' "$stm/etc/shadow")" != "$(stat -Lc '%d:%i' /etc/shadow)" ]; }; then
+		if mountpoint -q /etc/shadow; then umount /etc/shadow || exit 1; fi
 		mount --bind "$stm/etc/shadow" /etc/shadow || { echo "account: cannot rebind shadow; state kept at $stm" >&2; exit 1; }
 	fi
 	if [ -n "$stm" ]; then
@@ -58,11 +60,11 @@ unset again
 stm=$(mktemp -d /run/account.XXXXXX)
 mount -t btrfs -o rw,subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state "$stm" ||
 	die 'the state volume did not mount'
+refresh=1
 printf '%s:%s\n' "$user" "$pass" | chpasswd -P "$stm" -c YESCRYPT -s 5 || die 'could not hash password with yescrypt'
 unset pass
 awk -F: -v u="$user" '$1 == u && $2 ~ /^\$y\$/ {ok=1} END {exit !ok}' "$stm/etc/shadow" ||
 	die 'password is not yescrypt'
-refresh=1
 umount /etc/shadow || die 'cannot unmount shadow'
 mount --bind "$stm/etc/shadow" /etc/shadow || die 'cannot rebind shadow'
 refresh=

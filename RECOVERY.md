@@ -20,9 +20,10 @@ on the laptop as the owner unless the recipe says otherwise.
 
 ## 1. Wrong passphrase, the laptop powers off
 
-Three wrong tries power it off; nothing is lost. The prompt uses the **US layout**: on a Slovak
-keyboard `@` is Shift+2, `y` and `z` are swapped, digits are on the top row without Shift. Power
-on and type it again.
+Three wrong tries power it off; nothing is lost. The passphrase uses the US layout, see
+[README, First boot](README.md#first-boot). The screen can stay black while the prompt waits: type
+the passphrase blind and press Enter. Keys pressed meanwhile reappear as empty `host login:`
+prompts; ignore them. Power on and type it again.
 
 The boot can also stop before the passphrase prompt, with `more than one disk has a cv-state
 partition; detach the other`. Power off, unplug the other Convergent disk, and boot again. A
@@ -180,6 +181,7 @@ with `incus import`.
 
 ## 12. An online update fails
 
+First `sys update check`: it names the newest release and how old its signature is.
 `sys update install` stops with the reason. Running it again resumes the download.
 
 | Message | Do |

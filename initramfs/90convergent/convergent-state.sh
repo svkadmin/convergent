@@ -7,6 +7,9 @@ release=$(getarg convergent.release=)
 dev=/dev/disk/by-partlabel/cv-state
 state=/run/cv-state
 udevadm settle
+# The passphrase prompt only after the display driver took the screen (i915 on the laptop; none in QEMU).
+i=0
+while [ ! -e /dev/dri/card0 ] && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
 [ -b "$dev" ] || die "state: no partition labelled cv-state"
 # A second Convergent disk would make every label ambiguous.
 [ "$(blkid -o device -t PARTLABEL=cv-state | wc -l)" = 1 ] ||

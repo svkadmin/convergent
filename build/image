@@ -63,7 +63,7 @@ printf '%s\n' "$state_max" >"$root/usr/lib/convergent/state-max-gib"
 } >"$root/etc/convergent/dns.conf"
 xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
-sed -i "s/timeout 600 /timeout $((idle * 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
+sed -i "s/timeout 600 /timeout $((idle * 60)) /; s/timeout 660 /timeout $((idle * 60 + 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
 	"$root/etc/sway/config.d/convergent"
 if [ -n "$scale" ]; then
 	sed -i "/^include ~\/\.config\/sway\/config.d\/\*/i output * scale $scale" "$root/etc/sway/config.d/convergent"
@@ -111,6 +111,21 @@ find "$gccdir" -maxdepth 1 \( -name '*.o' -o -name '*.la' \) -delete
 # The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
 find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name 'cc' -o -name 'cpp' \
 	-o -name 'x86_64-pc-linux-gnu-*' \) -delete
+# Unused parts of needed packages (measured on release 202610181918): the compiler's own files,
+# gcc runtimes nothing links, Incus' extra tools and foreign-OS agents, protoc, the SSH server (the
+# host runs none) and QEMU firmware for other architectures. The library check below backs this.
+rm -rf "$root"/usr/x86_64-pc-linux-gnu/gcc-bin "$root"/usr/share/gcc-data "$gccdir/32" \
+	"$root"/usr/bin/incus-user "$root"/usr/bin/incus-benchmark "$root"/usr/bin/incus-migrate \
+	"$root"/usr/bin/incus-simplestreams "$root"/usr/bin/lxc-to-incus "$root"/usr/bin/lxd-to-incus \
+	"$root"/etc/init.d/incus-user "$root"/usr/libexec/incus/agents/*windows* "$root"/usr/libexec/incus/agents/*i686* \
+	"$root"/usr/lib64/libprotoc* "$root"/usr/bin/protoc* \
+	"$root"/usr/sbin/sshd "$root"/usr/lib64/misc/sshd-session "$root"/usr/lib64/misc/sshd-auth "$root"/etc/init.d/sshd \
+	"$root"/usr/share/edk2/ArmVirtQemu-AARCH64 "$root"/usr/share/edk2/OvmfX64/*.qcow2 "$root"/usr/share/edk2/OvmfX64/Shell.efi
+find "$gccdir" -maxdepth 1 \( -name 'libgfortran*' -o -name 'libquadmath*' -o -name 'lib*san*' -o -name 'libitm*' \
+	-o -name 'libcc1*' -o -name 'libgomp-plugin*' \) -exec rm -rf {} +
+(cd "$root/usr/share/qemu" && rm -rf edk2-arm* edk2-aarch64* edk2-riscv* edk2-loongarch64* edk2-i386-code.fd \
+	edk2-i386-secure-code.fd skiboot.lid openbios-* slof.bin hppa-* u-boot* opensbi-* palcode-* s390-* pnv-* \
+	vof* npcm* ast27x0* QEMU,* qemu_vga.ndrv dtb)
 printf '%s\n' "$release" >"$root/usr/lib/convergent/release"
 # Mount points the initramfs needs: the image is read-only once made.
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/home" "$root/tmp" "$root/var" "$root/srv"
@@ -160,6 +175,19 @@ mkdir -p "$root/usr/lib/locale"
 bld localedef --prefix=/image-root -i C -f UTF-8 C.UTF-8 || die "cannot compile C.UTF-8"
 bld env ROOT=/image-root env-update || die "env-update failed"
 grep -q "LANG='C.UTF-8'" "$root/etc/profile.env" || die "LANG is not in profile.env"
+# Setuid, setgid and file capabilities only where the laptop needs them: nothing else gains
+# privilege by being run. cdrtools' CD-writing programs (Incus needs only mkisofs) go entirely.
+rm -f "$root"/usr/bin/rscsi "$root"/usr/bin/cdrecord "$root"/usr/bin/cdda2wav "$root"/usr/bin/readcd
+find "$root" -xdev -type f -perm /6000 | while read -r f; do
+	case ${f##*/} in sudo | su | passwd | unix_chkpwd | dbus-daemon-launch-helper) continue ;; esac
+	chmod ug-s "$f" && echo "image: setuid/setgid removed: ${f#"$root"}"
+done
+bld getcap -r /image-root 2>/dev/null | awk '{ print $1 }' | while read -r f; do
+	bld setcap -r "$f" && echo "image: capabilities removed: ${f#/image-root}"
+done
+[ -z "$(bld getcap -r /image-root 2>/dev/null)" ] || die "file capabilities remain in the image"
+# Translations: the session runs C.UTF-8, compiled above.
+rm -rf "$root"/usr/share/locale/*/ "$root"/usr/share/i18n
 # A config the daemon rejects would only show at boot, as a release that never marks itself good.
 chroot "$root" syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"
 chroot "$root" visudo -cq || die "sudoers does not parse"
@@ -187,13 +215,20 @@ chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh
 # The links to the kernel sources and build files point at nothing once /usr/src is gone.
 find "$root/lib/modules/$kver" -maxdepth 1 -xtype l -delete
 bld depmod -b /image-root "$kver"
+# i915 in the initramfs: the panel is driven before the passphrase prompt, which the EFI framebuffer
+# alone did not show on the laptop.
 bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
 	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
-	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" \
+	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" --add-drivers i915 \
 	"$rel/initramfs.img"
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \
 	"$root"/usr/bin/dracut* "$root/usr/bin/lsinitrd"
 
+# Every program and library still finds its libraries after the trimming above (about 30 s).
+[ -x "$root/usr/bin/ldd" ] || die "no ldd in the image root for the library check"
+missing=$(chroot "$root" /bin/sh -c 'find /usr/bin /usr/sbin /usr/libexec /usr/lib64 /usr/lib -xdev -type f \
+	\( -perm -100 -o -name "*.so*" \) | while read -r f; do ldd "$f" | grep "not found" | sed "s|^|$f: |"; done' 2>/dev/null | sort -u)
+[ -z "$missing" ] || { printf '%s\n' "$missing" >&2; die "libraries missing in the image (above)"; }
 # Releases are published: no private key may be in the image.
 ! grep -rlIsx -e "-----BEGIN [A-Z ]*PRIVATE KEY-----" "$root" || die "private key material in the image root (above)"
 
@@ -216,7 +251,7 @@ for slot in a b; do
 	table="vroot,,,ro,0 $((blocks * 8)) verity 1 $part $part 4096 4096 $blocks $blocks sha256 $roothash $salt"
 	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
 		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
-		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 iTCO_wdt.heartbeat=180 quiet" \
+		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off iTCO_wdt.heartbeat=180 quiet" \
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.

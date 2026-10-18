@@ -7,6 +7,8 @@ account		include		system-auth
 password	include		system-auth
 session		required	pam_loginuid.so
 session		required	pam_env.so envfile=/etc/profile.env
+# Files the owner creates are private by default.
+session		optional	pam_umask.so umask=077
 session		include		system-auth
 session		optional	pam_motd.so motd=/etc/motd
 session		optional	pam_lastlog.so never showfailed

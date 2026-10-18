@@ -88,10 +88,10 @@ def wan_packages(text):
     packages = []
     for line in text.splitlines():
         if line.startswith('package='):
-            match = re.fullmatch(r'package=(.+)-(' + apk_pattern + ')', line)
-            require(match, f'invalid wan package record: {line}')
-            name, version = match.groups()
-            packages.append((name, version, name))
+            match = re.fullmatch(r'package=([A-Za-z0-9+_.-]+)-(' + apk_pattern +
+                                r') origin=([A-Za-z0-9+_.-]+)', line)
+            require(match, f'invalid wan package record (rebuild WAN with origins): {line}')
+            packages.append(match.groups())
     require(packages, 'wan.manifest has no package inventory')
     return packages
 
@@ -199,8 +199,16 @@ def selftest():
         require(apk_cmp(a, b) == -1 and apk_cmp(b, a) == 1, f'apk comparison: {a}, {b}')
         require(apk_cmp(a, a) == 0, f'apk equality: {a}')
     require(apk_cmp('01.2', '1.2') == 0, 'apk initial digits')
-    require(wan_packages('package=linux-lts-6.18.9-r0\n') ==
-            [('linux-lts', '6.18.9-r0', 'linux-lts')], 'wan inventory')
+    require(wan_packages('package=linux-lts-6.18.9-r0 origin=linux-lts\n'
+                         'package=libssl3-3.5.1-r0 origin=openssl\n') ==
+            [('linux-lts', '6.18.9-r0', 'linux-lts'),
+             ('libssl3', '3.5.1-r0', 'openssl')], 'wan inventory origins')
+    try:
+        wan_packages('package=libssl3-3.5.1-r0\n')
+    except ValueError:
+        pass
+    else:
+        raise ValueError('WAN inventory without origins was accepted')
     require(installed_apk('P:libssl3\nV:3.5.1-r0\no:openssl\n') ==
             [('libssl3', '3.5.1-r0', 'openssl')], 'apk origin')
     print('advisories: selftest ok (apk versions and inventories)')
@@ -391,7 +399,7 @@ fetch() {
 
 # Publish a complete GLSA generation; a failed sync must not replace the last fetch.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")
-if rsync -aq --no-motd --delete rsync://rsync.gentoo.org/gentoo-portage/metadata/glsa/ "$glsa/"; then
+if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$glsa"; then
 	previous=$(readlink "$cache/glsa" 2>/dev/null || true)
 	ln -s "${glsa##*/}" "$work/glsa-link"
 	mv -Tf "$work/glsa-link" "$cache/glsa"
@@ -406,7 +414,7 @@ if rsync -aq --no-motd --delete rsync://rsync.gentoo.org/gentoo-portage/metadata
 		printf '%s\n' '[[], ["builder chroot/Portage check failed"]]' > "$work/host.json"
 	fi
 else
-	printf '%s\n' '[[], ["GLSA rsync failed"]]' > "$work/host.json"
+	printf '%s\n' '[[], ["GLSA HTTPS fetch failed"]]' > "$work/host.json"
 fi
 fetch kernel.json https://www.kernel.org/releases.json
 fetch errata.html "https://www.openbsd.org/errata$(echo "$OPENBSD_VERSION" | tr -d .).html"

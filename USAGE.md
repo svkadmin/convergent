@@ -1,10 +1,8 @@
 # Using Convergent
 
-The tools are in `/usr/local/sbin`. `sys`, `browser`, the bar, lock and log out run as the owner:
-`sys` asks for `sudo` itself where an action needs root, and `browser` uses a password-free sudo
-entry for its own launcher. The other tools (`slot`, `fetch-release`, `guests`, `check`, `facts`,
-`portal`, `dns-push`, `devices`, `backup`, `power`, `account`) run with `sudo` (wheel only, password
-asked, ticket valid for 5 minutes). If `sudo` does not find a tool, give its full path.
+Tools live in `/usr/local/sbin`. `sys`, `browser` and the bar run as the owner (`sys` calls `sudo`
+where needed). The others (`slot`, `fetch-release`, `guests`, `check`, `devices`, `backup`,
+`account`, …) need `sudo` (password, 5-minute ticket).
 
 Contents: [Coming from Arch](#coming-from-arch) · [Keys](#keys) · [The sys tool](#the-sys-tool) ·
 [Browsers](#browsers) · [Wi-Fi](#wi-fi) · [Captive portals](#captive-portals) ·
@@ -35,11 +33,13 @@ The firewalls run OpenBSD. You do not log in to them for daily use; for a look,
 
 Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 
+The look is defined in `/usr/lib/convergent/theme`; owners can override Sway, foot, mako and swaylock in their `~/.config/` directories.
+
 | Key | Does |
 |---|---|
 | Super+m | `sys`: the menu of areas and actions, in a terminal |
 | Super+a | pick one `sys` action by name and run it in its own terminal |
-| Super+d | open an app by name (terminal, browsers, dashboards, settings, screenshot) |
+| Super+d | an app by name: Web browser, Temporary browser, Admin dashboards, Settings, Screenshot, Foot |
 | Super+b | web browser (`browser web`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
@@ -61,11 +61,8 @@ second word becomes an argument to that default: `sys backup /mnt/x proj` works;
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
 errors. `sys help` lists actions and aliases; `*` asks for `yes` in the terminal (default No).
 
-`sys` (Super+m): left = areas, right = status + commands. Super+a picks one action by name.
-Enter opens an area or runs a selected action; Enter after output continues. Esc goes back or quits.
-Alt+Enter runs typed `area action args` in Areas, or `action args` in the current area.
-The query filters rows; quote arguments containing spaces (no shell expansion).
-Alt+Up/Down scrolls the preview; Ctrl+u clears the query.
+`sys` (Super+m): areas left, status and commands right. Enter opens or runs, Esc goes back,
+Alt+Enter runs a typed `action args`. Super+a runs one action by name.
 
 | Area (alias) | Actions, default first |
 |---|---|
@@ -88,6 +85,9 @@ Alt+Up/Down scrolls the preview; Ctrl+u clears the query.
 
 Not built in `sys`: owner guest management, firewall failover and printing.
 
+Screen too big: `sys display set eDP-1 scale 1.2`, then `sys display save` (every login). Release
+default: `display_scale` in config.yaml ([README, Build](README.md#build-a-release)).
+
 ## Browsers
 
 ```sh
@@ -95,12 +95,15 @@ browser web|tmp|portal|admin [url]
 ```
 
 Run it as the owner in the Sway session; it needs no password. `sys browser web|tmp|admin|portal`
-(or the menu) opens one without a URL. `sys browser` lists running browser containers via
-the existing `sudo guests status` tool.
+(or the menu) opens one without a URL. `sys browser` lists running browsers.
 Only HTTP and HTTPS URLs are accepted. Each browser is
 Chromium in its own container with a restricted Wayland socket and playback-only audio; the
 window title starts with `[role]`.
 Browsers prefer dark pages; sites without a dark style stay light.
+
+Works when: a window titled `[web] …` opens and the bar shows `BR:1`. A failed start from
+Super+b or Super+Shift+t shows a line at the top with the reason; the full output is in
+`$XDG_RUNTIME_DIR/browser.log`.
 
 | Role | For | State |
 |---|---|---|
@@ -120,13 +123,8 @@ other programs to `tmp` is not built.
 
 The radio belongs to wan; `sys wifi` runs the commands in it over SSH.
 
-- `sys wifi status`: the connection and address. `sys wifi scan`: networks in
-  range, after a few seconds.
-- `sys wifi connect`: lists the networks in range, then asks `SSID:` and `Passphrase
-  (empty for a known or open network):` (8 to 63 bytes; it goes to wan on standard input
-  and stays there). An empty passphrase connects to a known network.
-- `sys wifi forget`: lists known networks, asks `SSID to forget:`.
-- `sys wifi disconnect`: drops the current connection.
+`sys wifi connect` lists networks, asks `SSID:` and
+`Passphrase (empty for a known or open network):`; the passphrase stays in wan.
 
 Hidden networks: `sys wifi hidden`. An upstream network that overlaps
 100.80.0.0/16 is refused and raises UpstreamOverlap.
@@ -230,7 +228,7 @@ rel 202610170000 good | US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | Topology | wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `wifi` | network name, `-` if none, `?` if wan does not answer; every minute | `sys wifi status` |
-| `alerts` | `0` (green), `1c 2w` (critical, warning; red with any critical, yellow otherwise), `?` (grey) when svc cannot be read; every 30 s | details in Grafana: `sys browser admin` |
+| `alerts` | `0` (green), `1c 2w` (critical, warning; red with any critical, yellow otherwise), `?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |

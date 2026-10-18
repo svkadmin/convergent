@@ -6,12 +6,10 @@ sys-apps/systemd-utils boot kernel-install udev tmpfiles
 
 # Containers and VMs, confined by AppArmor.
 app-containers/incus qemu apparmor
-app-containers/lxc apparmor caps tools
+app-containers/lxc apparmor caps -tools
 
 # Dependency USE requirements.
 media-libs/freetype harfbuzz
-# LXC's tools link libcap statically.
-sys-libs/libcap static-libs
 # Incus imports images with xz-compressed squashfs.
 sys-fs/squashfs-tools lzma
 # Incus: SPICE console, virtfs config drive, USB uplink passthrough.
@@ -27,7 +25,7 @@ net-firewall/nftables json
 
 # No mail or smartd.
 app-admin/sudo -sendmail
-sys-apps/smartmontools -daemon
+sys-apps/smartmontools -daemon -update-drivedb
 # Intel GPU; no runtime LLVM.
 media-libs/mesa -llvm
 # No AppArmor language bindings or ebtables Perl helper.
@@ -35,7 +33,7 @@ sys-libs/libapparmor -perl -python
 net-firewall/ebtables -perl
 
 # Passwords hashed with yescrypt (PAM, through pambase).
-sys-auth/pambase yescrypt
+sys-auth/pambase yescrypt -nullok
 
 # Read guest disks without mounting them; setpriv drops debugfs privileges.
 sys-apps/util-linux caps
@@ -51,3 +49,6 @@ sys-auth/seatd server
 
 # Launcher: Wayland only.
 dev-libs/bemenu wayland -X -ncurses
+
+# Bluetooth audio and input only: OBEX and mesh pull in ICU and libical.
+net-wireless/bluez -obex -mesh
