@@ -1,0 +1,19 @@
+#!/bin/sh
+# apps: pick a graphical app by name (Super+d). Lists /usr/share/applications entries that are not
+# hidden and not terminal programs; runs the chosen one's Exec line. Entries live on the verified root.
+set -eu
+dir=/usr/share/applications
+entries=$(awk -F= '
+	FNR == 1 { if (name != "" && exec != "" && !skip) print name "\t" exec; name = exec = ""; skip = 0; sect = "" }
+	/^\[/ { sect = $0; next }
+	sect != "[Desktop Entry]" { next }
+	$1 == "Name" && name == "" { name = substr($0, 6) }
+	$1 == "Exec" { exec = substr($0, 6); gsub(/ %[fFuUick]/, "", exec) }
+	($1 == "NoDisplay" || $1 == "Hidden" || $1 == "Terminal") && $2 == "true" { skip = 1 }
+	$1 == "Type" && $2 != "Application" { skip = 1 }
+	END { if (name != "" && exec != "" && !skip) print name "\t" exec }
+' "$dir"/*.desktop | sort -f -u -t "$(printf '\t')" -k1,1)
+choice=$(printf '%s\n' "$entries" | cut -f1 | bemenu "$@" -p apps) || exit 0
+cmd=$(printf '%s\n' "$entries" | awk -F '\t' -v n="$choice" '$1 == n { print $2; exit }')
+[ -n "$cmd" ] || exit 0
+exec sh -c "$cmd"

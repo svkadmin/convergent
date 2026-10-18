@@ -19,6 +19,7 @@ hostname=$(cfg hostname)
 timezone=$(cfg timezone)
 keymap=$(cfg console_keymap)
 layouts=$(cfg xkb_layouts)
+scale=$(cfg display_scale)
 nts=$(cfg nts_servers)
 blocklist=$(cfg blocklist_url)
 cap=$(cfg cpu_cap_khz)
@@ -64,6 +65,9 @@ xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
 sed -i "s/timeout 600 /timeout $((idle * 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
 	"$root/etc/sway/config.d/convergent"
+if [ -n "$scale" ]; then
+	sed -i "/^include ~\/\.config\/sway\/config.d\/\*/i output * scale $scale" "$root/etc/sway/config.d/convergent"
+fi
 # Modes git does not keep.
 chmod 0440 "$root"/etc/sudoers.d/*
 chmod 0600 "$root"/etc/audit/rules.d/*
@@ -95,6 +99,9 @@ done
 [ -s "$root/boot/intel-uc.img" ] || die "no Intel microcode in the staging root (sys-firmware/intel-microcode)"
 cp "$root/boot/intel-uc.img" "$out/microcode.cpio"
 gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
+# Super+d lists apps by their desktop entries: helpers that are not apps to pick go.
+rm -f "$root"/usr/share/applications/footclient.desktop "$root"/usr/share/applications/foot-server.desktop \
+	"$root"/usr/share/applications/qemu.desktop
 rm -rf "$root"/usr/src "$root"/usr/include "$root"/usr/share/doc "$root"/usr/share/man \
 	"$root"/usr/share/info "$root"/usr/share/gtk-doc "$root"/usr/lib*/pkgconfig "$root"/usr/share/pkgconfig \
 	"$root"/var/db/pkg "$root"/var/db/repos "$root"/var/cache/* "$root"/var/lib/portage "$root"/etc/portage \

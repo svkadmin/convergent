@@ -175,9 +175,9 @@ if [ "$role" = tmp ]; then
     ic config set "$name" environment.BROWSER_IPV4="100.80.3.$octet"
     device eth0 "ipv4.address=100.80.3.$octet" "hwaddr=00:16:3e:80:03:$octet"
 fi
-device wayland "source=$run/sockets/wayland-0"
+device wayland "source=$run/sockets/wayland-0" required=true
 # Retain the image socket mount path; its wire protocol is now Pulse.
-device pipewire "source=$run/sockets/pulse-0"
+device pipewire "source=$run/sockets/pulse-0" required=true
 ic start "$name"
 mapping=$(ic config get "$name" volatile.idmap.current)
 guest_uid=$(printf '%s\n' "$mapping" | jq -er '.[] | select(.Isuid and .Nsid <= 1000 and (.Nsid + .Maprange) > 1000) | .Hostid + 1000 - .Nsid')

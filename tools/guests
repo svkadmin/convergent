@@ -624,6 +624,8 @@ update() {
         ;;
     web|admin)
         running "$1" && die 'close this browser with tools/browser before updating it'
+        # The role profiles travel with the browser image.
+        for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         replace "$1"
         commit_update
         ;;

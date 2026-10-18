@@ -18,13 +18,14 @@ devices:
     security.port_isolation: "true"
   wayland:
     type: disk
-    source: /run/convergent/browser/tmp/wayland-0
+    source: /run/convergent/browser/tmp/sockets/wayland-0
     path: /mnt/browser/wayland-0
     readonly: "true"
-    required: "true"
+    # browser sets the real socket and required=true on the instance; at creation it does not exist yet.
+    required: "false"
   pipewire:
     type: disk
-    source: /run/convergent/browser/tmp/pipewire-0
+    source: /run/convergent/browser/tmp/sockets/pulse-0
     path: /mnt/browser/pipewire-0
     readonly: "true"
-    required: "true"
+    required: "false"

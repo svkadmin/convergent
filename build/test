@@ -362,10 +362,10 @@ t() {
 	if "$@" >/tmp/smoke.out 2>&1; then echo "CV-DESKTOP ok: $*"
 	else echo "CV-DESKTOP FAIL: $*"; head -n 10 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
 }
-for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq dialog \
+for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
 	gentoo-pipewire-launcher dbus-run-session sys browser bar; do t command -v "$p"; done
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
-t test -r "$(sed -n 's/^output \* bg \([^ ]*\) .*/\1/p' /etc/sway/config)"
+t grep -qx 'output \* bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'
 t sh -c 'XDG_RUNTIME_DIR=/tmp/smoke-run timeout 4 /usr/local/sbin/bar </dev/null >/tmp/bar.out
 	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8" >/dev/null'

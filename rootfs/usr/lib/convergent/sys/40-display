@@ -49,7 +49,10 @@ display_set() {
 	sway
 	if [ "$#" = 0 ]; then
 		display_status || return
-		ask Output; output=$answer
+		# One screen: Enter picks it.
+		only=$(display_json | jq -r 'if length == 1 then .[0].name else empty end') || only=
+		ask "Output${only:+ [$only]}"; output=${answer:-$only}
+		[ -n "$output" ] || die 'name an output from the list'
 		ask 'Setting (mode/scale/position/enable/disable)'; setting=$answer
 		case $setting in
 		enable|disable) set -- "$output" "$setting" ;;

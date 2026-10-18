@@ -84,7 +84,7 @@ done
 [ -n "$ips" ] || die "$host resolves to no public address (no Wi-Fi, or the blocklist: add $host to /var/lib/convergent/dns/allow, then sudo dns-push local)"
 src_open=1
 for _f in $fws; do
-	rsh "$_f" "pfctl -t update_src -T replace$ips" >/dev/null || die "could not open the update source on $_f"
+	rsh "$_f" "pfctl -q -t update_src -T replace$ips" >/dev/null || die "could not open the update source on $_f"
 done
 res=$(echo $ips | tr ' ' ',')
 get() {

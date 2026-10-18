@@ -483,7 +483,8 @@ How the owner uses it is in USAGE.md. The design points:
 - **Locking:** after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes;
   the idle lock can be paused from the bar. Never suspends.
 - **Menu (`sys`):** `sys AREA [ACTION] [ARGS]`; each area's first action is its default.
-  Short aliases work at the command line; menus use long names. Each action prints its commands.
+  Short aliases work at the command line; the fzf menu shows long names, status and command
+  previews. Each action prints its commands; bemenu remains the quick picker.
 - **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.
@@ -562,6 +563,7 @@ Convergent writes as little as it can:
 | `check` | cron: after boot and updates, daily | The checker (section 8) |
 | `bar` | in the session | The status bar; asks vmalert every 30 seconds |
 | `sys` | from a key binding | The menu: one file per area in `/usr/lib/convergent/sys` |
+| `apps` | Super+d | Lists the graphical apps from their desktop entries in bemenu and starts the chosen one |
 | `browser` | from the menu or a key | Starts a browser container with its restricted Wayland and audio sockets |
 | `facts` | at boot; hourly cron | Writes the host's extra figures for node_exporter, archives pstore records |
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |

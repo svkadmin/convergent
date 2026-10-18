@@ -85,7 +85,7 @@ download() {
 	[ -n "$ips" ] || die "$host resolves to no public IPv4 address"
 	src_open=1
 	for _f in $fws; do
-		rsh "$_f" "pfctl -t blocklist_src -T replace$ips" >/dev/null || die "could not open the blocklist source on $_f"
+		rsh "$_f" "pfctl -q -t blocklist_src -T replace$ips" >/dev/null || die "could not open the blocklist source on $_f"
 	done
 	_res=$(echo $ips | tr ' ' ',')
 

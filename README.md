@@ -125,7 +125,7 @@ default.
    ```
    Done when: `sudo devices list` shows nothing you use as blocked.
 5. Run `dbus-run-session sway` (the session bus serves PipeWire, WirePlumber and notifications).
-   Super+m opens `sys`: choose wifi, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
+   Super+m opens the `sys` fzf menu: choose Wi-Fi, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
    (or `sys wifi connect`). Done when: `sys wifi status` shows an address.
 6. Run `sys selftest` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
    Done when: no line says FAIL; otherwise send the report.
@@ -285,5 +285,5 @@ something to rebuild (UNKNOWN lines may appear too); 2: only UNKNOWN, a source w
 | `rootfs/` | the host's own files: `/etc`, `/usr/lib/convergent` (the `sys` areas), health checks |
 | `initramfs/` | the dracut module: unlock, `/var` per release, watchdog |
 | `install/` | the installer, shipped as `convergent-install` |
-| `tools/` | `slot`, `fetch-release`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts`, `account` |
+| `tools/` | `slot`, `fetch-release`, `apps`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts`, `account` |
 | `guests/` | `fw` (OpenBSD), `wan`, `svc` and `browser` (Alpine) |

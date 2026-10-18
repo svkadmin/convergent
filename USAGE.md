@@ -39,7 +39,7 @@ Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 |---|---|
 | Super+m | `sys`: the menu of areas and actions, in a terminal |
 | Super+a | pick one `sys` action by name and run it in its own terminal |
-| Super+d | run a program by name |
+| Super+d | open an app by name (terminal, browsers, dashboards, settings, screenshot) |
 | Super+b | web browser (`browser web`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
@@ -59,9 +59,13 @@ Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 Use `sys AREA [ACTION] [ARGS]`; the first action in each row is the default. An unrecognized
 second word becomes an argument to that default: `sys backup /mnt/x proj` works;
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
-errors. `sys` (Super+m) opens the terminal menu; `sys help` lists actions and aliases;
-Super+a picks an action. Menus use long area names. Commands print before running;
-`*` asks for confirmation (default No).
+errors. `sys help` lists actions and aliases; `*` asks for `yes` in the terminal (default No).
+
+`sys` (Super+m): left = areas, right = status + commands. Super+a picks one action by name.
+Enter opens an area or runs a selected action; Enter after output continues. Esc goes back or quits.
+Alt+Enter runs typed `area action args` in Areas, or `action args` in the current area.
+The query filters rows; quote arguments containing spaces (no shell expansion).
+Alt+Up/Down scrolls the preview; Ctrl+u clears the query.
 
 | Area (alias) | Actions, default first |
 |---|---|
@@ -96,6 +100,7 @@ the existing `sudo guests status` tool.
 Only HTTP and HTTPS URLs are accepted. Each browser is
 Chromium in its own container with a restricted Wayland socket and playback-only audio; the
 window title starts with `[role]`.
+Browsers prefer dark pages; sites without a dark style stay light.
 
 | Role | For | State |
 |---|---|---|

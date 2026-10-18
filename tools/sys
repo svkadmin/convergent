@@ -6,7 +6,6 @@ umask 077
 
 dir=/usr/lib/convergent/sys
 tab=$(printf '\t')
-ui=0
 die() { echo "sys: $*" >&2; exit 1; }
 usage() { echo 'usage: sys [help | --pick ["area action"] | AREA [ACTION] [ARGS]]' >&2; exit 2; }
 
@@ -20,13 +19,9 @@ trace() {
 run() { trace "$@"; "$@"; }
 ask() { printf '%s: ' "$1" >&2; IFS= read -r answer || die 'input cancelled'; }
 confirm() {
-	if [ "$ui" = 1 ]; then
-		dialog --clear --defaultno --yesno "$1?" 8 64
-	else
-		printf '%s? [yes/No] ' "$1" >&2
-		IFS= read -r answer || return 1
-		[ "$answer" = yes ]
-	fi
+	printf '%s? [yes/No] ' "$1" >&2
+	IFS= read -r answer || return 1
+	[ "$answer" = yes ]
 }
 secret() (
 	[ -t 0 ] || die 'passphrase needs a terminal'
@@ -82,7 +77,11 @@ page() (
 root_page() {
 	page run sudo cat -- "$1"
 }
-pause() { printf '\n[exit %s] Enter to continue ' "$1"; IFS= read -r answer || :; }
+pause() {
+	if [ "$1" = 0 ]; then printf '\nDone.\n'; else printf '\nFailed (exit %s).\n' "$1"; fi
+	printf 'Enter to continue '
+	IFS= read -r answer || :
+}
 cached() {
 	value=$(timeout -k 0.2 1 head -n 1 "$1" 2>/dev/null) || value=unknown
 	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | cut -c 1-100
@@ -168,44 +167,110 @@ state() {
 	value=$(timeout -k 0.2 2.5 "$0" --state "$1" 2>/dev/null) || value=unknown
 	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | head -n 3 | cut -c 1-100
 }
+command_line() {
+	printf 'sys %s %s  - %s\n' "$area" "$action" "$label"
+}
+status_preview() (
+	load "$1"
+	if lookup status; then
+		case " $flags " in
+		*' root '*) ;;
+		*)
+			value=$(timeout -k 0.2 2.5 "$0" "$area" status </dev/null 2>/dev/null) || value=
+			if [ -n "$value" ]; then
+				printf '%s\n' "$value" | tr -d '\000-\010\013-\037\177'
+				return
+			fi ;;
+		esac
+	fi
+	cat "$states/$1"
+)
+menu() {
+	FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= SHELL=/bin/sh fzf \
+		--layout reverse-list --border rounded --no-sort \
+		--delimiter "$tab" --with-nth 2.. --print-query --prompt 'sys> ' \
+		--header "$1
+Alt+Up/Down: scroll preview" \
+		--color 'dark,bg:#0b0b0b,bg+:#202020,fg:#dddddd,fg+:#ffffff,hl:#78a9ff,hl+:#78a9ff,pointer:#78a9ff,prompt:#78a9ff,info:#999999,header:#999999,border:#555555,spinner:#78a9ff' \
+		--preview 'cat -- "$SYS_PREVIEW"/{1}' --preview-window right:55%:wrap \
+		--bind 'enter:accept-non-empty,esc:abort,ctrl-u:clear-query,alt-up:preview-up,alt-down:preview-down' \
+		--bind 'alt-enter:print-query' \
+		>"$states/selection"
+	result=$?
+	case $result in 0|1) ;; 130) return 1 ;; *) die "fzf failed ($result)" ;; esac
+	query=$(head -n 1 "$states/selection")
+	selected=$(sed -n '2s/\t.*//p' "$states/selection")
+}
+typed_command() (
+	text_valid "$query"
+	[ "${#query}" -le 4096 ] || die 'command too long'
+	printf '%s\n' "$query" >"$states/query"
+	printf 'sys %s%s\n' "${current:+$current }" "$query"
+	set -- "$0"
+	[ -z "$current" ] || set -- "$@" "$current"
+	# xargs reads quotes, not shell syntax; -a preserves the terminal for prompts.
+	xargs -a "$states/query" -r -x -s 8192 -- "$@"
+)
 tui() (
-	ui=1
 	states=$(mktemp -d) || exit 1
 	trap 'rm -rf -- "$states"' 0
 	trap 'exit 1' HUP INT TERM
+	mkdir "$states/areas" "$states/actions" || exit 1
+	export SYS_PREVIEW
+	current=
 	while :; do
-		for area in $(printf '%s' "$areas" | cut -f 1); do
-			state "$area" >"$states/$area" &
-		done
-		wait
-		set --
-		for area in $(printf '%s' "$areas" | cut -f 1); do
-			load "$area"
-			set -- "$@" "$area" "$title: $(head -n 1 "$states/$area")"
-		done
-		area=$(dialog --stdout --title Sys --menu 'Choose an area' 22 78 12 "$@") || return 0
-		while :; do
-			load "$area"
-			set --
-			for action in $(printf '%s\n' "$actions" | cut -f 1); do
-				lookup "$action" || continue
-				set -- "$@" "$action" "$label${flags:+ [$flags]}"
+		printf 'Reading status...\n'
+		if [ -z "$current" ]; then
+			SYS_PREVIEW=$states/areas
+			for area in $(printf '%s' "$areas" | cut -f 1); do
+				(state "$area" >"$states/$area"; status_preview "$area" >"$states/status-$area") &
 			done
-			action=$(dialog --stdout --cr-wrap --title "$title" --menu "$(state "$area")" 23 78 14 "$@") || break
-			clear
-			# Ctrl+C stops the action, not the menu.
-			trap : INT
-			dispatch "$area" "$action"
-			result=$?
-			trap 'exit 1' INT
-			pause "$result"
-		done
+			wait
+			printf '%s' "$areas" | while IFS="$tab" read -r area title alias; do
+				load "$area"
+				printf '%s\t%s: %s\n' "$area" "$title" "$(head -n 1 "$states/$area")"
+				{
+					printf '%s\n\n' "$title"
+					cat "$states/status-$area"
+					printf '\nActions\n'
+					printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
+						printf '\n%s\n  ' "$label"; command_line
+					done
+				} >"$SYS_PREVIEW/$area"
+			done >"$states/list"
+			menu 'Areas: Enter: open  Alt+Enter: run typed "area action args"  Esc: quit' <"$states/list" || return 0
+			if [ -n "$selected" ]; then current=$selected; continue; fi
+		else
+			load "$current"
+			SYS_PREVIEW=$states/actions/$area
+			mkdir -p "$SYS_PREVIEW" || exit 1
+			(state "$area" >"$states/$area"; status_preview "$area" >"$states/status-$area") &
+			wait
+			printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
+				printf '%s\t%s\n' "$action" "$label"
+				{
+					printf '%s\n\n' "$label"; command_line
+					case " $flags " in *' root '*) echo 'Needs root (sudo)' ;; esac
+					case " $flags " in *' confirm '*) echo 'Asks to confirm (default No)' ;; esac
+					printf '\n%s\n\n' "$title"; cat "$states/status-$area"
+				} >"$SYS_PREVIEW/$action"
+			done >"$states/list"
+			menu "$title: Enter: run  Alt+Enter: run typed \"action args\"  Esc: back" <"$states/list" || { current=; continue; }
+		fi
+		[ -n "$selected$query" ] || continue
+		clear
+		# Ctrl+C stops the action, not the menu.
+		trap : INT
+		if [ -n "$selected" ]; then dispatch "$current" "$selected"; else typed_command; fi
+		result=$?
+		trap 'exit 1' INT
+		pause "$result"
 	done
 )
 
 case ${1:-} in
 '') [ "$#" = 0 ] || usage
-	if [ -t 0 ] && command -v dialog >/dev/null 2>&1; then tui; else help; fi ;;
+	if [ -t 0 ] && command -v fzf >/dev/null 2>&1; then tui; else help; fi ;;
 help) [ "$#" = 1 ] || usage; help ;;
 --state) [ "$#" = 2 ] || usage; load "$2"; "${area}_state" ;;
 --pick)
