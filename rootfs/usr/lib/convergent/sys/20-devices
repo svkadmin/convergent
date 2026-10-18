@@ -1,0 +1,39 @@
+title=Devices
+actions='usb-list	List blocked USB and Thunderbolt devices	root
+usb-allow	Allow USB device N	root
+thunderbolt-allow	Allow Thunderbolt ID	root
+bluetooth-power	Set Bluetooth power on|off	
+bluetooth-scan	Scan Bluetooth for 10 seconds	
+bluetooth-pair	Pair Bluetooth MAC	
+bluetooth-connect	Connect Bluetooth MAC	
+bluetooth-disconnect	Disconnect Bluetooth MAC	
+bluetooth-remove	Remove Bluetooth MAC	confirm
+bluetooth-list	List Bluetooth devices	'
+
+devices_state() { echo 'USB / Thunderbolt / Bluetooth'; }
+devices_usb_list() { noargs "$@"; page run sudo /usr/local/sbin/devices list; }
+devices_usb_allow() {
+	onearg 'USB device number' "$@"; number "$answer"
+	run sudo /usr/local/sbin/devices allow "$answer"
+}
+devices_thunderbolt_allow() {
+	onearg 'Thunderbolt unique ID' "$@"
+	printf '%s\n' "$answer" | grep -Eq '^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$' || die 'invalid Thunderbolt ID'
+	run sudo /usr/local/sbin/devices allow tb "$answer"
+}
+devices_bluetooth_power() {
+	onearg 'Bluetooth power (on/off)' "$@"
+	case $answer in on|off) ;; *) usage ;; esac
+	run bluetoothctl power "$answer"
+}
+devices_bluetooth_scan() { noargs "$@"; run bluetoothctl --timeout 10 scan on; }
+devices_bt() {
+	operation=$1; shift
+	onearg 'Bluetooth MAC' "$@"; mac "$answer"
+	run bluetoothctl "$operation" "$answer"
+}
+devices_bluetooth_pair() { devices_bt pair "$@" && run bluetoothctl trust "$answer"; }
+devices_bluetooth_connect() { devices_bt connect "$@"; }
+devices_bluetooth_disconnect() { devices_bt disconnect "$@"; }
+devices_bluetooth_remove() { devices_bt remove "$@"; }
+devices_bluetooth_list() { noargs "$@"; page run bluetoothctl devices; }

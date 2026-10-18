@@ -58,7 +58,7 @@ rollback() {
     if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
         if running "$guest"; then ic stop "$guest" --force || return; fi
         seed_remove "$guest" || return
-        ic config set "$guest" security.protection.delete false || return
+        ic config set "$guest" security.protection.delete=false || return
         ic delete "$guest" || return
     fi
     ic import "$backup" "$guest" || return
@@ -271,7 +271,7 @@ seed_attach() {
     case $1 in
     svc)
         [ -f "$state/seeds/svc.autostart" ] || ic config get svc boot.autostart >"$state/seeds/svc.autostart"
-        ic config set svc boot.autostart false
+        ic config set svc boot.autostart=false
         for seed_loop in $(losetup -j "$seed_source" | cut -d: -f1); do losetup -d "$seed_loop"; done
         seed_source=$(losetup --find --show --read-only "$seed_source")
         uid=$(jq -er '(.config["volatile.idmap.next"] // .config["volatile.idmap.current"]) | fromjson[] | select(.Isuid and .Nsid == 0) | .Hostid' "$work/instance")
@@ -299,7 +299,7 @@ seed_remove() {
     if [ "$1" = svc ]; then
         for seed_loop in $(losetup -j "$state/seeds/$1.img" | cut -d: -f1); do losetup -d "$seed_loop" || return; done
         if [ -f "$state/seeds/svc.autostart" ]; then
-            ic config set svc boot.autostart "$(cat "$state/seeds/svc.autostart")" || return
+            ic config set svc boot.autostart="$(cat "$state/seeds/svc.autostart")" || return
             rm "$state/seeds/svc.autostart" || return
         fi
     fi
@@ -503,8 +503,8 @@ init() {
     trust=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
     ic config trust list --format json | jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
-    ic config set core.metrics_address 100.80.1.10:8444
-    ic config set core.metrics_authentication true
+    ic config set core.metrics_address=100.80.1.10:8444
+    ic config set core.metrics_authentication=true
     profile svc "$release/guests/svc/incus.yaml"
     for role in base web tmp portal admin; do profile "browser-$role" "$release/guests/browser/incus/$role.yaml"; done
     volume_create svc-metrics 2GiB
@@ -521,14 +521,14 @@ init() {
     for node in fw1 fw2; do
         init_guest "$node" --vm --profile fw
     done
-    ic config set fw1 boot.autostart.priority 40
-    ic config set fw2 boot.autostart.priority 30
+    ic config set fw1 boot.autostart.priority=40
+    ic config set fw2 boot.autostart.priority=30
     image_dir=$release/guests/wan
     init_guest wan --vm --profile wan
     radio
     image_dir=$release/guests/svc
     init_guest svc --profile svc
-    ic config set svc security.idmap.isolated true
+    ic config set svc security.idmap.isolated=true
     image_dir=$release/guests/fw
     for node in fw1 fw2; do seed_start "$node"; done
     retry pair fw1 fw2
@@ -539,7 +539,7 @@ init() {
     ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
     install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0"
     rc-service syslog-ng reload 9>&- 8>&- 7>&-
-    for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart true; done
+    for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart=true; done
     sync
     touch "$state/initialized"
 }

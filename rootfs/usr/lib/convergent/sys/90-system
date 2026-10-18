@@ -1,0 +1,82 @@
+title=System
+actions='release	Show release slots	root
+update	Write a release from USB [MOUNTPOINT|DEVICE]	root confirm
+guests	Show guest status	root
+backup	Back up to encrypted USB [MOUNTPOINT PROJECT]	root
+logs	Read host logs	root
+services	Show OpenRC services	'
+
+system_state() {
+	value=$(timeout -k 0.2 1 cat /proc/cmdline 2>/dev/null) || value=
+	release=$(printf '%s\n' "$value" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^convergent.release=/) {sub(/^[^=]*=/,"",$i); print $i; exit}}')
+	printf 'Release: %s\n' "${release:-unknown}"
+}
+system_release() { noargs "$@"; page run sudo /usr/local/sbin/slot status; }
+system_guests() { noargs "$@"; page run sudo /usr/local/sbin/guests status; }
+system_logs() { noargs "$@"; root_page /var/log/messages; }
+system_services() { noargs "$@"; page run rc-status; }
+system_backup() {
+	case $# in
+	0) ask 'Mounted encrypted external disk'; dest=$answer; ask 'Owner Incus project'; project=$answer ;;
+	2) dest=$1; project=$2 ;;
+	*) usage ;;
+	esac
+	path "$dest"
+	dest=$(realpath -e -- "$dest") || die 'no destination directory'
+	path "$dest"
+	[ -d "$dest" ] && mountpoint -q -- "$dest" || die 'destination must be a mountpoint'
+	case $project in ''|default|*[!a-zA-Z0-9_-]*) die 'invalid owner project' ;; esac
+	run sudo /usr/local/sbin/backup "$dest" "$project"
+}
+system_update_media() (
+	onearg 'USB mountpoint or block device' "$@"; path "$answer"
+	source=$(realpath -e -- "$answer") || die 'source does not exist'
+	path "$source"
+	if [ -d "$source" ]; then
+		source=$(findmnt -nro SOURCE --mountpoint "$source") || die 'source must be a mountpoint'
+	fi
+	path "$source"
+	[ -b "$source" ] || die 'source must be a block device or its mountpoint'
+	lsblk -snro TRAN -- "$source" | grep -qx usb || die 'source must be on USB'
+	target=/run/sys-update
+	[ ! -L "$target" ] || die 'update mountpoint is a symlink'
+	if mountpoint -q "$target"; then
+		confirm "Unmount existing $target" || exit 1
+		run sudo umount -- "$target" || exit 1
+	fi
+	mounted=0
+	list=$(mktemp) || exit 1
+	cleanup() {
+		result=$?
+		trap - 0
+		trap 'exit 1' HUP INT TERM
+		if [ "$mounted" = 1 ]; then
+			run sudo -v && run sudo umount -- "$target" || result=1
+		fi
+		rm -f "$list"
+		exit "$result"
+	}
+	trap cleanup 0
+	trap 'exit 1' HUP INT TERM
+	run sudo mkdir -p "$target" || exit 1
+	(umask 022; run sudo mount -o ro,nodev,nosuid,noexec -- "$source" "$target") || exit 1
+	mounted=1
+	run find "$target" -xdev -type f -name manifest >"$list" || exit 1
+	[ -s "$list" ] || die 'no release directories containing manifest'
+	# Select by number so a directory name never becomes shell syntax.
+	sed 's|/manifest$||' "$list" | awk '{printf "%d  %s\n", NR, $0}' | pager
+	ask 'Release number'; number "$answer"
+	[ "$answer" -gt 0 ] && [ "$answer" -le "$(wc -l <"$list")" ] || die 'invalid release number'
+	release=$(sed -n "${answer}p" "$list"); release=${release%/manifest}
+	path "$release"
+	release=$(realpath -e -- "$release") || exit 1
+	case $release in "$target"|"$target"/*) ;; *) die 'release escapes USB mount' ;; esac
+	[ -f "$release/manifest" ] && [ ! -L "$release/manifest" ] || die 'invalid manifest'
+	confirm "Write release $release with CONVERGENT_UNSIGNED=1" || exit 1
+	run sudo env CONVERGENT_UNSIGNED=1 /usr/local/sbin/slot write "$release"
+)
+system_update() {
+	[ "$#" -le 1 ] || usage
+	system_update_media "$@" || return
+	if confirm 'Reboot into the new release'; then run sudo reboot; fi
+}

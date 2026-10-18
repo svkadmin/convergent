@@ -1,0 +1,219 @@
+#!/bin/sh
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+umask 077
+
+dir=/usr/lib/convergent/sys
+tab=$(printf '\t')
+ui=0
+die() { echo "sys: $*" >&2; exit 1; }
+usage() { echo 'usage: sys [help | --pick ["area action"] | AREA ACTION [ARGS]]' >&2; exit 2; }
+
+trace() {
+	printf '+' >&2
+	for arg do
+		printf " '%s'" "$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")" >&2
+	done
+	printf '\n' >&2
+}
+run() { trace "$@"; "$@"; }
+ask() { printf '%s: ' "$1" >&2; IFS= read -r answer || die 'input cancelled'; }
+confirm() {
+	if [ "$ui" = 1 ]; then
+		dialog --clear --defaultno --yesno "$1?" 8 64
+	else
+		printf '%s? [yes/No] ' "$1" >&2
+		IFS= read -r answer || return 1
+		[ "$answer" = yes ]
+	fi
+}
+secret() (
+	[ -t 0 ] || die 'passphrase needs a terminal'
+	saved=$(stty -g) || exit 1
+	trap 'stty "$saved"' 0
+	trap 'exit 1' HUP INT TERM
+	printf 'Passphrase (empty for a known or open network): ' >&2
+	stty -echo || exit 1
+	IFS= read -r answer || exit 1
+	printf '\n' >&2
+	printf '%s' "$answer"
+)
+noargs() { [ "$#" = 0 ] || usage; }
+onearg() {
+	[ "$#" -le 2 ] || usage
+	if [ "$#" = 2 ]; then answer=$2; else ask "$1"; fi
+}
+number() {
+	case $1 in ''|*[!0-9]*|??????????*) die 'invalid number' ;; esac
+}
+token() {
+	case $1 in ''|-*|*[!a-zA-Z0-9_.-]*) die 'invalid identifier' ;; esac
+}
+text_valid() {
+	[ "$(printf '%s' "$1" | tr -d '\001-\037\177')" = "$1" ] || die 'input contains control bytes'
+}
+path() {
+	case $1 in /*) ;; *) die 'use an absolute path' ;; esac
+	text_valid "$1"
+}
+mac() {
+	printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || die 'invalid Bluetooth MAC'
+}
+ssid_valid() {
+	[ -n "$1" ] && [ "${#1}" -le 32 ] || die 'SSID must be 1-32 bytes'
+	text_valid "$1"
+}
+sway() { [ -n "${SWAYSOCK:-}" ] || die 'needs the sway session'; }
+swayrun() { run swaymsg -r -- "$@"; }
+pager() {
+	if [ -t 1 ] && command -v less >/dev/null 2>&1; then less -F -X; else cat; fi
+}
+page() (
+	file=$(mktemp) || exit 1
+	trap 'rm -f "$file"' 0
+	trap 'exit 1' HUP INT TERM
+	"$@" >"$file"
+	result=$?
+	pager <"$file"
+	exit "$result"
+)
+root_page() {
+	run sudo cat -- "$1" | pager
+}
+pause() { printf '\n[exit %s] Enter to continue ' "$1"; IFS= read -r answer || :; }
+cached() {
+	value=$(timeout -k 0.2 1 head -n 1 "$1" 2>/dev/null) || value=unknown
+	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | cut -c 1-100
+}
+usb_count() {
+	value=$(timeout -k 0.2 1 usbguard list-devices -b 2>/dev/null) || { echo unknown; return; }
+	printf '%s\n' "$value" | awk 'NF {n++} END {print n+0}'
+}
+save_config() (
+	path "$HOME"
+	case $1 in outputs|input) ;; *) die 'invalid config name' ;; esac
+	config=$HOME/.config/sway/config.d
+	run mkdir -p "$config" || exit 1
+	file=$(mktemp "$config/.$1.XXXXXX") || exit 1
+	trap 'rm -f "$file"' 0
+	trap 'exit 1' HUP INT TERM
+	cat >"$file" || exit 1
+	run mv -f "$file" "$config/$1" || exit 1
+	[ -z "${SWAYSOCK:-}" ] || swayrun reload || exit 1
+	echo 'Saved: applies now and at every login.'
+)
+
+areas=
+for module in "$dir"/[0-9][0-9]-*; do
+	[ -f "$module" ] || continue
+	area=${module##*/}; area=${area#*-}
+	case $area in ''|*[!a-z]*) die 'invalid module name' ;; esac
+	title= actions=
+	. "$module"
+	[ -n "$title" ] && [ -n "$actions" ] || die "incomplete module: $area"
+	areas="${areas}${area}${tab}${title}
+"
+done
+
+load() {
+	case $1 in ''|*[!a-z]*) usage ;; esac
+	for module in "$dir"/[0-9][0-9]-"$1"; do
+		[ -f "$module" ] || continue
+		. "$module"
+		return
+	done
+	die "unknown area: $1"
+}
+lookup() {
+	label=$(printf '%s\n' "$actions" | awk -F '\t' -v a="$1" '$1 == a {print $2}')
+	flags=$(printf '%s\n' "$actions" | awk -F '\t' -v a="$1" '$1 == a {print $3}')
+	[ -n "$label" ]
+}
+help() {
+	printf 'usage: sys AREA ACTION [ARGS]\n       sys | sys help | sys --pick ["area action"]\n\n'
+	printf '%s' "$areas" | while IFS="$tab" read -r area title; do
+		load "$area"
+		printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
+			printf '  %-30s %s: %s\n' "$area $action" "$title" "$label"
+		done
+	done
+}
+pick_list() {
+	printf '%s' "$areas" | while IFS="$tab" read -r area title; do
+		load "$area"
+		printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
+			printf '%s %s\t%s: %s\n' "$area" "$action" "$title" "$label"
+		done
+	done
+}
+dispatch() (
+	[ "$#" -ge 2 ] || usage
+	area=$1; action=$2; shift 2
+	load "$area"
+	if ! lookup "$action"; then
+		[ "$#" -gt 0 ] || usage
+		action=$action-$1; shift
+		lookup "$action" || usage
+	fi
+	case " $flags " in *' confirm '*) confirm "$title: $label" || exit 1 ;; esac
+	function=${area}_$(printf '%s' "$action" | tr - _)
+	"$function" "$@"
+)
+state() {
+	value=$(timeout -k 0.2 2.5 "$0" --state "$1" 2>/dev/null) || value=unknown
+	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | head -n 3 | cut -c 1-100
+}
+tui() (
+	ui=1
+	states=$(mktemp -d) || exit 1
+	trap 'rm -rf -- "$states"' 0
+	trap 'exit 1' HUP INT TERM
+	while :; do
+		for area in $(printf '%s' "$areas" | cut -f 1); do
+			state "$area" >"$states/$area" &
+		done
+		wait
+		set --
+		for area in $(printf '%s' "$areas" | cut -f 1); do
+			load "$area"
+			set -- "$@" "$area" "$title: $(head -n 1 "$states/$area")"
+		done
+		area=$(dialog --stdout --title Sys --menu 'Choose an area' 22 78 12 "$@") || return 0
+		while :; do
+			load "$area"
+			set --
+			for action in $(printf '%s\n' "$actions" | cut -f 1); do
+				lookup "$action" || continue
+				set -- "$@" "$action" "$label${flags:+ [$flags]}"
+			done
+			action=$(dialog --stdout --cr-wrap --title "$title" --menu "$(state "$area")" 23 78 14 "$@") || break
+			clear
+			dispatch "$area" "$action"
+			pause "$?"
+		done
+	done
+)
+
+case ${1:-} in
+'') [ "$#" = 0 ] || usage
+	if [ -t 0 ] && command -v dialog >/dev/null 2>&1; then tui; else help; fi ;;
+help) [ "$#" = 1 ] || usage; help ;;
+--state) [ "$#" = 2 ] || usage; load "$2"; "${2}_state" ;;
+--pick)
+	case $# in
+	1) pick_list ;;
+	2)
+		selection=$2
+		area=${selection%% *}; action=${selection#* }
+		[ "$selection" = "$area $action" ] || usage
+		load "$area"; lookup "$action" || usage
+		(export CONVERGENT_SYS_WAIT=1; run foot -T "$title: $label" -e sys "$area" "$action") ;;
+	*) usage ;;
+	esac ;;
+*)
+	[ "${CONVERGENT_SYS_WAIT:-}" != 1 ] || trap ':' INT
+	dispatch "$@"; result=$?
+	[ "${CONVERGENT_SYS_WAIT:-}" != 1 ] || pause "$result"
+	exit "$result" ;;
+esac

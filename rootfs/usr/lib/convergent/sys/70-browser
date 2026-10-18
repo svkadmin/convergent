@@ -1,0 +1,11 @@
+title=Browser
+actions='web	Open the persistent web browser	
+tmp	Open a temporary browser	
+admin	Open the admin browser	
+portal	Open the portal browser	'
+
+browser_state() { echo 'web / tmp / admin / portal'; }
+browser_web() { noargs "$@"; run setsid -f /usr/local/sbin/browser web; }
+browser_tmp() { noargs "$@"; run setsid -f /usr/local/sbin/browser tmp; }
+browser_admin() { noargs "$@"; run setsid -f /usr/local/sbin/browser admin; }
+browser_portal() { noargs "$@"; run setsid -f /usr/local/sbin/browser portal; }

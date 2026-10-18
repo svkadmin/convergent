@@ -1,0 +1,58 @@
+#!/bin/sh
+# lint: checks before a push. Run from the repository root; no root needed.
+#   build/lint      exit 0 clean, 1 findings
+set -u
+
+here=$(cd "$(dirname "$0")" && pwd)
+cd "${here%/build}" || exit 1
+fail=0
+bad() { echo "lint: $*"; fail=1; }
+
+# Tracked files; an exported tree (no .git) is checked whole.
+files=$(git ls-files 2>/dev/null) || files=$(find . -type f ! -path './.git/*' | sed 's|^\./||')
+
+# Shell: every script, init script and sourced module parses.
+scripts=
+for f in $files; do
+	case $f in rootfs/usr/lib/convergent/sys/*) scripts="$scripts $f"; continue ;; esac
+	IFS= read -r first <"$f" 2>/dev/null || continue
+	case $first in '#!'*sh* | '#!/sbin/openrc-run'*) scripts="$scripts $f" ;; esac
+done
+for f in $scripts; do sh -n "$f" 2>/dev/null || bad "$f: sh -n fails"; done
+if command -v shellcheck >/dev/null 2>&1; then
+	# POSIX sh is the target; init scripts use OpenRC's dialect.
+	for f in $scripts; do
+		case $(head -n 1 "$f") in *openrc-run*) continue ;; esac
+		shellcheck -s sh -S warning "$f" >/dev/null 2>&1 || bad "$f: shellcheck (run: shellcheck -s sh $f)"
+	done
+else
+	echo "lint: shellcheck not installed, skipped"
+fi
+
+# Leaks: test passwords, private keys, agent session ids or scratch paths, Windows paths.
+for f in $files; do
+	grep -Iq . "$f" 2>/dev/null || continue
+	[ "$f" != build/lint ] || continue
+	# The EFI global-variable GUID is public and expected.
+	grep -nE 'TTesting|BEGIN [A-Z ]*PRIVATE KEY|AppData|scratchpad|claude/C--|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$f" |
+		grep -v 8be4df61-93ca-11d2-aa0d-00e098032b8c |
+		while IFS= read -r hit; do echo "lint: $f:$hit"; done | grep . && fail=1
+done
+
+# Line endings: LF only (.gitattributes).
+for f in $files; do
+	grep -Iq . "$f" 2>/dev/null || continue
+	! grep -q "$(printf '\r')" "$f" || bad "$f: CRLF line endings"
+done
+
+# Docs: every repository path they name exists.
+for d in README.md USAGE.md RECOVERY.md ARCHITECTURE.md; do
+	grep -oE '`(build|tools|rootfs|guests|install|initramfs|portage)/[A-Za-z0-9._/-]+`' "$d" | tr -d '`' | sort -u |
+		while read -r p; do
+			case $p in *'<'* | *'*'*) continue ;; esac
+			[ -e "$p" ] || [ -e "${p%/}" ] || echo "lint: $d names $p, which does not exist"
+		done | grep . && fail=1
+done
+
+[ "$fail" = 0 ] && echo "lint: clean"
+exit "$fail"

@@ -1,0 +1,78 @@
+title=Display
+actions='list	List output modes, scale and position	
+set	Set OUTPUT mode|scale|position|enable|disable [VALUE]	
+save	Save current outputs for sway startup	
+reset	Remove saved outputs	confirm'
+
+display_state() {
+	[ -n "${SWAYSOCK:-}" ] || { echo 'needs the sway session'; return; }
+	value=$(timeout -k 0.2 1 swaymsg -r -t get_outputs 2>/dev/null) || { echo unknown; return; }
+	printf '%s\n' "$value" | jq -er '[.[] | select(.active) | .name] | if length > 0 then join(", ") else "no active outputs" end' || echo unknown
+}
+display_json() { sway; run timeout -k 1 3 swaymsg -r -t get_outputs; }
+display_list() {
+	noargs "$@"
+	json=$(display_json) || return
+	printf '%s\n' "$json" | page jq -r '.[] | "\(.name): enabled=\(.active) mode=\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz scale=\(.scale) position=\(.rect.x),\(.rect.y)\n  modes: \([.modes[] | "\(.width)x\(.height)@\(.refresh/1000)Hz"] | join(" "))"'
+}
+display_value() {
+	case $1 in
+	mode) printf '%s\n' "$2" | grep -Eq '^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}(@[0-9]{1,3}(\.[0-9]{1,3})?(Hz)?)?$' || die 'invalid mode' ;;
+	scale) printf '%s\n' "$2" | grep -Eq '^[0-9](\.[0-9]{1,3})?$' && awk -v n="$2" 'BEGIN {exit !(n >= 0.25 && n <= 8)}' || die 'scale must be 0.25-8' ;;
+	position) printf '%s\n' "$2" | grep -Eq '^-?[0-9]{1,6},-?[0-9]{1,6}$' || die 'position must be X,Y' ;;
+	*) usage ;;
+	esac
+}
+display_set() {
+	sway
+	if [ "$#" = 0 ]; then
+		display_list || return
+		ask Output; output=$answer
+		ask 'Setting (mode/scale/position/enable/disable)'; setting=$answer
+		case $setting in
+		enable|disable) set -- "$output" "$setting" ;;
+		mode|scale|position) ask Value; set -- "$output" "$setting" "$answer" ;;
+		*) usage ;;
+		esac
+	fi
+	[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
+	output=$1; setting=$2; token "$output"
+	json=$(display_json) || return
+	printf '%s\n' "$json" | jq -e --arg name "$output" 'any(.[]; .name == $name)' >/dev/null || die 'unknown output'
+	case $setting in
+	enable|disable)
+		[ "$#" = 2 ] || usage
+		if [ "$setting" = disable ]; then
+			printf '%s\n' "$json" | jq -e --arg name "$output" 'any(.[]; .name != $name and .active)' >/dev/null || die 'another output must stay active'
+		fi
+		swayrun output "$output" "$setting" ;;
+	mode|scale|position)
+		[ "$#" = 3 ] || usage
+		display_value "$setting" "$3"
+		if [ "$setting" = position ]; then
+			swayrun output "$output" position "${3%,*}" "${3#*,}"
+		else
+			swayrun output "$output" "$setting" "$3"
+		fi ;;
+	*) usage ;;
+	esac
+}
+display_save() {
+	noargs "$@"
+	json=$(display_json) || return
+	rows=$(printf '%s\n' "$json" | jq -er '.[] | [.name, .active, "\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz", (.scale*1000|round/1000), "\(.rect.x),\(.rect.y)", .transform] | @tsv') || return
+	config=$(printf '%s\n' "$rows" | while IFS="$tab" read -r name active mode scale position transform; do
+		token "$name"
+		if [ "$active" = false ]; then printf 'output %s disable\n' "$name"; continue; fi
+		[ "$active" = true ] || die 'invalid output state'
+		display_value mode "$mode"; display_value scale "$scale"; display_value position "$position"
+		case $transform in normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270) ;; *) die 'invalid transform' ;; esac
+		printf 'output %s enable mode %s scale %s position %s %s transform %s\n' "$name" "$mode" "$scale" "${position%,*}" "${position#*,}" "$transform"
+	done) || return
+	printf '%s\n' "$config"
+	printf '%s\n' "$config" | save_config outputs
+}
+display_reset() {
+	noargs "$@"; sway; path "$HOME"
+	run rm -f "$HOME/.config/sway/config.d/outputs"
+}

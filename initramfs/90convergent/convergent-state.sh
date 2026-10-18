@@ -15,7 +15,7 @@ while :; do
 	[ "$tries" -lt 3 ] || die "convergent: the state volume did not open"
 	tries=$((tries + 1))
 	stty -echo </dev/console 2>/dev/null
-	printf 'Convergent passphrase [%s/3]: ' "$tries" >/dev/console
+	printf 'Passphrase [%s/3]: ' "$tries" >/dev/console
 	IFS= read -r pass </dev/console || pass=''
 	stty echo </dev/console 2>/dev/null
 	echo >/dev/console

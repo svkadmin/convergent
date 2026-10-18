@@ -2,6 +2,7 @@
 # test: boot unsigned releases on a throwaway disk. Runs as root after build/image.
 #   build/test <release>
 #   build/test --corrupt <release>
+#   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --guests <release> <guests-dir>
@@ -13,11 +14,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
+--desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
 --guests | --guests-update)
 	mode=${1#--}; shift
@@ -238,9 +240,60 @@ inject_guests() {
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
 	[ "$mode" != guests-update ] || inject_guest_update
+	# The QEMU uplink goes to wan as eth1, as a USB NIC would; then DNS over TLS and egress end to end.
+	cat >"$var/lib/convergent/test-release/uplink-test" <<'EOF'
+nic=$(ip -o link | awk -F': ' '/52:54:00:c0:ff:ee/ {print $2; exit}')
+[ -n "$nic" ] || { echo "CV-UPLINK no test NIC"; exit 1; }
+ip link add cvuplink type bridge && ip link set "$nic" master cvuplink && ip link set "$nic" up &&
+	ip link set cvuplink up || exit 1
+incus --force-local --project default config device add wan eth1 nic nictype=bridged parent=cvuplink name=eth1 || exit 1
+dns=fail tcp=fail
+for i in $(seq 36); do
+	[ "$tcp" = ok ] || ! timeout 10 ssh -F /etc/convergent/ssh_config fw1 'nc -z -w 5 9.9.9.9 853' || tcp=ok
+	[ "$dns" = ok ] || ! timeout 10 getent hosts codeberg.org >/dev/null || dns=ok
+	[ "$tcp:$dns" = ok:ok ] && break
+	sleep 5
+done
+echo "CV-UPLINK fw1-tcp=$tcp host-dns=$dns"
+[ "$tcp:$dns" = ok:ok ] || { timeout 10 ssh -F /etc/convergent/ssh_config wan diag; ip -s link show cvuplink; ip -s link show "$nic"; exit 1; }
+EOF
 	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
 	cat >"$var/spool/cron/crontabs/root" <<'EOF'
-@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
+@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; if [ "$result" = 0 ]; then sh /var/lib/convergent/test-release/uplink-test || echo "CV-UPLINK failed (reported, not gating yet)"; fi; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
+EOF
+	chown 0:0 "$var/spool/cron/crontabs/root"
+	chmod 0600 "$var/spool/cron/crontabs/root"
+	close_state
+}
+
+# The session's pieces without a display: what sway, the bar and sys need, checked as root by cron.
+inject_desktop() {
+	open_state rw
+	var="$state/var-$release"
+	[ -d "$var" ] || die "no var-$release after blessing"
+	mkdir -p "$var/lib/convergent/test-release" "$var/spool/cron/crontabs"
+	cat >"$var/lib/convergent/test-release/desktop" <<'EOF'
+# The session's PATH (profile.env), not cron's.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p -m 700 /tmp/smoke-run
+r=0
+t() {
+	if "$@" >/tmp/smoke.out 2>&1; then echo "CV-DESKTOP ok: $*"
+	else echo "CV-DESKTOP FAIL: $*"; head -n 10 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
+}
+for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq dialog \
+	gentoo-pipewire-launcher sys browser bar; do t command -v "$p"; done
+t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
+t test -r "$(sed -n 's/^output \* bg \([^ ]*\) .*/\1/p' /etc/sway/config)"
+t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'
+t sh -c 'XDG_RUNTIME_DIR=/tmp/smoke-run timeout 4 /usr/local/sbin/bar </dev/null >/tmp/bar.out
+	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8" >/dev/null'
+t su -s /bin/sh nobody -c '/usr/local/sbin/sys help >/dev/null'
+t su -s /bin/sh nobody -c '[ "$(/usr/local/sbin/sys --pick | wc -l)" -ge 30 ]'
+echo CV-DESKTOP-RESULT "$r"
+EOF
+	cat >"$var/spool/cron/crontabs/root" <<'EOF'
+@reboot { while [ ! -e /run/openrc/started/convergent-bless ]; do sleep 2; done; sh /var/lib/convergent/test-release/desktop; sync; } >/dev/console 2>&1
 EOF
 	chown 0:0 "$var/spool/cron/crontabs/root"
 	chmod 0600 "$var/spool/cron/crontabs/root"
@@ -286,7 +339,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=2400 ;; guests-update) memory=8192; limit=7200 ;; esac
+	case $goal in guests) memory=8192; limit=3600 ;; guests-update) memory=8192; limit=7200 ;; desktop) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -303,8 +356,8 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
-guest_test = goal in ("guests", "guests-update")
-marker = b"CV-UPDATE-RESULT" if goal == "guests-update" else b"CV-GUESTS-RESULT"
+guest_test = goal in ("guests", "guests-update", "desktop")
+marker = {"guests-update": b"CV-UPDATE-RESULT", "desktop": b"CV-DESKTOP-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -320,9 +373,11 @@ qemu = subprocess.Popen([
     "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
-    "-drive", f"file={work}/disk.img,if=virtio,format=raw",
+    "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
     "-qmp", f"unix:{path},server=on,wait=off",
-    "-nographic", "-monitor", "none", "-nic", "none"],
+    "-nographic", "-monitor", "none"] +
+    # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
+    (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if guest_test and goal != "desktop" else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
@@ -377,9 +432,10 @@ try:
                         match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
                         if match:
                             result = int(match[1])
-                    if not sent and b"Convergent passphrase" in seen:
+                    # Releases before 2026-10-18 print "Convergent passphrase".
+                    if not sent and b"assphrase [" in seen:
                         qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
-            done = result is not None if guest_test else re.search(rb"convergent: release [0-9]+ is good\r?\n", seen)
+            done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
             if ready and not quitting and done:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
@@ -413,7 +469,7 @@ EOF
 }
 
 blessed() {
-	[ "$ended" = blessed ] && grep -qF "convergent: release $release is good" "$log"
+	[ "$ended" = blessed ] && grep -qF "release $release is good" "$log"
 }
 
 refused() {
@@ -435,16 +491,25 @@ umount "$esp"
 detach
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | guests | guests-update) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | desktop | guests | guests-update) budget=300 ;; interrupt) budget=600 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 run_vm
 case $mode in
 boot) blessed || die "release $release did not bless; see $log" ;;
 corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
+desktop)
+	blessed || die "release $release did not bless; see $log"
+	inject_desktop
+	deadline=$(($(date +%s) + 600))
+	vm_ok=1
+	run_vm desktop || vm_ok=0
+	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
+	[ "$ended" = desktop-0 ] || die "desktop smoke test failed ($ended); CV-DESKTOP lines in $log"
+	;;
 guests | guests-update)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	if [ "$mode" = guests-update ]; then budget=7200; else budget=2400; fi
+	if [ "$mode" = guests-update ]; then budget=7200; else budget=3600; fi
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0

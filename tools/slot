@@ -101,7 +101,7 @@ accept() {
 	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] || put good "$release"
 	prune
 	log "release $release in slot $slot is good"
-	echo "convergent: release $release is good" 2>/dev/null >/dev/console || :
+	echo "release $release is good" 2>/dev/null >/dev/console || :
 }
 
 bless() {
@@ -121,7 +121,7 @@ bless() {
 	esac
 	if ! healthy; then
 		log "release $release in slot $slot failed its health checks"
-		echo "convergent: release $release failed its checks" 2>/dev/null >/dev/console || :
+		echo "release $release failed its checks" 2>/dev/null >/dev/console || :
 		exit 1
 	fi
 	# Persist highest, remove boot counter, then persist good.

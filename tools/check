@@ -17,11 +17,47 @@ if [ "${1:-}:$#" = status:1 ]; then
     status=/run/convergent/status
     install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
     exec 9>"$status/lock"; flock -n 9 || exit 0
-    if wifi=$(rsh wan wifi status 2>/dev/null); then
+    # Bound probes in parallel so a dead guest cannot stall cron.
+    (
+        portal=$(timeout -k 1 25 portal status 9>&- 2>/dev/null) || portal='portal: unknown'
+        printf '%s\n' "$portal" | awk '$1 == "portal:" {print $2}' >"$status/.portal"
+    ) &
+    (
+        if instances=$(timeout -k 1 10 incus --force-local --project default list --format json 9>&- 2>/dev/null); then
+            printf '%s\n' "$instances" | jq -er 'map(select(.status == "Running")) |
+                [any(.[]; .name == "wan"), any(.[]; .name == "fw1"),
+                 any(.[]; .name == "fw2"), any(.[]; .name == "svc"),
+                 ([.[] | select(.type == "container") | select(.name |
+                    test("^(browser-.*|web|admin|portal|tmp-[0-9]+)$"))] | length)] | @tsv' \
+                >"$status/.running" || rm -f "$status/.running"
+        else rm -f "$status/.running"; fi
+    ) &
+    for node in fw1 fw2; do
+        (
+            if carp=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" 'ifconfig carp' 9>&- 2>/dev/null); then
+                # All six carp interfaces must agree; anything mixed is degraded.
+                printf '%s\n' "$carp" | awk '/carp: / {n++; if ($2 == "MASTER") m++; else if ($2 == "BACKUP") b++}
+                    END {print n == 6 && m == 6 ? "master" : n == 6 && b == 6 ? "backup" : n ? "degraded" : "down"}' >"$status/.$node"
+            else echo down >"$status/.$node"; fi
+        ) &
+    done
+    if wifi=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan wifi status 9>&- 2>/dev/null); then
         printf '%s\n' "$wifi" | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
-    else echo '?' >"$status/.wifi"; fi
-    portal=$(timeout 25 portal status 2>/dev/null) || portal='portal: unknown'
-    printf '%s\n' "$portal" | awk '$1 == "portal:" {print $2}' >"$status/.portal"
+    else wifi=; echo '?' >"$status/.wifi"; fi
+    wait
+    # A failed inventory must age out, rather than publish false down states.
+    if [ -s "$status/.running" ]; then
+        read -r wan fw1 fw2 svc browsers <"$status/.running"
+        if [ "$wan" = true ]; then
+            wan=nolink
+            printf '%s\n' "${wifi:-}" | awk '$1 == "Connected" && $2 == "network" {found=1} END {exit !found}' && wan=up
+        else wan=down; fi
+        if [ "$fw1" = true ]; then read -r fw1 <"$status/.fw1"; else fw1=down; fi
+        if [ "$fw2" = true ]; then read -r fw2 <"$status/.fw2"; else fw2=down; fi
+        if [ "$svc" = true ]; then svc=up; else svc=down; fi
+        printf 'wan=%s fw1=%s fw2=%s svc=%s browsers=%s\n' "$wan" "$fw1" "$fw2" "$svc" "$browsers" >"$status/.topology"
+        chmod 644 "$status/.topology" && mv "$status/.topology" "$status/topology" || exit 1
+    fi
     chmod 644 "$status/.wifi" "$status/.portal" &&
         mv "$status/.wifi" "$status/wifi" && mv "$status/.portal" "$status/portal"
     exit $?

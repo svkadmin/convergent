@@ -1,0 +1,58 @@
+title=Network
+actions='wifi-status	Show Wi-Fi status	root
+wifi-scan	Scan Wi-Fi networks	root
+wifi-connect	Connect to Wi-Fi [SSID]	root
+wifi-connect-hidden	Connect to hidden Wi-Fi [SSID]	root
+wifi-disconnect	Disconnect Wi-Fi	root
+wifi-forget	Forget a Wi-Fi network [SSID]	root confirm
+portal-on	Open portal and its browser	root
+portal-off	Close portal	root
+portal-status	Show portal status	root
+test	Test DNS and the uplink	root'
+
+network_state() {
+	printf 'Wi-Fi: %s\n' "$(cached /run/convergent/status/wifi)"
+	printf 'Portal: %s\n' "$(cached /run/convergent/status/portal)"
+}
+network_wan() {
+	run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi "$@"
+}
+network_wifi_status() { noargs "$@"; page network_wan status </dev/null; }
+network_wifi_scan() { noargs "$@"; page network_wan scan </dev/null; }
+network_wifi_connect() { network_join '' "$@"; }
+network_wifi_connect_hidden() { network_join -hidden "$@"; }
+network_wifi_disconnect() { noargs "$@"; network_wan disconnect </dev/null; }
+network_join() {
+	suffix=$1; shift
+	[ "$#" -le 1 ] || usage
+	page network_wan scan </dev/null || return
+	onearg SSID "$@"; ssid_valid "$answer"; ssid=$answer
+	pass=$(secret) || return
+	text_valid "$pass"
+	if [ -n "$pass" ]; then
+		[ "${#pass}" -ge 8 ] && [ "${#pass}" -le 63 ] || die 'passphrase must be 8-63 bytes'
+		printf '%s\n%s\n' "$ssid" "$pass" | network_wan "add$suffix"
+	else
+		printf '%s\n' "$ssid" | network_wan "connect$suffix"
+	fi
+}
+network_wifi_forget() {
+	[ "$#" -le 1 ] || usage
+	page network_wan list </dev/null || return
+	onearg 'SSID to forget' "$@"; ssid_valid "$answer"
+	printf '%s\n' "$answer" | network_wan forget
+}
+network_portal_on() {
+	noargs "$@"
+	run sudo /usr/local/sbin/portal on || return
+	run setsid -f /usr/local/sbin/browser portal
+}
+network_portal_off() { noargs "$@"; run sudo /usr/local/sbin/portal off; }
+network_portal_status() { noargs "$@"; page run sudo /usr/local/sbin/portal status; }
+network_test() {
+	noargs "$@"
+	# The host itself has no web access by design (pf); browsers do. So: the host's DNS, which goes
+	# through the firewalls' DNS over TLS, then wan's own view of its uplink.
+	if run timeout -k 1 10 getent hosts example.com; then echo 'DNS: ok'; else echo 'DNS: failed'; fi
+	run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan diag
+}
