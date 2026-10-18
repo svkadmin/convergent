@@ -1,0 +1,13 @@
+title=Guests
+actions='status	Show guest status	root
+setup	Create the guests now (first boot does it; resumes)	root'
+
+guests_state() {
+	case $(cached /run/convergent/status/setup) in
+	running) echo 'Setup: creating the guests' ;;
+	failed) echo 'Setup: failed; run sys guests setup' ;;
+	*) echo 'Setup: done' ;;
+	esac
+}
+guests_status() { noargs "$@"; page run sudo /usr/local/sbin/guests status; }
+guests_setup() { noargs "$@"; run sudo /usr/local/sbin/guests init /var/lib/convergent/release-guests; }

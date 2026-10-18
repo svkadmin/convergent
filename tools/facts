@@ -167,6 +167,19 @@ fact_certs() {
 	if [ -n "$s" ]; then m "cv_certificate_not_after_seconds{certificate=\"incus-server\"} $s"; else bad "cannot read the certificate $cert"; fi
 }
 
+# The kernel's count of audit records it dropped this boot (queue full): any is an alert.
+fact_audit() {
+	lost=$(auditctl -s 2>/dev/null | awk '$1 == "lost" { print $2 }')
+	case $lost in '' | *[!0-9]*) bad "auditctl gave no lost counter"; return ;; esac
+	m "cv_audit_lost_total $lost"
+}
+
+hourly() {
+	new_buf
+	fact_audit
+	publish audit audit
+}
+
 daily() {
 	new_buf
 	fact_nvme
@@ -187,10 +200,11 @@ auto() {
 	if [ "$(age "$out/daily.prom")" -ge 72000 ]; then
 		daily
 	fi
+	hourly
 }
 
 case ${1:-} in
-boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; boot ;;
+boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; boot; hourly ;;
 daily) [ $# = 1 ] || usage; flock -w 120 9 || die "another facts is running"; daily ;;
 auto) [ $# = 1 ] || usage; flock -n 9 || exit 0; auto ;;
 *) usage ;;

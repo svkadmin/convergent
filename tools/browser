@@ -145,7 +145,7 @@ pulse.properties = {
   server.address = [ "unix:$run/sockets/pulse-0" ]
   pulse.allow-module-loading = false
 }
-pulse.rules = [ { matches = [ { } ] actions = { quirks = [ block-record-stream ] } } ]
+pulse.rules = [ { matches = [ { } ] actions = { quirks = [ block-record-stream block-source-volume block-sink-volume ] } } ]
 EOF
 chmod 644 "$run/pulse.conf"
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \

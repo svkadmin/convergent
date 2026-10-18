@@ -15,8 +15,8 @@ build host                         your PC                      laptop
 ──────────                         ───────                      ──────
 compile packages (once, cached)
 build a release ─► test in QEMU ─► disk image ─► write to disk ─► boot, unlock, log in
-sign, publish ─────────────────────────────────► R2 ──────────► sys system update
-                                   or release  ─► USB disk ─────► sys system update-usb
+sign, publish ─────────────────────────────────► R2 ──────────► sys update install
+                                   or release  ─► USB disk ─────► sys update usb
 ```
 
 Nothing is compiled on the laptop. A release is one verified root image plus two boot files (one
@@ -98,7 +98,7 @@ the boot disk, mounted disks and anything under 49 GiB plus 4 MiB, asks you to t
 (or `ERASE` and its serial), then the owner name, and the password and LUKS passphrase twice each.
 It writes and verifies slot A, registers a boot entry named from the release's `NAME` and powers
 off. Remove the USB disk before booting. The guest images are not copied: put the guest directory at
-`/var/lib/convergent/release-guests/guests` and run `sys system setup`.
+`/var/lib/convergent/release-guests/guests` and run `sys guests setup`.
 
 ## First boot
 
@@ -114,7 +114,7 @@ default.
 3. On a disk image the guests (firewalls, wan, svc) are then created in the background; the bar
    shows `SETUP`, usually for 10 to 30 minutes. It shows `SETUP failed` when the release is not
    good within 30 minutes or creation fails twice (log: `/var/log/guests-setup.log`): run
-   `sys system setup`, which resumes. Done when: `SETUP` is gone (before step 5:
+   `sys guests setup`, which resumes. Done when: `SETUP` is gone (before step 5:
    `cat /run/convergent/status/setup` says `done`); Wi-Fi works from then on.
 4. A disk image allows USB devices by class (input, storage, hubs). With only trusted devices
    attached, the disk you boot from included, replace that with a per-device policy. Built-in
@@ -125,9 +125,9 @@ default.
    ```
    Done when: `sudo devices list` shows nothing you use as blocked.
 5. Run `dbus-run-session sway` (the session bus serves PipeWire, WirePlumber and notifications).
-   Super+m opens `sys`: choose Network, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
-   (or `sys network wifi-connect`). Done when: `sys network wifi-status` shows an address.
-6. Run `sys selftest run` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
+   Super+m opens `sys`: choose wifi, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
+   (or `sys wifi connect`). Done when: `sys wifi status` shows an address.
+6. Run `sys selftest` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
    Done when: no line says FAIL; otherwise send the report.
 
 Until Secure Boot signing exists the alerts SecureBootNotVerified and CheckerFailed are expected.
@@ -136,7 +136,7 @@ alert is real ([USAGE](USAGE.md#health-and-alerts)).
 
 ## Update
 
-**Online** (Wi-Fi up): `sys system update` downloads the newest release of the image's channel
+**Online** (Wi-Fi up): `sys update install` downloads the newest release of the image's channel
 (about 1 GB), checks its signature and hashes, writes the other slot and offers the reboot. The
 same by hand: `sudo fetch-release` (`check` only reports). The firewalls open the download addresses
 only while it runs; if closing them fails, they expire within 4 hours. If the server's name does not
@@ -145,7 +145,7 @@ resolve, the blocklist may hold it: add the host to `/var/lib/convergent/dns/all
 
 **From USB:** copy the release directory (`manifest`, `manifest.sig`, `slot.img`, both `.efi`
 files) to a stick, FAT32 or exFAT. Allow the stick (`sudo devices list`, `sudo devices allow
-<number>`); `sys system update-usb` mounts it and writes the release. By hand:
+<number>`); `sys update usb` mounts it and writes the release. By hand:
 
 ```sh
 sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb
@@ -244,7 +244,8 @@ the bucket past about 9 GiB (R2's free tier is 10 GB).
 
 ## Test in QEMU
 
-Run one test at a time. Each boots the release on a throwaway disk and passes or fails by itself.
+Each test boots the release on a throwaway disk in `builder/test/<release>-<mode>` and passes or
+fails by itself. Tests can run side by side as far as memory allows (8 to 12 GiB each).
 
 ```sh
 build/test <release>                                  # boots and marks itself good

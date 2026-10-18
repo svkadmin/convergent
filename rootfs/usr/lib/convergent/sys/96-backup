@@ -1,0 +1,17 @@
+title=Backup
+actions='run	Back up to encrypted USB [MOUNTPOINT PROJECT]	root'
+
+backup_state() { echo 'Back up to encrypted USB'; }
+backup_run() {
+	case $# in
+	0) ask 'Mounted encrypted external disk'; dest=$answer; ask 'Owner Incus project'; project=$answer ;;
+	2) dest=$1; project=$2 ;;
+	*) usage ;;
+	esac
+	path "$dest"
+	dest=$(realpath -e -- "$dest") || die 'no destination directory'
+	path "$dest"
+	[ -d "$dest" ] && mountpoint -q -- "$dest" || die 'destination must be a mountpoint'
+	case $project in ''|default|*[!a-zA-Z0-9_-]*) die 'invalid owner project' ;; esac
+	run sudo /usr/local/sbin/backup "$dest" "$project"
+}

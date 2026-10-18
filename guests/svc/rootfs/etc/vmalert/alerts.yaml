@@ -132,6 +132,10 @@ groups:
         expr: cv_crash_records > 0
         labels: {severity: critical}
         annotations: {summary: 'Unacknowledged pstore crash records'}
+      - alert: AuditRecordsLost
+        expr: cv_audit_lost_total > 0
+        labels: {severity: critical}
+        annotations: {summary: 'The kernel dropped {{ $value }} audit records this boot'}
   - name: monitoring
     interval: 30s
     concurrency: 1
@@ -140,6 +144,8 @@ groups:
         expr: |
           (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180)
           or (time() - node_textfile_mtime_seconds{node="host",file=~".*(daily|checker).prom"} > 129600)
+          or (time() - node_textfile_mtime_seconds{node="host",file=~".*audit.prom"} > 7200)
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*audit.prom"})
           or (node_textfile_mtime_seconds{job="node"} > time() + 60)
           or (time() - node_textfile_mtime_seconds{node="wan",file=~".*wan.prom"} > 180)
           or (up{job="node",node="wan"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*wan.prom"})
@@ -169,6 +175,7 @@ groups:
           or (up{job="node",node="host"} == 1 unless on (node) cv_lockdown_enabled)
           or (up{job="node",node="host"} == 1 unless on (node) cv_luks_header_matches_release)
           or (up{job="node",node="host"} == 1 unless on (node) cv_crash_records)
+          or (up{job="node",node="host"} == 1 unless on (node) cv_audit_lost_total)
           or (up{job="node",node="host"} == 1 unless on (node) cv_nts_authenticated_sources)
           or (up{job="node",node="host"} == 1 unless on (node) cv_certificate_not_after_seconds)
           or (up{job="node",node="host"} == 1 unless on (node) cv_guest_expected_running)
@@ -204,11 +211,6 @@ groups:
       - record: cv_wan_overlap_events
         expr: '_time:10m remote_ip:="100.80.0.10" app_name:="convergent-alert" _msg:~"^UpstreamOverlap( |$)" | stats count() events'
       - alert: AuditEvent
-        expr: '_time:5m remote_ip:="100.80.1.10" app_name:in("audit","auditd") | stats count() hits | filter hits:>0'
+        expr: '_time:5m remote_ip:="100.80.1.10" app_name:in("audit","auditd","audispd","audisp-syslog","kernel") _msg:~"key=.(identity|usb|guestkeys).|apparmor=.DENIED" | stats count() hits | filter hits:>0'
         labels: {severity: warning}
-        annotations: {summary: 'Host audit events received; review records in the log view'}
-      # Host-forwarded Incus lifecycle events.
-      - alert: GuestRestarted
-        expr: '_time:5m remote_ip:="100.80.1.10" app_name:="incus-event" _msg:~"(^| )(instance-started|instance-restarted)( |$)" | stats count() hits | filter hits:>0'
-        labels: {severity: warning}
-        annotations: {summary: 'Incus guest started or restarted; inspect lifecycle event'}
+        annotations: {summary: 'Identity, USB policy or guest-key change, or an AppArmor denial; review the log view'}

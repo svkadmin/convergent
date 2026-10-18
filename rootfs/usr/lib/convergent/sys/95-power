@@ -1,19 +1,32 @@
 title=Power
-actions='profile	Set power profile ac|battery	root
+actions='status	Show power profile and battery	
+ac	Use the AC power profile	root
+battery	Use the battery power profile	root
 lock	Lock the sway session	
 logout	Log out of sway	confirm
 reboot	Reboot the host	root confirm
-poweroff	Power off the host	root confirm'
+off	Power off the host	root confirm'
 
 power_state() {
 	printf 'CPU governor: %s\n' "$(cached /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
 }
-power_profile() {
-	onearg 'Power profile (ac/battery)' "$@"
-	case $answer in ac|battery) ;; *) usage ;; esac
-	run sudo /usr/local/sbin/power "$answer"
+power_status() {
+	noargs "$@"
+	power_state
+	preference=$(cached /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)
+	case $preference in balance_performance) profile=ac ;; power) profile=battery ;; *) profile=unknown ;; esac
+	printf 'Profile: %s (energy preference: %s)\n' "$profile" "$preference"
+	battery=0
+	for d in /sys/class/power_supply/*; do
+		[ -r "$d/type" ] && [ "$(cat "$d/type")" = Battery ] || continue
+		battery=1
+		printf '%s: %s%%, %s\n' "${d##*/}" "$(cached "$d/capacity")" "$(cached "$d/status")"
+	done
+	[ "$battery" = 1 ] || echo 'No battery'
 }
+power_ac() { noargs "$@"; run sudo /usr/local/sbin/power ac; }
+power_battery() { noargs "$@"; run sudo /usr/local/sbin/power battery; }
 power_lock() { noargs "$@"; sway; run swaylock -f; }
 power_logout() { noargs "$@"; sway; run swaymsg exit; }
 power_reboot() { noargs "$@"; run sudo reboot; }
-power_poweroff() { noargs "$@"; run sudo poweroff; }
+power_off() { noargs "$@"; run sudo poweroff; }

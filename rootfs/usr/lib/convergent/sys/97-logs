@@ -1,0 +1,7 @@
+title=Logs
+actions='host	Read host logs	root
+services	Show OpenRC services	'
+
+logs_state() { echo 'Host logs / OpenRC services'; }
+logs_host() { noargs "$@"; root_page /var/log/messages; }
+logs_services() { noargs "$@"; page run rc-status -a; }
