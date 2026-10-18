@@ -4,3 +4,6 @@
 @{PROC}/@{pid}/{cmdline,loginuid,sessionid} r,
 # svc's CA for the TLS destination.
 /var/lib/convergent/syslog-ca/{,**} r,
+# The svc destination's disk buffer: queue files and the directory lock (the stock profile knows
+# only the older .qf names).
+/var/lib/syslog-ng/syslog-ng-* rwk,
