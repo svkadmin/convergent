@@ -13,12 +13,14 @@ if [ "${1:-}" = --selftest ]; then
 	[ "$(get hostname)" = host ] || die defaults
 	[ "$(get owner_login)" = owner ] || die defaults
 	[ "$(get state_max_gib)" = 0 ] || die defaults
+	[ -z "$(get display_scale)" ] || die defaults
 	cat >"$work/config" <<'EOF'
 # Non-defaults and whole-value quotes.
 hostname: "laptop-2" # comment
 timezone: Europe/Budapest
 console_keymap: hu
 xkb_layouts: us(dvorak),hu
+display_scale: 1.2
 wifi_country: HU
 nts_servers: a.example,b.example,a.example
 blocklist_url: https://example.org/list?x=1&y=2
@@ -33,13 +35,22 @@ image_size: 32G
 EOF
 	[ "$(get hostname)" = laptop-2 ] && [ "$(get state_max_gib)" = 64 ] || die values
 	[ "$(get blocklist_url)" = 'https://example.org/list?x=1&y=2' ] || die URL
+	[ "$(get display_scale)" = 1.2 ] || die scale
+	for scale in '' 0.5 0.50 1 1.25 4 4.00; do
+		printf 'display_scale: "%s"\n' "$scale" >"$work/config"
+		[ "$(get display_scale)" = "$scale" ] || die scale
+	done
 	n=0
 	for bad in 'typo: value' 'hostname: host\nhostname: host' ' hostname: host' \
 		'hostname: [host]' '- hostname: host' 'hostname: ho\tst' 'hostname: Bad' \
 		'blocklist_url: http://example.org/list' 'state_max_gib: 2G' \
 		'hostname: "host' 'hostname: host"' 'nts_servers: a.example,a.example' \
 		'esp_mib: 255' 'slot_mib: 65537' 'owner_password_hash: secret' \
-		'xkb_layouts: us,,hu' 'hostname: host\000' 'hostname: host\r'; do
+		'xkb_layouts: us,,hu' 'hostname: host\000' 'hostname: host\r' \
+		'display_scale: 0.49' 'display_scale: 4.01' 'display_scale: 1.234' \
+		'display_scale: -1' 'display_scale: .5' 'display_scale: 1.' \
+		'display_scale: 01' 'display_scale: 1e0' 'display_scale: NaN' \
+		'display_scale: 1;id'; do
 		printf '%b\n' "$bad" >"$work/config"
 		n=$((n + 1))
 		if get image_size >"$work/out" 2>"$work/error"; then die "accepted invalid input $n"; fi
@@ -68,6 +79,7 @@ function valid(k,v, a,n,i,distinct,seen) {
 	if (k == "hostname") return hn(v)
 	if (k == "timezone") return v ~ /^[A-Za-z_+-]+(\/[A-Za-z0-9_+-]+)*$/
 	if (k == "console_keymap") return v ~ /^[A-Za-z0-9_+-]+$/
+	if (k == "display_scale") return v == "" || (v ~ /^[0-4](\.[0-9]{1,2})?$/ && v+0 >= 0.5 && v+0 <= 4)
 	if (k == "xkb_layouts") {
 		n=split(v,a,",")
 		for (i=1;i<=n;i++) if (a[i] !~ /^[a-z]{2,3}(\([a-z0-9_-]+\))?$/) return 0
@@ -96,6 +108,7 @@ function valid(k,v, a,n,i,distinct,seen) {
 BEGIN {
 	d["hostname"]="host"; d["timezone"]="UTC"; d["console_keymap"]="us"
 	d["xkb_layouts"]="us"; d["wifi_country"]=""
+	d["display_scale"]=""
 	d["nts_servers"]="time.cloudflare.com,ptbtime1.ptb.de,ntppool1.time.nl"
 	d["blocklist_url"]="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/pro.mini.txt"
 	d["cpu_cap_khz"]="4200000"; d["idle_lock_minutes"]="10"; d["state_max_gib"]="0"

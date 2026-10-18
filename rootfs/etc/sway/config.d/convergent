@@ -1,4 +1,5 @@
 # ARCHITECTURE 9; the stock /etc/sway/config includes this directory last, so lines here win.
+output * bg #000000 solid_color
 
 # Bar: tools/bar speaks the i3bar protocol with pango markup and click events.
 bar bar-0 {
@@ -8,9 +9,10 @@ bar bar-0 {
 }
 
 # Launcher and the sys tool.
-set $pick bemenu -i -l 15 --fn "DejaVu Sans Mono 11"
+set $menu_colors --tb "#0b0b0b" --tf "#78a9ff" --fb "#0b0b0b" --ff "#dddddd" --cb "#dddddd" --cf "#0b0b0b" --nb "#0b0b0b" --nf "#dddddd" --ab "#0b0b0b" --af "#dddddd" --hb "#202020" --hf "#78a9ff" --sb "#0b0b0b" --sf "#999999"
+set $pick bemenu -i -l 15 --fn "DejaVu Sans Mono 11" $menu_colors
 unbindsym Mod4+d
-bindsym Mod4+d exec bemenu-run -i -l 15 --fn 'DejaVu Sans Mono 11' -p run
+bindsym Mod4+d exec apps -i -l 15 --fn 'DejaVu Sans Mono 11' $menu_colors
 bindsym Mod4+m exec foot -T sys -e sys
 # One sys action by name, run in its own terminal.
 unbindsym Mod4+a
@@ -52,7 +54,7 @@ bindsym --locked XF86AudioMicMute exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ tog
 
 # Session services: audio (Gentoo's launcher starts WirePlumber once PipeWire is up), notifications.
 exec gentoo-pipewire-launcher
-exec mako
+exec mako -c /etc/xdg/mako/config
 
 # The owner's own settings, written by `sys display save` and `sys keyboard set`.
 input type:keyboard xkb_layout "us"
