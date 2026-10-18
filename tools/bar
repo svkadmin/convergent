@@ -4,6 +4,7 @@
 set -u
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
+. /usr/lib/convergent/theme
 
 vmalert=http://100.80.2.10:8880
 ps=/sys/class/power_supply
@@ -87,6 +88,8 @@ while :; do
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
 	# One formatter per frame; procfs/sysfs reads need no helper processes.
 	awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
+		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
+		-v master="$theme_master" -v backup="$theme_backup" -v warning="$theme_alert_warn" -v fg="$theme_text" \
 		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" '
 	function get(path, value) {
 		if ((getline value < path) <= 0) value=""
@@ -105,7 +108,7 @@ while :; do
 	}
 	function block(text, color, name, markup) {
 		printf "%s{\"full_text\":%s", sep, json(text)
-		if (color != "") printf ",\"color\":%s", json(color)
+		printf ",\"color\":%s", json(color == "" ? fg : color)
 		if (name != "") printf ",\"name\":%s", json(name)
 		if (markup) printf ",\"markup\":\"pango\""
 		printf "}"
@@ -116,15 +119,14 @@ while :; do
 		color=grey
 		if (fresh) {
 			if (state == "up") color=green
-			else if (state == "master") {color="#00ff00"; text="<b>" text "</b>"}
-			else if (state == "backup") color="#5f8f5f"
+			else if (state == "master") {color=master; text="<b>" text "</b>"}
+			else if (state == "backup") color=backup
 			else if (state == "down") color=red
 			else if (state == "nolink" || state == "degraded") color=orange
 		}
 		return "<span foreground=\"" color "\">" text "</span>"
 	}
 	BEGIN {
-		grey="#888888"; green="#00cc00"; red="#ff0000"; orange="#ff8c00"
 		for (i=1;i<32;i++) control[sprintf("%c",i)]=sprintf("\\u%04x",i)
 		split(get(work "/previous"), prev, " ")
 		split(get("/proc/stat"), cpu, " ")
@@ -177,7 +179,7 @@ while :; do
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
 		wifi=get(st "/wifi"); block("wifi " (wifi == "" ? "?" : wifi), "")
 		alerts=get(work "/alerts"); if (alerts == "") alerts="?"
-		block("alerts " alerts,alerts == "?" ? grey : alerts == "0" ? green : alerts+0>0 ? red : "#ffd700")
+		block("alerts " alerts,alerts == "?" ? grey : alerts == "0" ? green : alerts+0>0 ? red : warning)
 		portal=get(st "/portal")
 		# Shown only while on; "unknown" before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)

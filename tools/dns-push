@@ -29,17 +29,32 @@ close_src() {
 	src_open=
 }
 # Serialize remote swaps and recovery; OpenBSD clears /var/run on boot.
+unlock="if [ \"\$(cat /var/run/convergent-dns.lock/pid 2>/dev/null)\" = \"\$\$\" ]; then
+	rm -f /var/run/convergent-dns.lock/pid
+	rmdir /var/run/convergent-dns.lock
+fi"
 lock="set -e
 cd $rdir
 i=0
 until mkdir /var/run/convergent-dns.lock 2>/dev/null; do
+	owner=\$(cat /var/run/convergent-dns.lock/pid 2>/dev/null || :)
+	case \$owner in
+	'') sleep 1; rmdir /var/run/convergent-dns.lock 2>/dev/null || : ;;
+	*[!0-9]*) exit 1 ;;
+	*) if ! ps -p \"\$owner\" -o pid= >/dev/null; then
+		rm -f /var/run/convergent-dns.lock/pid
+		rmdir /var/run/convergent-dns.lock 2>/dev/null || :
+	   fi ;;
+	esac
 	i=\$((i + 1)); [ \$i -lt 90 ] || exit 1; sleep 1
 done
-trap 'rmdir /var/run/convergent-dns.lock' 0
+(set -C; echo \$\$ >/var/run/convergent-dns.lock/pid)
+trap '$unlock' 0
 trap 'exit 1' HUP INT TERM"
-# Preserve backups until both activations commit.
-restore="cd $rdir && cp -p blocklist.rpz.prev blocklist.rpz &&
-cp -p local-owner.conf.prev local-owner.conf && unbound-control reload >/dev/null"
+# Preserve backups until both activations commit. A firewall rebuilt since has no .prev and nothing
+# to roll back: it runs its image's data until the next push.
+restore="cd $rdir && if [ -e blocklist.rpz.prev ]; then cp -p blocklist.rpz.prev blocklist.rpz &&
+cp -p local-owner.conf.prev local-owner.conf && unbound-control reload >/dev/null; fi"
 rollback() {
 	[ -e "$state/pending" ] || return 0
 	_failed=0
@@ -191,7 +206,7 @@ done
 sync
 for fw in $fws; do
 	rsh "$fw" "$lock
-		trap 's=\$?; set +e; trap - 0; if [ \$s != 0 ]; then $restore; fi; rmdir /var/run/convergent-dns.lock; exit \$s' 0
+		trap 's=\$?; set +e; trap - 0; if [ \$s != 0 ]; then $restore; fi; $unlock; exit \$s' 0
 		trap 'exit 1' HUP INT TERM
 		cd $rdir
 		mv blocklist.rpz.new blocklist.rpz

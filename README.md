@@ -59,7 +59,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | | |
 |---|---|
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
-| Built, first laptop test now | graphics, audio, Bluetooth, Wi-Fi in wan, browsers, bar, sys, power; signed releases and online updates |
+| Proven on the laptop | boot, blind unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch) |
+| Built, laptop test to finish | browsers, audio, Bluetooth, power |
 | Not built | Secure Boot signing (Secure Boot stays off), guest images online, a recovery boot entry |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
@@ -79,10 +80,7 @@ zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct 
 ```
 
 The image holds both slots (B empty), the encrypted state with the owner's account, and the guest
-images. At each unlock the encrypted state grows to the end of its disk (partition, LUKS, then
-Btrfs) when it is the last partition and more than 1 GiB is free, unless `state_max_gib` caps it.
-Each step checks its own size, so an interrupted grow finishes on a later boot; a failure only warns
-and keeps the old size.
+images. At each unlock the state grows to the end of its disk unless `state_max_gib` caps it.
 
 ### The laptop's own disk
 
@@ -110,38 +108,41 @@ keyboard `@` is Shift+2, and `y` and `z` are swapped). The console uses `console
 default.
 
 1. `Passphrase [1/3]:` appears; three wrong tries power it off. Done when: a login prompt.
+   The screen can stay black while the prompt waits: type the passphrase blind and press Enter.
+   Keys pressed meanwhile reappear as empty `host login:` prompts; ignore them.
 2. Log in as the owner. Done when: the console prints `release <release> is good` (minutes).
-3. On a disk image the guests (firewalls, wan, svc) are then created in the background; the bar
-   shows `SETUP`, usually for 10 to 30 minutes. It shows `SETUP failed` when the release is not
-   good within 30 minutes or creation fails twice (log: `/var/log/guests-setup.log`): run
-   `sys guests setup`, which resumes. Done when: `SETUP` is gone (before step 5:
-   `cat /run/convergent/status/setup` says `done`); Wi-Fi works from then on.
-4. A disk image allows USB devices by class (input, storage, hubs). With only trusted devices
-   attached, the disk you boot from included, replace that with a per-device policy. Built-in
-   devices (camera, Bluetooth, fingerprint reader) are always attached, so they are allowed too:
+3. Run `dbus-run-session sway`. On a disk image the bar shows `SETUP` (orange) for 10 to 30 minutes
+   while the guests are created; `SETUP failed` (red): `sys guests setup` resumes (log:
+   `/var/log/guests-setup.log`). Done when: `SETUP` is gone.
+   Keys: Super+Enter terminal, Super+m settings menu, Super+d apps, Super+b browser,
+   Super+Shift+t throwaway browser, Super+Escape lock. All keys: [USAGE, Keys](USAGE.md#keys);
+   bar: [USAGE, The bar](USAGE.md#the-bar).
+4. Replace the by-class USB policy with a per-device one, with every trusted device attached
+   (built-in camera, Bluetooth and fingerprint reader count as attached):
    ```sh
    sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
    sudo rc-service usbguard restart
    ```
    Done when: `sudo devices list` shows nothing you use as blocked.
-5. Run `dbus-run-session sway` (the session bus serves PipeWire, WirePlumber and notifications).
-   Super+m opens the `sys` fzf menu: choose Wi-Fi, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
-   (or `sys wifi connect`). Done when: `sys wifi status` shows an address.
+5. Super+m, Wi-Fi, Scan, Connect (or `sys wifi connect`). Done when: `sys wifi status` shows an
+   address.
 6. Run `sys selftest` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
-   Done when: no line says FAIL; otherwise send the report.
+   Done when: no line says FAIL (SKIP is fine).
 
-Until Secure Boot signing exists the alerts SecureBootNotVerified and CheckerFailed are expected.
-Without an accepted baseline, FirewallRulesetDrift and CollectorBroken are also expected. Any other
-alert is real ([USAGE](USAGE.md#health-and-alerts)).
+The bar's `alerts` shows `?` until svc runs, then counts (`1c 2w`). Expected with Secure Boot
+off: SecureBootNotVerified, CheckerFailed; without an accepted baseline also FirewallRulesetDrift.
+Details: `sys browser admin` (Grafana, user `owner`; password:
+`sudo cat /var/lib/convergent/guests/tls/admin-password`). Anything else is real.
+
+Something off: [RECOVERY.md](RECOVERY.md); logs: `sys logs`; every command: `sys help`.
 
 ## Update
 
-**Online** (Wi-Fi up): `sys update install` downloads the newest release of the image's channel
-(about 1 GB), checks its signature and hashes, writes the other slot and offers the reboot. The
-same by hand: `sudo fetch-release` (`check` only reports). The firewalls open the download addresses
-only while it runs; if closing them fails, they expire within 4 hours. If the server's name does not
-resolve, the blocklist may hold it: add the host to `/var/lib/convergent/dns/allow`, then
-`sudo dns-push local`.
+**Online** (Wi-Fi up): `sys update check` prints `up to date: release …` or `release N is
+available`. `sys update install` downloads the newest release of the image's channel (about 1 GB),
+checks its signature and hashes, writes the other slot and offers the reboot. The same by hand:
+`sudo fetch-release` (`check` only reports). The firewalls open the download addresses only while
+it runs; if closing them fails, they expire within 4 hours. Failures: RECOVERY 12.
 
 **From USB:** copy the release directory (`manifest`, `manifest.sig`, `slot.img`, both `.efi`
 files) to a stick, FAT32 or exFAT. Allow the stick (`sudo devices list`, `sudo devices allow
@@ -182,12 +183,12 @@ network access; the guest builds also need `qemu-img`, OVMF, `signify`, `python3
 
 Settings live in `/etc/convergent/config.yaml` on the build host (or the file named by
 `CONVERGENT_CONFIG`); keys and defaults are in `config.example.yaml`, validation rules in
-`tools/config-get`. The image keys (host name, time zone, keyboard layouts, Wi-Fi country, time
-servers, blocklist, CPU cap, idle lock, `state_max_gib` to stop the state growing past a size) are
-built into the release; the
-install keys (owner login, an optional password hash, partition and image sizes) are read by
-`build/stick` and `convergent-install --config`. A typo or unknown key stops the build. The LUKS
-passphrase is never in it, and the passphrase prompt stays US whatever `console_keymap` says.
+`tools/config-get`. The image keys (host name, time zone, keyboard layouts, display scale,
+Wi-Fi country, time servers, blocklist, CPU cap, idle lock, `state_max_gib` to stop the state
+growing past a size) are built into the release; the install keys (owner login, an optional
+password hash, partition and image sizes) are read by `build/stick` and
+`convergent-install --config`. A typo or unknown key stops the build. The LUKS passphrase is never
+in it, and the passphrase prompt stays US whatever `console_keymap` says.
 
 ```sh
 build/buildenv          # builder chroot from the pinned, signed stage3 and Portage snapshot
@@ -262,7 +263,9 @@ that the update is rolled back.
 
 `--guests` and `--guests-update` also try the Internet path: wan gets an emulated uplink (QEMU
 user networking, as a second NIC), then fw1 must reach 9.9.9.9:853 and the host must resolve a
-name; otherwise the test fails.
+name; otherwise the test fails. Both modes also smoke-test the web browser container without
+Wayland and check signed online updates when configured after a successful uplink. They run the
+booted selftest checks as root; only release, verity, nested and audit failures gate the test.
 
 ## Checks
 

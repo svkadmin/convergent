@@ -42,6 +42,21 @@ if [ "${1:-}:$#" = status:1 ]; then
             else echo down >"$status/.$node"; fi
         ) &
     done
+    (
+        if diag=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan diag 9>&- 2>/dev/null); then
+            printf '%s\n' "$diag" | awk '
+                /^== / {section=$2; next}
+                section == "addresses" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=1}
+                section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
+                    for (i=1;i<NF;i++) if ($i == "dev") route[$(i+1)]=1
+                }
+                section == "links" && /[<,]UP[,>]/ && /[<,]LOWER_UP[,>]/ {
+                    name=$2; sub(/:$/, "", name); sub(/@.*/, "", name); link[name]=1
+                }
+                END {for (name in route) if (name != "eth0" && address[name] && link[name]) up=1
+                    print up ? "up" : "nolink"}' >"$status/.wan"
+        else echo nolink >"$status/.wan"; fi
+    ) &
     if wifi=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan wifi status 9>&- 2>/dev/null); then
         printf '%s\n' "$wifi" | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
     else wifi=; echo '?' >"$status/.wifi"; fi
@@ -50,8 +65,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     if [ -s "$status/.running" ]; then
         read -r wan fw1 fw2 svc browsers <"$status/.running"
         if [ "$wan" = true ]; then
-            wan=nolink
-            printf '%s\n' "${wifi:-}" | awk '$1 == "Connected" && $2 == "network" {found=1} END {exit !found}' && wan=up
+            read -r wan <"$status/.wan"
         else wan=down; fi
         if [ "$fw1" = true ]; then read -r fw1 <"$status/.fw1"; else fw1=down; fi
         if [ "$fw2" = true ]; then read -r fw2 <"$status/.fw2"; else fw2=down; fi
@@ -67,6 +81,9 @@ case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
 exec 9>/run/convergent/check.lock
 flock -n 9 || die 'another checker is running'
+if [ ! -e "$state/accepted" ] && [ -d "$state/previous" ]; then
+    mv "$state/previous" "$state/accepted" || die 'cannot restore previous acceptance'
+fi
 exec 8>/run/convergent/guests.lock
 case ${1:-} in accept|accept-fw) lock=-x ;; *) lock=-s ;; esac
 flock "$lock" -n 8 || { [ "${1:-}" = auto ] && exit 0; die 'a guest operation is running'; }
@@ -106,14 +123,27 @@ dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $
 
 # Track content, including non-executable desktop files and shell startup scripts.
 autostart() {
-    find /home -xdev -type f \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
+    find /home -mindepth 1 -maxdepth 1 -type l -print >"$work/home.links" || return 1
+    [ ! -s "$work/home.links" ] || return 1
+    find /home -xdev \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
         -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
         -o -path '*/.config/environment.d/*' -o -name .profile -o -name .shrc -o -name .bashrc \
         -o -name .bash_profile -o -name .bash_login -o -name .zshrc -o -name .zshenv -o -name .zprofile \
         -o -name .zlogin -o -path '*/.config/fish/*' -o -path '*/.config/autostart-scripts/*' \
         -o -path '*/.config/plasma-workspace/env/*' -o -path '*/.local/share/autostart/*' \
-        -o -name .xprofile -o -name .xinitrc -o -path '*/.ssh/rc' \) \
-        -exec sha256sum '{}' + >"$work/autostart.raw" && sort "$work/autostart.raw" >"$work/autostart"
+        -o -name .xprofile -o -name .xinitrc -o -path '*/.ssh/rc' \
+        -o -name .config -o -name .local -o -name .ssh \
+        -o -path '*/.config/autostart' -o -path '*/.config/systemd' -o -path '*/.config/systemd/user' \
+        -o -path '*/.local/share' -o -path '*/.local/share/systemd' -o -path '*/.local/share/systemd/user' \
+        -o -path '*/.config/sway' -o -path '*/.local/bin' -o -path '*/.config/environment.d' \
+        -o -path '*/.config/fish' -o -path '*/.config/autostart-scripts' \
+        -o -path '*/.config/plasma-workspace' -o -path '*/.config/plasma-workspace/env' \
+        -o -path '*/.local/share/autostart' \) -exec sh -c '
+            for file do
+                [ ! -L "$file" ] || { echo "autostart symlink: $file" >&2; exit 1; }
+                sha256sum "$file" || exit 1
+            done
+        ' sh '{}' + >"$work/autostart.raw" && sort "$work/autostart.raw" >"$work/autostart"
 }
 suid() {
     find /home /var /tmp -xdev -type f -perm -4000 -printf '%m %U %G %p\n' >"$work/suid.raw" &&
@@ -122,9 +152,17 @@ suid() {
 autostart 2>>"$work/report" || bad 'autostart scan failed'
 suid 2>>"$work/report" || bad 'SUID scan failed'
 incus --force-local list --all-projects --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
+incus_limits() {
+    jq -S 'map(if .name == "svc" and (.config["limits.memory"] == "350MiB" or .config["limits.memory"] == "768MiB")
+        then .config["limits.memory"] = "350MiB" else . end) | sort_by(.name)' "$1"
+}
 jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|web|admin)$")) |
     {name, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
-    devices: .expanded_devices}) | sort_by(.name)' "$work/instances" >"$work/incus" || bad 'Incus settings unreadable'
+    devices: .expanded_devices})' "$work/instances" >"$work/incus.raw" || bad 'Incus settings unreadable'
+incus_limits "$work/incus.raw" >"$work/incus" || bad 'Incus settings unreadable'
+jq -e 'all(.[] | select((.project // "default") == "default" and .name == "svc");
+    .expanded_config["limits.memory"] == "350MiB" or .expanded_config["limits.memory"] == "768MiB")' \
+    "$work/instances" >/dev/null || bad 'svc memory limit differs'
 
 if [ "${1:-}" = accept ]; then
     [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'refusing acceptance: host verification failed'; }
@@ -162,7 +200,12 @@ while IFS= read -r entry; do
     [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"
 done <"$list"
 for inventory in autostart suid incus; do
-    diff -u "$baseline/$inventory" "$work/$inventory" >>"$work/report" 2>&1 || bad "$inventory inventory changed or missing"
+    accepted=$baseline/$inventory
+    if [ "$inventory" = incus ]; then
+        accepted=$work/incus.accepted
+        incus_limits "$baseline/incus" >"$accepted" 2>>"$work/report" || bad 'accepted Incus settings unreadable'
+    fi
+    diff -u "$accepted" "$work/$inventory" >>"$work/report" 2>&1 || bad "$inventory inventory changed or missing"
 done
 radio=$(jq -r '.[] | select((.project // "default") == "default" and .name == "wan") |
     .expanded_devices.radio.address // empty' "$work/instances")

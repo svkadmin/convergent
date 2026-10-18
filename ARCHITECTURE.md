@@ -68,7 +68,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Area | Design |
 |---|---|
 | Base | Gentoo, hardened profile, OpenRC, glibc |
-| Kernel | Gentoo distribution kernel, hardened configuration plus a Convergent fragment: confidentiality lockdown; every module signed with a key that exists only during the build; no kexec; no hibernation; DM, DM_INIT, DM_VERITY, EROFS and the storage drivers built in; drivers for unused protocols, filesystems and buses (FireWire, legacy network protocols) left out of the build rather than blacklisted; the Wi-Fi driver left out, so the host cannot take the radio back |
+| Kernel | Gentoo distribution kernel, hardened configuration plus a Convergent fragment: confidentiality lockdown; every module signed with a key that exists only during the build; no kexec; no hibernation; DM, DM_INIT, DM_VERITY, EROFS and the storage drivers built in; FireWire, X.25, TIPC, RDS and CAN left out of the build, other unused protocols and filesystems never loaded (`modprobe.d`; out of the build *(planned)*); setuid, setgid and file capabilities stripped from all but sudo, su, passwd, unix_chkpwd and the D-Bus helper; hardening on the command line (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); the Wi-Fi driver left out, so the host cannot take the radio back |
 | Kernel settings | One sysctl file, carried from Archer: ptrace, perf, BPF and kernel-pointer restrictions, dmesg restricted, protected links and FIFOs, TIOCSTI and line-discipline loading off, strict network settings (no redirects, no source routing, martians logged, reverse-path filtering), no core dumps |
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; every NVIDIA function bound to vfio-pci before any driver probes it and left powered down; the Wi-Fi function must sit alone in its IOMMU group, with no ACS override |
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
@@ -279,7 +279,8 @@ router; the firewalls are.
 | slot A, slot B | EROFS images with their dm-verity hash trees |
 | state | LUKS2 (Argon2id), Btrfs: `/var` (with a snapshot per slot generation), `/home`, `/etc` entries, the Incus pool |
 
-Btrfs is trimmed weekly and scrubbed monthly. Selected custom volumes have size limits; a pool-wide
+Encrypted state has discard disabled on purpose: discard reveals free-space patterns.
+Btrfs is scrubbed monthly. Selected custom volumes have size limits; a pool-wide
 quota *(planned)* would keep guests and logs from filling the space `/var` and `/home` need.
 
 ### 5.2 Boot

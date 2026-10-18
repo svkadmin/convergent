@@ -11,6 +11,8 @@ repo=${here%/build}
 [ -x "$BUILDER/bin/sh" ] || { echo "packages: no builder; run build/buildenv first" >&2; exit 1; }
 
 # Rebuild image-only Portage configuration.
+exec 9>/run/convergent-packages.lock
+flock 9
 conf="$BUILDER/image-config/etc/portage"
 rm -rf "$BUILDER/image-config"
 mkdir -p "$conf"

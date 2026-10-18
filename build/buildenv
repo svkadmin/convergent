@@ -15,7 +15,9 @@ key=/usr/share/openpgp-keys/gentoo-release.asc
 [ -r "$key" ] || die "$key missing (sec-keys/openpgp-keys-gentoo-release)"
 
 work=$(mktemp -d)
-trap 'chroot_umount; rm -rf "$work"' EXIT
+stage=
+trap 'chroot_umount; rm -rf "$work"; [ -z "$stage" ] || rm -rf "$stage"' 0
+trap 'exit 1' HUP INT TERM
 
 # Bootstrap the signed stage3 once.
 if [ ! -x "$BUILDER/bin/sh" ]; then
@@ -26,8 +28,12 @@ if [ ! -x "$BUILDER/bin/sh" ]; then
 	mkdir -m 700 "$GNUPGHOME"
 	gpg -q --import "$key"
 	gpg -q --verify "$work/$tarball.asc" "$work/$tarball" || die "stage3 signature does not verify"
-	mkdir -p "$BUILDER"
-	tar -xpf "$work/$tarball" --xattrs-include='*.*' --numeric-owner -C "$BUILDER"
+	mkdir -p "${BUILDER%/*}"
+	stage=$(mktemp -d "$BUILDER.stage3.XXXXXX")
+	tar -xpf "$work/$tarball" --xattrs-include='*.*' --numeric-owner -C "$stage"
+	[ ! -d "$BUILDER" ] || rmdir "$BUILDER" || die "incomplete builder exists: $BUILDER"
+	mv -T "$stage" "$BUILDER"
+	stage=
 	echo "buildenv: builder created from $tarball"
 fi
 

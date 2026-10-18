@@ -108,7 +108,7 @@ generation=$base/backup-$(date -u +%Y%m%dT%H%M%SZ)
 mv "$payload" "$generation"
 sync
 # Three generations, following the existing guest-backup retention count in 7.2.
-find "$base" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' | sort -r | sed '1,3d' >"$work/prune"
+find "$base" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' ! -name "${generation##*/}" | sort -r | sed '1,2d' >"$work/prune"
 while IFS= read -r old; do rm -rf "$old"; done <"$work/prune"
 rm "$work/prune"
 sync

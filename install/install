@@ -138,9 +138,11 @@ awk -v r="$release" '
 ' "$work/manifest" || die "malformed manifest"
 grep -E '^[0-9a-f]{64}  ' "$work/manifest" | (cd "$dir" && sha256sum -c --quiet -) ||
 	die "the release does not match its manifest"
-size=$(stat -c %s "$dir/slot.img") || die "cannot size slot.img"
-[ "$size" -gt 0 ] && [ $((size % 4096)) = 0 ] || die "invalid slot.img size"
+cp "$dir/slot.img" "$work/slot.img" || die "cannot read slot.img"
 sum=$(awk '$2 == "slot.img" && length($1) == 64 { print $1 }' "$work/manifest") || die "no slot checksum"
+[ "$(sha256sum <"$work/slot.img" | cut -d' ' -f1)" = "$sum" ] || die "slot.img does not match the manifest"
+size=$(stat -c %s "$work/slot.img") || die "cannot size slot.img"
+[ "$size" -gt 0 ] && [ $((size % 4096)) = 0 ] || die "invalid slot.img size"
 cp "$dir/convergent-$release-a.efi" "$work/uki" || die "cannot read the UKI"
 [ "$(sha256sum <"$work/uki" | cut -d" " -f1)" = "$(awk -v f="convergent-$release-a.efi" '$2 == f && length($1) == 64 { print $1 }' "$work/manifest")" ] ||
 	die "the UKI does not match the manifest"
@@ -225,6 +227,14 @@ check_disk() {
 }
 check_disk
 identity=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk") || die "cannot identify target"
+diskseq=
+if [ -e "/sys/block/${disk##*/}/diskseq" ]; then
+	diskseq=$(cat "/sys/block/${disk##*/}/diskseq") || die "cannot read target diskseq"
+fi
+check_identity() {
+	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
+	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
+}
 serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
 disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
 # Leave at least 32 GiB for state, plus GPT/alignment space; a disk image needs only room for the
@@ -243,7 +253,7 @@ fi
 # Prepare account hashes in /run before erasing.
 [ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
 run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state"
-loop=$(losetup --find --show --read-only "$dir/slot.img") || die "cannot open image"
+loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 image_mounted=1
 grep -qx 'command_args="-g seat"' "$work/image/etc/init.d/seatd" ||
@@ -327,8 +337,9 @@ secret 'LUKS passphrase'
 
 # Recheck target identity; use disk-local partition paths.
 check_disk
-[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
+check_identity
 run sgdisk --zap-all "$disk"
+check_identity
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$disk"
 run blockdev --rereadpt "$disk"
@@ -342,12 +353,15 @@ for p in 1 2 3 4; do
 	shift
 done
 esp=${prefix}1 slota=${prefix}2 slotb=${prefix}3 state=${prefix}4
-run dd if="$dir/slot.img" of="$slota" bs=1M conv=fsync status=none
+check_identity
+run dd if="$work/slot.img" of="$slota" bs=1M conv=fsync status=none
 run blockdev --flushbufs "$slota"
 [ "$(head -c "$size" "$slota" | sha256sum | cut -d' ' -f1)" = "$sum" ] || die "slot A readback differs"
+check_identity
 run dd if=/dev/zero of="$slotb" bs=1M count="$slot_mib" conv=fsync status=none
 
 # Argon2id: 1 GiB, four passes, four lanes.
+check_identity
 printf '%s' "$pass" | cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
 	--pbkdf-memory 1048576 --pbkdf-force-iterations 4 --pbkdf-parallel 4 --key-file - "$state" ||
 	die "could not format LUKS"
@@ -356,6 +370,7 @@ mapname=cv-install-$$
 printf '%s' "$pass" | cryptsetup open --type luks2 --key-file - "$state" "$mapname" || die "could not open LUKS"
 mapper=$mapname
 pass=
+check_identity
 run mkfs.btrfs -q "/dev/mapper/$mapper"
 run mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec "/dev/mapper/$mapper" "$work/state"
 state_mounted=1
@@ -383,6 +398,7 @@ if [ -n "$image_install" ]; then
 	run cp -a "$CONVERGENT_INSTALL_GUESTS/." "$var/lib/convergent/release-guests/guests/"
 fi
 
+check_identity
 run mkfs.vfat -F 32 -n CV-ESP "$esp"
 run mount -t vfat -o nodev,nosuid,noexec "$esp" "$work/esp"
 esp_mounted=1

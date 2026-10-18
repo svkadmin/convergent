@@ -27,7 +27,7 @@ ic() {
 rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 retry() {
     # VMs boot slowly; the svc container is up in seconds.
-    case "$*" in *' svc'*) wait=300 ;; *) wait=$boot_timeout ;; esac
+    case "$*" in *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;; *) wait=$boot_timeout ;; esac
     deadline=$(($(date +%s) + wait))
     until "$@"; do
         [ "$(date +%s)" -lt "$deadline" ] || { fail "$* timed out after ${wait}s"; return 1; }

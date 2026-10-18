@@ -15,6 +15,6 @@ installkernel() {
 }
 
 install() {
-	inst_multiple cryptsetup btrfs mount umount mkdir cp cat mv sync modprobe stty tr readlink awk sgdisk partx blockdev blkid wc
+	inst_multiple cryptsetup btrfs mount umount mkdir cp cat mv sync modprobe stty tr readlink awk sgdisk partx blockdev blkid wc sleep
 	inst_hook pre-pivot 50 "$moddir/convergent-state.sh"
 }
