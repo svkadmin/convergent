@@ -22,6 +22,7 @@ run() {
 read_ssid() {
 	IFS= read -r ssid || true
 	[ -n "$ssid" ] || die "SSID missing"
+	case $ssid in -*) die "SSID must not start with -" ;; esac
 	[ "$(printf %s "$ssid" | wc -c)" -le 32 ] || die "SSID longer than 32 bytes"
 	if printf %s "$ssid" | grep -q '[[:cntrl:]]'; then
 		die "SSID has control characters"

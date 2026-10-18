@@ -1,0 +1,90 @@
+#!/bin/sh
+# publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
+# <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
+# free tier is 10 GB). Only the five files a laptop needs go up; the bucket is public.
+#   build/publish <release-dir>
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+cap=$((9 * 1024 * 1024 * 1024))
+keep=2
+pub=/etc/convergent/keys/$CHANNEL.pub
+env=/etc/convergent/r2-$CHANNEL.env
+die() { echo "publish: $*" >&2; exit 1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# = 1 ] || die "usage: build/publish <release-dir>"
+dir=$1
+release=$(awk '$1 == "release" { print $2 }' "$dir/manifest" 2>/dev/null) || :
+case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
+files="slot.img convergent-$release-a.efi convergent-$release-b.efi manifest.sig manifest"
+for f in $files latest latest.sig; do
+	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
+done
+[ -f "$pub" ] || die "no public key $pub"
+openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/manifest" -sigfile "$dir/manifest.sig" >/dev/null ||
+	die "the manifest is not signed with the $CHANNEL key"
+(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) || die "the release does not match its manifest"
+openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/latest" -sigfile "$dir/latest.sig" >/dev/null &&
+	grep -qx "release $release" "$dir/latest" || die "latest is not signed for release $release"
+
+[ -f "$env" ] || die "no $env"
+. "$env"
+ep=${R2_ENDPOINT:-https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com}/$R2_BUCKET
+s3() {
+	curl -q -sS --fail --proto =https --retry 3 --connect-timeout 15 --max-time 3600 --aws-sigv4 "aws:amz:auto:s3" -K - "$@" <<-EOF
+	user = "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY"
+	EOF
+}
+
+# One publisher at a time: the totals and latest below must not go stale.
+exec 9>/run/convergent-publish.lock
+flock -n 9 || die "another publish is running"
+
+# The bucket as "size key" lines (a key may hold spaces); one page is plenty for what this keeps.
+list=$(s3 "$ep?list-type=2&max-keys=1000") || die "cannot list the bucket"
+case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket" ;; esac
+objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
+total=$(printf '%s\n' "$objects" | awk '{ s += $1 } END { print s + 0 }')
+new=0
+for f in $files; do new=$((new + $(stat -c %s "$dir/$f"))); done
+[ "$(stat -c %s "$dir/slot.img")" -lt $((5 * 1024 * 1024 * 1024)) ] || die "slot.img is over R2's 5 GiB single upload"
+# Only a missing latest means none; any other failure stops here.
+latest=0
+if cur=$(s3 "$ep/$CHANNEL/latest" 2>&1); then
+	latest=$(printf '%s\n' "$cur" | awk '$1 == "release" { print $2 }')
+	case $latest in '' | *[!0-9]*) die "the published latest is malformed" ;; esac
+else
+	case $cur in *'returned error: 404'*) ;; *) die "cannot read the published latest: $cur" ;; esac
+fi
+expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
+
+keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { print k }'; }
+size_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { s += $1 } END { print s + 0 }'; }
+total=$((total - $(size_of "$release")))
+olds=$(printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '
+	{ k = substr($0, index($0, " ") + 1) }
+	index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r) print p[1] }' | sort -u -n)
+n=$(printf '%s\n' $olds | grep -c . || :)
+# Oldest first, never the one latest points at.
+for old in $olds; do
+	[ "$n" -ge "$keep" ] || [ $((total + new)) -gt "$cap" ] || break
+	[ "$old" != "$latest" ] || continue
+	keys_of "$old" | while IFS= read -r k; do
+		s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
+	done
+	total=$((total - $(size_of "$old"))); n=$((n - 1))
+	echo "publish: removed $CHANNEL/$old"
+done
+[ $((total + new)) -le "$cap" ] ||
+	die "the bucket would hold $(((total + new) / 1048576)) MiB, over the $((cap / 1048576)) MiB cap"
+
+for f in $files; do
+	s3 -o /dev/null -T "$dir/$f" "$ep/$CHANNEL/$release/$f" || die "upload of $f failed"
+	got=$(s3 -I "$ep/$CHANNEL/$release/$f" | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { print $2 }')
+	[ "$got" = "$(stat -c %s "$dir/$f")" ] || die "$f is $got bytes in the bucket"
+done
+for f in latest.sig latest; do
+	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/$f" "$ep/$CHANNEL/$f" || die "could not update $f"
+done
+echo "publish: $CHANNEL/$release is latest; bucket $(((total + new) / 1048576)) MiB of $((cap / 1048576))"

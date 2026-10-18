@@ -2,17 +2,22 @@
 # ARCHITECTURE 5.2
 
 release=$(getarg convergent.release=)
-[ -n "$release" ] || die "convergent: no convergent.release= on the command line"
+[ -n "$release" ] || die "state: no convergent.release= on the command line"
 
 dev=/dev/disk/by-partlabel/cv-state
 state=/run/cv-state
 udevadm settle
-[ -b "$dev" ] || die "convergent: no partition labelled cv-state"
+[ -b "$dev" ] || die "state: no partition labelled cv-state"
+# A second Convergent disk would make every label ambiguous.
+[ "$(blkid -o device -t PARTLABEL=cv-state | wc -l)" = 1 ] ||
+	die "state: more than one disk has a cv-state partition; detach the other"
 
 # Three passphrase attempts; failure powers off.
+# rd.debug traces every command: none with the passphrase.
+{ set +x; } 2>/dev/null
 tries=0
 while :; do
-	[ "$tries" -lt 3 ] || die "convergent: the state volume did not open"
+	[ "$tries" -lt 3 ] || die "state: the state volume did not open"
 	tries=$((tries + 1))
 	stty -echo </dev/console 2>/dev/null
 	printf 'Passphrase [%s/3]: ' "$tries" >/dev/console
@@ -21,6 +26,44 @@ while :; do
 	echo >/dev/console
 	printf '%s' "$pass" | cryptsetup open --type luks2 --key-file - "$dev" cv-state && break
 done
+
+# Disk images are written small: grow state to the end of its disk, while the passphrase is still
+# here for the LUKS resize. Each step checks its own size, so an interrupted grow finishes on a
+# later boot; Btrfs follows after mounting. A failure only keeps the old size.
+grow_state() {
+	part=$(readlink -f "$dev") && sys=/sys/class/block/${part##*/} && [ -r "$sys/partition" ] || return 0
+	num=$(cat "$sys/partition") && parent=$(readlink -f "$sys/..") && disk=/dev/${parent##*/} || return 0
+	start=$(cat "$sys/start") && end=$((start + $(cat "$sys/size"))) || return 1
+	limit=$(cat "$parent/size") || return 1
+	cap=0
+	[ ! -f "$NEWROOT/usr/lib/convergent/state-max-gib" ] || cap=$(cat "$NEWROOT/usr/lib/convergent/state-max-gib")
+	case $cap in ''|*[!0-9]*) return 1 ;; esac
+	if [ "$cap" -gt 0 ] && [ $((start + cap * 2097152)) -lt "$limit" ]; then limit=$((start + cap * 2097152)); fi
+	# Last partition only, and at least 1 GiB (in 512-byte units) to gain.
+	last=1
+	for p in "$parent"/*/start; do [ "$(cat "$p")" -lt "$end" ] || last=; done
+	if [ -n "$last" ] && [ $((limit - end)) -gt 2097152 ]; then
+		info=$(LC_ALL=C sgdisk -i "$num" "$disk") || return 1
+		first=$(printf '%s\n' "$info" | awk '/^First sector:/ {print $3}')
+		guid=$(printf '%s\n' "$info" | awk '/^Partition unique GUID:/ {print $4}')
+		[ -n "$first" ] && [ -n "$guid" ] || return 1
+		sector=$(blockdev --getss "$disk") || return 1
+		sgdisk -e "$disk" >/dev/null || return 1
+		table=$(LC_ALL=C sgdisk -p "$disk") || return 1
+		usable=$(printf '%s\n' "$table" | awk '/last usable sector is/ {print $NF}')
+		case $usable in ''|*[!0-9]*) return 1 ;; esac
+		target=$((limit * 512 / sector - 1))
+		[ "$target" -le "$usable" ] || target=$usable
+		if [ $(((target + 1) * sector / 512)) -gt "$end" ]; then
+			sgdisk -d "$num" -n "$num:$first:$target" -t "$num:8309" -c "$num:cv-state" -u "$num:$guid" "$disk" >/dev/null &&
+				partx -u --nr "$num" "$disk" || return 1
+		fi
+	fi
+	# The LUKS mapping 1 GiB or more short of its partition (header aside).
+	[ $(( $(cat "$sys/size") - $(blockdev --getsz /dev/mapper/cv-state) )) -gt 2097152 ] || return 0
+	printf '%s' "$pass" | cryptsetup resize --key-file - cv-state
+}
+grow_state || warn "state: could not grow the state volume; it keeps its size"
 pass=''
 
 # Arm without magic close; a hang must reset the board.
@@ -31,29 +74,37 @@ if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
 	if modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ]; then
 		printf '.' >/dev/watchdog
 	else
-		warn "convergent: no hardware watchdog; a hang needs a manual reset"
+		warn "state: no hardware watchdog; a hang needs a manual reset"
 	fi
 fi
 
 mkdir -p "$state"
 mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
-	die "convergent: the state volume did not mount"
+	die "state: the state volume did not mount"
+# A no-op at full size; finishes a grow that stopped after the partition or LUKS step.
+btrfs -q filesystem resize max "$state" >/dev/null ||
+	warn "state: Btrfs did not grow; run btrfs filesystem resize max /var"
 
 # Prepare this release's /var atomically from the good release.
 if [ ! -d "$state/var-$release" ]; then
 	new="$state/var-$release.new"
 	[ ! -d "$new" ] || btrfs -q subvolume delete "$new"
-	good=$(cat "$state/good" 2>/dev/null)
+	# No file: a fresh install. A file that cannot be read must not look like one.
+	good=
+	if [ -e "$state/good" ]; then
+		good=$(cat "$state/good") || good=
+		case $good in "" | *[!0-9]*) die "state: $state/good is unreadable; not starting /var from the image" ;; esac
+	fi
 	# Only a fresh install starts /var from the image.
 	[ -z "$good" ] || [ -d "$state/var-$good" ] ||
-		die "convergent: /var of the good release $good is missing; not starting release $release from the image"
+		die "state: /var of the good release $good is missing; not starting release $release from the image"
 	if [ -n "$good" ]; then
 		btrfs -q subvolume snapshot "$state/var-$good" "$new"
 	else
 		# First install: /var starts from the image's own.
 		btrfs -q subvolume create "$new" && cp -a "$NEWROOT/var/." "$new/"
 	fi && sync && mv "$new" "$state/var-$release" ||
-		die "convergent: could not prepare /var for release $release"
+		die "state: could not prepare /var for release $release"
 fi
 [ -d "$state/home" ] || btrfs -q subvolume create "$state/home"
 [ -d "$state/pool" ] || btrfs -q subvolume create "$state/pool"
@@ -65,7 +116,7 @@ mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var
 	mkdir -p "$NEWROOT/var/lib/incus-pool" &&
 	mount -t btrfs -o "subvol=pool,noatime,nodev" /dev/mapper/cv-state "$NEWROOT/var/lib/incus-pool" &&
 	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec tmpfs "$NEWROOT/tmp" ||
-	die "convergent: could not mount the writable places"
+	die "state: could not mount the writable places"
 
 # Seed and bind the image's writable /etc list.
 while read -r entry; do
@@ -74,10 +125,10 @@ while read -r entry; do
 	if [ ! -e "$dst" ]; then
 		mkdir -p "${dst%/*}"
 		cp -a "$NEWROOT/etc/$entry" "$dst" ||
-			die "convergent: /etc/$entry is missing from the image"
+			die "state: /etc/$entry is missing from the image"
 	fi
 	mount --bind "$dst" "$NEWROOT/etc/$entry" ||
-		die "convergent: could not bind /etc/$entry"
+		die "state: could not bind /etc/$entry"
 done <"$NEWROOT/usr/lib/convergent/etc-state"
 
 [ -s "$state/etc/machine-id" ] || tr -d - </proc/sys/kernel/random/uuid >"$state/etc/machine-id"

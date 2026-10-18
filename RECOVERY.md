@@ -16,6 +16,7 @@ on the laptop as the owner unless the recipe says otherwise.
 | 9 | [Read the encrypted state from another Linux](#9-read-the-encrypted-state-from-another-linux) |
 | 10 | [Second passphrase and header backup](#10-second-passphrase-and-header-backup) |
 | 11 | [Start over](#11-start-over) |
+| 12 | [An online update fails](#12-an-online-update-fails) |
 
 ## 1. Wrong passphrase, the laptop powers off
 
@@ -23,15 +24,20 @@ Three wrong tries power it off; nothing is lost. The prompt uses the **US layout
 keyboard `@` is Shift+2, `y` and `z` are swapped, digits are on the top row without Shift. Power
 on and type it again.
 
+The boot can also stop before the passphrase prompt, with `more than one disk has a cv-state
+partition; detach the other`. Power off, unplug the other Convergent disk, and boot again. A
+USB disk cannot reinstall over a laptop disk that already holds Convergent (the two cannot be told
+apart yet): erase the old one first, from the firmware's disk wipe (Dell: F2, Maintenance, Data Wipe)
+or another system.
+
 Right after an update each power-on uses one of the new release's three tries, so three powered-off
 sessions bring the previous release back (recipe 2).
 
 ## 2. A new release does not boot or does not become good
 
-After `slot write` the new release gets three boot tries. A boot that hangs after unlock is reset
-by the hardware watchdog after ten minutes, if the laptop has one (otherwise hold the power
-button); a boot whose health checks fail does not mark itself good. After the third try the
-previous slot boots by itself, with the `/var` it had.
+After `slot write` the new release gets three boot tries. A boot that is not good within about 13
+minutes of unlocking is reset by the hardware watchdog, if the laptop has one (otherwise hold the
+power button). After the third try the previous slot boots by itself, with the `/var` it had.
 
 Once back, the failed release's log is in its own `/var`, not in the one you are running:
 
@@ -49,16 +55,21 @@ when it is fixed.
 
 At power-on the boot menu shows for three seconds; press an arrow key to stop it. Each slot is
 an entry named `Gentoo Linux <release> (slot a)` or `(slot b)` (releases before 2026-10-18 show
-only `Gentoo Linux`: the top one is the default). Pick the other one.
+only `Gentoo Linux`: the top one is the default). Pick the other one. Works when: `sudo slot
+status` shows the other slot booted.
 
 That slot uses its own `/var` from before the update, so changes made since are not in it. The
-next `slot write` must be newer than the highest release ever marked good.
+guests are not rolled back: they stay as they are, and nothing stops this after a guest update
+yet. The next `slot write` must be newer than the highest release ever marked good.
 
 ## 4. `guests init` or `guests update` stopped
 
-Both print the step that failed. Run `guests init` again with the same directory: finished steps
-are skipped. `guests update` restores the old guest by itself when the new one fails its checks;
-run it again once the cause is fixed.
+On a disk image the first boot runs `guests init` by itself (bar: `SETUP`; log
+`/var/log/guests-setup.log`). Both print the step that failed. Run `sys system setup` (it uses
+`/var/lib/convergent/release-guests`) or `sudo guests init <dir>` with the same directory as
+before: finished steps are skipped. `guests update` restores the old guest by itself when the
+new one fails its checks; run it again once the cause is fixed. Works when: `SETUP` is gone and
+fw1, fw2, wan and svc run.
 
 ```sh
 sudo guests status                          # one line per guest and its state
@@ -70,7 +81,8 @@ as it is.
 
 ## 5. No Wi-Fi
 
-The radio belongs to the `wan` VM, so `ip link` on the host does not show it.
+The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Works when:
+`sys network wifi-status` shows the network and an address.
 
 1. `sys network wifi-status`. "not found" or no answer means wan or its radio is not up.
 2. Is the card handed to wan?
@@ -91,19 +103,22 @@ itself cannot browse, by design: pf lets it resolve names through the firewalls 
 list of update servers. Browsers have Internet, so try one (`browser web`) to tell the two apart.
 
 ```sh
-sys network wifi-status                                              # connected, with an address
-sys network test              # "DNS: ok" or "DNS: failed", then wan diag: default route, "853 tls ok" per server
-sys system guests                                                    # fw1, fw2, wan, svc running
+sys network wifi-status        # connected, with an address
+sys network test               # "DNS: ok" or "DNS: failed", then wan diag: addresses, routes, NAT, upstream DNS, DHCP
+sys selftest run               # among its checks: fw1 reaches 9.9.9.9:853 (DNS over TLS)
+sys system guests              # fw1, fw2, wan, svc running
 sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MASTER here, BACKUP on fw2
-sys security check                                                   # report: /var/lib/convergent/check/last
 ```
 
-A captive portal (hotel, train) needs portal mode first: `sys network portal-on`.
+No address or default route in wan diag: check Wi-Fi (`sys network wifi-status`) and the upstream
+network; a captive portal (hotel, train) needs `sys network portal-on` first. fw1 cannot reach
+9.9.9.9:853: fw1, wan or routing is down, or the upstream blocks DNS over TLS. Anything else: send
+the output.
 
 ## 7. A USB device does not work
 
 USBGuard blocks every device it does not know. The internal keyboard and touchpad are not USB,
-so they always work.
+so they always work. Works when: the device works and `sudo devices list` no longer shows it.
 
 ```sh
 sudo devices list            # blocked devices with a number
@@ -120,12 +135,12 @@ first boot step 4).
 |---|---|
 | Warnings and errors of the host | `/var/log/messages`; `sys system logs` reads it |
 | Release checks, boot tries | `sudo slot status`; `slot:` lines in `/var/log/messages` |
-| Self-test of this boot | `sys selftest run` writes `~/selftest-YYYYmmdd-HHMM.txt` (PASS, FAIL or SKIP per check) |
-| Services | `rc-status` (all); `sudo rc-service <name> status`, `restart` |
+| Self-test of this boot | `sys selftest run` writes `~/selftest-YYYYmmdd-HHMMSS.txt` (PASS, FAIL or SKIP per check) |
+| Services | `rc-status -a` (all runlevels); `sudo rc-service <name> status`, `restart` |
 | Guests | `/var/log/incus/<guest>/console.log` and `qemu.log`; `/var/log/incus/incusd.log` |
 | Security audit | `/var/log/audit/audit.log` |
 | Health check report | `sys security report`; `/var/lib/convergent/check/last` |
-| Everything, searchable | Grafana in the admin browser (needs svc) |
+| Searchable in Grafana (admin browser, needs svc) | the host's, the firewalls' and wan's syslog, including host audit records; not file-only logs such as `/var/log/guests-setup.log` or `/var/log/incus/` |
 
 All of them need `sudo` to read, except the self-test report in the owner's home.
 
@@ -145,15 +160,35 @@ If the other Linux has its own Convergent disk attached, `by-partlabel` is ambig
 
 ## 10. Second passphrase and header backup
 
-Do this once the laptop is in daily use, and keep the backup on offline encrypted media:
+Do this once the laptop is in daily use, and keep the backup on offline encrypted media. Works
+when: `luksDump` lists two keyslots.
 
 ```sh
 sudo cryptsetup luksAddKey /dev/disk/by-partlabel/cv-state
 sudo cryptsetup luksHeaderBackup /dev/disk/by-partlabel/cv-state --header-backup-file <file>
 sudo rm /var/lib/convergent/luks-header.sha256 && sudo facts boot    # the checker takes the new header
+sudo cryptsetup luksDump /dev/disk/by-partlabel/cv-state             # check
 ```
 
 ## 11. Start over
 
-Write the disk image again (README, Install). Everything on the disk is lost, including `/home`;
-restore from `backup` if you made one.
+Write the disk image again (README, Install). Everything on the disk is lost, including `/home`.
+A `backup` holds `/home`, the writable `/etc` files, the owner's instances and the custom volumes;
+not the firewalls, wan (with its saved Wi-Fi networks), svc, or the credentials in
+`/var/lib/convergent`. There is no restore tool: unpack the archives and bring instances back
+with `incus import`.
+
+## 12. An online update fails
+
+`sys system update` stops with the reason. Running it again resumes the download.
+
+| Message | Do |
+|---|---|
+| `resolves to no public address` | Wi-Fi first (recipe 5). Otherwise the blocklist holds the server: add the host from `/etc/convergent/update.conf` to `/var/lib/convergent/dns/allow`, run `sudo dns-push local`, try again |
+| `could not open the update source` | a firewall is not answering: recipe 6 |
+| `signature does not verify`, `latest is not signed`, `does not match the manifest` | never bypass it: what arrived is not what was published. Try again; if it repeats, update from USB with a release you built (README, Update) |
+| `this release has no online updates` | the image lacks its release key or update URL: update from USB |
+| `not enough free space in /var` | make room in `/var`: what is still missing, plus 1 GiB |
+
+Works when: `sys system release` shows the new release with `+3`; then reboot (recipe 2 if it
+does not become good).

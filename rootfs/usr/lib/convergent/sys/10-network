@@ -14,9 +14,13 @@ network_state() {
 	printf 'Wi-Fi: %s\n' "$(cached /run/convergent/status/wifi)"
 	printf 'Portal: %s\n' "$(cached /run/convergent/status/portal)"
 }
-network_wan() {
-	run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi "$@"
+network_reply() {
+	_reply=$(run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan "$@" 2>&1)
+	_result=$?
+	printf '%s\n' "$_reply" | tr -d '\000-\010\013-\037\177'
+	return "$_result"
 }
+network_wan() { network_reply wifi "$@"; }
 network_wifi_status() { noargs "$@"; page network_wan status </dev/null; }
 network_wifi_scan() { noargs "$@"; page network_wan scan </dev/null; }
 network_wifi_connect() { network_join '' "$@"; }
@@ -53,6 +57,8 @@ network_test() {
 	noargs "$@"
 	# The host itself has no web access by design (pf); browsers do. So: the host's DNS, which goes
 	# through the firewalls' DNS over TLS, then wan's own view of its uplink.
-	if run timeout -k 1 10 getent hosts example.com; then echo 'DNS: ok'; else echo 'DNS: failed'; fi
-	run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan diag
+	dns=0
+	if run timeout -k 1 10 getent hosts example.com; then echo 'DNS: ok'; else echo 'DNS: failed'; dns=1; fi
+	network_reply diag || return
+	return "$dns"
 }

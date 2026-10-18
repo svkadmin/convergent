@@ -19,7 +19,7 @@ for disk in $(sysctl -n hw.disknames | tr ',' ' '); do
 done
 if [ -z "$found" ]; then
     echo; echo "CONVERGENT-HOSTKEY $node unseeded $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')"
-    echo 'convergent: no CVSEED; CARP remains disabled'
+    echo 'seed: no CVSEED; CARP remains disabled'
     exit 0
 fi
 stage=$(mktemp -d /etc/convergent/seed.XXXXXXXX)

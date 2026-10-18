@@ -1,0 +1,30 @@
+# Host name; internal host and svc aliases stay fixed.
+hostname: host
+# Installed zoneinfo name.
+timezone: UTC
+# Console layout after boot; the LUKS prompt stays US.
+console_keymap: us
+# Sway layouts, with optional variants such as us(dvorak).
+xkb_layouts: us
+# Two-letter regulatory country; required for a WAN build unless WAN_COUNTRY is set.
+wifi_country: ""
+# At least two distinct authenticated time sources.
+nts_servers: time.cloudflare.com,ptbtime1.ptb.de,ntppool1.time.nl
+# HTTPS RPZ blocklist.
+blocklist_url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/pro.mini.txt
+# CPU frequency ceiling in kHz.
+cpu_cap_khz: 4200000
+# Idle time before locking, in minutes.
+idle_lock_minutes: 10
+# Maximum state partition size in GiB; zero grows to the disk end, never shrinks.
+state_max_gib: 0
+# Install login; omit to prompt, CONVERGENT_INSTALL_OWNER overrides.
+owner_login: owner
+# Optional yescrypt hash for installation only; empty prompts for a password.
+owner_password_hash: ""
+# ESP size in MiB (256..4096).
+esp_mib: 1024
+# Size of each root slot in MiB (4096..65536).
+slot_mib: 8192
+# Default stick image size; the positional size overrides it.
+image_size: 30G

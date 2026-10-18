@@ -7,3 +7,6 @@ echo "== routes"; ip -4 route
 echo "== forwarding"; cat /proc/sys/net/ipv4/ip_forward
 echo "== nat"; nft list chain inet wan postrouting 2>&1 | grep -E 'masquerade|counter'
 echo "== upstream dns"; cat /run/wan/resolv.* 2>/dev/null || echo none
+echo "== links"; ip -o link | cut -c 1-110
+echo "== dhcp"; ps -o pid,args | grep -E '[u]dhcpc|[d]hcpcd' || echo 'no DHCP client'
+echo "== ifstate"; cat /run/ifstate* 2>/dev/null || echo none

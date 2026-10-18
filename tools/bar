@@ -179,7 +179,11 @@ while :; do
 		alerts=get(work "/alerts"); if (alerts == "") alerts="?"
 		block("alerts " alerts,alerts == "?" ? grey : alerts == "0" ? green : alerts+0>0 ? red : "#ffd700")
 		portal=get(st "/portal")
-		if (portal != "off") block(portal == "on" ? "PORTAL" : "portal ?",portal == "on" ? orange : grey)
+		# Shown only while on; "unknown" before guests exist is not news.
+		if (portal == "on") block("PORTAL", orange)
+		# First boot of a disk image: guests being created (convergent-setup).
+		setup=get(st "/setup")
+		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
 		rel="?"; n=split(get("/proc/cmdline"),words," ")
 		for (i=1;i<=n;i++) if (words[i] ~ /^convergent.release=/) {rel=words[i]; sub(/^[^=]*=/,"",rel)}
 		block("rel " rel " " bl,bl == "good" ? grey : red)

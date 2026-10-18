@@ -1,0 +1,151 @@
+#!/bin/sh
+# ARCHITECTURE 7.2
+# fetch-release: download the channel's newest signed release and write it to the other slot.
+#   fetch-release [check]      check: only report whether a newer release exists
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+conf=/etc/convergent/update.conf
+key=/etc/convergent/release.pub
+ssh_conf=/etc/convergent/ssh_config
+# Root's own directory on state: nothing the owner can create or rename in.
+work=/var/lib/convergent/update
+fws="fw2 fw1"
+src_open=
+
+die() { logger -p user.err -t fetch-release "$*"; echo "fetch-release: $*" >&2; exit 1; }
+# Lock fds closed: a shared SSH connection outlives this run and would keep them held.
+rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&-; }
+# The firewalls pass the host to <update_src> on 443 only while this runs; closing also ends its
+# connections. Every firewall is tried even when one fails.
+close_src() {
+	_r=0
+	for _f in $fws; do
+		rsh "$_f" "pfctl -t update_src -T flush; pfctl -k label -k update" >/dev/null 2>&1 || _r=1
+	done
+	[ "$_r" = 1 ] || src_open=
+	return "$_r"
+}
+cleanup() {
+	_rc=$?
+	trap - 0
+	trap '' HUP INT TERM
+	[ -z "$src_open" ] || close_src || { echo "fetch-release: a firewall kept the update source open; it expires within 4 hours" >&2; _rc=1; }
+	exit "$_rc"
+}
+# As in dns-push: an address pf.conf does not count as nonpublic.
+public_v4() {
+	case $1 in
+	'' | *[!0-9.]* | *..* | .* | *.) return 1 ;;
+	0.* | 10.* | 127.* | 169.254.* | 192.168.* | 198.18.* | 198.19.* | 192.0.0.* | 192.0.2.* | \
+	198.51.100.* | 203.0.113.* | 22[4-9].* | 2[3-5][0-9].* | 172.1[6-9].* | 172.2[0-9].* | 172.3[01].* | \
+	100.6[4-9].* | 100.[7-9][0-9].* | 100.1[01][0-9].* | 100.12[0-7].*) return 1 ;;
+	esac
+	case $(printf '%s\n' "$1" | tr -cd . | wc -c) in 3) ;; *) return 1 ;; esac
+}
+verify() { openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$1" -sigfile "$1.sig" >/dev/null 2>&1; }
+field() { awk -v k="$1" -v f="${2:-}" '$1 == k && (f == "" || $2 == f) { print $NF; n++ } END { exit n != 1 }' "$3"; }
+num() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+have() { [ -f "$dir/$1" ] && stat -c %s "$dir/$1" || echo 0; }
+
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# -le 1 ] || die "usage: fetch-release [check]"
+mode=${1:-write}
+case $mode in write | check) ;; *) die "usage: fetch-release [check]" ;; esac
+[ -f "$conf" ] && [ -f "$key" ] || die "this release has no online updates; update from USB"
+. "$conf"
+url=${UPDATE_URL:-}
+case $url in https://[A-Za-z0-9]*) ;; *) die "UPDATE_URL in $conf must start with https://" ;; esac
+case $url in *[!A-Za-z0-9._~:/-]*) die "UPDATE_URL has characters that are not allowed" ;; esac
+host=${url#https://}
+host=${host%%/*}
+case $host in '' | *[!A-Za-z0-9.-]*) die "UPDATE_URL must name a host, without port or user" ;; esac
+mkdir -p /run/convergent
+exec 9>/run/convergent/fetch-release.lock
+flock -n 9 || die "another download is running"
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+# Newer than both the booted release and the highest ever marked good, or slot write refuses.
+booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+highest=$(slot status | awk '$1 == "highest" { print $2 }') || highest=
+num "$booted" || die "the kernel command line names no release"
+num "$highest" || highest=0
+expr "$highest" '>' "$booted" >/dev/null && floor=$highest || floor=$booted
+
+ips=
+for _a in $(getent ahostsv4 "$host" | awk '$2 == "STREAM" { print $1 }' | sort -u | head -n 8); do
+	if public_v4 "$_a"; then ips="$ips $_a"; fi
+done
+[ -n "$ips" ] || die "$host resolves to no public address (no Wi-Fi, or the blocklist: add $host to /var/lib/convergent/dns/allow, then sudo dns-push local)"
+src_open=1
+for _f in $fws; do
+	rsh "$_f" "pfctl -t update_src -T replace$ips" >/dev/null || die "could not open the update source on $_f"
+done
+res=$(echo $ips | tr ' ' ',')
+get() {
+	curl -q --silent --show-error --fail --noproxy '*' --proto =https --proto-redir =https --tlsv1.2 \
+		--connect-timeout 15 --resolve "$host:443:$res" "$@"
+}
+
+# The work directory: root's, a real directory, nothing else in it but this release.
+[ ! -L "$work" ] || die "$work is a symlink"
+[ -d "$work" ] || mkdir -m 0700 "$work"
+[ "$(stat -c '%u %a %F' "$work")" = "0 700 directory" ] || die "$work is not root's private directory"
+pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
+get --max-time 60 --max-filesize 1024 -o "$pointer/latest" "$url/latest" &&
+	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot reach $host"; }
+verify "$pointer/latest" || { rm -rf "$pointer"; die "latest is not signed with this image's key"; }
+latest=$(field release "" "$pointer/latest") && signed=$(field signed "" "$pointer/latest") || latest=
+rm -rf "$pointer"
+num "$latest" && num "$signed" || die "the update server's latest is malformed"
+age=$(( ($(date +%s) - signed) / 86400 ))
+if ! expr "$latest" '>' "$floor" >/dev/null; then
+	echo "up to date: release $booted (newest published: $latest, signed $age days ago)"
+	exit 0
+fi
+if [ "$mode" = check ]; then
+	echo "release $latest is available (booted: $booted; signed $age days ago)"
+	exit 0
+fi
+
+for _d in "$work"/* "$work"/.[!.]*; do
+	[ -e "$_d" ] || [ -L "$_d" ] || continue
+	[ "$_d" = "$work/$latest" ] && [ -d "$_d" ] && [ ! -L "$_d" ] || rm -rf "$_d"
+done
+dir=$work/$latest
+[ -d "$dir" ] || mkdir -m 0700 "$dir"
+get --max-time 120 --max-filesize 65536 -o "$dir/manifest" "$url/$latest/manifest" &&
+	get --max-time 120 --max-filesize 1024 -o "$dir/manifest.sig" "$url/$latest/manifest.sig" ||
+	die "manifest download failed"
+verify "$dir/manifest" || { rm -rf "$dir"; die "the manifest signature does not verify"; }
+[ "$(field release "" "$dir/manifest")" = "$latest" ] || { rm -rf "$dir"; die "the manifest is not release $latest"; }
+
+files="slot.img convergent-$latest-a.efi convergent-$latest-b.efi"
+# Room for what is still missing, plus 1 GiB.
+need=0
+for f in $files; do
+	size=$(field size "$f" "$dir/manifest") && num "$size" || { rm -rf "$dir"; die "the manifest gives no size for $f"; }
+	[ "$(have "$f")" -le "$size" ] || rm -f "$dir/$f"
+	need=$((need + size - $(have "$f")))
+done
+[ "$(( $(df -Pk "$work" | awk 'NR == 2 { print $4 }') * 1024 ))" -gt $((need + 1073741824)) ] ||
+	die "not enough free space in /var: $((need / 1048576)) MiB to download, plus 1 GiB"
+
+for f in $files; do
+	size=$(field size "$f" "$dir/manifest")
+	want=$(awk -v f="$f" '$2 == f && length($1) == 64 { print $1 }' "$dir/manifest")
+	if [ "$(have "$f")" != "$size" ]; then
+		echo "downloading $f"
+		# A dropped connection resumes on the next run; a refused or ignored range starts over.
+		get --max-time 7200 --max-filesize "$size" --retry 5 -C - -o "$dir/$f" "$url/$latest/$f" ||
+			{ rc=$?; case $rc in 22 | 33 | 36) rm -f "$dir/$f" ;; esac; die "download of $f failed; run again"; }
+	fi
+	[ "$(have "$f")" = "$size" ] && [ "$(sha256sum <"$dir/$f" | cut -d' ' -f1)" = "$want" ] ||
+		{ rm -f "$dir/$f"; die "$f does not match the manifest; run again"; }
+done
+close_src || die "a firewall kept the update source open; it expires within 4 hours"
+
+slot write "$dir"
+rm -rf "$dir"

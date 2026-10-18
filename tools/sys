@@ -61,6 +61,7 @@ mac() {
 	printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || die 'invalid Bluetooth MAC'
 }
 ssid_valid() {
+	case $1 in -*) die 'SSID must not start with -' ;; esac
 	[ -n "$1" ] && [ "${#1}" -le 32 ] || die 'SSID must be 1-32 bytes'
 	text_valid "$1"
 }
@@ -79,7 +80,7 @@ page() (
 	exit "$result"
 )
 root_page() {
-	run sudo cat -- "$1" | pager
+	page run sudo cat -- "$1"
 }
 pause() { printf '\n[exit %s] Enter to continue ' "$1"; IFS= read -r answer || :; }
 cached() {
@@ -189,8 +190,12 @@ tui() (
 			done
 			action=$(dialog --stdout --cr-wrap --title "$title" --menu "$(state "$area")" 23 78 14 "$@") || break
 			clear
+			# Ctrl+C stops the action, not the menu.
+			trap : INT
 			dispatch "$area" "$action"
-			pause "$?"
+			result=$?
+			trap 'exit 1' INT
+			pause "$result"
 		done
 	done
 )

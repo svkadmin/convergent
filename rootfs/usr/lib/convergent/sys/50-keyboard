@@ -15,14 +15,19 @@ keyboard_layouts() {
 }
 keyboard_set() {
 	sway; onearg 'Layouts (for example us,hu)' "$@"; layouts=$answer
-	case $layouts in ''|,*|*,|*,,*|*[!a-zA-Z0-9_,]*) die 'invalid layout list' ;; esac
-	[ "${#layouts}" -le 128 ] || die 'layout list too long'
+	printf '%s\n' "$layouts" | LC_ALL=C awk -F, 'NR != 1 {exit 1} {
+		for (i=1;i<=NF;i++) if ($i !~ /^[a-z]{2,3}(\([a-z0-9_-]+\))?$/) exit 1
+		if (!NF) exit 1
+	}' || die 'invalid layout list'
+	variants=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
+	layouts=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 	if [ -r /usr/share/X11/xkb/rules/evdev.lst ]; then
 		for layout in $(printf '%s' "$layouts" | tr , ' '); do
 			awk -v code="$layout" '$1 == "!" {section=$2} section == "layout" && $1 == code {found=1} END {exit !found}' /usr/share/X11/xkb/rules/evdev.lst || die "unknown layout: $layout"
 		done
 	fi
 	swayrun input type:keyboard xkb_layout "\"$layouts\"" || return
-	printf 'input type:keyboard xkb_layout "%s"\n' "$layouts" | save_config input
+	swayrun input type:keyboard xkb_variant "\"$variants\"" || return
+	printf 'input type:keyboard xkb_layout "%s"\ninput type:keyboard xkb_variant "%s"\n' "$layouts" "$variants" | save_config input
 }
 keyboard_next() { noargs "$@"; sway; swayrun input type:keyboard xkb_switch_layout next; }

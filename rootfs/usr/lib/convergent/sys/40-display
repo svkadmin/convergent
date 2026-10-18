@@ -2,7 +2,28 @@ title=Display
 actions='list	List output modes, scale and position	
 set	Set OUTPUT mode|scale|position|enable|disable [VALUE]	
 save	Save current outputs for sway startup	
-reset	Remove saved outputs	confirm'
+reset	Remove saved outputs	confirm
+brightness	Set panel brightness PERCENT, +N or -N	'
+
+# The udev rule gives group video (the owner) write access to the backlight.
+display_brightness() {
+	onearg 'Brightness percent, +N or -N' "$@"
+	case $answer in [+-][0-9]|[+-][0-9][0-9]|[0-9]|[0-9][0-9]|100) ;; *) die 'use 0-100, +N or -N' ;; esac
+	for d in /sys/class/backlight/*; do
+		[ -w "$d/brightness" ] || continue
+		max=$(cat "$d/max_brightness") && now=$(cat "$d/brightness") || return
+		case $answer in
+		[+-]*) value=$(( now + ${answer%%[0-9]*}1 * ${answer#?} * max / 100 )) ;;
+		*) value=$(( answer * max / 100 )) ;;
+		esac
+		# Never fully dark: the panel would look dead.
+		[ "$value" -ge $(( max / 20 )) ] || value=$(( max / 20 ))
+		[ "$value" -le "$max" ] || value=$max
+		echo "$value" >"$d/brightness" && echo "brightness $(( value * 100 / max ))%"
+		return
+	done
+	die 'no writable backlight (group video, udev rule)'
+}
 
 display_state() {
 	[ -n "${SWAYSOCK:-}" ] || { echo 'needs the sway session'; return; }

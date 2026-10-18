@@ -10,7 +10,8 @@ list=/usr/lib/convergent/etc-state
 work=
 die() { echo "check: $*" >&2; exit 1; }
 bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
-rsh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@"; }
+# Lock fds closed: a shared SSH connection outlives this run and would keep them held.
+rsh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&- 7>&-; }
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ "${1:-}:$#" = status:1 ]; then
     umask 022

@@ -1,0 +1,122 @@
+#!/bin/sh
+# Flat config.yaml v1; never source input.
+set -eu
+set +ax
+export LC_ALL=C
+
+die() { echo "config-get: $*" >&2; exit 1; }
+if [ "${1:-}" = --selftest ]; then
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	trap 'exit 1' HUP INT TERM
+	get() { sh "$0" "$work/config" "$1"; }
+	[ "$(get hostname)" = host ] || die defaults
+	[ "$(get owner_login)" = owner ] || die defaults
+	[ "$(get state_max_gib)" = 0 ] || die defaults
+	cat >"$work/config" <<'EOF'
+# Non-defaults and whole-value quotes.
+hostname: "laptop-2" # comment
+timezone: Europe/Budapest
+console_keymap: hu
+xkb_layouts: us(dvorak),hu
+wifi_country: HU
+nts_servers: a.example,b.example,a.example
+blocklist_url: https://example.org/list?x=1&y=2
+cpu_cap_khz: 3000000
+idle_lock_minutes: 5
+state_max_gib: 64
+owner_login: user_2
+owner_password_hash: ""
+esp_mib: 512
+slot_mib: 4096
+image_size: 32G
+EOF
+	[ "$(get hostname)" = laptop-2 ] && [ "$(get state_max_gib)" = 64 ] || die values
+	[ "$(get blocklist_url)" = 'https://example.org/list?x=1&y=2' ] || die URL
+	n=0
+	for bad in 'typo: value' 'hostname: host\nhostname: host' ' hostname: host' \
+		'hostname: [host]' '- hostname: host' 'hostname: ho\tst' 'hostname: Bad' \
+		'blocklist_url: http://example.org/list' 'state_max_gib: 2G' \
+		'hostname: "host' 'hostname: host"' 'nts_servers: a.example,a.example' \
+		'esp_mib: 255' 'slot_mib: 65537' 'owner_password_hash: secret' \
+		'xkb_layouts: us,,hu' 'hostname: host\000' 'hostname: host\r'; do
+		printf '%b\n' "$bad" >"$work/config"
+		n=$((n + 1))
+		if get image_size >"$work/out" 2>"$work/error"; then die "accepted invalid input $n"; fi
+		[ ! -s "$work/out" ] && grep -q 'line [0-9]' "$work/error" || die diagnostics
+	done
+	echo 'config-get: selftest passed'
+	exit
+fi
+[ $# = 2 ] || die 'usage: config-get <file> <key>'
+file=$1
+if [ ! -e "$file" ] && [ ! -L "$file" ]; then file=/dev/null; fi
+[ -f "$file" ] || [ "$file" = /dev/null ] || die 'not a regular config file'
+awk -v BINMODE=3 -v key="$2" '
+function fail(message) {
+	print "config-get: line " NR ": " message > "/dev/stderr"
+	bad=1; exit 1
+}
+function hn(s) { return length(s) <= 63 && s ~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/ }
+function dns(s, a,n,i) {
+	if (length(s) > 253) return 0
+	n=split(s,a,".")
+	for (i=1;i<=n;i++) if (!hn(a[i])) return 0
+	return n > 0
+}
+function valid(k,v, a,n,i,distinct,seen) {
+	if (k == "hostname") return hn(v)
+	if (k == "timezone") return v ~ /^[A-Za-z_+-]+(\/[A-Za-z0-9_+-]+)*$/
+	if (k == "console_keymap") return v ~ /^[A-Za-z0-9_+-]+$/
+	if (k == "xkb_layouts") {
+		n=split(v,a,",")
+		for (i=1;i<=n;i++) if (a[i] !~ /^[a-z]{2,3}(\([a-z0-9_-]+\))?$/) return 0
+		return n > 0
+	}
+	if (k == "wifi_country") return v ~ /^([A-Z]{2})?$/
+	if (k == "nts_servers") {
+		n=split(v,a,",")
+		for (i=1;i<=n;i++) {
+			if (!dns(a[i])) return 0
+			if (!seen[a[i]]++) distinct++
+		}
+		return distinct >= 2
+	}
+	if (k == "blocklist_url") return v ~ /^https:\/\/[a-z0-9][a-z0-9.-]*(\/[A-Za-z0-9._~\/%?=&+,-]*)?$/
+	if (k == "cpu_cap_khz") return v ~ /^[1-9][0-9]{5,7}$/
+	if (k == "idle_lock_minutes") return v ~ /^[1-9][0-9]?$/ && v+0 <= 60
+	if (k == "state_max_gib") return v ~ /^(0|[1-9][0-9]{0,5})$/
+	if (k == "owner_login") return v ~ /^[a-z_][a-z0-9_-]{0,31}$/
+	if (k == "owner_password_hash") return v == "" || v ~ /^\$y\$[.\/A-Za-z0-9]+\$[.\/A-Za-z0-9]+\$[.\/A-Za-z0-9]{43}$/
+	if (k == "esp_mib") return v ~ /^[1-9][0-9]{2,3}$/ && v+0 >= 256 && v+0 <= 4096
+	if (k == "slot_mib") return v ~ /^[1-9][0-9]{3,4}$/ && v+0 >= 4096 && v+0 <= 65536
+	if (k == "image_size") return v ~ /^[1-9][0-9]{0,4}G$/
+	return 0
+}
+BEGIN {
+	d["hostname"]="host"; d["timezone"]="UTC"; d["console_keymap"]="us"
+	d["xkb_layouts"]="us"; d["wifi_country"]=""
+	d["nts_servers"]="time.cloudflare.com,ptbtime1.ptb.de,ntppool1.time.nl"
+	d["blocklist_url"]="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/pro.mini.txt"
+	d["cpu_cap_khz"]="4200000"; d["idle_lock_minutes"]="10"; d["state_max_gib"]="0"
+	d["owner_login"]="owner"; d["owner_password_hash"]=""
+	d["esp_mib"]="1024"; d["slot_mib"]="8192"; d["image_size"]="30G"
+	if (!(key in d)) fail("unknown requested key")
+}
+{
+	if ($0 ~ /[[:cntrl:]]/) fail("control character")
+	if ($0 ~ /^ *$/ || $0 ~ /^#/) next
+	if ($0 ~ /^ /) fail("indentation")
+	line=$0; sub(/ *#.*/, "", line)
+	colon=index(line, ":")
+	if (!colon) fail("expected key: value")
+	k=substr(line,1,colon-1); sub(/ *$/, "", k)
+	if (!(k in d)) fail("unknown key")
+	if (seen[k]++) fail("duplicate key " k)
+	v=substr(line,colon+1); sub(/^ */, "", v); sub(/ *$/, "", v)
+	if (v ~ /^".*"$/) v=substr(v,2,length(v)-2)
+	if (!valid(k,v)) fail("invalid " k)
+	d[k]=v
+}
+END { if (!bad) print d[key] }
+' <"$file"

@@ -17,8 +17,9 @@ selftest=cv-$(date +%s)-$$.example.net
 selftest_addr=192.0.2.53
 
 die() { echo "dns-push: $*" >&2; exit 1; }
-rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@"; }
-rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@"; }
+# Lock fds closed: a shared SSH connection outlives this run and would keep them held.
+rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&-; }
+rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@" 9>&- 8>&- 7>&-; }
 close_src() {
 	_closed=0
 	for _f in $fws; do

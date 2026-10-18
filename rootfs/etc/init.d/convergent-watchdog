@@ -38,5 +38,7 @@ start() {
 
 stop() {
 	# No --oknodo: in OpenRC it reports failure when the feeder exits during the retry.
-	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile"
+	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile" && return 0
+	# Feeding stopped at its deadline but the board has not reset yet: a late bless disarms here.
+	[ -c /dev/watchdog ] && printf V >/dev/watchdog
 }

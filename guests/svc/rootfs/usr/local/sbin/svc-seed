@@ -5,7 +5,7 @@ umask 077
 state=/var/lib/convergent
 [ ! -f "$state/seeded" ] || exit 0
 seed=$state/seed
-[ -s "$seed/seed-id" ] || { echo 'convergent: no CVSEED; services remain unconfigured' >&2; exit 1; }
+[ -s "$seed/seed-id" ] || { echo 'seed: no CVSEED; services remain unconfigured' >&2; exit 1; }
 id=$(cat "$seed/seed-id")
 [ "${#id}" = 32 ]
 case $id in *[!0-9a-f]*) exit 1 ;; esac

@@ -37,6 +37,9 @@ net-firewall/ebtables -perl
 # Passwords hashed with yescrypt (PAM, through pambase).
 sys-auth/pambase yescrypt
 
+# Read guest disks without mounting them; setpriv drops debugfs privileges.
+sys-apps/util-linux caps
+
 # Static addresses only: no DHCP client on the host.
 net-misc/netifrc -dhcp
 

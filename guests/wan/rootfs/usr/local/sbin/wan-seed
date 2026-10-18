@@ -9,7 +9,7 @@ announce() { printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan $(cat "$sta
 device=$(blkid -L CVSEED || true)
 if [ -z "$device" ]; then
     printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan unseeded $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console
-    echo 'convergent: no CVSEED; management remains unconfigured' >&2
+    echo 'seed: no CVSEED; management remains unconfigured' >&2
     exit 1
 fi
 seed=/mnt/cvseed

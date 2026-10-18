@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+{ set +ax; } 2>/dev/null
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+unset pass again
+stm= saved= refresh=
+
+die() { echo "account: $*" >&2; exit 1; }
+usage() { echo 'usage: account password [user]' >&2; exit 2; }
+cleanup() {
+	result=$?
+	trap - 0
+	trap '' HUP INT TERM
+	set +e
+	unset pass again
+	[ -z "$saved" ] || stty "$saved" <&3
+	if [ -n "$refresh" ] && ! mountpoint -q /etc/shadow; then
+		mount --bind "$stm/etc/shadow" /etc/shadow || { echo "account: cannot rebind shadow; state kept at $stm" >&2; exit 1; }
+	fi
+	if [ -n "$stm" ]; then
+		if mountpoint -q "$stm"; then umount "$stm" || exit 1; fi
+		rmdir "$stm" || result=1
+	fi
+	exit "$result"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+case ${1:-}:$# in password:1|password:2) ;; *) usage ;; esac
+[ "$(id -u)" = 0 ] || die 'run as root'
+exec 9>/run/convergent-account.lock
+flock -w 30 9 || die 'another account operation is running'
+
+if [ "$#" = 2 ]; then
+	user=$2
+else
+	user=$(awk -F: 'NR == FNR {if ($1 == "wheel") {gid=$3; members="," $4 ","} next}
+		$3 >= 1000 && (gid != "" && $4 == gid || index(members, "," $1 ",")) {user=$1; n++}
+		END {if (n != 1) exit 1; print user}' /etc/group /etc/passwd) || die 'expected one owner in wheel'
+fi
+case $user in ''|-*|*[!a-zA-Z0-9_.-]*) die 'invalid user' ;; esac
+awk -F: -v u="$user" '$1 == u {n++} END {exit n != 1}' /etc/passwd || die 'unknown user'
+exec 3<>/dev/tty
+saved=$(stty -g <&3) || die 'needs a terminal'
+stty -echo <&3
+printf 'New password for %s: ' "$user" >&3
+IFS= read -r pass <&3 || die 'input cancelled'
+printf '\nRepeat new password: ' >&3
+IFS= read -r again <&3 || die 'input cancelled'
+printf '\n' >&3
+stty "$saved" <&3
+saved=
+[ -n "$pass" ] && [ "${#pass}" -ge 8 ] || die 'password must be at least 8 characters'
+[ "$pass" = "$again" ] || die 'passwords differ'
+unset again
+
+stm=$(mktemp -d /run/account.XXXXXX)
+mount -t btrfs -o rw,subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state "$stm" ||
+	die 'the state volume did not mount'
+printf '%s:%s\n' "$user" "$pass" | chpasswd -P "$stm" -c YESCRYPT -s 5 || die 'could not hash password with yescrypt'
+unset pass
+awk -F: -v u="$user" '$1 == u && $2 ~ /^\$y\$/ {ok=1} END {exit !ok}' "$stm/etc/shadow" ||
+	die 'password is not yescrypt'
+refresh=1
+umount /etc/shadow || die 'cannot unmount shadow'
+mount --bind "$stm/etc/shadow" /etc/shadow || die 'cannot rebind shadow'
+refresh=
+echo "account: password changed for $user"
