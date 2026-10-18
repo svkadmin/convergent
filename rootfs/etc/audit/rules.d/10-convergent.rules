@@ -1,6 +1,9 @@
 # ARCHITECTURE 3.1
 -D
 -b 8192
+# A full queue makes each audited process wait (default 60 s, the slow sudo on the laptop); 100 jiffies
+# bounds the wait; lost records show in auditctl -s and sys selftest.
+--backlog_wait_time 100
 -f 1
 
 # The writable identity files (rootfs/usr/lib/convergent/etc-state).
@@ -11,6 +14,9 @@
 -w /etc/subuid -p wa -k identity
 -w /etc/subgid -p wa -k identity
 -w /etc/usbguard/rules.conf -p wa -k usb
+-w /var/lib/convergent/ssh/ -p wa -k guestkeys
+-w /var/lib/convergent/check/ -p wa -k baseline
+-w /var/lib/convergent/dns/ -p wa -k dns
 
 # Every command the owner runs as root, from either ABI.
 -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd

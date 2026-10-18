@@ -18,7 +18,7 @@ for f in late/etc/*; do cp -p "$f" "/etc/${f##*/}"; done
 subst=/tmp/convergent.sed
 : >"$subst"
 for f in net "node.$node"; do
-	grep -E '^[A-Z0-9_]+=' "$f" | while IFS== read -r k v; do
+	grep -E '^[A-Z0-9_]+=' "$f" | while IFS="=" read -r k v; do
 		printf 's|@%s@|%s|g\n' "$k" "$v"
 	done >>"$subst"
 done

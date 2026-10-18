@@ -5,7 +5,7 @@ account		required	pam_nologin.so
 account		required	pam_time.so
 account		include		system-auth
 password	include		system-auth
-session		optional	pam_loginuid.so
+session		required	pam_loginuid.so
 session		required	pam_env.so envfile=/etc/profile.env
 session		include		system-auth
 session		optional	pam_motd.so motd=/etc/motd

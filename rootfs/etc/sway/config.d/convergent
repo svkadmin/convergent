@@ -17,9 +17,16 @@ unbindsym Mod4+a
 bindsym Mod4+a exec sh -c 'a=$(sys --pick | $pick -p action | cut -f1) && [ -n "$a" ] && sys --pick "$a"'
 
 # Browsers (Archer's keys).
+# A failed start says why instead of vanishing.
 unbindsym Mod4+b
-bindsym Mod4+b exec browser web
-bindsym Mod4+Shift+t exec browser tmp
+bindsym Mod4+b exec sh -c 'browser web 2>"$XDG_RUNTIME_DIR/browser.log" || swaynag -t warning -m "browser web: $(tail -n 1 "$XDG_RUNTIME_DIR/browser.log")"'
+bindsym Mod4+Shift+t exec sh -c 'browser tmp 2>"$XDG_RUNTIME_DIR/browser.log" || swaynag -t warning -m "browser tmp: $(tail -n 1 "$XDG_RUNTIME_DIR/browser.log")"'
+
+# Brightness keys: the stock bindings call brightnessctl, which Gentoo does not have.
+unbindsym --locked XF86MonBrightnessDown
+unbindsym --locked XF86MonBrightnessUp
+bindsym --locked XF86MonBrightnessDown exec sys display brightness -5
+bindsym --locked XF86MonBrightnessUp exec sys display brightness +5
 
 # Lock now; after 10 minutes idle unless the bar's NL holds it off (nolock file); lid close.
 # No before-sleep: without logind swayidle exits on it.
@@ -48,4 +55,6 @@ exec gentoo-pipewire-launcher
 exec mako
 
 # The owner's own settings, written by `sys display save` and `sys keyboard set`.
+input type:keyboard xkb_layout "us"
+input type:keyboard xkb_variant ""
 include ~/.config/sway/config.d/*

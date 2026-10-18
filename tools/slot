@@ -5,7 +5,9 @@ set -eu
 linux=EFI/Linux
 health=/usr/lib/convergent/health.d
 stm=/run/cv-state
+key=/etc/convergent/release.pub
 esp=
+tmp=
 mounted=
 
 # Warning level: /var/log/messages keeps warnings and up, and slot events are few.
@@ -22,6 +24,7 @@ flock -w 120 9 || die "another slot is running"
 cleanup() {
 	for d in $mounted; do umount "$d" 2>/dev/null || :; done
 	[ -z "$esp" ] || rmdir "$esp" 2>/dev/null || :
+	[ -z "$tmp" ] || rm -rf "$tmp"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -68,10 +71,15 @@ disarm() { rc-service -q convergent-watchdog stop || :; }
 healthy() {
 	[ -z "$(rc-status --crashed)" ] || { log "crashed services: $(rc-status --crashed | tr '\n' ' ')"; return 1; }
 
-	if rc-status -f ini default | grep -Eq '^[^=]*= *(crashed|failed|stopped)( |$)'; then
+	s=$(rc-status -f ini default) || { log "rc-status default failed"; return 1; }
+	if printf '%s\n' "$s" | grep -Eq '^[^=]*= *(crashed|failed|stopped)( |$)'; then
 		log "services of the default runlevel are not running"
 		return 1
 	fi
+	# From the boot runlevel only the protections; its stock one-shots may differ per machine.
+	for svc in convergent-firewall usbguard auditd apparmor; do
+		rc-service -q "$svc" status || { log "$svc is not running"; return 1; }
+	done
 	for h in "$health"/*; do
 		[ -f "$h" ] && [ -x "$h" ] || continue
 		"$h" || { log "health check $h failed"; return 1; }
@@ -149,16 +157,25 @@ status() {
 
 write() {
 	dir=$1
-	[ "${CONVERGENT_UNSIGNED:-}" = 1 ] ||
-		die "manifests are not signature-checked yet; set CONVERGENT_UNSIGNED=1 to write an unsigned release"
 	[ -f "$dir/manifest" ] || die "no manifest in $dir"
-	# TODO(signing): verify the manifest signature.
-	new=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
+	# Everything after the check is read from this private copy, never again from $dir.
+	tmp=$(mktemp -d /run/slot-write.XXXXXX)
+	m=$tmp/manifest
+	cp "$dir/manifest" "$m" || die "cannot read the manifest"
+	if [ "${CONVERGENT_UNSIGNED:-}" = 1 ]; then
+		log "writing without a signature check (CONVERGENT_UNSIGNED=1)"
+	else
+		[ -f "$key" ] || die "this image trusts no release key; CONVERGENT_UNSIGNED=1 writes an unsigned release"
+		cp "$dir/manifest.sig" "$tmp/sig" 2>/dev/null || die "the release is not signed"
+		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$m" -sigfile "$tmp/sig" \
+			>/dev/null 2>&1 || die "the manifest signature does not verify"
+	fi
+	new=$(awk '$1 == "release" { print $2 }' "$m")
 	case $new in '' | *[!0-9]*) die "the manifest names no release" ;; esac
 	for f in slot.img "convergent-$new-a.efi" "convergent-$new-b.efi"; do
-		grep -q "  $f\$" "$dir/manifest" || die "the manifest does not list $f"
+		grep -q "  $f\$" "$m" || die "the manifest does not list $f"
 	done
-	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) ||
+	grep -E '^[0-9a-f]{64}  ' "$m" | (cd "$dir" && sha256sum -c --quiet -) ||
 		die "the release does not match its manifest"
 
 	booted
@@ -172,9 +189,13 @@ write() {
 	[ "$slot" = a ] && inactive=b || inactive=a
 	part=/dev/disk/by-partlabel/cv-slot-$inactive
 	[ -b "$part" ] || die "no partition $part"
+	[ "$(blkid -o device -t PARTLABEL=cv-slot-$inactive | wc -l)" = 1 ] || die "more than one disk has a cv-slot-$inactive partition"
 	size=$(stat -c %s "$dir/slot.img")
 	[ "$size" -le "$(blockdev --getsize64 "$part")" ] || die "slot.img does not fit in slot $inactive"
-	sum=$(awk '$2 == "slot.img" { print $1 }' "$dir/manifest")
+	sum=$(awk '$2 == "slot.img" && length($1) == 64 { print $1 }' "$m")
+	uki=convergent-$new-$inactive.efi
+	cp "$dir/$uki" "$tmp/uki" && [ "$(sha256sum <"$tmp/uki" | cut -d' ' -f1)" = "$(awk -v f="$uki" '$2 == f && length($1) == 64 { print $1 }' "$m")" ] ||
+		die "$uki does not match the manifest"
 
 	# Remove the old UKI before overwriting its image.
 	esp_mount
@@ -194,7 +215,7 @@ write() {
 
 	# Stage the UKI before exposing its three-try boot entry.
 	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
-	cp "$dir/convergent-$new-$inactive.efi" "$dst.new" && cmp -s "$dir/convergent-$new-$inactive.efi" "$dst.new" &&
+	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
 		sync && mv "$dst.new" "$dst" && sync || die "could not install the UKI"
 	log "release $new is in slot $inactive with three tries; reboot to try it"
 }

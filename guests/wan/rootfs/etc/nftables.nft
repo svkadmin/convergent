@@ -10,6 +10,8 @@ define host_addr   = 100.80.1.10
 define svc_addr    = 100.80.2.10
 define portal_addr = 100.80.3.11
 define fw_addrs    = { 100.80.0.1, 100.80.0.2, 100.80.0.3 }
+# The upstream network's own private ranges: hotel, office or home LAN devices.
+define private     = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
 
 table inet wan {
 	# Portal DNS destination map; empty means off.
@@ -19,6 +21,11 @@ table inet wan {
 
 	# Check the resolver on every DNAT packet, including existing flows.
 	set portal_ns {
+		type ipv4_addr
+	}
+
+	# The portal browser while portal mode is on: the only one that may reach the upstream LAN.
+	set portal_src {
 		type ipv4_addr
 	}
 
@@ -40,7 +47,8 @@ table inet wan {
 		ct state invalid drop
 		iifname $transit ct status dnat ip daddr != @portal_ns drop
 		iifname $upstream oifname $transit ct state established,related accept
-		iifname $transit oifname $upstream ip saddr $internal ip daddr != $internal accept
+		iifname $transit oifname $upstream ip saddr $internal ip daddr != $internal ip daddr != $private accept
+		iifname $transit oifname $upstream ip saddr @portal_src ip daddr $private accept
 	}
 
 	chain output {

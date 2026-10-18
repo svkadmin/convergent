@@ -5,10 +5,16 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+country=${WAN_COUNTRY-}
+country_set=${WAN_COUNTRY+x}
 . "$here/build.conf"
 . "$here/../alpine.sh"
 
 die() { echo "build: $*" >&2; exit 1; }
+input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
+configured_country=$(sh "$here/../../tools/config-get" "$input" wifi_country)
+[ -e "$input" ] || echo 'build: config absent; using defaults' >&2
+if [ -n "$country_set" ]; then WAN_COUNTRY=$country; else WAN_COUNTRY=$configured_country; fi
 [ "$(id -u)" = 0 ] || die "run as root"
 for t in curl sha256sum tar xz truncate chroot mount umount losetup sfdisk mkfs.vfat mkfs.ext4 \
 	awk sed grep blkid; do
@@ -108,6 +114,10 @@ chmod 644 "$target/usr/local/lib/wan-lib.sh" "$target/etc/udhcpc/udhcpc.conf" "$
 chmod 700 "$target/root"
 chmod 600 "$target/etc/crontabs/root"
 chmod 644 "$target/etc/ssh/sshd_config" "$target/etc/syslog-ng/syslog-ng.conf"
+# The CA comes from the seed at first boot; a stand-in for the check only.
+touch "$target/etc/syslog-ng/svc-ca.pem"
+inchroot syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"
+rm "$target/etc/syslog-ng/svc-ca.pem"
 # Lock root; host-key SSH only.
 sed -i 's/^root:[^:]*:/root:*:/' "$target/etc/shadow"
 
@@ -151,7 +161,7 @@ cat > "$work/meta/metadata.yaml" <<EOF
 architecture: x86_64
 creation_date: $epoch
 properties:
-  description: Convergent wan, Alpine ${ALPINE_BRANCH#v}
+  description: wan, Alpine ${ALPINE_BRANCH#v}
   os: Alpine
   release: "${ALPINE_BRANCH#v}"
   variant: wan

@@ -15,12 +15,13 @@ build host                         your PC                      laptop
 ──────────                         ───────                      ──────
 compile packages (once, cached)
 build a release ─► test in QEMU ─► disk image ─► write to disk ─► boot, unlock, log in
-                                   or release  ─► USB disk ─────► sudo slot write (update)
+sign, publish ─────────────────────────────────► R2 ──────────► sys system update
+                                   or release  ─► USB disk ─────► sys system update-usb
 ```
 
 Nothing is compiled on the laptop. A release is one verified root image plus two boot files (one
 per slot). The laptop keeps two slots, A and B: an update writes the slot not in use and boots it
-with three tries; if it never reports healthy, the other slot boots again.
+with three tries; if it is never marked good (healthy), the other slot boots again.
 
 ## The design in one page
 
@@ -48,8 +49,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 | File | Read it when |
 |---|---|
-| this README | you build, test, install or update |
-| [USAGE.md](USAGE.md) | you use the laptop: the sys tool, browsers, Wi-Fi, devices, backups, coming from Arch |
+| this README | you install, update, build or test |
+| [USAGE.md](USAGE.md) | you use the laptop: the sys tool, the bar, browsers, Wi-Fi, devices, backups, coming from Arch |
 | [RECOVERY.md](RECOVERY.md) | something is broken: numbered recipes |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | you change the system and need the reasons |
 
@@ -58,17 +59,135 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | | |
 |---|---|
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
-| Built, first laptop test now | graphics, audio, Bluetooth, Wi-Fi in wan, browsers, bar, sys, power |
-| Not built | release signing (Secure Boot stays off), updates over the network, a recovery boot entry |
+| Built, first laptop test now | graphics, audio, Bluetooth, Wi-Fi in wan, browsers, bar, sys, power; signed releases and online updates |
+| Not built | Secure Boot signing (Secure Boot stays off), guest images online, a recovery boot entry |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
 after a release has also run on the laptop. Releases are tags on `stable`.
+
+## Install
+
+### A disk image (USB disk or stick)
+
+The builder makes the image ([Build a release](#build-a-release)). It is 30 GiB
+(32,212,254,720 bytes) by default, so a stick sold as "32 GB" may be too small. Write it on any
+Linux:
+
+```sh
+lsblk -o NAME,SIZE,MODEL,TRAN                        # find the disk: TRAN usb, the right size
+zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
+```
+
+The image holds both slots (B empty), the encrypted state with the owner's account, and the guest
+images. At each unlock the encrypted state grows to the end of its disk (partition, LUKS, then
+Btrfs) when it is the last partition and more than 1 GiB is free, unless `state_max_gib` caps it.
+Each step checks its own size, so an interrupted grow finishes on a later boot; a failure only warns
+and keeps the old size.
+
+### The laptop's own disk
+
+From a Convergent USB disk booted in UEFI mode, as root, with a release directory:
+
+```sh
+convergent-install /path/to/release
+```
+
+It checks the release's signature against the booted system's key (`CONVERGENT_UNSIGNED=1` installs
+an unsigned one). It needs the Intel GPU as `/dev/dri/renderD128`. It lists the disks and refuses
+the boot disk, mounted disks and anything under 49 GiB plus 4 MiB, asks you to type the disk again
+(or `ERASE` and its serial), then the owner name, and the password and LUKS passphrase twice each.
+It writes and verifies slot A, registers a boot entry named from the release's `NAME` and powers
+off. Remove the USB disk before booting. The guest images are not copied: put the guest directory at
+`/var/lib/convergent/release-guests/guests` and run `sys system setup`.
+
+## First boot
+
+Before it: in the firmware setup (Dell: F2) turn Secure Boot off and leave VT-d on. Plug the disk
+into a port of the laptop itself, not a hub or dock, and pick it in the boot menu (Dell: F12).
+
+The passphrase prompt uses the **US keyboard layout**, whatever the keys show (on a Slovak
+keyboard `@` is Shift+2, and `y` and `z` are swapped). The console uses `console_keymap`, US by
+default.
+
+1. `Passphrase [1/3]:` appears; three wrong tries power it off. Done when: a login prompt.
+2. Log in as the owner. Done when: the console prints `release <release> is good` (minutes).
+3. On a disk image the guests (firewalls, wan, svc) are then created in the background; the bar
+   shows `SETUP`, usually for 10 to 30 minutes. It shows `SETUP failed` when the release is not
+   good within 30 minutes or creation fails twice (log: `/var/log/guests-setup.log`): run
+   `sys system setup`, which resumes. Done when: `SETUP` is gone (before step 5:
+   `cat /run/convergent/status/setup` says `done`); Wi-Fi works from then on.
+4. A disk image allows USB devices by class (input, storage, hubs). With only trusted devices
+   attached, the disk you boot from included, replace that with a per-device policy. Built-in
+   devices (camera, Bluetooth, fingerprint reader) are always attached, so they are allowed too:
+   ```sh
+   sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
+   sudo rc-service usbguard restart
+   ```
+   Done when: `sudo devices list` shows nothing you use as blocked.
+5. Run `dbus-run-session sway` (the session bus serves PipeWire, WirePlumber and notifications).
+   Super+m opens `sys`: choose Network, then **Scan Wi-Fi networks** and **Connect to Wi-Fi**
+   (or `sys network wifi-connect`). Done when: `sys network wifi-status` shows an address.
+6. Run `sys selftest run` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
+   Done when: no line says FAIL; otherwise send the report.
+
+Until Secure Boot signing exists the alerts SecureBootNotVerified and CheckerFailed are expected.
+Without an accepted baseline, FirewallRulesetDrift and CollectorBroken are also expected. Any other
+alert is real ([USAGE](USAGE.md#health-and-alerts)).
+
+## Update
+
+**Online** (Wi-Fi up): `sys system update` downloads the newest release of the image's channel
+(about 1 GB), checks its signature and hashes, writes the other slot and offers the reboot. The
+same by hand: `sudo fetch-release` (`check` only reports). The firewalls open the download addresses
+only while it runs; if closing them fails, they expire within 4 hours. If the server's name does not
+resolve, the blocklist may hold it: add the host to `/var/lib/convergent/dns/allow`, then
+`sudo dns-push local`.
+
+**From USB:** copy the release directory (`manifest`, `manifest.sig`, `slot.img`, both `.efi`
+files) to a stick, FAT32 or exFAT. Allow the stick (`sudo devices list`, `sudo devices allow
+<number>`); `sys system update-usb` mounts it and writes the release. By hand:
+
+```sh
+sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb
+sudo slot write /run/usb/<release>
+sudo umount /run/usb && sudo reboot
+```
+
+`slot write` checks the manifest's signature against the key built into the image; an unsigned
+release needs `sudo env CONVERGENT_UNSIGNED=1 slot write ...`; the menu offers that only on an image
+without a key. It runs only on the release marked good, checks every hash, refuses a release that is
+not newer than the booted one and the highest ever marked good, writes the other slot, reads it back
+and gives it three boot tries. After the reboot the release runs its health checks and marks itself
+good; `sudo slot status` shows both slots. If it fails three times, the previous slot boots again
+with its own `/var`. During these counted boots the hardware watchdog, if the laptop has one, resets
+a boot that is not good within about 13 minutes of unlocking; otherwise hold the power button.
+
+Guests update separately, on a slot already marked good, with every browser closed. Copy the new
+guest images to the laptop; `$g` is that directory. Each guest is exported first and restored if
+the new one fails its checks:
+
+```sh
+sudo guests update fw  $g/fw      # fw2 first, then failover, then fw1
+sudo guests update wan $g/wan
+sudo guests update svc $g/svc
+```
+
+To go back by hand, pick the other slot in the boot menu: see [RECOVERY.md](RECOVERY.md).
 
 ## Build a release
 
 On the build host, as root, from the repository root. Needs Gentoo with KVM, loop devices and
 network access; the guest builds also need `qemu-img`, OVMF, `signify`, `python3`, `jq` and
 `curl`.
+
+Settings live in `/etc/convergent/config.yaml` on the build host (or the file named by
+`CONVERGENT_CONFIG`); keys and defaults are in `config.example.yaml`, validation rules in
+`tools/config-get`. The image keys (host name, time zone, keyboard layouts, Wi-Fi country, time
+servers, blocklist, CPU cap, idle lock, `state_max_gib` to stop the state growing past a size) are
+built into the release; the
+install keys (owner login, an optional password hash, partition and image sizes) are read by
+`build/stick` and `convergent-install --config`. A typo or unknown key stops the build. The LUKS
+passphrase is never in it, and the passphrase prompt stays US whatever `console_keymap` says.
 
 ```sh
 build/buildenv          # builder chroot from the pinned, signed stage3 and Portage snapshot
@@ -86,7 +205,42 @@ guests/fw/build $g/fw                              # OpenBSD 7.9 with its errata
 WAN_COUNTRY=SK guests/wan/build $g/wan             # Wi-Fi regulatory country
 guests/svc/build && cp guests/svc/out/* guests/svc/incus.yaml $g/svc/
 guests/browser/build && cp guests/browser/out/* $g/browser/ && cp guests/browser/incus/*.yaml $g/browser/incus/
+build/stick <release> $g <out.img> [size]          # disk image; size: 30G by default
+zstd -T0 <out.img>                                 # compress it for the copy
 ```
+
+`build/stick` asks for the LUKS passphrase (12 characters or more) and, unless `owner_password_hash`
+is set, the owner password. The owner login comes from `CONVERGENT_INSTALL_OWNER`, else
+`owner_login` in the config, else it is asked. It runs the real installer on a loop device and
+prints the image's SHA-256. A disk image holds the owner's account: never publish one.
+
+### Sign and publish
+
+Each channel (`CHANNEL` in `build/build.conf`: `bleeding-edge`, later `stable`) has an Ed25519
+key pair in `/etc/convergent/keys/` on the build host. `build/image` builds `<channel>.pub` and the
+download URL into the image, and signs the manifest (`manifest.sig`) when `<channel>.key` is
+there. The stable key stays on offline media: `build/sign <release-dir> /media/offline/stable.key`
+asks for its passphrase. Make the keys once:
+
+```sh
+install -d -m 700 /etc/convergent/keys && cd /etc/convergent/keys
+openssl genpkey -algorithm ed25519 -out bleeding-edge.key
+openssl pkey -in bleeding-edge.key -pubout -out bleeding-edge.pub
+openssl genpkey -algorithm ed25519 -aes-256-cbc -out /media/offline/stable.key   # passphrase
+openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
+```
+
+A laptop trusts only the key its image was built with; without that key its next update comes
+from USB with `CONVERGENT_UNSIGNED=1`.
+
+`build/publish <release-dir>` uploads to the public R2 bucket named in
+`/etc/convergent/r2-<channel>.env` (mode 600: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY` of a token limited to the bucket, `R2_BUCKET`, `R2_PUBLIC_URL`, and
+`R2_ENDPOINT` for an EU bucket). Only the five release files go up, only with a valid signature, to
+`<channel>/<release>/`; then the signed `<channel>/latest` points at it (`build/sign` writes it). A
+mirror cannot forge the pointer, but can hold back newer releases by replaying an older signed one;
+`fetch-release` shows how old the signature is. Two releases per channel stay; it refuses to grow
+the bucket past about 9 GiB (R2's free tier is 10 GB).
 
 ## Test in QEMU
 
@@ -105,122 +259,30 @@ build/test --guests-update <release> $g <broken-dir>  # plus guest updates and a
 `<broken-dir>` is a new path: the test builds a deliberately broken svc image there and checks
 that the update is rolled back.
 
-`--guests` and `--guests-update` also check the Internet path. The test gives wan an emulated
-uplink (QEMU user networking, as a second NIC), then checks that fw1 reaches DNS over TLS and
-that the host resolves a name through the firewalls.
+`--guests` and `--guests-update` also try the Internet path: wan gets an emulated uplink (QEMU
+user networking, as a second NIC), then fw1 must reach 9.9.9.9:853 and the host must resolve a
+name; otherwise the test fails.
 
 ## Checks
 
-Run `build/lint` before a push: shell syntax, shellcheck when installed, leaked secrets or session
-and scratch paths, CRLF line endings, and that every path the docs name exists. Once a week, as
-root, run `build/advisories [release-dir] [guests-dir]` (by default the newest release): it reads
-the upstream fixes for the kernel, the OpenBSD firewalls, the Alpine guests and the Gentoo
-packages, and names what to rebuild (`host`, `kernel`, `fw`, `svc`, `browser`, `wan`, or `guests` for the
-pins). Exit status 1 means something needs a rebuild, 2 means a source could not be read.
+Run `build/lint` before a push. On tracked files: shell syntax, shellcheck when installed, leaked
+secrets or session and scratch paths, CRLF line endings; and that each simple backticked
+repository path in the docs exists.
 
-## Install
-
-### A disk image (USB disk or stick)
-
-```sh
-build/stick <release> $g <out.img> [size]            # size: 56G by default, fits 64 GB
-```
-
-It asks for the owner password and the LUKS passphrase (12 characters or more; owner login from
-`CONVERGENT_INSTALL_OWNER`, else asked), runs the real installer on a loop device and prints the
-image's SHA-256. Compress it for the copy, then write it on any Linux:
-
-```sh
-zstd -T0 <out.img>                                   # on the build host
-lsblk -o NAME,SIZE,MODEL,TRAN                        # find the disk: TRAN usb, the right size
-zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
-```
-
-Use a USB 3 port and cable: on USB 2 a large image takes hours. The image holds both slots
-(B empty), the encrypted state with the owner's account, and the guest images.
-
-### The laptop's own disk
-
-From a booted Convergent disk, as root, with a release directory:
-
-```sh
-CONVERGENT_UNSIGNED=1 convergent-install /path/to/release
-```
-
-It lists the disks and refuses the boot disk, mounted disks and anything under 49 GiB, asks you
-to type the disk again (or `ERASE` and its serial), then the owner name, and the password and
-LUKS passphrase twice each. It writes and verifies slot A, sets up the boot entry `Convergent`
-and powers off. Remove the USB disk before booting. The guest images are not copied: put the
-guest directory at `/var/lib/convergent/release-guests/guests`, then do first boot step 3.
-
-## First boot
-
-Before it: in the firmware setup (Dell: F2) turn Secure Boot off and leave VT-d on. Plug the disk
-into a port of the laptop itself, not a hub or dock, and pick it in the boot menu (Dell: F12).
-
-The passphrase prompt and the console use the **US keyboard layout**, whatever the keys show (on
-a Slovak keyboard `@` is Shift+2, and `y` and `z` are swapped).
-
-1. `Passphrase [1/3]:` appears. Three wrong tries power the laptop off.
-2. Log in as the owner. Within a few minutes the console prints
-   `release <release> is good`.
-3. Create the guests. Several minutes per guest; if it stops, run it again:
-   ```sh
-   sudo guests init /var/lib/convergent/release-guests
-   ```
-4. With only trusted devices attached, allow them. Built-in devices (camera, Bluetooth,
-   fingerprint reader) are always attached, so they are allowed too:
-   ```sh
-   sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
-   sudo rc-service usbguard restart
-   ```
-5. Run `sway`. Super+m opens `sys`: choose Network, then **Scan Wi-Fi networks** and
-   **Connect to Wi-Fi** (or `sys network wifi-connect` in a terminal).
-6. Run `sys selftest run` and keep the report it writes to `~/selftest-YYYYmmdd-HHMM.txt`. It asks
-   for the owner's password once. Send the report with any FAIL.
-
-Until signing exists the bar always counts two alerts: Secure Boot off, and the health checker
-that fails because of it.
-
-## Update
-
-Copy the release directory (`manifest`, `slot.img`, both `.efi` files; about 1 GB) to a USB
-stick, FAT32 or exFAT. On the laptop allow the stick (`sudo devices list`, `sudo devices allow
-<number>`) and mount it under `/run`, since the root is read-only:
-
-```sh
-sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb
-sudo env CONVERGENT_UNSIGNED=1 slot write /run/usb/<release>
-sudo umount /run/usb && sudo reboot
-```
-
-`slot write` checks every hash, refuses a release that is not newer than the booted one and the
-highest ever marked good, writes the other slot, reads it back and gives it three boot tries.
-After the reboot the release runs its health checks and marks itself good; `sudo slot status`
-shows both slots. If it fails three times, the previous slot boots again with its own `/var`. A
-hang after unlock is reset by the hardware watchdog after ten minutes, if the laptop has one;
-otherwise hold the power button.
-
-Guests update separately, on a slot already marked good, with every browser closed. Copy the new
-guest images to the laptop; `$g` is that directory. Each guest is exported first and restored if
-the new one fails its checks:
-
-```sh
-sudo guests update fw  $g/fw      # fw2 first, then failover, then fw1
-sudo guests update wan $g/wan
-sudo guests update svc $g/svc
-```
-
-To go back by hand, pick the other slot in the boot menu: see [RECOVERY.md](RECOVERY.md).
+Once a week, as root, run `build/advisories <release-dir> $g` (pass both: the default guest
+directory is not `$g`). It reads the upstream fixes and names what to rebuild (`host`, `kernel`,
+`fw`, `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the
+release; the Gentoo packages from the builder's current `/staging`, which must match it. Exit 1:
+something to rebuild (UNKNOWN lines may appear too); 2: only UNKNOWN, a source was not read.
 
 ## Repository
 
 | Path | What |
 |---|---|
-| `build/` | builder chroot, packages, image, QEMU tests, lint, advisories, disk image |
+| `build/` | builder chroot, packages, image, sign, publish, QEMU tests, lint, advisories, disk image |
 | `portage/` | make.conf, USE flags, package sets, the image profile, two local ebuilds |
 | `rootfs/` | the host's own files: `/etc`, `/usr/lib/convergent` (the `sys` areas), health checks |
 | `initramfs/` | the dracut module: unlock, `/var` per release, watchdog |
 | `install/` | the installer, shipped as `convergent-install` |
-| `tools/` | `slot`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts` |
+| `tools/` | `slot`, `fetch-release`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts`, `account` |
 | `guests/` | `fw` (OpenBSD), `wan`, `svc` and `browser` (Alpine) |

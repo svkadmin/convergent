@@ -7,11 +7,15 @@ umask 077
 export LC_ALL=C
 
 here=$(cd "$(dirname "$0")" && pwd -P)
+input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
+cfg() { sh "$here/../tools/config-get" "$input" "$1"; }
+default_size=$(cfg image_size)
+[ -e "$input" ] || echo 'stick: config absent; using defaults' >&2
 . "$here/build.conf"
 . "$here/chroot.sh"
 die() { echo "stick: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 56G: fits a 64 GB stick]"
+[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; the first boot grows it to the disk]"
 release=$1
 case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
 [ -s "$BUILDER/releases/$release/slot.img" ] || die "no release $release; run build/image first"
@@ -25,9 +29,11 @@ done
 outdir=$(cd "$(dirname "$3")" && pwd -P) || die "no output directory"
 out=$outdir/$(basename "$3")
 [ ! -e "$out" ] && [ ! -L "$out" ] || die "output already exists: $out"
-size=${4:-56G}
+size=${4:-$default_size}
 case ${size%[KMGT]} in '' | *[!0-9]*) die "size must be bytes or an integer with K, M, G or T suffix" ;; esac
-owner=${CONVERGENT_INSTALL_OWNER:-}
+owner=$(cfg owner_login)
+if ! grep -q '^owner_login *:' "$input" 2>/dev/null; then owner=; fi
+owner=${CONVERGENT_INSTALL_OWNER:-$owner}
 if [ -z "$owner" ]; then
 	printf 'Owner login name: ' >/dev/tty
 	IFS= read -r owner </dev/tty || die "set CONVERGENT_INSTALL_OWNER without a terminal"
@@ -56,6 +62,9 @@ chroot_mount
 work=$(mktemp -d "$BUILDER/tmp/cv-stick.XXXXXX")
 inside=${work#"$BUILDER"}
 cp "$here/../install/install" "$work/install"
+cp "$here/../tools/config-get" "$work/config-get"
+if [ -f "$input" ]; then cp "$input" "$work/config.yaml"; else : >"$work/config.yaml"; fi
+chmod 600 "$work/config.yaml"
 mkdir "$work/guests"
 mount --bind "$guests" "$work/guests"
 guest_mounted=1
@@ -65,7 +74,7 @@ mount -o remount,bind,ro "$work/guests"
 truncate -s "$size" "$out"
 loop=$(losetup --find --show --partscan "$out")
 CONVERGENT_UNSIGNED=1 CONVERGENT_INSTALL_DISK="$loop" CONVERGENT_INSTALL_OWNER="$owner" \
-	CONVERGENT_INSTALL_GUESTS="$inside/guests" bld sh "$inside/install" "/releases/$release" <&4 4<&-
+	CONVERGENT_INSTALL_GUESTS="$inside/guests" bld sh "$inside/install" --config "$inside/config.yaml" "/releases/$release" <&4 4<&-
 exec 4<&-
 sync
 losetup -d "$loop"
@@ -76,4 +85,4 @@ printf 'Check /dev/sdX carefully: this overwrites the entire device; it must fit
 quoted=$(printf '%s' "$out" | sed "s/'/'\\\\''/g")
 printf "dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
 printf 'Boot with Secure Boot OFF; unlock LUKS and log in as %s.\n' "$owner"
-printf 'Run: sudo guests init /var/lib/convergent/release-guests\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
+printf 'The first boot grows the disk and creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'

@@ -12,6 +12,18 @@ repo=${here%/build}
 . "$here/chroot.sh"
 
 die() { echo "image: $*" >&2; exit 1; }
+input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
+cfg() { sh "$repo/tools/config-get" "$input" "$1"; }
+hostname=$(cfg hostname)
+[ -e "$input" ] || echo 'image: config absent; using defaults' >&2
+timezone=$(cfg timezone)
+keymap=$(cfg console_keymap)
+layouts=$(cfg xkb_layouts)
+nts=$(cfg nts_servers)
+blocklist=$(cfg blocklist_url)
+cap=$(cfg cpu_cap_khz)
+idle=$(cfg idle_lock_minutes)
+state_max=$(cfg state_max_gib)
 [ "$(id -u)" = 0 ] || die "run as root"
 
 release=${1:-$(date -u +%Y%m%d%H%M)}
@@ -28,6 +40,30 @@ rm -rf "$root"
 cp -a "$staging" "$root"
 # Owned by root whatever the checkout's owner; modes kept.
 cp -R --preserve=mode,timestamps,links "$repo/rootfs/." "$root/"
+rm -f "$root/etc/convergent/config.yaml"
+[ -f "$root/usr/share/zoneinfo/$timezone" ] || die "timezone is not installed: $timezone"
+ln -sfn "../usr/share/zoneinfo/$timezone" "$root/etc/localtime"
+printf '%s\n' "$timezone" >"$root/etc/timezone"
+printf 'hostname="%s"\n' "$hostname" >"$root/etc/conf.d/hostname"
+aliases=host
+[ "$hostname" = host ] || aliases="host $hostname"
+printf '127.0.0.1\tlocalhost %s\n::1\tlocalhost\n' "$aliases" >"$root/etc/hosts"
+find "$root/usr/share/keymaps" -name "$keymap.map*" | grep -q . || die "console_keymap $keymap is not an installed keymap"
+printf 'keymap="%s"\n' "$keymap" >"$root/etc/conf.d/keymaps"
+printf '%s\n' "$cap" >"$root/usr/lib/convergent/cpu-cap-khz"
+printf '%s\n' "$state_max" >"$root/usr/lib/convergent/state-max-gib"
+{
+	printf '%s\n' "$nts" | awk -F, '{for (i=1;i<=NF;i++) if (!seen[$i]++) print "server " $i " iburst nts"}'
+	sed '/^server /d' "$repo/rootfs/etc/chrony/chrony.conf"
+} >"$root/etc/chrony/chrony.conf"
+{
+	printf "BLOCKLIST_URL='%s'\n" "$blocklist"
+	sed '/^BLOCKLIST_URL=/d' "$repo/rootfs/etc/convergent/dns.conf"
+} >"$root/etc/convergent/dns.conf"
+xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
+xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
+sed -i "s/timeout 600 /timeout $((idle * 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
+	"$root/etc/sway/config.d/convergent"
 # Modes git does not keep.
 chmod 0440 "$root"/etc/sudoers.d/*
 chmod 0600 "$root"/etc/audit/rules.d/*
@@ -62,7 +98,7 @@ gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
 rm -rf "$root"/usr/src "$root"/usr/include "$root"/usr/share/doc "$root"/usr/share/man \
 	"$root"/usr/share/info "$root"/usr/share/gtk-doc "$root"/usr/lib*/pkgconfig "$root"/usr/share/pkgconfig \
 	"$root"/var/db/pkg "$root"/var/db/repos "$root"/var/cache/* "$root"/var/lib/portage "$root"/etc/portage \
-	"$root"/etc/kernel "$root"/boot/* "$root"/usr/libexec/gcc "$gccdir/include" "$gccdir/plugin"
+	"$root"/etc/kernel "${root:?}"/boot/* "$root"/usr/libexec/gcc "$gccdir/include" "$gccdir/plugin"
 find "$root/usr/lib" "$root/usr/lib64" -name '*.a' -delete
 find "$gccdir" -maxdepth 1 \( -name '*.o' -o -name '*.la' \) -delete
 # The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
@@ -71,6 +107,8 @@ find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name '
 printf '%s\n' "$release" >"$root/usr/lib/convergent/release"
 # Mount points the initramfs needs: the image is read-only once made.
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/home" "$root/tmp" "$root/var" "$root/srv"
+# The audit watches need their directories before the first guests init, check or dns-push.
+install -d -m 0700 "$root/var/lib/convergent/ssh" "$root/var/lib/convergent/check" "$root/var/lib/convergent/dns"
 # Every writable /etc entry must exist in the image: the initramfs binds over it.
 grep -v '^#' "$root/usr/lib/convergent/etc-state" | while read -r entry; do
 	[ -n "$entry" ] && [ ! -e "$root/etc/$entry" ] || continue
@@ -85,9 +123,9 @@ chmod 0600 "$root/etc/audit/audit.rules"
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"
 rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
-for s in boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
+for s in boot/keymaps boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
 	default/cronie default/acpid default/dbus default/bluetooth default/seatd default/node_exporter default/lxcfs default/incus \
-	sysinit/convergent-watchdog default/convergent-bless boot/convergent-net; do
+	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
 done
@@ -115,6 +153,23 @@ mkdir -p "$root/usr/lib/locale"
 bld localedef --prefix=/image-root -i C -f UTF-8 C.UTF-8 || die "cannot compile C.UTF-8"
 bld env ROOT=/image-root env-update || die "env-update failed"
 grep -q "LANG='C.UTF-8'" "$root/etc/profile.env" || die "LANG is not in profile.env"
+# A config the daemon rejects would only show at boot, as a release that never marks itself good.
+chroot "$root" syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"
+chroot "$root" visudo -cq || die "sudoers does not parse"
+# Online updates: the channel's key and download URL. Without the key the image takes only
+# releases written with CONVERGENT_UNSIGNED=1.
+keys=/etc/convergent/keys
+case $CHANNEL in '' | *[!a-z0-9-]*) die "CHANNEL must be lowercase letters, digits and dashes" ;; esac
+if [ -f "$keys/$CHANNEL.pub" ]; then
+	install -m 0644 "$keys/$CHANNEL.pub" "$root/etc/convergent/release.pub"
+	# A subshell: the bucket secrets stay out of this build.
+	url=$(. "/etc/convergent/r2-$CHANNEL.env" 2>/dev/null; echo "${R2_PUBLIC_URL:-}") || url=
+	case $url in https://*[!A-Za-z0-9./-]* | */) url= ;; esac
+	case $url in https://?*) printf 'UPDATE_URL=%s/%s\n' "$url" "$CHANNEL" >"$root/etc/convergent/update.conf" ;;
+	*) echo "image: no R2_PUBLIC_URL in /etc/convergent/r2-$CHANNEL.env; online updates off" >&2 ;; esac
+else
+	echo "image: no $keys/$CHANNEL.pub; this release accepts only unsigned writes" >&2
+fi
 rel=/releases/$release
 
 # 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
@@ -131,6 +186,9 @@ bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sy
 	"$rel/initramfs.img"
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \
 	"$root"/usr/bin/dracut* "$root/usr/bin/lsinitrd"
+
+# Releases are published: no private key may be in the image.
+! grep -rlIsx -e "-----BEGIN [A-Z ]*PRIVATE KEY-----" "$root" || die "private key material in the image root (above)"
 
 # 4. The EROFS image and its dm-verity hash tree, one after the other in the slot image.
 bld mkfs.erofs -zlz4hc "$rel/root.erofs" /image-root >/dev/null
@@ -157,8 +215,12 @@ for slot in a b; do
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
 	# The stock name plus release and slot: the boot menu tells the two slots apart.
 	name=$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
-	sed "s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $release (slot $slot)\"/" \
-		"$root/usr/lib/os-release" >"$out/os-release-$slot"
+	# IMAGE_VERSION orders the boot menu by release, whatever Gentoo's VERSION_ID does.
+	{
+		sed "/^IMAGE_\(ID\|VERSION\)=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $release (slot $slot)\"/" \
+			"$root/usr/lib/os-release"
+		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\n' "$release"
+	} >"$out/os-release-$slot"
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" \
 		--initrd "$rel/initramfs.img" --cmdline "@$rel/cmdline-$slot" \
 		--os-release "@$rel/os-release-$slot" --uname "$kver" \
@@ -172,5 +234,8 @@ done
 	echo "kernel $kver"
 	echo "roothash $roothash"
 	sha256sum "$out/slot.img" "$out"/convergent-*.efi | sed "s|$out/||"
+	# Exact sizes: a download stops at them.
+	for f in "$out/slot.img" "$out"/convergent-*.efi; do echo "size ${f##*/} $(stat -c %s "$f")"; done
 } >"$out/manifest"
+[ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$out"
 echo "image: release $release in $out"

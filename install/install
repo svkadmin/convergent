@@ -10,10 +10,25 @@ export LC_ALL=C
 die() { echo "install: $*" >&2; exit 1; }
 run() { "$@" || die "failed: $1"; }
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 1 ] || die "usage: install/install <release-dir>"
+input=/dev/null
+if [ "${1:-}" = --config ]; then
+	[ $# -ge 3 ] || die 'usage: install/install [--config <file>] <release-dir>'
+	input=$2; shift 2
+fi
+[ $# = 1 ] || die 'usage: install/install [--config <file>] <release-dir>'
+here=$(cd "$(dirname "$0")" && pwd)
+reader=$here/../tools/config-get
+if [ ! -f "$reader" ]; then reader=$here/config-get; fi
+cfg() { sh "$reader" "$input" "$1"; }
+owner=$(cfg owner_login)
+if ! grep -q '^owner_login *:' "$input" 2>/dev/null; then owner=; fi
+owner=${CONVERGENT_INSTALL_OWNER:-$owner}
+owner_hash=$(cfg owner_password_hash)
+esp_mib=$(cfg esp_mib)
+slot_mib=$(cfg slot_mib)
 image_install=${CONVERGENT_INSTALL_DISK:-}
 for cmd in lsblk findmnt readlink blockdev sgdisk udevadm cryptsetup mkfs.vfat mkfs.btrfs \
-	btrfs losetup mount umount sha256sum stat awk grep cp cmp sync stty mktemp \
+	btrfs losetup mount umount sha256sum stat awk sed grep cp cmp sync stty mktemp \
 	useradd groupadd usermod chpasswd dd head cut chmod chown mkdir rm mv cat sleep od tr; do
 	command -v "$cmd" >/dev/null 2>&1 || die "missing tool: $cmd"
 done
@@ -21,7 +36,6 @@ done
 tty_mode=
 if [ -n "$image_install" ]; then
 	[ -b "$image_install" ] && [ "$(lsblk -dnro TYPE "$image_install")" = loop ] || die "build target must be a whole loop device"
-	[ -n "${CONVERGENT_INSTALL_OWNER:-}" ] || die "set CONVERGENT_INSTALL_OWNER"
 	[ -d "${CONVERGENT_INSTALL_GUESTS:-}" ] || die "set CONVERGENT_INSTALL_GUESTS to the guests directory"
 	exec 3<&0
 	exec </dev/null
@@ -40,7 +54,7 @@ work= loop= mapper= image_mounted= state_mounted= esp_mounted=
 cleanup() {
 	bad=0
 	if [ -n "$tty_mode" ]; then stty "$tty_mode" <&3 || bad=1; fi
-	pass= again= answer=
+	pass= again= answer= owner_hash=
 	if [ -n "$esp_mounted" ]; then
 		if umount "$work/esp"; then esp_mounted=; else bad=1; fi
 	fi
@@ -94,18 +108,26 @@ Repeat $1: "
 }
 
 # Parse only manifest fields; never source cmdline-*.
-[ "${CONVERGENT_UNSIGNED:-}" = 1 ] ||
-	die "manifests are not signature-checked yet; set CONVERGENT_UNSIGNED=1 to install"
 dir=$(cd "$1" && pwd -P) || die "no release directory"
 [ -f "$dir/manifest" ] || die "no manifest"
-# TODO(signing): verify the manifest signature.
-release=$(awk '$1 == "release" { print $2 }' "$dir/manifest") || die "cannot read manifest"
+# Checked and used only as private copies: the source may change underneath.
+work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
+cp "$dir/manifest" "$work/manifest" || die "cannot read manifest"
+# The booted Convergent system's release key; the build host's disk images pass CONVERGENT_UNSIGNED=1.
+if [ "${CONVERGENT_UNSIGNED:-}" != 1 ]; then
+	key=/etc/convergent/release.pub
+	[ -f "$key" ] || die "this system trusts no release key; CONVERGENT_UNSIGNED=1 installs an unsigned release"
+	openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/manifest" -sigfile "$dir/manifest.sig" >/dev/null 2>&1 ||
+		die "the manifest signature does not verify"
+fi
+release=$(awk '$1 == "release" { print $2 }' "$work/manifest") || die "cannot read manifest"
 case $release in '' | *[!0-9]*) die "the manifest names no release" ;; esac
 [ "${#release}" -le 16 ] || die "release number is too large"
 awk -v r="$release" '
 	$1 == "release" && NF == 2 && $2 == r { release++; next }
 	$1 == "kernel" && NF == 2 { kernel++; next }
 	$1 == "roothash" && NF == 2 && length($2) == 64 && $2 !~ /[^0-9a-f]/ { root++; next }
+	$1 == "size" && NF == 3 && $3 ~ /^[1-9][0-9]*$/ && ($2 == "slot.img" || $2 == "convergent-" r "-a.efi" || $2 == "convergent-" r "-b.efi") && ++sized[$2] == 1 { next }
 	length($1) == 64 && $1 !~ /[^0-9a-f]/ && NF == 2 && substr($0,65,2) == "  " {
 		if ($2 != "slot.img" && $2 != "convergent-" r "-a.efi" && $2 != "convergent-" r "-b.efi") exit 1
 		if (++seen[$2] != 1) exit 1
@@ -113,14 +135,16 @@ awk -v r="$release" '
 	}
 	{ exit 1 }
 	END { if (release != 1 || kernel != 1 || root != 1 || n != 3) exit 1 }
-' "$dir/manifest" || die "malformed manifest"
-(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) ||
+' "$work/manifest" || die "malformed manifest"
+grep -E '^[0-9a-f]{64}  ' "$work/manifest" | (cd "$dir" && sha256sum -c --quiet -) ||
 	die "the release does not match its manifest"
 size=$(stat -c %s "$dir/slot.img") || die "cannot size slot.img"
 [ "$size" -gt 0 ] && [ $((size % 4096)) = 0 ] || die "invalid slot.img size"
-sum=$(awk '$2 == "slot.img" { print $1 }' "$dir/manifest") || die "no slot checksum"
-slot_mib=8192
-[ "$size" -le $((slot_mib * 1048576)) ] || die "slot.img exceeds the 8 GiB slot"
+sum=$(awk '$2 == "slot.img" && length($1) == 64 { print $1 }' "$work/manifest") || die "no slot checksum"
+cp "$dir/convergent-$release-a.efi" "$work/uki" || die "cannot read the UKI"
+[ "$(sha256sum <"$work/uki" | cut -d" " -f1)" = "$(awk -v f="convergent-$release-a.efi" '$2 == f && length($1) == 64 { print $1 }' "$work/manifest")" ] ||
+	die "the UKI does not match the manifest"
+[ "$size" -le $((slot_mib * 1048576)) ] || die "slot.img exceeds the $slot_mib MiB slot"
 bootloader=${CONVERGENT_BOOTLOADER:-/usr/lib/systemd/boot/efi/systemd-bootx64.efi}
 # Check x86_64 EFI image structure.
 pe() {
@@ -152,11 +176,12 @@ pe() {
 	[ "$2" != uki ] || [ -n "$pe_linux" ]
 }
 pe "$bootloader" efi || die "invalid systemd-boot PE image"
-pe "$dir/convergent-$release-a.efi" uki || die "invalid slot A UKI"
+pe "$work/uki" uki || die "invalid slot A UKI"
 # TODO(signing): verify EFI signatures and firmware enrollment.
 boot_size=$(stat -Lc %s "$bootloader") || die "cannot size systemd-boot"
-uki_size=$(stat -Lc %s "$dir/convergent-$release-a.efi") || die "cannot size UKI"
-[ $((boot_size * 2 + uki_size)) -lt $((1000 * 1048576)) ] || die "boot files do not fit the ESP"
+uki_size=$(stat -Lc %s "$work/uki") || die "cannot size UKI"
+# An update keeps the running UKI while it stages the new one.
+[ $((boot_size * 2 + uki_size * 2)) -lt $(((esp_mib - 24) * 1048576)) ] || die "boot files do not fit the ESP"
 
 # Resolve the live root's disks; refuse RAM/overlay roots.
 bootdisks=
@@ -202,9 +227,12 @@ check_disk
 identity=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk") || die "cannot identify target"
 serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
 disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
-# Leave at least 32 GiB for state, plus GPT/alignment space.
-[ "$disk_size" -ge $(((1024 + slot_mib * 2 + 32768 + 4) * 1048576)) ] || die "target is too small"
-printf 'Release %s; %s; ESP 1024 MiB; slots %s MiB each; state is the rest.\n' "$release" "$disk" "$slot_mib"
+# Leave at least 32 GiB for state, plus GPT/alignment space; a disk image needs only room for the
+# guest images, because the first boot grows state to the end of the disk it is written to.
+state_mib=32768
+[ -z "$image_install" ] || state_mib=12288
+[ "$disk_size" -ge $(((esp_mib + slot_mib * 2 + state_mib + 4) * 1048576)) ] || die "target is too small"
+printf 'Release %s; %s; ESP %s MiB; slots %s MiB each; state is the rest.\n' "$release" "$disk" "$esp_mib" "$slot_mib"
 if [ -z "$image_install" ]; then
 ask "Type $typed again, or ERASE followed by a space and serial $serial: "
 if [ "$answer" != "$typed" ]; then
@@ -214,7 +242,6 @@ fi
 
 # Prepare account hashes in /run before erasing.
 [ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
-work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
 run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state"
 loop=$(losetup --find --show --read-only "$dir/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
@@ -227,11 +254,11 @@ for f in passwd shadow group gshadow subuid subgid; do
 	[ -f "$work/image/etc/$f" ] && [ ! -L "$work/image/etc/$f" ] || die "no regular image /etc/$f"
 	run cp -a "$work/image/etc/$f" "$work/accounts/etc/$f"
 done
-if [ -n "$image_install" ]; then
-	owner=$CONVERGENT_INSTALL_OWNER
-else
-	ask 'Owner login name: '
-	owner=$answer
+if [ -z "$owner" ]; then
+	# In image mode fd 3 carries the passwords.
+	[ -z "$image_install" ] || die "set the owner login in the config or CONVERGENT_INSTALL_OWNER"
+	printf 'Owner login name: ' >&2
+	IFS= read -r owner <&3 || die 'missing owner login'
 fi
 case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;; esac
 [ "${#owner}" -le 32 ] || die "login name is too long"
@@ -239,19 +266,24 @@ for f in passwd shadow group gshadow subuid subgid; do
 	if grep -q "^$owner:" "$work/accounts/etc/$f"; then die "account name already exists"; fi
 done
 printf 'CREATE_MAIL_SPOOL=no\n' >"$work/accounts/etc/default/useradd" || die "cannot write useradd defaults"
-# Gentoo's OpenRC seatd service owns its socket with -g seat.
-for group in wheel seat audio; do
+# Gentoo's OpenRC seatd service owns its socket with -g seat; video may set the backlight (udev rule).
+for group in wheel seat audio video; do
 	if ! grep -q "^$group:" "$work/accounts/etc/group"; then
 		run groupadd -P "$work/accounts" -r "$group"
 	fi
 done
-run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio \
+run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio,video \
 	-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
 run usermod -P "$work/accounts" -L root
 
-secret 'Owner password'
-printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
-	die "could not hash password with yescrypt"
+if [ -n "$owner_hash" ]; then
+	printf '%s:%s\n' "$owner" "$owner_hash" | chpasswd -P "$work/accounts" -e || die 'could not set password hash'
+	owner_hash=
+else
+	secret 'Owner password'
+	printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
+		die "could not hash password with yescrypt"
+fi
 pass=
 awk -F: -v u="$owner" '$1 == u && $2 ~ /^\$y\$/ { ok=1 } END { exit !ok }' \
 	"$work/accounts/etc/shadow" || die "owner password is not yescrypt"
@@ -297,7 +329,7 @@ secret 'LUKS passphrase'
 check_disk
 [ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
 run sgdisk --zap-all "$disk"
-run sgdisk -n1:0:+1024M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
+run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$disk"
 run blockdev --rereadpt "$disk"
 run udevadm settle
@@ -361,18 +393,19 @@ for dst in EFI/BOOT/BOOTX64.EFI EFI/systemd/systemd-bootx64.efi; do
 done
 printf 'timeout 3\neditor no\ndefault convergent-*\n' >"$work/esp/loader/loader.conf" || die "cannot write loader.conf"
 dst=$work/esp/EFI/Linux/convergent-$release-a+3.efi
-run cp "$dir/convergent-$release-a.efi" "$dst.new"
-run cmp -s "$dir/convergent-$release-a.efi" "$dst.new"
+run cp "$work/uki" "$dst.new"
+run cmp -s "$work/uki" "$dst.new"
 run sync
 run mv "$dst.new" "$dst"
 run sync
 if [ -z "$image_install" ]; then
-	run efibootmgr --create --disk "$disk" --part 1 --label Convergent --loader '\EFI\systemd\systemd-bootx64.efi'
+	name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/usr/lib/os-release")
+	run efibootmgr --create --disk "$disk" --part 1 --label "${name:-Linux}" --loader '\EFI\systemd\systemd-bootx64.efi'
 fi
 cleanup || die "could not close the installed system"
-printf 'Installed release %s on %s for %s.\nESP: 1 GiB; slots: %s MiB each; encrypted state: remainder.\n' "$release" "$disk" "$owner" "$slot_mib"
+printf 'Installed release %s on %s for %s.\nESP: %s MiB; slots: %s MiB each; encrypted state: remainder.\n' "$release" "$disk" "$owner" "$esp_mib" "$slot_mib"
 if [ -n "$image_install" ]; then
-	printf 'Slot A verified, three boot tries; slot B empty. Guest images copied.\nOn the laptop: sudo guests init /var/lib/convergent/release-guests\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
+	printf 'Slot A verified, three boot tries; slot B empty. Guest images copied.\nThe first boot creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
 	exit 0
 fi
 printf 'Slot A verified, three boot tries; slot B empty. First boot prepares /var and blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\nRemove the install stick after power-off, before booting.\n'

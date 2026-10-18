@@ -11,7 +11,7 @@ tls=$state/tls
 conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
-work= loop= mounted= pending= demoted= starting= probes= initializing=
+work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touched=
 step=setup
 
 fail() { echo "guests: $step: $*" >&2; return 1; }
@@ -23,7 +23,8 @@ ic() {
     *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- ;;
     esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
 }
-rsh() { timeout 30 ssh -F "$conf" "$@" 9>&- 8>&- 7>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
+# Fresh connections only: a shared one could still reach a guest this tool just replaced.
+rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 retry() {
     # VMs boot slowly; the svc container is up in seconds.
     case "$*" in *' svc'*) wait=300 ;; *) wait=$boot_timeout ;; esac
@@ -83,6 +84,11 @@ cleanup() {
     if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
     if [ -n "$starting" ]; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
+    # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
+    if [ -n "$fw_touched" ] && [ -f /var/lib/convergent/dns/list.rpz ]; then
+        exec 8>&-
+        dns-push local || { fail 'the DNS push failed; run sudo dns-push local'; result=1; }
+    fi
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
     exit "$result"
@@ -96,7 +102,7 @@ credentials() {
     [ -f "$keys/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C convergent -f "$keys/id_ed25519"
     if [ ! -f "$tls/ca.crt" ]; then
         openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-            -keyout "$tls/ca.key" -out "$tls/ca.crt" -days 3650 -subj /CN=Convergent \
+            -keyout "$tls/ca.key" -out "$tls/ca.crt" -days 3650 -subj '/CN=Local CA' \
             -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
     fi
     for cert in server incus-server incus-client; do
@@ -365,7 +371,50 @@ radio() {
     [ "$(ic config device get wan radio address)" = "${radio_device##*/}" ] || die 'wan radio differs'
 }
 
-# Incus Btrfs VM disks are raw; only mount partition 2 of a stopped wan.
+# Read the old disk in userspace; only the rebuilt disk may reach the kernel.
+wan_read() {
+    running wan && die 'refusing to read a running wan disk'
+    disk=$pool/virtual-machines/wan/root.img
+    [ -f "$disk" ] || die 'unexpected Incus Btrfs VM disk layout'
+    sfdisk --json "$disk" >"$work/wan-partitions"
+    range=$(jq -er --arg disk "$disk" --argjson bytes "$(stat -c %s "$disk")" '
+        .partitiontable | select(.label == "gpt" and .unit == "sectors") |
+        .sectorsize as $s | select($s == 512 or $s == 4096) |
+        [.partitions[] | select(.node == ($disk + "2"))] | select(length == 1) | .[0] |
+        select(.start > 0 and .size > 0 and .start == (.start | floor) and .size == (.size | floor)) |
+        select((.start + .size) <= ($bytes / $s | floor)) |
+        "\(.start * $s) \(.size * $s)"' "$work/wan-partitions") || die 'invalid wan partition 2'
+    read -r offset bytes <<EOF
+$range
+EOF
+    mkdir -p "$work/wan-read/out" "$work/iwd"
+    dd if="$disk" of="$work/wan-read/partition" bs=4M iflag=skip_bytes,count_bytes \
+        skip="$offset" count="$bytes" status=none
+    [ "$(stat -c %s "$work/wan-read/partition")" = "$bytes" ] || die 'short wan partition copy'
+    chown 65534:65534 "$work/wan-read/partition" "$work/wan-read/out"
+    chmod 0400 "$work/wan-read/partition"
+    chmod 0700 "$work/wan-read/out"
+    chmod 0711 "$work/wan-read"
+    (cd "$work/wan-read" && setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
+        debugfs -R 'rdump /var/lib/iwd out' partition) >"$work/wan-debugfs" 2>&1 9>&- 8>&- 7>&-
+    if [ -d "$work/wan-read/out/iwd" ] && [ ! -L "$work/wan-read/out/iwd" ]; then
+        for file in "$work/wan-read/out/iwd/"* "$work/wan-read/out/iwd/".[!.]* "$work/wan-read/out/iwd/"..?*; do
+            [ -f "$file" ] && [ ! -L "$file" ] || continue
+            name=${file##*/}
+            case $name in *.psk|*.open|*.8021x) ;; *) continue ;; esac
+            ssid=${name%.*}
+            case $ssid in
+            =*) hex=${ssid#=}; case $hex in ''|*[!0-9a-fA-F]*) continue ;; esac
+                [ "${#hex}" -le 64 ] && [ $((${#hex} % 2)) = 0 ] || continue ;;
+            *) case $ssid in ''|*[!\ -~]*) continue ;; esac
+                [ "${#ssid}" -le 32 ] || continue ;;
+            esac
+            [ "$(stat -c %s "$file")" -le 65536 ] || continue
+            install -m 600 -- "$file" "$work/iwd/$name"
+        done
+    fi
+    rm -rf "$work/wan-read"
+}
 wan_mount() {
     running wan && die 'refusing to mount a running wan disk'
     [ -f "$pool/virtual-machines/wan/root.img" ] || die 'unexpected Incus Btrfs VM disk layout'
@@ -388,13 +437,9 @@ replace() {
     guest=$1
     snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$
     import_image "$guest"
+    case $guest in fw1|fw2) fw_touched=1 ;; esac
     step="backup $guest"
     cp "$keys/known_hosts" "$state/known_hosts.before"
-    case $guest in
-    fw1|fw2)
-        rsh "$guest" 'tar -czf - -C / var/unbound/etc/blocklist.rpz var/unbound/etc/local-owner.conf etc/convergent/pf.guests etc/convergent/update_src' >"$work/fw-state.tar.gz"
-        ;;
-    esac
     if running "$guest"; then starting=$guest; ic stop "$guest" --timeout 60; fi
     mkdir -p "$state/backups"
     for volume in $(volumes "$guest"); do ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
@@ -404,13 +449,7 @@ replace() {
     starting=
     sync
     if [ "$guest" = wan ]; then
-        wan_mount
-        if [ -d "$work/root/var/lib/iwd" ]; then
-            tar -C "$work/root" -cf "$work/wan-state.tar" var/lib/iwd
-        else
-            tar -cf "$work/wan-state.tar" -T /dev/null
-        fi
-        unmount_root
+        wan_read
     fi
     step="rebuild $guest"
     ic query "/1.0/instances/$guest/snapshots?recursion=1" >"$work/snapshots"
@@ -420,7 +459,8 @@ replace() {
     case $guest in
     wan)
         wan_mount
-        tar -C "$work/root" -xf "$work/wan-state.tar"
+        mkdir -p "$work/root/var/lib/iwd"
+        cp -a "$work/iwd/." "$work/root/var/lib/iwd/"
         unmount_root
         ;;
     web|admin)
@@ -432,12 +472,8 @@ replace() {
     web|admin) ;;
     *)
         seed_start "$guest"
-        case $guest in
-        fw1|fw2)
-            fw_check "$guest" release
-            rsh "$guest" 'tar -xzf - -C / && unbound-checkconf /var/unbound/etc/unbound.conf && pfctl -nf /etc/pf.conf && unbound-control reload && pfctl -f /etc/pf.conf' <"$work/fw-state.tar.gz"
-            ;;
-        esac
+        # Nothing comes over from the old firewall; the host pushes its DNS data afterwards.
+        case $guest in fw1|fw2) fw_check "$guest" release ;; esac
         ;;
     esac
 }
@@ -542,6 +578,8 @@ init() {
     for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart=true; done
     sync
     touch "$state/initialized"
+    # Clears the bar's SETUP after a manual retry too.
+    [ ! -e /run/convergent/status/setup ] || echo 'done' >/run/convergent/status/setup
 }
 update() {
     step="update $1"

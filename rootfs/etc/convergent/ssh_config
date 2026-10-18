@@ -17,7 +17,11 @@ Host fw1 fw2 wan
 	ServerAliveCountMax 2
 	ForwardAgent no
 	ForwardX11 no
-	ControlMaster no
+	# One connection per guest for a minute: the per-minute status checks would otherwise fill pf's
+	# 100 states per source for host SSH. tools/guests turns this off: it replaces guests.
+	ControlMaster auto
+	ControlPath /run/ssh-%C
+	ControlPersist 60
 	LogLevel ERROR
 
 Host fw1

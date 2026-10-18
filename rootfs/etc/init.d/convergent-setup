@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+# First boot of a disk image: create the guests from its images, in the background (bar: SETUP).
+
+description="Creates the guests once from /var/lib/convergent/release-guests"
+
+depend() {
+	# Not need: guests init stops and starts Incus, which would stop this service too.
+	use incus
+	after incus
+}
+
+start() {
+	src=/var/lib/convergent/release-guests
+	st=/run/convergent/status
+	[ ! -e /var/lib/convergent/guests/initialized ] && [ -d "$src/guests" ] || return 0
+	ebegin "Creating the guests in the background; the bar shows SETUP until done"
+	mkdir -p "$st"
+	echo running >"$st/setup"
+	# After the release is marked good (30 min at most); a second try resumes where the first stopped.
+	nohup sh -c '
+		n=0
+		until [ -e /run/openrc/started/convergent-bless ]; do
+			[ $((n += 1)) -le 360 ] || { echo failed >"$2/setup"; exit 1; }
+			sleep 5
+		done
+		for try in 1 2; do
+			/usr/local/sbin/guests init "$1" >>/var/log/guests-setup.log 2>&1 && { echo done >"$2/setup"; exit 0; }
+		done
+		echo failed >"$2/setup"' sh "$src" "$st" </dev/null >/dev/null 2>&1 &
+	eend 0
+}

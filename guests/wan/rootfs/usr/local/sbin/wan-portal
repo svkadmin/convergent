@@ -20,6 +20,7 @@ close_map() {
 	nft -f - <<EOF
 flush map inet wan portal_dns
 flush set inet wan portal_ns
+flush set inet wan portal_src
 EOF
 }
 
@@ -36,6 +37,8 @@ flush map inet wan portal_dns
 flush set inet wan portal_ns
 add element inet wan portal_dns { $TRANSIT_ADDR : $ns }
 add element inet wan portal_ns { $ns }
+flush set inet wan portal_src
+add element inet wan portal_src { $PORTAL_BROWSER }
 EOF
 	echo "$ns"
 }

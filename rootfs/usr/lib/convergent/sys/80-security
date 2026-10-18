@@ -1,7 +1,8 @@
 title=Security
-actions='status	Show lockdown, boot, verity, USB and alerts	root
+actions="status	Show lockdown, boot, verity, USB and alerts	root
 check	Run the host security check	root
-report	Read the last security report	root'
+report	Read the last security report	root
+password	Change the owner's login password	root"
 
 security_state() { printf 'Lockdown: %s\n' "$(cached /sys/kernel/security/lockdown)"; }
 security_status() {
@@ -27,3 +28,4 @@ security_status() {
 }
 security_check() { noargs "$@"; page run sudo /usr/local/sbin/check; }
 security_report() { noargs "$@"; root_page /var/lib/convergent/check/last; }
+security_password() { noargs "$@"; run sudo /usr/local/sbin/account password; }

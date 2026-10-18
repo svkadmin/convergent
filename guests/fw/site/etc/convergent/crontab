@@ -1,1 +1,4 @@
 * * * * * root -ns /usr/local/libexec/convergent/fw-facts
+# Openings the host forgot to close (a killed fetch-release or dns-push) end after 4 hours, and
+# with an empty table so do their connections.
+*/15 * * * * root -ns for t in update blocklist; do pfctl -q -t ${t}_src -T expire 14400; [ -n "$(pfctl -q -t ${t}_src -T show)" ] || pfctl -q -k label -k $t; done

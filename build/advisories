@@ -266,7 +266,9 @@ def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
                 f'{machine}: invalid syspatch list')
         # syspatch applied every erratum for the installed sets (no X), so only newer ones can be missing.
         newest = max((int(item[:3]) for item in applied), default=0)
-        missing = sorted(i for i in ids - applied if int(i[:3]) > newest)
+        # The firewalls install no X sets (install.conf: -x*), so X errata never apply.
+        missing = sorted(i for i in ids - applied if int(i[:3]) > newest
+                         and not re.search(r'_(xserver|xorg|xenocara|libx|mesa)', i, re.I))
         if missing:
             yield f'{machine} OpenBSD {openbsd}; missing fixes ' + ', '.join(missing)
 
@@ -394,7 +396,7 @@ if rsync -aq --no-motd --delete rsync://rsync.gentoo.org/gentoo-portage/metadata
 	ln -s "${glsa##*/}" "$work/glsa-link"
 	mv -Tf "$work/glsa-link" "$cache/glsa"
 	glsa=
-	case "$previous" in .glsa.*) case "$previous" in */*) ;; *) rm -rf "$cache/$previous" ;; esac ;; esac
+	case "$previous" in .glsa.*) case "$previous" in */*) ;; *) rm -rf "${cache:?}/$previous" ;; esac ;; esac
 	# Pure Portage matching needs no proc/dev mounts and never queries the builder's VDB.
 	if inside=$(mktemp -d "$BUILDER/tmp/advisories.XXXXXX") &&
 		cp -R "$cache/glsa/." "$inside/" &&

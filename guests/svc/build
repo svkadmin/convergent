@@ -29,17 +29,20 @@ mkdir -p "$mini/apks"
 alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc ifupdown-ng ca-certificates
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "bootstrap is not Alpine 3.24" ;; esac
 alpine_apk update
-while read -r name repository rest; do
+while read -r name repository version sha rest; do
     case $name in ''|'#'*) continue ;; esac
     if alpine_apk search --exact --quiet "$name" | grep -q .; then
         alpine_apk add "$name"
     else
-        # Not in 3.24: the current signed edge build; dependencies from 3.24.
+        # Not in 3.24: the pinned signed edge build; dependencies from 3.24. Edge keeps only its
+        # newest build, so a moved edge stops here until the pin in packages is updated.
+        [ -n "$version" ] && [ -n "$sha" ] || die "$name: no version and sha256 pin in packages"
         chroot "$mini" /sbin/apk --repositories-file /dev/null \
             --repository "$ALPINE_MIRROR/edge/$repository" \
-            --no-cache fetch --output /apks "$name"
-        set -- "$mini"/apks/"$name"-[0-9]*.apk
-        alpine_apk add "/apks/${1##*/}"
+            --no-cache fetch --output /apks "$name=$version" || die "$name $version is no longer on edge; update its pin"
+        [ "$(sha256sum <"$mini/apks/$name-$version.apk" | cut -d' ' -f1)" = "$sha" ] ||
+            die "$name $version does not match its pinned sha256"
+        alpine_apk add "/apks/$name-$version.apk"
     fi
 done <"$here/packages"
 
@@ -138,7 +141,7 @@ properties:
   os: Alpine
   release: '3.24'
   variant: convergent-svc
-  description: Convergent svc (Alpine 3.24, OpenRC, x86_64)
+  description: svc (Alpine 3.24, OpenRC, x86_64)
 EOF
 tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
 
