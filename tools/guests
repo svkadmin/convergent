@@ -89,7 +89,7 @@ cleanup() {
     if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
     # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
     if [ -n "$fw_touched" ] && [ -f /var/lib/convergent/dns/list.rpz ]; then
-        exec 8>&-
+        exec 8>&- 6>&-
         dns-push local || { fail 'the DNS push failed; run sudo dns-push local'; result=1; }
     fi
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
@@ -741,6 +741,13 @@ apply() {
     installed=/var/lib/convergent/release-guests
     [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
     mkdir -p "$installed/guests"
+    # Nothing changes under an open browser (an admin one uses svc's Grafana); all of it waits.
+    exec 6>/run/convergent/browser-update.lock
+    if ! flock -n 6; then
+        echo 'guests: a browser is open; close it, then sys guests update'
+        browser_pending=1
+        return 0
+    fi
     for kind in svc wan fw browser; do
         [ -d "$staged/$kind" ] || continue
         echo "guests: applying $kind from release $booted"

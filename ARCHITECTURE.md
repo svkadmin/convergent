@@ -424,12 +424,13 @@ stopped, so the fw build's seedless smoke boot leaves the release unpersonalised
 
 Releases carry guest images and their Incus profiles in `guests.manifest`, signed with the same
 key beside the host manifest, which stays unchanged, so older releases and the installer that read
-only the host manifest are unaffected. Online updates download only guests whose SHA256SUMS
-identity changed. After reboot and marking the host good, staged guests apply in order: svc, wan,
-fw, browser; the bar shows GUESTS (red on failure). A running browser waits for a later
-`guests apply`. When the booted release is already the newest but its guests are not installed
-(it came as a host-only update), `sys update install` downloads and applies them at once.
-Host-only releases remain valid.
+only the host manifest are unaffected; the signed `latest` names its hash (or `none`), so a mirror
+can neither withhold nor swap it. Online updates download only guests whose identity (their
+SHA256SUMS and delivered profiles) changed. After reboot and marking the host good, staged guests
+apply in order: svc, wan, fw, browser; the bar shows GUESTS (red on failure). Nothing is applied
+while a browser is open: it waits for `sys guests update`. When the booted release is already the
+newest but its guests are not installed (it came as a host-only update), `sys update install`
+downloads and applies them at once. Host-only releases remain valid.
 
 Guests are updated only on a host slot already marked good, one at a time, each after an instance
 export and snapshots of its custom state volumes; the last three backups per guest are kept. The

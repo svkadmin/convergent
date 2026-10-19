@@ -14,7 +14,7 @@ guests_state() {
 	failed) echo 'Updates: failed; run sys guests update' ;;
 	*)
 		case $(cached /run/convergent/status/guests-pending) in ''|unknown) ;; *)
-			echo 'Updates: the browsers wait; close them, then sys guests update'
+			echo 'Updates: waiting for the browsers to close; then sys guests update'
 			;;
 		esac
 		;;

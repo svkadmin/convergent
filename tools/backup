@@ -34,6 +34,9 @@ exec 9>/run/convergent/backup.lock
 flock -n 9 || die 'another backup is running'
 exec 8>/run/convergent/guests.lock
 flock -n 8 || die 'a guest operation is running'
+# Browser sessions hold this shared; their state volumes are not exported live.
+exec 6>/run/convergent/browser-update.lock
+flock -n 6 || die 'close the browsers first'
 base=$dest/convergent-backups
 [ ! -L "$base" ] || die 'backup directory is a symlink'
 mkdir -p "$base"

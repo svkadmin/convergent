@@ -22,7 +22,10 @@ for f in manifest guests.manifest; do
 done
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 # latest: what build/publish points the channel at; signed, so a mirror cannot pick the release.
-printf 'release %s\nsigned %s\n' "$release" "$(date -u +%s)" >"$dir/latest"
+# It also names the guests.manifest (or none), which a mirror then cannot withhold or swap.
+guests=none
+[ ! -f "$dir/guests.manifest" ] || guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
+printf 'release %s\nsigned %s\nguests %s\n' "$release" "$(date -u +%s)" "$guests" >"$dir/latest"
 # An encrypted key asks once per file; it is never written out decrypted.
 for f in manifest guests.manifest latest; do
 	[ -f "$dir/$f" ] || continue

@@ -10,8 +10,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 keys=/etc/convergent/keys
 die() { echo "guests: $*" >&2; exit 1; }
-# A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (fetch-release: the same).
-ident() { (cd "$1" && { cat SHA256SUMS; find . -type f -name '*.yaml' | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
+# A guest's identity: its artifacts' SHA256SUMS and the Incus profiles delivered with it
+# (fetch-release: the same); other files beside them never count.
+ident() { (cd "$1" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# = 2 ] || die "usage: build/guests <release-dir> <guests-dir>"
 dir=$1

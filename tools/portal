@@ -27,7 +27,7 @@ else
 	flock -w 60 9 || die "another portal is running"
 fi
 
-rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@"; }
+rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 
 # Normalize an external IPv4 /16..30 network.
 net_of() {
