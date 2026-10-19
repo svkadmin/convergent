@@ -144,7 +144,7 @@ install_node() {
 	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
 	log=$out/$n.syspatch.log
 	echo "build: patching $n (console log: $log)"
-	timeout 3600 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+	timeout 900 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
