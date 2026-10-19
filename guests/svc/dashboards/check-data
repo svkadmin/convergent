@@ -6,6 +6,8 @@ dir=${1:?dashboards directory}
 base=${2:-http://100.80.2.10:9428}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+# A just-restarted svc or a failover in progress drops a request now and then: three tries.
+curl() { for try in 1 2 3; do command curl "$@" && return 0; [ "$try" = 3 ] || sleep 5; done; return 1; }
 jq -r '.title as $d | .panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
     [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
