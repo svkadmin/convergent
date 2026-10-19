@@ -219,8 +219,8 @@ rel=/releases/$release
 # 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
 #    so Convergent's module is put there for the run; afterwards dracut leaves the image, which
 #    never builds an initramfs itself.
-cp -r "$repo/initramfs/90convergent" "$root/usr/lib/dracut/modules.d/"
-chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh
+cp -r "$repo/initramfs/90convergent" "$repo/initramfs/91convergent-rescue" "$root/usr/lib/dracut/modules.d/"
+chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh "$root/usr/lib/dracut/modules.d/91convergent-rescue"/*.sh
 # The links to the kernel sources and build files point at nothing once /usr/src is gone.
 find "$root/lib/modules/$kver" -maxdepth 1 -xtype l -delete
 bld depmod -b /image-root "$kver"
@@ -230,6 +230,32 @@ bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sy
 	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
 	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" --add-drivers i915 \
 	"$rel/initramfs.img"
+# Rescue is inside the verity image; no new release files or manifest fields.
+profiles=$(bld mktemp -d /tmp/convergent-rescue.XXXXXX)
+bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
+	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
+	--modules "base kernel-modules udev-rules dm crypt btrfs convergent convergent-rescue" --add-drivers i915 \
+	"$profiles/initramfs.img"
+printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
+	" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off quiet" \
+	" vfio-pci.ids=$VFIO_IDS" >"$BUILDER$profiles/cmdline"
+printf 'ID=convergent\nIMAGE_ID=zz-convergent-rescue\nIMAGE_VERSION=%s\nPRETTY_NAME="Convergent rescue (%s)"\n' \
+	"$release" "$release" >"$BUILDER$profiles/os-release"
+bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$profiles/initramfs.img" \
+	--cmdline "@$profiles/cmdline" --os-release "@$profiles/os-release" --uname "$kver" \
+	--output /image-root/usr/lib/convergent/rescue.efi >/dev/null
+bld ukify inspect /image-root/usr/lib/convergent/rescue.efi >/dev/null || die "invalid rescue UKI"
+bld lsinitrd "$profiles/initramfs.img" >"$BUILDER$profiles/contents"
+for file in sbin/convergent-rescue sbin/slot lib/convergent-unlock.sh lib/convergent-recovery.sh; do
+	grep -Eq " (usr/)?$file$" "$BUILDER$profiles/contents" || die "rescue initramfs lacks $file"
+done
+! grep -q 'convergent-state.sh' "$BUILDER$profiles/contents" || die "rescue contains the slot mount hook"
+if [ -f "$root/etc/convergent/release.pub" ]; then
+	grep -q ' etc/convergent/release.pub$' "$BUILDER$profiles/contents" || die "rescue lacks its release key"
+fi
+echo "image: rescue initramfs $(stat -c %s "$BUILDER$profiles/initramfs.img") bytes; UKI $(stat -c %s "$root/usr/lib/convergent/rescue.efi") bytes"
+rm -rf "$BUILDER$profiles"
+profiles=
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \
 	"$root"/usr/bin/dracut* "$root/usr/bin/lsinitrd"
 

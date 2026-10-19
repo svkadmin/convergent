@@ -24,7 +24,50 @@ Booting recovery on a release not yet marked good uses one of its three tries, s
 normal boots. Rebooting or powering off from the menu does not mark it good. The watchdog is
 armed only after continuing, so time spent in the menu does not reset the laptop. Recovery
 starts no network services. If the release cannot reach the passphrase prompt, try the other
-slot (recipe 3) or read state from another Linux (recipe 9).
+slot (recipe 3) or the standalone rescue entry below.
+
+## Standalone rescue entry
+
+Choose `Convergent rescue (<release>)` when neither slot boots. Unlike a release's `(Recovery)`
+profile, it has its own initramfs and never mounts a slot root. It needs a working ESP, kernel
+and encrypted state. Enter the usual LUKS passphrase with the US layout; three failures power
+off. The state is mounted read-write at `/run/cv-state`. There is no network, watchdog, boot
+counter, blessing or option to continue into a release.
+
+1. Root shell. The tools are those in the rescue initramfs; `/sysroot` is empty. `exit` returns.
+2. Reset owner password. The same uid 1000 reset and password rules as per-release Recovery.
+3. Write release from USB. Choose a USB partition and the release directory on it. FAT, exFAT,
+   ext4 and Btrfs are supported; the source mounts read-only without journal replay. Bring the
+   usual `manifest`, `manifest.sig`, `slot.img` and both release UKIs. Rescue requires the
+   signature to verify against its embedded release key, even with `CONVERGENT_UNSIGNED=1`.
+   Choose `a` or `b`, or press Enter for the slot opposite the last good release (if uniquely
+   identifiable). Confirm the printed release and slot with `yes`. This deliberately permits
+   reinstalling an older or identical signed release, preserves existing `/var` subvolumes,
+   and leaves `good` and `highest` unchanged. It uses `slot`'s checksum, size and readback checks
+   and installs the chosen release UKI with three tries. Use option 4 to boot it next,
+   especially if it is older than the other slot. Normal updates still enforce anti-rollback.
+4. Choose next slot. Select `a` or `b`; writes `LoaderEntryOneShot` for that entry's normal
+   profile. It can select an exhausted entry, without resetting its counter or marking it good.
+5. Copy logs to USB. Choose a writable USB partition. A new `convergent-logs-<time>.<suffix>`
+   directory holds `logs.tar`: every release's `var-*/log` (including Incus VM console/QEMU logs)
+   and reachable container `pool/containers/*/rootfs/var/log`. It does not start guests or open
+   their VM disk images; logs inside those images are not copied. The archive contains private
+   logs in plaintext; keep the stick private.
+6. Reboot.
+7. Power off.
+
+The installer installs rescue when the release contains it. On upgrade, the first successful
+`slot bless` copies `/usr/lib/convergent/rescue.efi` from the verified slot to the fixed ESP name
+`EFI/Linux/convergent-rescue.efi`. It compares first and stages, checks, syncs and renames only
+when different. A failed release cannot replace rescue. The ordinary default matches numbered
+release entries only; rescue sorts after bootable releases (systemd-boot always puts exhausted
+entries last). Select rescue explicitly. An image built without a release key can unlock and
+repair state but cannot write releases from this menu. If rescue itself cannot boot, use another
+Linux to read state (recipe 9).
+
+`build/test --rescue <release>` boots the shipped rescue UKI with both slots empty, unlocks,
+checks the menu, selects power off, and checks that UKI names/content and blessing state did
+not change. USB writes, password reset, next-slot selection and log export need separate testing.
 
 | # | Symptom |
 |---|---|

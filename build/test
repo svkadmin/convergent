@@ -2,6 +2,7 @@
 # test: boot releases on a throwaway disk. Runs as root after build/image.
 #   build/test <release>
 #   build/test --recovery <release>     recovery profile, unlock, continue and bless
+#   build/test --rescue <release>       standalone rescue, empty slots, unlock and power off
 #   build/test --corrupt <release>
 #   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
 #   build/test --fallback <good-release> <bad-release>
@@ -18,13 +19,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop|--recovery] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
 --recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
+--rescue) mode=rescue; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
 --guests | --guests-update | --online)
 	mode=${1#--}; shift
@@ -102,7 +104,7 @@ detach() {
 make_disk() {
 	case $mode in online) truncate -s 64G "$disk" ;; guests* | update) truncate -s 48G "$disk" ;; *) truncate -s 16G "$disk" ;; esac
 	slot_mib=$(( (size >> 20) + 64 ))
-	bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
+	bld sgdisk -n1:0:+512M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 		-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
 	attach
 }
@@ -634,7 +636,17 @@ make_esp() {
 	mount "${loop}p1" "$esp"
 	mkdir -p "$esp/EFI/BOOT" "$esp/EFI/Linux" "$esp/loader"
 	cp "$BUILDER/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$esp/EFI/BOOT/BOOTX64.EFI"
-	printf 'timeout 0\neditor no\ndefault convergent-*\n' >"$esp/loader/loader.conf"
+	printf 'timeout 0\neditor no\ndefault convergent-[0-9]*\n' >"$esp/loader/loader.conf"
+}
+
+install_rescue() {
+	mkdir -p "$root"
+	mount -t erofs -o ro,loop "$BUILDER/releases/$release/slot.img" "$root"
+	cp "$root/usr/lib/convergent/rescue.efi" "$esp/EFI/Linux/convergent-rescue.efi" || die 'release has no rescue UKI'
+	umount "$root"
+	# Boot the shipped UKI; SMBIOS adds only the serial console, as in --update.
+	printf 'timeout 0\neditor no\ndefault convergent-rescue.efi\n' >"$esp/loader/loader.conf"
+	(cd "$esp/EFI/Linux" && sha256sum *.efi) >"$BUILDER$work/esp-before"
 }
 
 install_uki() {   # release slot counter
@@ -697,7 +709,7 @@ qemu = subprocess.Popen([
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
-    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal == "update" else []) +
+    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
     (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-update") else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -761,9 +773,13 @@ try:
                         qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
                     if goal == "recovery" and sent and not continued and b"Recovery choice: " in seen:
                         qemu.stdin.write(b"3\n"); qemu.stdin.flush(); continued = True
+                    if goal == "rescue" and sent and not continued and b"Rescue choice: " in seen:
+                        qemu.stdin.write(b"7\n"); qemu.stdin.flush(); continued = True
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
             if goal == "recovery":
                 done = done and continued
+            if goal == "rescue":
+                done = False  # Wait for guest poweroff, not a host-initiated quit.
             if ready and not quitting and done:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
@@ -810,26 +826,39 @@ if [ "$mode" = guests-update ]; then
 	make_broken_svc
 fi
 make_disk
-write_slot "$release" 2
+[ "$mode" = rescue ] || write_slot "$release" 2
 make_state
 make_esp
 case $mode in
-boot | corrupt | recovery) install_uki "$release" a +3 ;;
+boot | corrupt | recovery | rescue) install_uki "$release" a +3 ;;
 *) install_uki "$release" a '' ;;
 esac
 # The recovery profile's entry id is the UKI's plus @ and its number or ID; only it has an @.
 [ "$mode" != recovery ] || printf 'timeout 0\neditor no\ndefault convergent-*@*\n' >"$esp/loader/loader.conf"
+[ "$mode" != rescue ] || install_rescue
 umount "$esp"
 [ "$mode" != corrupt ] || corrupt 2
 detach
 [ "$mode" != update ] || inject_update
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | recovery | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | recovery | rescue | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
-case $mode in update | recovery) run_vm "$mode" ;; *) run_vm ;; esac
+case $mode in update | recovery | rescue) run_vm "$mode" ;; *) run_vm ;; esac
 case $mode in
 boot) blessed || die "release $release did not bless; see $log" ;;
+rescue)
+	[ "$ended" = poweroff ] && grep -qF 'Convergent rescue: state at /run/cv-state' "$log" &&
+		grep -qF 'Rescue choice: ' "$log" && ! grep -q ' is good' "$log" || die "rescue did not unlock and power off; see $log"
+	open_state ro
+	[ ! -e "$state/good" ] && [ ! -e "$state/highest" ] || die 'rescue blessed a release'
+	for f in "$state"/var-*; do [ ! -e "$f" ] || die 'rescue prepared a slot /var'; done
+	mount "${loop}p1" "$esp"
+	(cd "$esp/EFI/Linux" && sha256sum *.efi) >"$BUILDER$work/esp-after"
+	cmp "$BUILDER$work/esp-before" "$BUILDER$work/esp-after" || die 'rescue changed or counted the UKIs'
+	umount "$esp"
+	close_state
+	;;
 recovery)
 	blessed || die "recovery did not continue and bless; see $log"
 	grep -qF "Convergent recovery: release $release, slot a" "$log" || die "no recovery menu; see $log"
@@ -888,7 +917,7 @@ fallback | interrupt)
 		mount "${loop}p1" "$esp"
 		install_uki "$other" b +3
 		# As install/install: newest entry first, exhausted entries last.
-		printf 'timeout 0\neditor no\ndefault convergent-*\n' >"$esp/loader/loader.conf"
+		printf 'timeout 0\neditor no\ndefault convergent-[0-9]*\n' >"$esp/loader/loader.conf"
 		umount "$esp"
 		detach
 		failed=0

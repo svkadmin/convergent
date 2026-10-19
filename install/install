@@ -189,8 +189,9 @@ pe "$work/uki" uki || die "invalid slot A UKI"
 # TODO(signing): verify EFI signatures and firmware enrollment.
 boot_size=$(stat -Lc %s "$bootloader") || die "cannot size systemd-boot"
 uki_size=$(stat -Lc %s "$work/uki") || die "cannot size UKI"
-# An update keeps the running UKI while it stages the new one.
-[ $((boot_size * 2 + uki_size * 2)) -lt $(((esp_mib - 24) * 1048576)) ] || die "boot files do not fit the ESP"
+# Include the larger slot UKI when reserving space for both releases.
+other_uki_size=$(stat -Lc %s "$dir/convergent-$release-b.efi") || die "cannot size slot B UKI"
+[ "$uki_size" -ge "$other_uki_size" ] || uki_size=$other_uki_size
 
 # Resolve the live root's disks; refuse RAM/overlay roots.
 bootdisks=
@@ -263,6 +264,15 @@ run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state
 loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 image_mounted=1
+rescue=$work/image/usr/lib/convergent/rescue.efi
+rescue_size=0
+if [ -f "$rescue" ]; then
+	pe "$rescue" uki || die "invalid rescue UKI"
+	rescue_size=$(stat -Lc %s "$rescue") || die "cannot size rescue UKI"
+fi
+# Two release UKIs, both bootloader paths, rescue and room for its atomic replacement.
+[ $((boot_size * 2 + uki_size * 2 + rescue_size * 2)) -lt $(((esp_mib - 24) * 1048576)) ] ||
+	die "boot files do not fit the ESP"
 grep -qx 'command_args="-g seat"' "$work/image/etc/init.d/seatd" ||
 	die "image seatd must own its socket with -g seat"
 [ "$(cat "$work/image/usr/lib/convergent/release")" = "$release" ] || die "image release differs"
@@ -418,7 +428,15 @@ for dst in EFI/BOOT/BOOTX64.EFI EFI/systemd/systemd-bootx64.efi; do
 	run cp "$bootloader" "$work/esp/$dst"
 	run cmp -s "$bootloader" "$work/esp/$dst"
 done
-printf 'timeout 3\neditor no\ndefault convergent-*\n' >"$work/esp/loader/loader.conf" || die "cannot write loader.conf"
+printf 'timeout 3\neditor no\ndefault convergent-[0-9]*\n' >"$work/esp/loader/loader.conf" || die "cannot write loader.conf"
+if [ -f "$rescue" ]; then
+	dst=$work/esp/EFI/Linux/convergent-rescue.efi
+	run cp "$rescue" "$dst.new"
+	run cmp -s "$rescue" "$dst.new"
+	run sync
+	run mv "$dst.new" "$dst"
+	run sync
+fi
 dst=$work/esp/EFI/Linux/convergent-$release-a+3.efi
 run cp "$work/uki" "$dst.new"
 run cmp -s "$work/uki" "$dst.new"
