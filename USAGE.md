@@ -114,8 +114,8 @@ Super+b or Super+Shift+t shows a line at the top with the reason; the full outpu
 | portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; starts only while portal mode is on |
 | admin | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
 
-web, admin and portal refuse a second start while open; tmp can run many at once. Downloads stay
-in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no sync, no password
+A second start of web or admin brings the open window forward; portal refuses one; tmp can run many
+at once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no sync, no password
 manager, no telemetry; admin and portal allow no extensions. The admin browser starts Grafana in
 svc and stops it on close. Log in as `owner` with the password in
 `/var/lib/convergent/guests/tls/admin-password` (`sudo cat`). A handler that sends links from
@@ -272,7 +272,7 @@ and manual guest updates: [README, Update](README.md#update).
 ## Power and locking
 
 - The screen locks after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes
-  (swayidle, swaylock).
+  (swayidle, swaylock); a minute after the lock the screen turns off. NL in the bar pauses both.
   `sys power lock` locks now. Pause or resume the idle lock with the `NL` block in the bar.
 - `power` sets the CPU energy preference and a clock cap for AC or battery (4.2 GHz by default,
   `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or

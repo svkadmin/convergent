@@ -58,9 +58,15 @@ poll_inputs() {
 	timeout -k 1 2 ip -4 route show default 2>/dev/null |
 		awk '{for (i=1;i<NF;i++) if ($i == "dev") {print $(i+1); exit}}' >"$work/.route"
 	mv "$work/.route" "$work/route"
-	layout=$(timeout -k 1 2 swaymsg -t get_inputs 2>/dev/null |
-		jq -er '[.[] | select(.type == "keyboard")][0].xkb_active_layout_name |
-		select(type == "string") | if test("\\(US\\)") then "US" else .[0:2] | ascii_upcase end') || layout='?'
+	# The layout's code (SK, GB), looked up by the name sway reports in xkeyboard-config's list.
+	layout='?'
+	if name=$(timeout -k 1 2 swaymsg -t get_inputs 2>/dev/null |
+		jq -er '[.[] | select(.type == "keyboard")][0].xkb_active_layout_name | select(type == "string")'); then
+		layout=$(awk -v n="$name" '$1 == "!" {s=$2; next}
+			s == "layout" {c=$1; sub(/^ *[^ ]+ +/, ""); if ($0 == n) {print toupper(c); exit}}
+			s == "variant" {sub(/^ *[^ ]+ +/, ""); i=index($0, ": "); if (i && substr($0, i+2) == n) {print toupper(substr($0, 1, i-1)); exit}}' \
+			/usr/share/X11/xkb/rules/evdev.lst 2>/dev/null | grep .) || layout=$(printf '%.2s' "$name" | tr a-z A-Z)
+	fi
 	printf '%s\n' "$layout" >"$work/.layout" && mv "$work/.layout" "$work/layout"
 }
 
@@ -86,8 +92,9 @@ while :; do
 	pkill -0 -u "$uid" -x swayidle 2>/dev/null || nl=missing
 	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
-	# One formatter per frame; procfs/sysfs reads need no helper processes.
-	awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
+	# One formatter per frame; procfs/sysfs reads need no helper processes. UTF-8: the network
+	# name is cut by characters.
+	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
 		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
 		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" '

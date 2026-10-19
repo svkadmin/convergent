@@ -63,7 +63,8 @@ printf '%s\n' "$state_max" >"$root/usr/lib/convergent/state-max-gib"
 } >"$root/etc/convergent/dns.conf"
 xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
-sed -i "s/timeout 600 /timeout $((idle * 60)) /; s/timeout 660 /timeout $((idle * 60 + 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
+# The power-off first: the lock, always the first timeout, could otherwise become 660 and be taken.
+sed -i "s/timeout 660 /timeout $((idle * 60 + 60)) /; s/timeout 600 /timeout $((idle * 60)) /; s/xkb_layout \"us\"/xkb_layout \"$xkb_layout\"/; s/xkb_variant \"\"/xkb_variant \"$xkb_variant\"/" \
 	"$root/etc/sway/config.d/convergent"
 if [ -n "$scale" ]; then
 	sed -i "/^include ~\/\.config\/sway\/config.d\/\*/i output * scale $scale" "$root/etc/sway/config.d/convergent"

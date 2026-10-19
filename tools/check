@@ -59,7 +59,8 @@ if [ "${1:-}:$#" = status:1 ]; then
         else echo nolink - >"$status/.wan"; fi
     ) &
     if wifi=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan wifi status 9>&- 2>/dev/null); then
-        printf '%s\n' "$wifi" | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
+        # Valid UTF-8 only: the bar's markup breaks on anything else.
+        printf '%s\n' "$wifi" | iconv -c -f UTF-8 -t UTF-8 | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
     else wifi=; echo '?' >"$status/.wifi"; fi
     # What the guests hold, which the bar leaves out of the host's use: container cgroups, and VM
     # processes outside them.
