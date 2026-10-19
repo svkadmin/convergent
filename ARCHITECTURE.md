@@ -74,7 +74,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
 | Audit | auditd with immutable rules for identity files, the guests' SSH keys, the accepted check baseline, the DNS files, authentication, privilege changes, boot files, keys, module loading, policy changes and commands run as root; records forwarded to svc |
 | Accounts | root locked; the owner in `wheel`, `seat`, `audio` and `video` only; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt (SHA-512 crypt for an initramfs recovery reset); faillock after 5 failures for 15 minutes; restrictive umask |
-| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles. *(Planned:* signing with the owner's key*)* |
+| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles, plus a standalone rescue UKI. *(Planned:* signing with the owner's key*)* |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the UKI command line; the root hash will be covered by the Secure Boot signature *(planned)* |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
 | Memory | No disk swap; zram swap of 32 GiB (a ceiling, not a reservation; its index costs about 128 MiB), zswap off *(planned)* |
@@ -317,7 +317,7 @@ The normal title is unchanged, e.g. `Gentoo Linux <release> (slot a)`; recovery 
 `(Recovery)`. Entry IDs are `convergent-<release>-a.efi` and
 `convergent-<release>-a.efi@recovery`, with boot counters stripped from both IDs.
 In systemd-boot 260.1, entries sort by descending IMAGE_VERSION and filename, then profiles
-retain their discovery order (0 first) in its stable sort. Thus `default convergent-*` still
+retain their discovery order (0 first) in its stable sort. Thus `default convergent-[0-9]*`
 selects the newest non-exhausted UKI's normal profile. Both profiles use the same counted
 file, e.g. `convergent-<release>-a+3.efi`: entering recovery on an unblessed release consumes
 one try. Continuing runs the usual health checks; `slot bless` renames that shared file to
@@ -329,6 +329,38 @@ ukify automatically supplies a base profile. Fragments live in a temporary direc
 removed: release files, manifest entries and installed UKI names stay the same. Kernel and
 initrd occur once; the profiles add only metadata and the recovery command line. The
 installer's ESP check uses the actual UKI size, including these sections.
+
+The standalone rescue UKI is independent of both slots: the release kernel, Intel microcode,
+and a separate dracut initramfs with `convergent` and `convergent-rescue`. Its command line has
+`convergent.rescue=1`, no verity table and no slot root. A cmdline hook claims a synthetic root;
+the pre-mount hook unlocks state using the same code and US keyboard rules as normal boot, then
+runs the rescue console menu without ever reaching root mounting or pivot. It neither grows
+state nor prepares a release `/var`. The slot pre-pivot hook and watchdog drivers are omitted;
+no network services or guest daemons run. The menu shares Recovery's password reset code.
+
+Rescue includes cryptsetup, Btrfs, OpenSSL, `slot`, USB filesystem support and the small console,
+disk, checksum and archive tools they need, with their libraries and i915 firmware. It mounts
+release USB media read-only and requires the embedded channel key's manifest signature.
+`slot rescue-write` is gated to rescue, permits an explicitly confirmed reinstall or downgrade,
+and reuses normal write/readback and counted UKI installation while preserving `/var`, `good`
+and `highest`. `slot rescue-next` sets the normal entry ID in `LoaderEntryOneShot`; logs can be
+exported without starting guests. There is no continue-to-host path or rescue blessing.
+
+Build rescue before EROFS and put it at `/usr/lib/convergent/rescue.efi`, covered by the slot's
+verity hash. Release files and manifest fields stay unchanged, so update 7 clients can still
+write the release. After health checks and blessing, `slot` compares that file with the ESP's
+`EFI/Linux/convergent-rescue.efi`, copies to `.new`, checks, syncs, renames and syncs when it
+differs. Existing rescue survives a failed copy; a later bless retries. The installer also copies
+it and reserves space for two release UKIs, both systemd-boot paths, rescue and an extra rescue
+for atomic replacement. Older releases without rescue remain installable.
+
+Rescue's `IMAGE_ID=zz-convergent-rescue` sorts after bootable releases; systemd-boot 260 moves
+exhausted entries below it regardless of sort key. The numbered default pattern excludes rescue,
+including when both slots are exhausted. Bless migrates the old `default convergent-*` line.
+Rescue is a normal, currently unsigned UKI and can be signed for Secure Boot later. Its ESP copy
+is independent of slot corruption, but is not authenticated by firmware while Secure Boot is off.
+`build/test --rescue` uses the existing QEMU/OVMF console driver and the actual embedded UKI,
+with both slot roots empty; it checks unlock, menu, poweroff and unchanged counters/blessing state.
 
 ### 5.3 What is writable
 
@@ -469,7 +501,7 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 - **Backups:** from the menu, an export of `/home`, the writable `/etc` entries, the owner's
   guests and the custom volumes to LUKS-encrypted external media. Not in it: the infrastructure
   instances and `/var/lib/convergent`.
-- **Recovery:** each slot UKI's recovery profile (section 5.2), plus RECOVERY.md's numbered recipes
+- **Recovery:** each slot UKI's recovery profile and the standalone rescue entry (section 5.2), plus RECOVERY.md's numbered recipes
   for the failures known so far; each failure found on the laptop adds one. *(Planned:* restoring
   a guest snapshot, a restore tool for the backups.*)*
 

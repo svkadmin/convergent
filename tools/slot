@@ -11,9 +11,9 @@ tmp=
 mounted=
 
 # Warning level: /var/log/messages keeps warnings and up, and slot events are few.
-die() { logger -p user.err -t slot "$*"; echo "slot: $*" >&2; exit 1; }
-log() { logger -p user.warning -t slot "$*"; echo "slot: $*"; }
-usage() { echo "usage: slot bless | status | write <release-dir>" >&2; exit 2; }
+die() { logger -p user.err -t slot "$*" 2>/dev/null || :; echo "slot: $*" >&2; exit 1; }
+log() { logger -p user.warning -t slot "$*" 2>/dev/null || :; echo "slot: $*"; }
+usage() { echo "usage: slot bless | status | write <release-dir> | rescue-write <release-dir> [a|b|inactive] | rescue-next <a|b>" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # One run at a time.
@@ -37,7 +37,14 @@ booted() {
 	case $slot in a | b) ;; *) die "the kernel command line names no slot" ;; esac
 }
 
+rescue_only() {
+	[ -f /etc/convergent/rescue ] && grep -qw 'convergent.rescue=1' /proc/cmdline ||
+		die "this command requires the standalone rescue image"
+	stm=/run/slot-state
+}
+
 esp_mount() {
+	[ "$(blkid -o device -t PARTLABEL=cv-esp | wc -l)" = 1 ] || die "expected one cv-esp partition"
 	esp=$(mktemp -d /run/slot.XXXXXX)
 	mount -t vfat -o nodev,nosuid,noexec /dev/disk/by-partlabel/cv-esp "$esp" || die "the ESP did not mount"
 	mounted="$esp $mounted"
@@ -109,7 +116,22 @@ accept() {
 	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] || put good "$release"
 	prune
 	log "release $release in slot $slot is good"
-	echo "release $release is good" 2>/dev/null >/dev/console || :
+}
+
+copy_rescue() {
+	src=/usr/lib/convergent/rescue.efi
+	[ -f "$src" ] || return 0
+	# Exclude rescue even when both releases have exhausted their tries.
+	conf=$esp/loader/loader.conf
+	if grep -qxF 'default convergent-*' "$conf"; then
+		sed 's/^default convergent-\*$/default convergent-[0-9]*/' "$conf" >"$conf.new" &&
+			sync && mv "$conf.new" "$conf" && sync || die "could not update loader default"
+	fi
+	dst=$esp/$linux/convergent-rescue.efi
+	cmp -s "$src" "$dst" && return 0
+	cp "$src" "$dst.new" && cmp -s "$src" "$dst.new" &&
+		sync && mv -f "$dst.new" "$dst" && sync || die "could not install rescue UKI"
+	log "rescue UKI refreshed from release $release"
 }
 
 bless() {
@@ -140,6 +162,8 @@ bless() {
 	esac
 	disarm
 	accept
+	copy_rescue
+	echo "release $release is good" 2>/dev/null >/dev/console || :
 }
 
 status() {
@@ -162,10 +186,10 @@ write() {
 	tmp=$(mktemp -d /run/slot-write.XXXXXX)
 	m=$tmp/manifest
 	cp "$dir/manifest" "$m" || die "cannot read the manifest"
-	if [ "${CONVERGENT_UNSIGNED:-}" = 1 ]; then
+	if [ "${CONVERGENT_UNSIGNED:-}" = 1 ] && [ -z "${rescue_target:-}" ]; then
 		log "writing without a signature check (CONVERGENT_UNSIGNED=1)"
 	else
-		[ -f "$key" ] || die "this image trusts no release key; CONVERGENT_UNSIGNED=1 writes an unsigned release"
+		[ -f "$key" ] || die "this image trusts no release key"
 		cp "$dir/manifest.sig" "$tmp/sig" 2>/dev/null || die "the release is not signed"
 		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$m" -sigfile "$tmp/sig" \
 			>/dev/null 2>&1 || die "the manifest signature does not verify"
@@ -178,15 +202,34 @@ write() {
 	grep -E '^[0-9a-f]{64}  ' "$m" | (cd "$dir" && sha256sum -c --quiet -) ||
 		die "the release does not match its manifest"
 
-	booted
-	expr "$new" '>' "$release" >/dev/null || die "release $new is not newer than the booted $release"
-	# Only a good boot may overwrite the fallback.
-	state_mount rw
-	[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] ||
-		die "the booted release $release is not the one marked good; boot the good slot or let it bless first"
-	hi=$(num highest)
-	expr "$new" '>' "$hi" >/dev/null || die "release $new is not newer than $hi, the highest ever blessed"
-	[ "$slot" = a ] && inactive=b || inactive=a
+	if [ -n "${rescue_target:-}" ]; then
+		state_mount rw
+		esp_mount
+		inactive=$rescue_target
+		if [ "$inactive" = inactive ]; then
+			good=$(num good)
+			active=
+			for s in a b; do
+				for u in $(ukis "$s"); do
+					[ "$(uki_release "$u")" != "$good" ] || active="$active$s"
+				done
+			done
+			case $active in a) inactive=b ;; b) inactive=a ;; *) die "cannot identify the last good slot; choose a or b" ;; esac
+		fi
+		printf 'Write signed release %s over slot %s (highest blessed: %s)? Type yes: ' "$new" "$inactive" "$(num highest)"
+		IFS= read -r answer || die "no confirmation"
+		[ "$answer" = yes ] || die "cancelled"
+	else
+		booted
+		expr "$new" '>' "$release" >/dev/null || die "release $new is not newer than the booted $release"
+		# Only a good boot may overwrite the fallback.
+		state_mount rw
+		[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] ||
+			die "the booted release $release is not the one marked good; boot the good slot or let it bless first"
+		hi=$(num highest)
+		expr "$new" '>' "$hi" >/dev/null || die "release $new is not newer than $hi, the highest ever blessed"
+		[ "$slot" = a ] && inactive=b || inactive=a
+	fi
 	part=/dev/disk/by-partlabel/cv-slot-$inactive
 	[ -b "$part" ] || die "no partition $part"
 	[ "$(blkid -o device -t PARTLABEL=cv-slot-$inactive | wc -l)" = 1 ] || die "more than one disk has a cv-slot-$inactive partition"
@@ -198,14 +241,14 @@ write() {
 		die "$uki does not match the manifest"
 
 	# Remove the old UKI before overwriting its image.
-	esp_mount
+	[ -n "$esp" ] || esp_mount
 	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"+*.efi.new; do
 		if [ -e "$f" ]; then rm "$f"; fi
 	done
 	sync
 	# Remove /var from a previous failed attempt at this release.
 	for v in "$stm/var-$new" "$stm/var-$new.new"; do
-		if [ -d "$v" ]; then btrfs -q subvolume delete "$v" || die "could not remove $v"; fi
+		if [ -z "${rescue_target:-}" ] && [ -d "$v" ]; then btrfs -q subvolume delete "$v" || die "could not remove $v"; fi
 	done
 	log "writing release $new to slot $inactive"
 	dd if="$dir/slot.img" of="$part" bs=1M conv=fsync status=none || die "writing slot $inactive failed"
@@ -220,9 +263,43 @@ write() {
 	log "release $new is in slot $inactive with three tries; reboot to try it"
 }
 
+rescue_next() {
+	case $1 in a | b) ;; *) usage ;; esac
+	esp_mount
+	set -- $(ukis "$1")
+	[ $# = 1 ] || die "expected one UKI for the selected slot"
+	entry=${1##*/}
+	entry=${entry%%+*}
+	case $entry in *.efi) ;; *) entry=$entry.efi ;; esac
+	vars=/sys/firmware/efi/efivars
+	mkdir -p "$vars"
+	if ! findmnt -rn -t efivarfs "$vars" >/dev/null; then
+		mount -t efivarfs efivarfs "$vars" || die "cannot mount EFI variables"
+		mounted="$vars $mounted"
+	fi
+	# EFI attributes, then a NUL-terminated UTF-16LE entry ID without its counter.
+	tmp=$(mktemp -d /run/slot-next.XXXXXX)
+	printf '\007\000\000\000' >"$tmp/entry"
+	case $entry in *[!a-z0-9.-]*) die "invalid entry ID" ;; esac
+	for char in $(printf '%s' "$entry" | sed 's/./& /g'); do printf '%s\000' "$char"; done >>"$tmp/entry"
+	printf '\000\000' >>"$tmp/entry"
+	cat "$tmp/entry" >"$vars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" ||
+		die "cannot set the next boot entry"
+	sync
+	log "next boot: $entry (boot counter and good state unchanged)"
+}
+
 case ${1:-} in
 bless) [ $# = 1 ] || usage; bless ;;
 status) [ $# = 1 ] || usage; status ;;
 write) [ $# = 2 ] || usage; write "$2" ;;
+rescue-write)
+	[ $# = 2 ] || [ $# = 3 ] || usage
+	rescue_only
+	rescue_target=${3:-inactive}
+	case $rescue_target in a | b | inactive) ;; *) usage ;; esac
+	write "$2"
+	;;
+rescue-next) [ $# = 2 ] || usage; rescue_only; rescue_next "$2" ;;
 *) usage ;;
 esac

@@ -62,7 +62,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
 | Proven on the laptop | boot, unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch), the web and admin browsers |
 | Built, laptop test to finish | the tmp and portal browsers, audio, Bluetooth, power, online guest delivery |
-| Not built | Secure Boot signing (Secure Boot stays off) |
+| Implemented, QEMU and laptop tests pending | standalone rescue entry independent of both slots; `build/test --rescue <release>` |
+| Not built | Secure Boot signing, including rescue (Secure Boot stays off) |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
 after a release has also run on the laptop. Releases are tags on `stable`.
