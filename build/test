@@ -8,6 +8,7 @@
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
 #   build/test --guests <release> <guests-dir>
 #   build/test --guests-update <release> <guests-dir> <broken-svc-dir>
+#   build/test --online <release> <guests-dir>   once <release> is published: its guests from R2
 set -eu
 umask 077
 
@@ -16,14 +17,14 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
---guests | --guests-update)
+--guests | --guests-update | --online)
 	mode=${1#--}; shift
 	if [ "$mode" = guests-update ]; then
 		[ $# = 3 ] || usage
@@ -97,7 +98,7 @@ detach() {
 }
 
 make_disk() {
-	case $mode in guests* | update) truncate -s 48G "$disk" ;; *) truncate -s 16G "$disk" ;; esac
+	case $mode in online) truncate -s 64G "$disk" ;; guests* | update) truncate -s 48G "$disk" ;; *) truncate -s 16G "$disk" ;; esac
 	slot_mib=$(( (size >> 20) + 64 ))
 	bld sgdisk -n1:0:+256M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 		-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$work/disk.img" >/dev/null
@@ -371,6 +372,34 @@ echo CV-UPDATE-RESULT "$result"
 EOF
 }
 
+# The booted release is the published latest; its guests come from R2 as on a laptop that took it
+# as a host-only update (nothing installed under release-guests).
+inject_online() {
+	cat >"$var/lib/convergent/test-release/update-test" <<'EOF'
+#!/bin/sh
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+result=0
+[ "$1" = 0 ] || { sync; echo CV-ONLINE-RESULT 1; exit 1; }
+rm -rf /var/lib/convergent/release-guests/guests
+timeout -k 10 5400 fetch-release >/var/log/online-fetch.log 2>&1 || result=1
+tail -n 25 /var/log/online-fetch.log
+grep -q '^updating the guests of release ' /var/log/online-fetch.log || result=1
+[ "$(cat /run/convergent/status/guests-update 2>/dev/null)" = done ] || result=1
+for g in fw wan svc browser; do
+	[ -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] || { echo "CV-ONLINE missing $g"; result=1; }
+done
+[ -z "$(ls -A /var/lib/convergent/guest-updates 2>/dev/null)" ] || result=1
+line=$(timeout -k 5 120 fetch-release check 2>&1)
+echo "CV-ONLINE check: $line"
+case $line in 'up to date:'*) ;; *) result=1 ;; esac
+/usr/local/sbin/guests status
+sync
+echo CV-ONLINE-RESULT "$result"
+EOF
+}
+
 inject_guests() {
 	open_state rw
 	var="$state/var-$release"
@@ -378,6 +407,7 @@ inject_guests() {
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
 	[ "$mode" != guests-update ] || inject_guest_update
+	[ "$mode" != online ] || inject_online
 	# The QEMU uplink goes to wan as eth1, as a USB NIC would; then DNS over TLS and egress end to end.
 	cat >"$var/lib/convergent/test-release/uplink-test" <<'EOF'
 nic=$(ip -o link | awk -F': ' '/52:54:00:c0:ff:ee/ {print $2; exit}')
@@ -612,7 +642,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=3600 ;; guests-update) memory=8192; limit=7200 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192; limit=3600 ;; guests-update | online) memory=8192; limit=7200 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -629,8 +659,8 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
-guest_test = goal in ("guests", "guests-update", "desktop", "update")
-marker = {"guests-update": b"CV-UPDATE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
+guest_test = goal in ("guests", "guests-update", "online", "desktop", "update")
+marker = {"guests-update": b"CV-UPDATE-RESULT", "online": b"CV-ONLINE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -772,7 +802,7 @@ detach
 [ "$mode" != update ] || inject_update
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | desktop | guests | guests-update) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 if [ "$mode" = update ]; then run_vm update; else run_vm; fi
 case $mode in
@@ -798,10 +828,10 @@ desktop)
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
 	[ "$ended" = desktop-0 ] || die "desktop smoke test failed ($ended); CV-DESKTOP lines in $log"
 	;;
-guests | guests-update)
+guests | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	if [ "$mode" = guests-update ]; then budget=7200; else budget=3600; fi
+	if [ "$mode" = guests ]; then budget=3600; else budget=7200; fi
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
