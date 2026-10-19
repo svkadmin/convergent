@@ -20,19 +20,69 @@ wifi_scan() { noargs "$@"; page wifi_wan scan </dev/null; }
 wifi_connect() { wifi_join '' "$@"; }
 wifi_hidden() { wifi_join -hidden "$@"; }
 wifi_disconnect() { noargs "$@"; wifi_wan disconnect </dev/null; }
+wifi_pick() (
+	states=$(mktemp -d) || exit 1
+	trap 'rm -rf -- "$states"' 0
+	trap 'exit 1' HUP INT TERM
+	wifi_wan scan </dev/null >"$states/scan" || exit 1
+	# Use iwctl's column headings so spaces and security words in names survive.
+	awk '
+	/^[ \t]*Network name[ \t]+Security[ \t]+Signal[ \t]*$/ {
+		start=index($0,"Network name"); sec=index($0,"Security"); sig=index($0,"Signal"); next
+	}
+	start {
+		s=substr($0,start,sec-start); sub(/[ \t]+$/, "", s)
+		security=substr($0,sec,sig-sec); gsub(/^[ \t]+|[ \t]+$/, "", security)
+		signal=substr($0,sig); gsub(/^[ \t]+|[ \t]+$/, "", signal)
+		if (s != "" && security ~ /^(open|psk|8021x)$/)
+			print ++n "\t" s "\t" security "\t" (signal == "" ? "no bars" : signal)
+	}' "$states/scan" >"$states/networks"
+	[ -s "$states/networks" ] || die 'no visible networks; rescan closer to the AP, or use sys wifi hidden'
+	SYS_PREVIEW=$states/preview; export SYS_PREVIEW
+	mkdir "$SYS_PREVIEW" || exit 1
+	while IFS="$tab" read -r id name security signal; do
+		printf '%s\nSecurity: %s\nSignal: %s\n' "$name" "$security" "$signal" >"$SYS_PREVIEW/$id"
+	done <"$states/networks"
+	menu Wi-Fi 'Enter connect · Esc cancel · Hidden SSID: sys wifi hidden' <"$states/networks" || exit 1
+	[ -n "$selected" ] || exit 1
+	awk -F '\t' -v id="$selected" '$1 == id {print $2}' "$states/networks"
+)
+wifi_join_reply() {
+	_reply=$(wifi_wan "$1"); _result=$?
+	printf '%s\n' "$_reply"
+	if [ "$_result" != 0 ]; then
+		case $_reply in
+		*[Aa]uth*|*[Pp]assphrase*) echo 'Wi-Fi authentication failed: check the passphrase and AP security.' >&2 ;;
+		*"not found"*|*"No network"*|*"out of range"*) echo 'Wi-Fi has no signal for that SSID; move closer, rescan, or use hidden.' >&2 ;;
+		*"Operation failed"*) echo 'Wi-Fi association failed: check the passphrase and signal, then retry; wan did not report a more specific cause.' >&2 ;;
+		*) echo 'wan could not join; check the error above and sys wifi status.' >&2 ;;
+		esac
+		return "$_result"
+	fi
+	for attempt in 1 2 3 4 5 6; do
+		_reply=$(wifi_wan status </dev/null) || return
+		printf '%s\n' "$_reply" | grep -q '^address ' && return 0
+		sleep 5
+	done
+	die 'joined but DHCP supplied no IPv4 address; check the AP DHCP service and sys wifi test (including overlap refusal)'
+}
 wifi_join() {
 	suffix=$1; shift
 	[ "$#" -le 1 ] || usage
-	page wifi_wan scan </dev/null || return
-	onearg SSID "$@"; ssid_valid "$answer"; ssid=$answer
+	if [ "$#" = 0 ] && [ -z "$suffix" ]; then
+		ssid=$(wifi_pick) || return
+	else
+		onearg SSID "$@"; ssid=$answer
+	fi
+	ssid_valid "$ssid"
 	pass=$(secret) || return
 	text_valid "$pass"
 	if [ -n "$pass" ]; then
 		bytes=$(printf %s "$pass" | LC_ALL=C wc -c)
 		[ "$bytes" -ge 8 ] && [ "$bytes" -le 63 ] || die 'passphrase must be 8-63 bytes'
-		printf '%s\n%s\n' "$ssid" "$pass" | wifi_wan "add$suffix"
+		printf '%s\n%s\n' "$ssid" "$pass" | wifi_join_reply "add$suffix"
 	else
-		printf '%s\n' "$ssid" | wifi_wan "connect$suffix"
+		printf '%s\n' "$ssid" | wifi_join_reply "connect$suffix"
 	fi
 }
 wifi_forget() {

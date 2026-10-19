@@ -6,7 +6,7 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 tb=/sys/bus/thunderbolt/devices
 
 die() { echo "devices: $*" >&2; exit 1; }
-usage() { echo "usage: devices list | allow ID | allow tb ID" >&2; exit 2; }
+usage() { echo "usage: devices list | allow ID | allow tb ID | wired status|remove|attach VENDOR:PRODUCT SERIAL" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # ask: show the question, accept only the word yes from a terminal.
@@ -76,7 +76,64 @@ allow_tb() {
 	die "no Thunderbolt device with unique id $id"
 }
 
+ic() { incus --force-local --project default "$@" 9>&-; }
+wired() {
+	umask 077
+	mkdir -p /run/convergent
+	exec 9>/run/convergent/guests.lock
+	flock -n 9 || die 'another guest operation is running'
+	instance=$(incus --force-local query '/1.0/instances/wan?project=default') || die 'cannot read wan'
+	printf '%s\n' "$instance" | jq -e '.type == "virtual-machine"' >/dev/null || die 'wan is not a VM'
+	role=$(printf '%s\n' "$instance" | jq -c '.devices["wired-uplink"] // null')
+	case ${1:-} in
+	status)
+		[ $# = 1 ] || usage
+		printf 'wan wired-uplink: %s\n' "$role"
+		allowed=$(usbguard list-devices -a) || die 'USBGuard does not answer'
+		printf '%s\n' "$allowed" | tr -d '\000-\010\013-\037\177'
+		;;
+	remove)
+		[ $# = 1 ] || usage
+		[ "$role" != null ] || return 0
+		ic config device remove wan wired-uplink
+		;;
+	attach)
+		[ $# = 3 ] || usage
+		# Only the owner's supported NIC; no arbitrary USB classes enter wan.
+		[ "$2" = 0bda:8153 ] || die 'supported uplink is 0bda:8153'
+		serial=$3
+		case $serial in ''|*[!A-Za-z0-9_.:-]*) die 'invalid USB serial' ;; esac
+		[ "${#serial}" -le 64 ] || die 'USB serial exceeds 64 characters'
+		[ "$role" = null ] || die 'remove the existing wired role first'
+		allowed=$(usbguard list-devices -a) || die 'USBGuard does not answer'
+		printf '%s\n' "$allowed" | serial="$serial" awk '
+		$2 == "allow" && $3 == "id" && $4 == "0bda:8153" &&
+		index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
+		END {exit n != 1}' || die 'exactly one matching NIC must be allowed by USBGuard; use sys usb allow first'
+		found=0
+		for d in /sys/bus/usb/devices/*; do
+			[ "$(cat "$d/idVendor" 2>/dev/null)" = 0bda ] &&
+			[ "$(cat "$d/idProduct" 2>/dev/null)" = 8153 ] &&
+			[ "$(cat "$d/serial" 2>/dev/null)" = "$serial" ] || continue
+			[ "$(cat "$d/authorized")" = 1 ] || die 'NIC is not authorized'
+			for n in "$d"/*/net/*; do
+				[ -e "$n" ] || continue
+				addresses=$(ip -o addr show dev "${n##*/}") || die 'cannot check host NIC addresses'
+				[ -z "$addresses" ] || die 'NIC has host addresses; refusing passthrough'
+			done
+			found=$((found + 1))
+		done
+		[ "$found" = 1 ] || die 'NIC missing or serial is ambiguous'
+		ask "Assign 0bda:8153 serial $serial to wan, including future replugs?"
+		ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false
+		echo 'Wired role set. Incus attaches matching authorized replugs; sys wired remove clears it.'
+		;;
+	*) usage ;;
+	esac
+}
+
 case ${1:-} in
+wired) shift; wired "$@" ;;
 list) [ $# = 1 ] || usage; list ;;
 allow)
 	case $# in

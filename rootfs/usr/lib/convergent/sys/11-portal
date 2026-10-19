@@ -6,7 +6,6 @@ off	Close portal	root'
 portal_state() { printf 'Portal: %s\n' "$(cached /run/convergent/status/portal)"; }
 portal_on() {
 	noargs "$@"
-	run sudo /usr/local/sbin/portal on || return
 	browser_start portal
 }
 portal_off() { noargs "$@"; run sudo /usr/local/sbin/portal off; }

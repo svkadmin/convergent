@@ -32,8 +32,17 @@ fi
 # A wired uplink (USB NIC) has no hotplug handler here: bring it up once it appears, unless
 # its lease was refused; ifup is a no-op for an interface already up.
 for ifc in $UP_IFS; do
-	[ "$ifc" != "$WIFI_IF" ] && [ -e "/sys/class/net/$ifc" ] || continue
+	[ "$ifc" != "$WIFI_IF" ] || continue
+	if [ ! -e "/sys/class/net/$ifc" ]; then
+		# Drop ifup's remembered state so a replug starts a new DHCP client.
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
+		continue
+	fi
 	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
+	# A quick replug may occur between checks, leaving ifup's state but no address.
+	if ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
+	fi
 	ifup "$ifc" 9>&- >/dev/null 2>&1 || :
 done
 

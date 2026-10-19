@@ -99,8 +99,19 @@ takes the upstream address by DHCP and performs the only NAT in the system.
 - **Networks:** join, forget, hidden networks and roaming between known networks, all from the
   menu. Credentials are sent over SSH on standard input and live only in wan. A replaced wan keeps
   its predecessor's saved networks (section 7.2).
+  `sys wifi connect` without an SSID reuses the sys fzf picker with scanned security and signal;
+  hidden SSIDs remain typed. Wan replies are sanitized and explained; after association the
+  host polls for wan's Wi-Fi IPv4 address six times at five-second intervals before reporting
+  DHCP failure.
 - **Wired uplink:** a USB network adapter approved in USBGuard can be passed to wan as an
-  uplink. No other role.
+  uplink. `sys wired attach` uses `devices wired attach` to require the approved 0bda:8153
+  identity and a unique nonempty serial, then adds `wired-uplink` to wan as an Incus `usb`
+  device with vendorid, productid, serial and required=false. Incus handles matching hotplug
+  and unplug; removing the role removes the device configuration. The guest-operation lock
+  serializes assignment with guest updates. The host does not configure the NIC or run DHCP;
+  wan's image includes Realtek NIC firmware and retains its existing eth1 DHCP/default-route
+  preference. Wan clears stale ifup state
+  after removal or an addressless replug, restarting DHCP at the next minute's check.
 - **Egress:** wan's own traffic is limited to DHCP and the NAT; it starts nothing toward the
   inside except syslog to svc.
 - **Management:** no Incus agent and no guest API; SSH from the host only, on its transit address.
@@ -128,6 +139,15 @@ offline smoke boot, and records each node's installed patches in `<node>.syspatc
   MSS clamping toward wan, and a ruleset hash the checker compares with the release.
 - **unbound**, from OpenBSD's base system, answers DNS on every segment's gateway address, so a
   failover carries DNS with it (section 4.5).
+- **Owner maintenance:** `sys firewall` (`fw`) reports each segment's CARP state, PF state
+  count, Unbound status and the last successful DNS push to both. Maintenance requires a
+  six-segment MASTER/BACKUP pair and healthy PF, pfsync with defer and local DNS on both.
+  It adds a dedicated `sysmaint` group to all six CARP interfaces on the master and demotes
+  that group by 128, then checks peer takeover. Failure removes that group; successful
+  maintenance stays until `sys fw undo`. A persistent host journal makes interrupted actions
+  recoverable without decrementing health/upgrade counters. Undo checks both nodes and the
+  normal fw1-master pair. Guest and DNS push locks serialize the operation; finish maintenance
+  before performing guest updates.
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
 - **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
 - **No DHCP:** every address is static (section 4.1).
@@ -266,6 +286,15 @@ router; the firewalls are.
 - **Blocklist:** an RPZ zone. The host downloads it weekly, retries on failure, validates it,
   and pushes the same file to both firewalls over SSH; the last good copy stays in force until
   a new one validates. A short allow-list file holds the owner's exceptions.
+- **Owner editor:** `sys dns` lists records and exceptions, adds/removes IPv4 A records and
+  allow-list names through `dns-push`. The helper holds the push lock through validation, a
+  proposed diff, confirmation and activation. It rejects duplicate names, malformed names or
+  IPv4 addresses and conflicts with either firewall's built-in names. Other manually maintained
+  record types remain supported by the push but are not edited by this interface. An edit
+  journals the previous owner inputs on encrypted state; recovery restores those and both
+  firewalls. A commit marker prevents a completed push from being rolled back during journal
+  cleanup. `last-push` records the UTC time for full and local pushes; the weekly-download
+  stamp remains separate.
 
 ---
 
@@ -588,7 +617,12 @@ How the owner uses it is in USAGE.md. The design points:
 - **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.
-- *(Planned:* guest and firewall actions in the menu, printing (off by default; IPP printers on
+  The browser launcher owns activation under its session lock and closes stale rules on all
+  three guests before a new opening. Failure to close any side prevents opening. The portal
+  tool journals closure before remote changes, retries partial closures each minute and records
+  a reason for `sys portal status`. Expiry is checked by cron and by browser status polling;
+  an orphaned session without a browser lock is closed after a one-minute startup allowance.
+- *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on
   the upstream network for the web browsers), display profiles, clipboard clearing.*)*
 
 ---
