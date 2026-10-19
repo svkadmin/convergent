@@ -151,7 +151,7 @@
         "w": 24,
         "h": 9
       },
-      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; total is the container limit or guest RAM, not a separately collected configured VM limit. Guest memory needs guest support; blank cells on agentless VMs are unknown. Rates use two minutes.",
+      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; agentless fw/wan VMs report capped QEMU RSS against configured RAM. Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -342,7 +342,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "CPU cores"
+              "options": "Incus cores"
             },
             "properties": [
               {
@@ -358,7 +358,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "RAM used"
+              "options": "Incus RAM"
             },
             "properties": [
               {
@@ -370,7 +370,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "RAM limit"
+              "options": "RAM total"
             },
             "properties": [
               {
@@ -490,9 +490,9 @@
             },
             "renameByName": {
               "Value #A": "state",
-              "Value #B": "CPU cores",
-              "Value #C": "RAM used",
-              "Value #D": "RAM limit",
+              "Value #B": "Incus cores",
+              "Value #C": "Incus RAM",
+              "Value #D": "RAM total",
               "Value #E": "RAM %",
               "Value #F": "in",
               "Value #G": "out",
@@ -545,14 +545,14 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "CPU · cores used",
+      "title": "CPU · Incus cores",
       "gridPos": {
         "x": 0,
         "y": 12,
         "w": 12,
         "h": 7
       },
-      "description": "Source: Incus CPU counters for selected project/name, user plus system time. One means one fully used CPU core.",
+      "description": "Source: Incus user plus system CPU time. For agentless fw/wan VMs this is QEMU vCPU thread overhead, excluding guest execution; it is not guest CPU utilization.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -619,14 +619,14 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Memory · used against guest total",
+      "title": "Memory · Incus used / total",
       "gridPos": {
         "x": 12,
         "y": 12,
         "w": 12,
         "h": 7
       },
-      "description": "Source: Incus MemTotal minus MemAvailable; total is container limit or guest RAM, not configured VM limit. Agentless VMs may not report memory; select svc for collection checks.",
+      "description": "Source: Incus MemTotal minus MemAvailable. Agentless fw/wan VMs report QEMU RSS capped at configured RAM, with configured RAM as total; this is not guest memory pressure. Containers use their memory limit.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -642,7 +642,7 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "used"
+          "legendFormat": "Incus used"
         },
         {
           "refId": "B",
@@ -654,7 +654,7 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "guest total / container limit"
+          "legendFormat": "Incus total"
         }
       ],
       "fieldConfig": {
@@ -689,7 +689,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "guest total / container limit"
+              "options": "Incus total"
             },
             "properties": [
               {
@@ -1034,7 +1034,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Stopped on-demand instances and their resource history are not an inventory source; only checker autostart expectations remain when stopped. Configured VM limits, guest filesystem fill, image currency and storage-pool capacity are not collected. OpenBSD and wan have no Incus agent: unsupported per-guest figures remain blank."
+        "content": "Stopped on-demand instances and their resource history are not an inventory source; only checker autostart expectations remain when stopped. Guest filesystem fill, image currency and storage-pool capacity are not collected. OpenBSD and wan have no Incus agent: their CPU is QEMU vCPU thread overhead and memory is capped QEMU RSS, not guest utilization."
       }
     }
   ],

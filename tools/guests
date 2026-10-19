@@ -52,23 +52,25 @@ clear_probes() {
 }
 rollback() {
     step=rollback
-    read -r guest snap <"$state/pending" || return
-    backup=$state/backups/$guest-$snap.tar.gz
-    [ -s "$backup" ] || { fail "missing backup $backup"; return 1; }
-    echo "guests: restoring $guest/$snap" >&2
-    ic list --format json >"$work/instances" || return
-    if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
-        if running "$guest"; then ic stop "$guest" --force || return; fi
-        seed_remove "$guest" || return
-        ic config set "$guest" security.protection.delete=false || return
-        ic delete "$guest" || return
-    fi
-    ic import "$backup" "$guest" || return
-    for volume in $(volumes "$guest"); do
-        ic storage volume snapshot restore default "$volume" "$snap" || return
+    while read -r guest snap <"$state/pending"; do
+        backup=$state/backups/$guest-$snap.tar.gz
+        [ -s "$backup" ] || { fail "missing backup $backup"; return 1; }
+        echo "guests: restoring $guest/$snap" >&2
+        ic list --format json >"$work/instances" || return
+        if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
+            if running "$guest"; then ic stop "$guest" --force || return; fi
+            seed_remove "$guest" || return
+            ic config set "$guest" security.protection.delete=false || return
+            ic delete "$guest" || return
+        fi
+        ic import "$backup" "$guest" || return
+        for volume in $(volumes "$guest"); do
+            ic storage volume snapshot restore default "$volume" "$snap" || return
+        done
+        cp "$state/known_hosts.before" "$keys/known_hosts" || return
+        case $guest in web|admin) ;; *) ic start "$guest" || return; retry healthy "$guest" || return ;; esac
+        tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
     done
-    cp "$state/known_hosts.before" "$keys/known_hosts" || return
-    case $guest in web|admin) ;; *) ic start "$guest" || return; retry healthy "$guest" || return ;; esac
     rm "$state/pending" || return
     pending=
 }
@@ -83,8 +85,10 @@ cleanup() {
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
     # Profiles first: the restored instance starts with what it ran with.
-    if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; }; fi
-    if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
+    if [ ! -f "$state/browser.ready" ]; then
+        if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; pending=; }; fi
+        if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
+    fi
     if [ -n "$starting" ]; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
     # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
@@ -112,10 +116,22 @@ update_status() {
 }
 
 # Secrets are generated once on this laptop, never on the build host.
+secret_valid() {
+    [ "$(wc -c <"$1")" -eq $(($2 * 2 + 1)) ] &&
+        LC_ALL=C grep -qxE "[0-9a-f]{$(($2 * 2))}" "$1"
+}
+secret_create() {
+    if [ -e "$1" ]; then
+        secret_valid "$1" "$2" || die "invalid secret: $1; remove it before retrying setup"
+        return
+    fi
+    openssl rand -hex "$2" >"$1.new" && secret_valid "$1.new" "$2" &&
+        sync && mv "$1.new" "$1" && sync || { rm -f "$1.new"; die "cannot generate $1"; }
+}
 credentials() {
     step=credentials
     mkdir -p "$tls" "$keys"
-    [ -f "$state/carp-pass" ] || openssl rand -hex 16 >"$state/carp-pass"
+    secret_create "$state/carp-pass" 16
     [ -f "$keys/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C convergent -f "$keys/id_ed25519"
     if [ ! -f "$tls/ca.crt" ]; then
         openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
@@ -137,7 +153,7 @@ credentials() {
             -set_serial "0x$(openssl rand -hex 16)" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt"
     done
     for secret in admin-password secret-key; do
-        [ -f "$tls/$secret" ] || openssl rand -hex 32 >"$tls/$secret"
+        secret_create "$tls/$secret" 32
     done
 }
 verify_image() {
@@ -172,11 +188,15 @@ import_image() {
     fingerprint=$(cat "$2" "$3" | sha256sum | awk '{print $1}')
     ic image list --format json >"$work/images"
     jq -e --arg fp "$fingerprint" '.[] | select(.fingerprint == $fp)' "$work/images" >/dev/null || ic image import "$2" "$3"
+    [ -z "${import_only:-}" ] || return 0
+    image_alias "$1" "$fingerprint"
+}
+image_alias() {
     ic image alias list --format json >"$work/aliases"
     target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases")
-    [ "$target" != "$fingerprint" ] || return 0
+    [ "$target" != "$2" ] || return 0
     [ -z "$target" ] || ic image alias delete "candidate-$1"
-    ic image alias create "candidate-$1" "$fingerprint"
+    ic image alias create "candidate-$1" "$2"
 }
 pin() {
     step="pin $1"
@@ -359,7 +379,12 @@ profile() {
 # Profiles as they were before this update; a failed update puts them back.
 profiles_save() {
     mkdir -p "$state/profiles.before"
-    for p do [ -f "$state/profiles.before/$p.yaml" ] || ic profile show "$p" >"$state/profiles.before/$p.yaml" || return; done
+    for p do
+        [ ! -f "$state/profiles.before/$p.yaml" ] || continue
+        ic profile show "$p" >"$state/profiles.before/$p.new" &&
+            mv "$state/profiles.before/$p.new" "$state/profiles.before/$p.yaml" || return
+    done
+    sync
 }
 profiles_restore() {
     for f in "$state/profiles.before"/*.yaml; do
@@ -468,7 +493,7 @@ replace() {
     import_image "$guest"
     case $guest in fw1|fw2) fw_touched=1 ;; esac
     step="backup $guest"
-    cp "$keys/known_hosts" "$state/known_hosts.before"
+    [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
     if running "$guest"; then starting=$guest; ic stop "$guest" --timeout 60; fi
     # Drop a local memory pin (by hand or update fw); the fw profile carries it now.
     case $guest in
@@ -479,7 +504,10 @@ replace() {
     mkdir -p "$state/backups"
     for volume in $(volumes "$guest"); do ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
     ic export "$guest" "$state/backups/$guest-$snap.tar.gz" --instance-only || { rm -f "$state/backups/$guest-$snap.tar.gz"; die 'cannot export guest backup'; }
-    printf '%s %s\n' "$guest" "$snap" >"$state/pending"
+    if [ -n "$pending" ]; then cp "$state/pending" "$work/pending"; else : >"$work/pending"; fi
+    printf '%s %s\n' "$guest" "$snap" >>"$work/pending"
+    sync
+    mv "$work/pending" "$state/pending"
     pending=1
     starting=
     sync
@@ -513,12 +541,25 @@ replace() {
     esac
 }
 commit_update() {
-    step="commit $guest"
-    printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates"
+    step=commit
+    cp "$state/pending" "$work/committed"
+    while read -r guest snap; do
+        printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates"
+    done <"$work/committed"
     sync
     rm "$state/pending"
     pending=
-    prune "$guest"
+    while read -r guest snap; do prune "$guest"; done <"$work/committed"
+}
+browser_commit() {
+    # The durable marker means both replacements passed; recovery finishes the commit.
+    browser_image=$(cat "$state/browser.ready")
+    image_alias browser "$browser_image"
+    [ ! -f "$state/pending" ] || commit_update
+    rm -rf "$state/profiles.before"
+    sync
+    rm "$state/browser.ready"
+    sync
 }
 good_slot() {
     slot status >"$work/slot" 9>&- 8>&- 7>&- 6>&-
@@ -620,8 +661,9 @@ update() {
     step="update $1"
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
-    [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+    [ ! -f "$state/browser.ready" ] || browser_commit
     [ ! -d "$state/profiles.before" ] || profiles_restore
+    [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
     image_dir=$2
     verify_image "$1"
     case $1 in
@@ -698,18 +740,22 @@ update() {
         fi
         profiles_save browser-base browser-web browser-tmp browser-portal browser-admin
         for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
+        import_only=1
         import_image browser
+        import_only=
+        browser_image=$fingerprint
         for node in web admin; do
             jq -e --arg n "$node" '.[] | select(.name == $n)' "$work/browsers" >/dev/null || continue
             if running "$node"; then
-                echo "guests: $node is running; browser update waits for a later guests apply"
-                browser_pending=1
-                continue
+                die "$node started during the browser update"
             fi
             replace "$node"
-            commit_update
         done
-        rm -rf "$state/profiles.before"
+        printf '%s\n' "$browser_image" >"$work/browser.ready"
+        sync
+        mv "$work/browser.ready" "$state/browser.ready"
+        sync
+        browser_commit
         exec 6>&-
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, web or admin' ;;

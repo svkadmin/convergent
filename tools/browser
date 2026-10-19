@@ -85,6 +85,11 @@ exec 9>/run/convergent/guests.lock
 flock -s -n 9 || die 'guest update in progress'
 exec 6>/run/convergent/browser-update.lock
 flock -s -n 6 || die 'browser update in progress'
+journal=/var/lib/convergent/guests
+if [ -f "$journal/browser.ready" ] || [ -f "$journal/profiles.before/browser-base.yaml" ] ||
+    grep -qE '^(web|admin) ' "$journal/pending" 2>/dev/null; then
+    die 'interrupted browser update; rerun the guests update first'
+fi
 name=$role
 if [ "$role" = tmp ]; then
     octet=20

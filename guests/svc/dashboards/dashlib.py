@@ -287,7 +287,7 @@ def guests_table(page, gp, compact=False):
                'max by (%s) (incus_memory_MemTotal_bytes - incus_memory_MemAvailable_bytes)' % keys,
                'max by (%s) (incus_memory_MemTotal_bytes)' % keys,
                '100 * max by (%s) (1 - incus_memory_MemAvailable_bytes / incus_memory_MemTotal_bytes)' % keys]
-    names = ["state", "CPU cores", "RAM used", "RAM limit", "RAM %"]
+    names = ["state", "Incus cores", "Incus RAM", "RAM total", "RAM %"]
     if not compact:
         for metric, name, factor in [("incus_network_receive_bytes_total", "in", 8),
                                      ("incus_network_transmit_bytes_total", "out", 8),
@@ -299,12 +299,12 @@ def guests_table(page, gp, compact=False):
     return page.table("Instances · now", [target(q) for q in queries], gp, ["project", "name"], names,
                       "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. "
                       "A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; "
-                      "total is the container limit or guest RAM, not a separately collected configured VM limit. "
-                      "Guest memory needs guest support; blank cells on agentless VMs are unknown. Rates use two minutes.",
+                      "agentless fw/wan VMs report capped QEMU RSS against configured RAM. "
+                      "Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
                       [ov("state", mappings=STATE),
                        ov("name", links=[{"title": "This instance", "url": "/d/cv-compartments?var-project=${__data.fields.project}&var-name=${__value.raw}&${__url_time_range}"}]),
-                       ov("CPU cores", unit="suffix: cores", decimals=2),
-                       ov("RAM used", unit="bytes"), ov("RAM limit", unit="bytes"),
+                       ov("Incus cores", unit="suffix: cores", decimals=2),
+                       ov("Incus RAM", unit="bytes"), ov("RAM total", unit="bytes"),
                        ov("RAM %", unit="percent", min=0, max=100, thresholds=USE),
                        ov("in", unit="bps"), ov("out", unit="bps"), ov("read", unit="Bps"), ov("written", unit="Bps")])
 

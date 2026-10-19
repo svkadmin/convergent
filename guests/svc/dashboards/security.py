@@ -47,7 +47,7 @@ def generate():
              ov("media errors", thresholds=BAD), ov("warning bits", thresholds=BAD)])
     p.table("Textfile freshness · now", [target('max by (node,file) (time() - node_textfile_mtime_seconds)')],
             grid(0, 14, 12, 7), ["node", "file"], ["age"],
-            "Source: node_exporter textfile mtimes across host, fw1/fw2 and wan. Boot facts age with this boot; daily facts refresh after 20 hours; audit/firewall/wan facts refresh every minute; checker after boot/update and daily. No single age threshold fits them all.", [ov("age", unit="s")])
+            "Source: node_exporter textfile mtimes across host, fw1/fw2 and wan. Boot facts age with this boot; daily facts refresh after 20 hours; audit facts refresh hourly; firewall/wan facts every minute; checker after boot/update and daily. No single age threshold fits them all.", [ov("age", unit="s")])
     p.timeline("Checker · over the range", [target('max(cv_checker_success)', "checker")],
                grid(12, 14, 12, 7), "Source: tools/check result at each scrape. A gap means no result; failure stays visible until the checker passes.", mappings=OK)
     p.logs("Security · denials, authentication and sudo", SECURITY, grid(0, 21, 24, 10),

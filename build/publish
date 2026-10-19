@@ -79,7 +79,10 @@ expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than
 
 keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { print k }'; }
 size_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { s += $1 } END { print s + 0 }'; }
-total=$((total - $(size_of "$release")))
+overwritten=$(printf '%s\n' "$objects" | awk -v p="$CHANNEL/$release/" -v files="$files" '
+	BEGIN {n=split(files, f, /[[:space:]]+/); for (i=1;i<=n;i++) replace[p f[i]]=1}
+	{ k = substr($0, index($0, " ") + 1); if (k in replace) s += $1 } END {print s + 0}')
+total=$((total - overwritten))
 olds=$(printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '
 	{ k = substr($0, index($0, " ") + 1) }
 	index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r) print p[1] }' | sort -u -n)

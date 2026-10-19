@@ -199,7 +199,7 @@
         },
         {
           "refId": "tmp",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"tmp\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=~\"tmp-[2-9][0-9]\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
           "legendFormat": "tmp",
           "instant": true,
           "range": false,
@@ -3215,7 +3215,7 @@
         "w": 6,
         "h": 2
       },
-      "description": "Source: tools/facts collector success and node_exporter textfile mtimes. Live facts update each minute; amber after three minutes. Daily/boot facts are on Security.",
+      "description": "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -3235,7 +3235,7 @@
         },
         {
           "refId": "B",
-          "expr": "max(time() - node_textfile_mtime_seconds{file=~\".*(audit|convergent_fw|wan)[.]prom\"})",
+          "expr": "max(time() - node_textfile_mtime_seconds{file=~\".*(convergent_fw|wan)[.]prom\"})",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -3846,7 +3846,7 @@
         "w": 17,
         "h": 7
       },
-      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; total is the container limit or guest RAM, not a separately collected configured VM limit. Guest memory needs guest support; blank cells on agentless VMs are unknown. Rates use two minutes.",
+      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; agentless fw/wan VMs report capped QEMU RSS against configured RAM. Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -3989,7 +3989,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "CPU cores"
+              "options": "Incus cores"
             },
             "properties": [
               {
@@ -4005,7 +4005,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "RAM used"
+              "options": "Incus RAM"
             },
             "properties": [
               {
@@ -4017,7 +4017,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "RAM limit"
+              "options": "RAM total"
             },
             "properties": [
               {
@@ -4137,9 +4137,9 @@
             },
             "renameByName": {
               "Value #A": "state",
-              "Value #B": "CPU cores",
-              "Value #C": "RAM used",
-              "Value #D": "RAM limit",
+              "Value #B": "Incus cores",
+              "Value #C": "Incus RAM",
+              "Value #D": "RAM total",
               "Value #E": "RAM %"
             },
             "includeByName": {
@@ -4245,7 +4245,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; configured VM memory limits; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments."
+        "content": "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments."
       }
     }
   ],

@@ -15,7 +15,7 @@ The menu shows the release, slot and the data mounted read-write at `/run/cv-sta
 1. Root shell. The verified root is at `/sysroot`; encrypted data and writable `/etc` files are
    under `/run/cv-state`. `exit` returns to the menu.
 2. Reset owner password. Enter the new password twice; it changes the account with uid 1000.
-   This uses SHA-512 crypt; a later `account password` in the running system uses yescrypt.
+   Use 12 to 256 bytes. This uses SHA-512 crypt; a later `account password` in the running system uses yescrypt.
 3. Continue booting this release. The normal health checks then mark it good.
 4. Reboot.
 5. Power off.
