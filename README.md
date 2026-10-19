@@ -62,7 +62,7 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
 | Proven on the laptop | boot, unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch), the web and admin browsers |
 | Built, laptop test to finish | the tmp and portal browsers, audio, Bluetooth, power, online guest delivery |
-| Not built | Secure Boot signing (Secure Boot stays off), a recovery boot entry |
+| Not built | Secure Boot signing (Secure Boot stays off) |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
 after a release has also run on the laptop. Releases are tags on `stable`.
@@ -135,6 +135,12 @@ Details: `sys browser admin` (Grafana, user `owner`; password:
 `sudo cat /var/lib/convergent/guests/tls/admin-password`). Anything else is real.
 
 Something off: [RECOVERY.md](RECOVERY.md); logs: `sys logs`; every command: `sys help`.
+
+**Recovery:** pick the release's `(Recovery)` entry in the boot menu and enter the usual LUKS
+passphrase. Before the system starts, a console menu offers a root shell, an owner password reset,
+continue, reboot or power off. The encrypted data is mounted read-write at `/run/cv-state`.
+Recovery shares the release's boot tries: entering it on an unblessed release uses one try.
+See [RECOVERY.md](RECOVERY.md#recovery-boot-menu).
 
 ## Update
 
@@ -255,6 +261,7 @@ fails by itself. Tests can run side by side as far as memory allows (8 to 12 GiB
 
 ```sh
 build/test <release>                                  # boots and marks itself good
+build/test --recovery <release>                       # recovery profile, unlock, continue and bless
 build/test --corrupt <release>                        # one flipped block: must refuse to boot
 build/test --desktop <release>                        # sway, bar and sys: the session's programs and config
 build/test --fallback <good> <newer>                  # broken newer slot: the good one returns

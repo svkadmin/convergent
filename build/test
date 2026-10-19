@@ -1,6 +1,7 @@
 #!/bin/sh
 # test: boot releases on a throwaway disk. Runs as root after build/image.
 #   build/test <release>
+#   build/test --recovery <release>     recovery profile, unlock, continue and bless
 #   build/test --corrupt <release>
 #   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
 #   build/test --fallback <good-release> <bad-release>
@@ -17,12 +18,13 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--recovery] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
+--recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
 --guests | --guests-update | --online)
 	mode=${1#--}; shift
@@ -622,7 +624,7 @@ make_esp() {
 	mount "${loop}p1" "$esp"
 	mkdir -p "$esp/EFI/BOOT" "$esp/EFI/Linux" "$esp/loader"
 	cp "$BUILDER/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$esp/EFI/BOOT/BOOTX64.EFI"
-	printf 'timeout 0\neditor no\n' >"$esp/loader/loader.conf"
+	printf 'timeout 0\neditor no\ndefault convergent-*\n' >"$esp/loader/loader.conf"
 }
 
 install_uki() {   # release slot counter
@@ -633,9 +635,14 @@ install_uki() {   # release slot counter
 	# The release's own metadata; older releases did not keep it.
 	osr=$rel/os-release-$2
 	[ -f "$BUILDER$osr" ] || osr=/image-root/usr/lib/os-release
+	sed 's/ init=/ convergent.recovery=1 init=/' "$BUILDER$work/cmdline" >"$BUILDER$work/recovery-cmdline"
+	bld ukify build --profile 'ID=recovery
+TITLE=Recovery' --cmdline "@$work/recovery-cmdline" --os-release '' --output "$work/p1.efi" >/dev/null
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
 		--cmdline "@$work/cmdline" --os-release "@$osr" --uname "$kver" \
+		--profile 'ID=main' --join-profile "$work/p1.efi" \
 		--output "$work/esp/EFI/Linux/convergent-$1-$2$3.efi" >/dev/null
+	rm "$BUILDER$work/p1.efi" "$BUILDER$work/recovery-cmdline"
 }
 
 run_vm() {
@@ -687,6 +694,7 @@ qemu = subprocess.Popen([
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
 sent = ready = quitting = powered_off = rebooted = False
+continued = False
 ended = "stopped"
 result = None
 
@@ -741,7 +749,11 @@ try:
                     # Releases before 2026-10-18 print "Convergent passphrase".
                     if not sent and b"assphrase [" in seen:
                         qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
+                    if goal == "recovery" and sent and not continued and b"Recovery choice: " in seen:
+                        qemu.stdin.write(b"3\n"); qemu.stdin.flush(); continued = True
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
+            if goal == "recovery":
+                done = done and continued
             if ready and not quitting and done:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
@@ -791,22 +803,33 @@ make_disk
 write_slot "$release" 2
 make_state
 make_esp
-[ "$mode" != update ] || printf 'timeout 0\neditor no\ndefault convergent-*\n' >"$esp/loader/loader.conf"
 case $mode in
-boot | corrupt) install_uki "$release" a +3 ;;
+boot | corrupt | recovery) install_uki "$release" a +3 ;;
 *) install_uki "$release" a '' ;;
 esac
+# The recovery profile's entry id is the UKI's plus @ and its number or ID; only it has an @.
+[ "$mode" != recovery ] || printf 'timeout 0\neditor no\ndefault convergent-*@*\n' >"$esp/loader/loader.conf"
 umount "$esp"
 [ "$mode" != corrupt ] || corrupt 2
 detach
 [ "$mode" != update ] || inject_update
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | recovery | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
-if [ "$mode" = update ]; then run_vm update; else run_vm; fi
+case $mode in update | recovery) run_vm "$mode" ;; *) run_vm ;; esac
 case $mode in
 boot) blessed || die "release $release did not bless; see $log" ;;
+recovery)
+	blessed || die "recovery did not continue and bless; see $log"
+	grep -qF "Convergent recovery: release $release, slot a" "$log" || die "no recovery menu; see $log"
+	attach
+	mount "${loop}p1" "$esp"
+	[ -f "$esp/EFI/Linux/convergent-$release-a.efi" ] || die 'recovery UKI was not blessed'
+	for f in "$esp/EFI/Linux/"*+*.efi; do [ ! -e "$f" ] || die 'recovery boot counter remains'; done
+	umount "$esp"
+	detach
+	;;
 corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
 update)
 	[ "$ended" = reboot ] || die "signed update did not reboot ($ended); see $log"

@@ -3,6 +3,29 @@
 Numbered recipes. Each says when it applies, what to do, and how to tell it worked. Commands run
 on the laptop as the owner unless the recipe says otherwise.
 
+## Recovery boot menu
+
+At power-on, press an arrow key during the three-second boot menu to stop the timer. Pick the
+release and slot with `(Recovery)` at the end, e.g. `Gentoo Linux <release> (slot a) (Recovery)`.
+Enter the usual LUKS passphrase (US keyboard layout); three wrong attempts power off. Recovery
+requires the same unlock as a normal boot and the same verified release must be able to boot.
+
+The menu shows the release, slot and the data mounted read-write at `/run/cv-state`:
+
+1. Root shell. The verified root is at `/sysroot`; encrypted data and writable `/etc` files are
+   under `/run/cv-state`. `exit` returns to the menu.
+2. Reset owner password. Enter the new password twice; it changes the account with uid 1000.
+   This uses SHA-512 crypt; a later `account password` in the running system uses yescrypt.
+3. Continue booting this release. The normal health checks then mark it good.
+4. Reboot.
+5. Power off.
+
+Booting recovery on a release not yet marked good uses one of its three tries, shared with
+normal boots. Rebooting or powering off from the menu does not mark it good. The watchdog is
+armed only after continuing, so time spent in the menu does not reset the laptop. Recovery
+starts no network services. If the release cannot reach the passphrase prompt, try the other
+slot (recipe 3) or read state from another Linux (recipe 9).
+
 | # | Symptom |
 |---|---|
 | 1 | [Wrong passphrase, the laptop powers off](#1-wrong-passphrase-the-laptop-powers-off) |
