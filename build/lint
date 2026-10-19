@@ -42,9 +42,9 @@ fi
 for f in $files; do
 	grep -Iq . "$f" 2>/dev/null || continue
 	[ "$f" != build/lint ] || continue
-	# The EFI global-variable GUID is public and expected.
+	# Public GUIDs: the EFI global variables and systemd-boot's loader variables.
 	grep -nE 'BEGIN [A-Z ]*PRIVATE KEY|AppData|scratchpad|claude/C--|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$f" |
-		grep -v 8be4df61-93ca-11d2-aa0d-00e098032b8c |
+		grep -vE '8be4df61-93ca-11d2-aa0d-00e098032b8c|4a67b082-0a4c-41cf-b6c7-440b29bb8c4f' |
 		while IFS= read -r hit; do echo "lint: $f:$hit"; done | grep . && fail=1
 done
 
