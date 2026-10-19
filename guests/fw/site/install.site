@@ -94,6 +94,7 @@ echo "$node.$DOMAIN" >/etc/myname
 cat >/etc/rc.firsttime <<'SYSPATCH'
 #!/bin/sh
 set -eu
+export LC_ALL=C
 exec >/dev/console 2>&1
 trap 'echo CONVERGENT-SYSPATCH-FAILED; halt -p' 0
 trap 'exit 1' HUP INT TERM
@@ -135,6 +136,21 @@ pkill -x dhcpleased
 mv /etc/resolv.conf.syspatch /etc/resolv.conf
 rm -f /var/db/dhcpleased/em0 /etc/rc.firsttime /etc/rc.firsttime.run
 rm -f /etc/ssh/ssh_host_* /etc/isakmpd/private/local.key /etc/iked/private/local.key /etc/soii.key
+# Patch inventory stays; rollback archives do not travel with the image.
+rm -f /var/syspatch/*/rollback.tgz
+# Every mounted install filesystem, including the auto layout's separate /usr trees.
+filesystems=$(mount -t ffs)
+[ -n "$filesystems" ]
+printf '%s\n' "$filesystems" | awk '{print $3}' | while read -r fs; do
+	zero=$(mktemp "${fs%/}/.convergent-zero.XXXXXXXXXX")
+	# A full filesystem is expected; other write errors must fail the build.
+	rc=0
+	error=$(dd if=/dev/zero of="$zero" bs=1m 2>&1) || rc=$?
+	sync
+	rm -f "$zero"
+	sync
+	[ "$rc" = 0 ] || printf '%s\n' "$error" | grep -q 'No space left on device'
+done
 sync
 echo "CONVERGENT-SYSPATCH-OK $(hostname -s)"
 trap - 0

@@ -1,5 +1,7 @@
 # Signed hardened kernel; build creates initramfs and UKI.
 sys-kernel/gentoo-kernel hardened modules-sign -initramfs
+# build/image selects client microcode from the individual blobs.
+sys-firmware/intel-microcode split-ucode -hostonly
 
 # systemd-boot and udev; ukify is builder-only.
 sys-apps/systemd-utils boot kernel-install udev tmpfiles

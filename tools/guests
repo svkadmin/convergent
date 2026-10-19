@@ -669,6 +669,7 @@ update() {
     case $1 in
     fw)
         [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+        ic profile set fw boot.autostart.delay=0
         # Installs from before 1 GiB: KARL beside the blocklist ran 384 MiB out of memory. A running
         # VM cannot always grow, so each keeps its old size locally until replace() drops the pin.
         old=$(ic profile get fw limits.memory)
@@ -706,7 +707,10 @@ update() {
         commit_update
         ;;
     wan|svc)
-        [ "$1" != wan ] || ic profile device set wan eth0 security.ipv4_filtering=false
+        if [ "$1" = wan ]; then
+            ic profile device set wan eth0 security.ipv4_filtering=false
+            ic profile set wan boot.autostart.delay=0
+        fi
         [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
         replace "$1"
         commit_update
