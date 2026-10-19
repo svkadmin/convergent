@@ -1,0 +1,67 @@
+#!/bin/sh
+# guests: add guest images to a release for online delivery, in guests.manifest: a second signed
+# file, so laptops and installers that read only the host manifest are unaffected.
+#   build/guests <release-dir> <guests-dir>
+set -eu
+export LC_ALL=C
+umask 077
+
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+keys=/etc/convergent/keys
+die() { echo "guests: $*" >&2; exit 1; }
+# A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (fetch-release: the same).
+ident() { (cd "$1" && { cat SHA256SUMS; find . -type f -name '*.yaml' | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# = 2 ] || die "usage: build/guests <release-dir> <guests-dir>"
+dir=$1
+src=$2
+[ -f "$dir/manifest" ] || die "no manifest in $dir"
+[ ! -e "$dir/guests.manifest" ] || die "guests.manifest already exists"
+release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
+case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
+[ ! -e "$dir/guests" ] && [ ! -L "$dir/guests" ] || die "guests already exists in $dir"
+# Complete or absent: a failure removes what this run made.
+finished=
+trap '[ -n "$finished" ] || rm -rf "$dir/guests" "$dir/guests.manifest.new" "$dir/guests.manifest" "$dir/guests.manifest.sig"' 0
+echo "release $release" >"$dir/guests.manifest.new"
+for g in fw wan svc browser; do
+	[ -d "$src/$g" ] || continue
+	[ ! -L "$src/$g" ] || die "$g is a symlink"
+	files=$(awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+		{ sub(/^\*/, "", $2); if ($2 !~ /^[A-Za-z0-9._-]+$/ || $2 == "." || $2 == ".." || seen[$2]++) exit 1; print $2 }' "$src/$g/SHA256SUMS") || die "invalid $g/SHA256SUMS"
+	[ -n "$files" ] || die "empty $g/SHA256SUMS"
+	case $g in
+	svc) files="$files incus.yaml" ;;
+	browser)
+		[ ! -L "$src/$g/incus" ] || die "browser/incus is a symlink"
+		for f in "$src/$g"/incus/*.yaml; do files="$files incus/${f##*/}"; done
+		;;
+	esac
+	files=$(printf '%s\n' $files | sort -u)
+	mkdir -p "$dir/guests/$g"
+	for f in SHA256SUMS $files; do
+		printf '%s\n' "$f" | grep -Eq '^([A-Za-z0-9._-]+|incus/[A-Za-z0-9._-]+\.yaml)$' || die "invalid guest path: $f"
+		[ -f "$src/$g/$f" ] && [ ! -L "$src/$g/$f" ] || die "missing $g/$f"
+		mkdir -p "$(dirname "$dir/guests/$g/$f")"
+		cp "$src/$g/$f" "$dir/guests/$g/$f"
+	done
+	(cd "$dir/guests/$g" && sha256sum -c SHA256SUMS) || die "$g checksum mismatch"
+	echo "guest $g $(ident "$dir/guests/$g")" >>"$dir/guests.manifest.new"
+	for f in SHA256SUMS $files; do
+		path=guests/$g/$f
+		case $f in
+		*.qcow2)
+			echo "unpacked $path $(stat -c %s "$dir/$path")" >>"$dir/guests.manifest.new"
+			zstd -q -T0 -10 --long=27 "$dir/$path" -o "$dir/$path.zst"
+			rm "$dir/$path"
+			path=$path.zst
+			;;
+		esac
+		printf '%s  %s\n' "$(sha256sum <"$dir/$path" | cut -d' ' -f1)" "$path" >>"$dir/guests.manifest.new"
+		echo "size $path $(stat -c %s "$dir/$path")" >>"$dir/guests.manifest.new"
+	done
+done
+mv "$dir/guests.manifest.new" "$dir/guests.manifest"
+[ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$dir"
+finished=1

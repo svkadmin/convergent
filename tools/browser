@@ -80,9 +80,11 @@ wait_socket() {
 
 mkdir -p /run/convergent/browser
 chmod 711 /run/convergent/browser
-# Share the guests lock for the session so image/profile updates cannot race a launch.
+# The guests lock covers launch; the browser lock covers the whole session.
 exec 9>/run/convergent/guests.lock
 flock -s -n 9 || die 'guest update in progress'
+exec 6>/run/convergent/browser-update.lock
+flock -s -n 6 || die 'browser update in progress'
 name=$role
 if [ "$role" = tmp ]; then
     octet=20
@@ -208,6 +210,8 @@ done
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
     --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" &
 browser=$!
+flock -u 9
+exec 9>&-
 tick=0
 while kill -0 "$browser" 2>/dev/null; do
     for child in $children; do kill -0 "$child" 2>/dev/null || die 'socket or audio provider exited'; done

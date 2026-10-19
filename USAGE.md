@@ -79,7 +79,7 @@ Super+a runs one action by name.
 | `browser` (`br`) | `status`, `web`, `tmp`, `admin`, `portal` |
 | `security` (`sec`) | `status`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
-| `guests` | `status`, `setup` |
+| `guests` | `status`, `setup`, `update` |
 | `power` | `status`, `ac`, `battery`, `lock`, `logout` *, `reboot` *, `off` * |
 | `backup` | `run [MOUNTPOINT PROJECT]` |
 | `logs` | `host` (`/var/log/messages`), `services` (`rc-status -a`) |
@@ -233,6 +233,7 @@ rel 202610170000 good | US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `alerts` | `0` (green), `1c 2w` (critical, warning; red with any critical, yellow otherwise), `?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
+| `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
 | `BAT` | capacity, `+` charging or `-` discharging; orange below 30 %, red below 15 % discharging; `AC` without a battery | `sys power status` |
@@ -248,13 +249,16 @@ turns grey. The idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid l
 ```sh
 sys update                           # release slots; `sys update check` asks whether a newer one is published
 sys guests status                     # one line per instance: name and state (guests status)
-sudo guests update fw|wan|svc|web|admin <image-dir>
+sys guests update                     # apply pending downloaded guests now
+sudo guests update fw|wan|svc|browser|web|admin <image-dir>
 ```
 
-Updating `web` or `admin` replaces that instance only; `tmp` and `portal` keep the browser image
-from setup. Writing a release and updating guests: [README, Update](README.md#update). Close every
-browser first: an open browser makes guest operations wait, then fail after ten minutes. One guest
-operation runs at a time; browsers, `check` and `backup` refuse to start while one runs.
+Online releases carry guests; only changed guests download with `sys update install`. After reboot
+and marking the host good, they apply in order: svc, wan, fw, browser. The bar shows GUESTS while
+applying and GUESTS failed on failure. Close browsers and run `sys guests update` to retry a pending
+browser update. Updating `browser` also moves the image used for future tmp and portal instances;
+`web` or `admin` replaces that instance only. One guest operation runs at a time. Writing a release
+and manual guest updates: [README, Update](README.md#update).
 
 ## Power and locking
 

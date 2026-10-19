@@ -1,7 +1,7 @@
 #!/sbin/openrc-run
-# First boot of a disk image: create the guests from its images, in the background (bar: SETUP).
+# Create guests once, or apply downloaded guests after the host is marked good.
 
-description="Creates the guests once from /var/lib/convergent/release-guests"
+description="Creates guests or applies downloaded guest updates"
 
 depend() {
 	# Not need: guests init stops and starts Incus, which would stop this service too.
@@ -12,6 +12,26 @@ depend() {
 start() {
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
+	if [ -e /var/lib/convergent/guests/initialized ]; then
+		release=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+		case $release in ''|*[!0-9]*) return 0 ;; esac
+		[ -d "/var/lib/convergent/guest-updates/$release" ] || return 0
+		[ ! -e /run/convergent/guests-update-started ] || return 0
+		ebegin "Updating downloaded guests in the background; the bar shows GUESTS until done"
+		mkdir -p "$st"
+		(umask 077; touch /run/convergent/guests-update-started)
+		echo running >"$st/guests-update"
+		nohup sh -c '
+			n=0
+			until [ -e /run/openrc/started/convergent-bless ]; do
+				[ $((n += 1)) -le 360 ] || { echo failed >"$1/guests-update"; exit 1; }
+				sleep 5
+			done
+			umask 077
+			/usr/local/sbin/guests apply >>/var/log/guests-update.log 2>&1 || echo failed >"$1/guests-update"' sh "$st" </dev/null >/dev/null 2>&1 &
+		eend 0
+		return 0
+	fi
 	[ ! -e /var/lib/convergent/guests/initialized ] && [ -d "$src/guests" ] || return 0
 	ebegin "Creating the guests in the background; the bar shows SETUP until done"
 	mkdir -p "$st"

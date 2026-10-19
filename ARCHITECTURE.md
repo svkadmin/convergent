@@ -395,6 +395,15 @@ stopped, so the fw build's seedless smoke boot leaves the release unpersonalised
    board; passing the checks disarms it, even after feeding stopped. A release already good disarms
    it before the checks.
 
+Releases carry guest images and their Incus profiles in `guests.manifest`, signed with the same
+key beside the host manifest, which stays unchanged, so older releases and the installer that read
+only the host manifest are unaffected. Online updates download only guests whose SHA256SUMS
+identity changed. After reboot and marking the host good, staged guests apply in order: svc, wan,
+fw, browser; the bar shows GUESTS (red on failure). A running browser waits for a later
+`guests apply`. When the booted release is already the newest but its guests are not installed
+(it came as a host-only update), `sys update install` downloads and applies them at once.
+Host-only releases remain valid.
+
 Guests are updated only on a host slot already marked good, one at a time, each after an instance
 export and snapshots of its custom state volumes; the last three backups per guest are kept. The
 firewalls go one at a time: fw2 first, checked (CARP state, pfsync, pf ruleset hash, a resolution
