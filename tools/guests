@@ -441,6 +441,8 @@ replace() {
     step="backup $guest"
     cp "$keys/known_hosts" "$state/known_hosts.before"
     if running "$guest"; then starting=$guest; ic stop "$guest" --timeout 60; fi
+    # Drop a hand-set memory override; the fw profile carries it now.
+    case $guest in fw1|fw2) [ -z "$(ic config get "$guest" limits.memory)" ] || ic config unset "$guest" limits.memory ;; esac
     mkdir -p "$state/backups"
     for volume in $(volumes "$guest"); do ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
     ic export "$guest" "$state/backups/$guest-$snap.tar.gz" --instance-only || { rm -f "$state/backups/$guest-$snap.tar.gz"; die 'cannot export guest backup'; }
@@ -591,6 +593,8 @@ update() {
     case $1 in
     fw)
         [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+        # Installs from before 1 GiB: KARL beside the blocklist ran 384 MiB out of memory.
+        [ "$(ic profile get fw limits.memory)" = 1GiB ] || ic profile set fw limits.memory=1GiB
         for node in fw1 fw2; do
             for suffix in qcow2 pf.sha256 rules.sha256; do
                 [ -s "$image_dir/$node.$suffix" ] || die "missing $node.$suffix"

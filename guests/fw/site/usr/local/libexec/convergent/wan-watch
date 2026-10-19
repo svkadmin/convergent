@@ -7,7 +7,8 @@ umask 077
 die() { logger -t wan-watch "$*"; echo "wan-watch: $*" >&2; exit 1; }
 
 want=128
-ping -q -c 1 -w 1 "${1:?wan address required}" >/dev/null && want=0
+# CARP lives in the kernel and outlasts a killed resolver; such a firewall must not stay master.
+pgrep -x unbound >/dev/null && ping -q -c 1 -w 1 "${1:?wan address required}" >/dev/null && want=0
 owned=0
 [ ! -e "$state" ] || owned=$(cat "$state") || die "cannot read owned demotion"
 case $owned in 0|128) ;; *) die "invalid owned demotion" ;; esac

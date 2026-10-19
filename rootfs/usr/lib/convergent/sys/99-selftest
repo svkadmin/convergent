@@ -7,7 +7,9 @@ selftest_run() (
 	noargs "$@"; path "$HOME"
 	# Authenticate on this terminal once; checks must never prompt.
 	run timeout --foreground -k 1 120 sudo -v || return
-	report=$HOME/selftest-$(date +%Y%m%d-%H%M%S).txt
+	# root's home is on the read-only image.
+	dir=$HOME; [ -w "$dir" ] || dir=/var/tmp
+	report=$dir/selftest-$(date +%Y%m%d-%H%M%S).txt
 	set -C
 	exec 3>"$report" || exit 1
 	set +C
@@ -77,7 +79,7 @@ printf '%s\n' "$s" | awk -F ' *: *' '$1 ~ /^Leap status/ {leap=$2} $1 ~ /^Stratu
 CHECK
 	check audio 10 <<'CHECK'
 grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards || { echo 'no ALSA card'; exit 1; }; echo 'ALSA card present'; [ -S "${XDG_RUNTIME_DIR:-}/pipewire-0" ] || { echo 'PipeWire session absent; hardware only'; exit 0; }
-s=$(wpctl status); printf '%s\n' "$s" | awk '/^Audio/ {audio=1} /^Video/ {audio=0; sinks=0} audio && /Sinks:/ {sinks=1; next} sinks && /(Sources|Filters|Streams):/ {sinks=0} sinks && /\* *[0-9]+\./ {found=1} END {print "PipeWire default sink " (found ? "present" : "missing"); exit !found}'
+s=$(wpctl status 2>/dev/null); printf '%s\n' "$s" | awk '/^Audio/ {audio=1} /^Video/ {audio=0; sinks=0} audio && /Sinks:/ {sinks=1; next} sinks && /(Sources|Filters|Streams):/ {sinks=0} sinks && /\* *[0-9]+\./ {found=1} END {print "PipeWire default sink " (found ? "present" : "missing"); exit !found}'
 CHECK
 	check bluetooth 5 <<'CHECK'
 for d in /sys/class/bluetooth/hci*; do [ ! -e "$d" ] || { echo "${d##*/} present"; exit 0; }; done; echo 'no Bluetooth controller'; exit 1
@@ -89,8 +91,9 @@ CHECK
 s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys usb status:\n%s\n' "$s"
 CHECK
 	check firmware 10 <<'CHECK'
-# Drivers probe optional files ("Direct firmware load ... error -2") and fall back; only other failures count.
-s=$(sudo -n dmesg); printf '%s\n' "$s" | awk '/Direct firmware load .* failed with error -2/ {next} tolower($0) ~ /(firmware|ucode|microcode)/ && tolower($0) ~ /(fail|error|not found|could not|unable to|timed out)/ {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " firmware load errors"; printf "%s", lines; exit (n>0)}'
+# Drivers probe optional files ("Direct firmware load ... error -2") and fall back, and "[Firmware Bug]"
+# is the BIOS; only other failures count.
+s=$(sudo -n dmesg); printf '%s\n' "$s" | awk '/Direct firmware load .* failed with error -2/ || /\[Firmware Bug\]/ {next} tolower($0) ~ /(firmware|ucode|microcode)/ && tolower($0) ~ /(fail|error|not found|could not|unable to|timed out)/ {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " firmware load errors"; printf "%s", lines; exit (n>0)}'
 CHECK
 	# Laptop firmware always logs some err-level lines (ACPI BIOS bugs, UEFI certificates, USB disk
 	# caching): those are shown as SKIP; emerg, alert and crit fail, except the armed watchdog the

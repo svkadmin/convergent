@@ -174,7 +174,7 @@ for n in $nodes; do
 		i=$((i + 1))
 	done
 	# shellcheck disable=SC2086
-	qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 1 -m 384 \
+	qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 1 -m 1024 \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.smoke.vars.fd" \

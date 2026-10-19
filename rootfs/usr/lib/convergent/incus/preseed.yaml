@@ -48,7 +48,8 @@ profiles:
   - name: fw
     config:
       limits.cpu: "1"
-      limits.memory: 384MiB
+      # Every boot relinks the kernel (KARL) beside unbound's blocklist: 384 MiB ran out.
+      limits.memory: 1GiB
       security.secureboot: "false"
       # No guest API listener (vsock) for a VM that has no agent anyway.
       security.guestapi: "false"

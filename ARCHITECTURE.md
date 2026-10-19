@@ -131,7 +131,7 @@ offline smoke boot, and records each node's installed patches in `<node>.syspatc
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
 - **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
 - **No DHCP:** every address is static (section 4.1).
-- **Size:** 384 MiB each.
+- **Size:** 1 GiB each: every boot relinks the kernel (KARL) beside the loaded blocklist.
 
 Either firewall can be updated, rebooted or broken while the other carries everything. Each has
 its own kernel: a firewall kernel bug is not a host kernel bug, and the reverse. A silent
@@ -531,13 +531,14 @@ log *(planned)*, not by enrolling Microsoft's third-party certificate.
 | Host: kernel, Sway, PipeWire, status bar | 700 |
 | incusd | 200 |
 | wan (512 cap, plus QEMU overhead) | 500 |
-| fw1 + fw2 (384 each, plus QEMU overhead, unbound with the blocklist) | 1 000 |
+| fw1 + fw2 (1 GiB each, plus QEMU overhead, unbound with the blocklist) | 2 200 |
 | svc | 350 |
 | zram index for 32 GiB | 130 |
-| Total, idle, browsers closed | about 2 880 |
+| Total, idle, browsers closed | about 4 080 |
 
-The margin to 3 GB is small. If measurement shows it is crossed, the first levers are the zram
-size and the firewalls' memory caps.
+On the laptop 384 MiB firewalls ran out of memory at boot (the kernel relink beside the
+blocklist), killing sshd and unbound while CARP kept the master role. If memory gets tight, the
+first levers are the zram size and the browsers' caps, not the firewalls.
 
 ---
 
