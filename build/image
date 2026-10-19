@@ -71,6 +71,9 @@ fi
 # The stock config's wallpaper is not installed (no wallpapers USE): its bg line would be a config error.
 sed -i '/^output \* bg /d' "$root/etc/sway/config"
 ! grep -q '^output \* bg ' "$root/etc/sway/config" || die 'the stock sway config still sets a wallpaper'
+# tty1 logs in through greetd (etc/greetd/config.toml); the other consoles keep agetty.
+sed -i 's|^c1:12345:respawn:/sbin/agetty .* tty1 linux$|c1:12345:respawn:/usr/bin/greetd|' "$root/etc/inittab"
+grep -qx 'c1:12345:respawn:/usr/bin/greetd' "$root/etc/inittab" || die 'tty1 does not run greetd'
 # Modes git does not keep.
 chmod 0440 "$root"/etc/sudoers.d/*
 chmod 0600 "$root"/etc/audit/rules.d/*

@@ -581,7 +581,9 @@ t() {
 	else echo "CV-DESKTOP FAIL: $*"; head -n 10 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
 }
 for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
-	gentoo-pipewire-launcher dbus-run-session sys browser bar; do t command -v "$p"; done
+	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet; do t command -v "$p"; done
+t grep -qx "c1:12345:respawn:/usr/bin/greetd" /etc/inittab
+t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
 t grep -qxF 'output * bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(stat -c "%G %A" /usr/sbin/unix_chkpwd)" = "shadow -rwxr-sr-x" ]'

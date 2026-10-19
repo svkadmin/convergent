@@ -108,10 +108,12 @@ The passphrase prompt uses the **US keyboard layout**, whatever the keys show (o
 keyboard `@` is Shift+2, and `y` and `z` are swapped). The console uses `console_keymap`, US by
 default.
 
-1. `Passphrase [1/3]:` appears; three wrong tries power it off. Done when: a login prompt.
-   Keys pressed while it boots reappear as empty `host login:` prompts; ignore them.
-2. Log in as the owner. Done when: the console prints `release <release> is good` (minutes).
-3. Run `dbus-run-session sway`. On a disk image the bar shows `SETUP` (orange) for 10 to 30 minutes
+1. `Passphrase [1/3]:` appears; three wrong tries power it off. Done when: the greeter (tuigreet) asks
+   for a user name.
+   Ctrl+Alt+F2 to F6 keep text console logins.
+2. Log in as the owner: user name, then password; sway starts. The release is marked good within
+   minutes (the bar: `rel <release> good`).
+3. On a disk image the bar shows `SETUP` (orange) for 10 to 30 minutes
    while the guests are created; `SETUP failed` (red): `sys guests setup` resumes (log:
    `/var/log/guests-setup.log`). Done when: `SETUP` is gone.
    Keys: Super+Enter terminal, Super+m settings menu, Super+d apps, Super+b browser,
