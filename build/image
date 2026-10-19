@@ -28,6 +28,7 @@ state_max=$(cfg state_max_gib)
 [ "$(id -u)" = 0 ] || die "run as root"
 
 release=${1:-$(date -u +%Y%m%d%H%M)}
+case $release in '' | *[!0-9]*) die "release must be digits: $release" ;; esac
 staging="$BUILDER/staging"
 root="$BUILDER/image-root"                 # the image root, a copy of the staging root
 out="$BUILDER/releases/$release"           # inside the builder, so its tools can reach it
@@ -273,6 +274,7 @@ for slot in a b; do
 	} >"$out/os-release-$slot"
 	profiles=$(bld mktemp -d /tmp/convergent-profile.XXXXXX)
 	sed 's/ init=/ convergent.recovery=1 init=/' "$out/cmdline-$slot" >"$BUILDER$profiles/cmdline"
+	grep -q ' convergent\.recovery=1 ' "$BUILDER$profiles/cmdline" || die "the recovery profile's command line lacks convergent.recovery=1"
 	bld ukify build --profile 'ID=recovery
 TITLE=Recovery' --cmdline "@$profiles/cmdline" --os-release '' --output "$profiles/p1.efi" >/dev/null
 	# ukify supplies profile 0 here; joining a p0 fragment would add a third profile.
