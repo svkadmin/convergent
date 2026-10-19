@@ -10,6 +10,9 @@ die() { echo "browser: $*" >&2; exit 1; }
 if [ "$(id -u)" != 0 ]; then
     case $# in 1|2) ;; *) die 'usage: browser web|tmp|portal|admin [url]' ;; esac
     [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${SWAYSOCK:-}" ] || die 'run in the owner Sway session'
+    # Pressed again: focus the open window instead of refusing.
+    if [ $# = 1 ] && { [ "$1" = web ] || [ "$1" = admin ]; } &&
+        swaymsg -q "[app_id=\"^convergent-$1\$\"] focus" 2>/dev/null; then exit 0; fi
     exec sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$@"
 fi
 case ${SUDO_UID:-} in ''|0|*[!0-9]*) die 'run as the owner, not root' ;; esac
