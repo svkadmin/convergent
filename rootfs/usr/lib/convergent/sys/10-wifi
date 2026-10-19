@@ -28,7 +28,8 @@ wifi_join() {
 	pass=$(secret) || return
 	text_valid "$pass"
 	if [ -n "$pass" ]; then
-		[ "${#pass}" -ge 8 ] && [ "${#pass}" -le 63 ] || die 'passphrase must be 8-63 bytes'
+		bytes=$(printf %s "$pass" | LC_ALL=C wc -c)
+		[ "$bytes" -ge 8 ] && [ "$bytes" -le 63 ] || die 'passphrase must be 8-63 bytes'
 		printf '%s\n%s\n' "$ssid" "$pass" | wifi_wan "add$suffix"
 	else
 		printf '%s\n' "$ssid" | wifi_wan "connect$suffix"

@@ -53,11 +53,12 @@ path() {
 	text_valid "$1"
 }
 mac() {
+	text_valid "$1"
 	printf '%s\n' "$1" | grep -Eq '^([[:xdigit:]]{2}:){5}[[:xdigit:]]{2}$' || die 'invalid Bluetooth MAC'
 }
 ssid_valid() {
 	case $1 in -*) die 'SSID must not start with -' ;; esac
-	[ -n "$1" ] && [ "${#1}" -le 32 ] || die 'SSID must be 1-32 bytes'
+	[ -n "$1" ] && [ "$(printf %s "$1" | LC_ALL=C wc -c)" -le 32 ] || die 'SSID must be 1-32 bytes'
 	text_valid "$1"
 }
 sway() { [ -n "${SWAYSOCK:-}" ] || die 'needs the sway session'; }
@@ -129,8 +130,8 @@ load() {
 	. "$dir"/[0-9][0-9]-"$area"
 }
 lookup() {
-	label=$(printf '%s\n' "$actions" | awk -F '\t' -v a="$1" '$1 == a {print $2}')
-	flags=$(printf '%s\n' "$actions" | awk -F '\t' -v a="$1" '$1 == a {print $3}')
+	label=$(printf '%s\n' "$actions" | a="$1" awk -F '\t' '$1 == ENVIRON["a"] {print $2}')
+	flags=$(printf '%s\n' "$actions" | a="$1" awk -F '\t' '$1 == ENVIRON["a"] {print $3}')
 	[ -n "$label" ]
 }
 help() {
@@ -138,6 +139,7 @@ help() {
 	printf '%s' "$areas" | while IFS="$tab" read -r area title alias; do
 		load "$area"
 		printf '%s\n' "$actions" | while IFS="$tab" read -r action label flags; do
+			case " $flags " in *' confirm '*) label="$label *" ;; esac
 			printf '  %-30s %s: %s\n' "$area${alias:+ ($alias)} $action" "$title" "$label"
 		done
 	done
@@ -159,7 +161,14 @@ dispatch() (
 		action=${actions%%"$tab"*}
 		lookup "$action" || usage
 	fi
-	case " $flags " in *' confirm '*) confirm "$title: $label" || exit 1 ;; esac
+	case " $flags " in
+	*' confirm '*)
+		case $area:$action in
+		wifi:forget|bluetooth:forget|update:usb) [ "$#" -le 1 ] || usage ;;
+		display:reset|update:install|power:logout|power:reboot|power:off) noargs "$@" ;;
+		esac
+		confirm "$title: $label" || exit 1 ;;
+	esac
 	function=${area}_$action
 	"$function" "$@"
 )
@@ -214,7 +223,15 @@ typed_command() (
 	set -- "$0"
 	[ -z "$current" ] || set -- "$@" "$current"
 	# xargs reads quotes, not shell syntax; -a preserves the terminal for prompts.
-	xargs -a "$states/query" -r -x -s 8192 -- "$@"
+	rm -f "$states/result" || exit 1
+	xargs -a "$states/query" -r -x -s 8192 -- sh -c '
+		file=$1; shift
+		"$@"; result=$?
+		printf "%s\n" "$result" >"$file"
+	' sh "$states/result" "$@" || exit $?
+	[ -f "$states/result" ] || exit 0
+	IFS= read -r result <"$states/result" || exit 1
+	exit "$result"
 )
 tui() (
 	states=$(mktemp -d) || exit 1

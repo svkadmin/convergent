@@ -6,6 +6,7 @@ usb_state() { echo 'USB / Thunderbolt'; }
 usb_status() { noargs "$@"; page run sudo /usr/local/sbin/devices list; }
 usb_allow() {
 	onearg 'USB number or Thunderbolt ID' "$@"
+	text_valid "$answer"
 	case $answer in
 	''|*[!0-9]*)
 		printf '%s\n' "$answer" | grep -Eq '^[[:xdigit:]]{8}(-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$' || die 'invalid Thunderbolt ID'

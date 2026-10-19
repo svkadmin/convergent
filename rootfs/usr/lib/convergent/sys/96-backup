@@ -12,6 +12,6 @@ backup_run() {
 	dest=$(realpath -e -- "$dest") || die 'no destination directory'
 	path "$dest"
 	[ -d "$dest" ] && mountpoint -q -- "$dest" || die 'destination must be a mountpoint'
-	case $project in ''|default|*[!a-zA-Z0-9_-]*) die 'invalid owner project' ;; esac
+	case $project in ''|-*|default|*[!a-zA-Z0-9_-]*) die 'invalid owner project' ;; esac
 	run sudo /usr/local/sbin/backup "$dest" "$project"
 }

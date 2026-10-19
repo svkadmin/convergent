@@ -14,7 +14,8 @@ screenshot_path() {
 }
 screenshot_area() {
 	noargs "$@"; screenshot_path || return
-	geometry=$(run slurp) || return
+	# Esc in slurp is a cancel, not a failure.
+	geometry=$(run slurp) || return 0
 	printf '%s\n' "$geometry" | grep -Eq '^-?[0-9]{1,6},-?[0-9]{1,6} [1-9][0-9]{0,5}x[1-9][0-9]{0,5}$' || die 'invalid selection'
 	run grim -g "$geometry" "$shot" || return
 	printf '%s\n' "$shot"
@@ -22,7 +23,7 @@ screenshot_area() {
 screenshot_screen() {
 	noargs "$@"; screenshot_path || return
 	json=$(run swaymsg -r -t get_outputs) || return
-	output=$(printf '%s\n' "$json" | jq -er '.[] | select(.focused and .active) | .name') || return
+	output=$(printf '%s\n' "$json" | jq -er '.[] | select(.focused and .active) | .name') || die 'no focused active output'
 	token "$output"
 	echo 'Capturing in 1 s; move this terminal away. Shift+Print copies the same output to the clipboard.'
 	sleep 1
