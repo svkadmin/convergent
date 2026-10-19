@@ -128,6 +128,22 @@ install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
 if [ "$role" = portal ]; then portal_on || die 'portal mode is not on'; portal=1; fi
 owner swaymsg "for_window [app_id=\"^convergent-$role\$\"] title_format \"[$role] %title\"" |
     jq -e 'all(.[]; .success)' >/dev/null || die 'cannot label Sway windows'
+# The container first: a first start creates it, which takes long, and the sockets below should not
+# wait through that unused (a first browser once found its Wayland listener gone).
+instances=$(ic list --format json)
+if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+    printf '%s\n' "$instances" | jq -e --arg n "$name" --arg r "$role" \
+        '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
+        >/dev/null || die 'existing instance is not this browser role'
+    stop_container
+fi
+active=1
+if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+    case $role in
+        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" ;;
+        *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" ;;
+    esac
+fi
 background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland"
@@ -156,21 +172,6 @@ chmod 0710 "$run/sockets"
 for socket in wayland-0 pulse-0; do
     [ ! -L "$run/sockets/$socket" ] && [ -S "$run/sockets/$socket" ] || die 'invalid socket inode'
 done
-
-instances=$(ic list --format json)
-if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    printf '%s\n' "$instances" | jq -e --arg n "$name" --arg r "$role" \
-        '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
-        >/dev/null || die 'existing instance is not this browser role'
-    stop_container
-fi
-active=1
-if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    case $role in
-        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" ;;
-        *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" ;;
-    esac
-fi
 if [ "$role" = tmp ]; then
     ic config set "$name" environment.BROWSER_IPV4="100.80.3.$octet"
     device eth0 "ipv4.address=100.80.3.$octet" "hwaddr=00:16:3e:80:03:$octet"
@@ -193,6 +194,10 @@ if [ "$role" = admin ]; then
     grafana=1; ic exec svc -- rc-service grafana start
 fi
 [ "$role" != portal ] || portal_on || die 'portal mode ended during startup'
+# A dead proxy would show only as a confusing Chromium error ("Connection refused").
+for child in $children; do
+    kill -0 "$child" 2>/dev/null || die "the Wayland or audio proxy exited before the browser started (logs: $run/*.log)"
+done
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
     --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" &
 browser=$!
