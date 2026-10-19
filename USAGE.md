@@ -65,11 +65,17 @@ errors. `sys help` lists actions and aliases; `*` marks actions that ask for `ye
 commands right, terminal colours with a blue highlight. Enter opens or runs, Esc goes back, typing
 filters, Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
 Super+a runs one action by name.
+The Wi-Fi network picker uses the same keys: type to filter, Enter selects the highlighted
+SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hidden SSIDs use
+`sys wifi hidden` and a typed name; Alt+Enter does not join an unscanned name.
 
 | Area (alias) | Actions, default first |
 |---|---|
 | `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
 | `portal` | `status`, `on`, `off` |
+| `wired` | `status`, `attach [VENDOR:PRODUCT SERIAL]` *, `remove` * |
+| `dns` | `list`, `add [NAME IPv4]` *, `remove [NAME]` *, `allow [DOMAIN]` *, `unallow [DOMAIN]` *, `push` |
+| `firewall` (`fw`) | `status`, `maintenance` *, `undo` * |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair MAC`, `connect MAC`, `disconnect MAC`, `forget MAC` * |
 | `usb` | `status`, `allow N\|ID` * |
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `micmute` |
@@ -85,7 +91,8 @@ Super+a runs one action by name.
 | `logs` | `host` (`/var/log/messages`), `services` (`rc-status -a`) |
 | `selftest` | `run` |
 
-Not built in `sys`: owner guest management, firewall failover and printing.
+DNS edits, wired assignment and firewall maintenance ask inside the action, after displaying
+the proposed change or checking health. Not built in `sys`: owner guest management and printing.
 
 Screen too big: `sys display set eDP-1 scale 1.2`, then `sys display save` (every login). Release
 default: `display_scale` in config.yaml ([README, Build](README.md#build-a-release)).
@@ -125,8 +132,10 @@ other programs to `tmp` is not built.
 
 The radio belongs to wan; `sys wifi` runs the commands in it over SSH.
 
-`sys wifi connect` lists networks, asks `SSID:` and
-`Passphrase (empty for a known or open network):`; the passphrase stays in wan.
+`sys wifi connect` offers scanned SSIDs in the sys picker, with security and signal strength,
+then asks `Passphrase (empty for a known or open network):`; the passphrase stays in wan.
+`sys wifi connect 'SSID with spaces'` skips the picker. Authentication/no-signal failures include
+guidance from wan's reply; a successful association without an IPv4 lease reports DHCP failure.
 
 Hidden networks: `sys wifi hidden`. An upstream network that overlaps
 100.80.0.0/16 is refused and raises UpstreamOverlap.
@@ -136,12 +145,16 @@ uplinks and rechecks the lease; the overlap latch clears only after a safe lease
 
 ## Captive portals
 
-`sys portal on` runs `sudo portal on` and then the portal browser. It opens two pf rules
+`sys portal on` starts the portal browser, which owns portal mode for its lifetime. It opens two pf rules
 on both firewalls and wan's DNS pass-through, for the portal browser only; the bar shows `PORTAL`.
 It ends when the browser closes, with `sys portal off`, or after 30 minutes.
+`sys browser portal` and `browser portal` use the same lifecycle. A new launch closes stale rules
+on all three guests before opening any; it refuses to open if closure fails. Cron also detects an
+abandoned browser session and retries incomplete closure every minute. `sys portal status` shows
+the reason (active, timeout, browser closed, interrupted, or closure pending) and each guest's state.
 
 ```sh
-sudo portal on [A.B.C.D/LEN]   # upstream network, taken from wan's address if omitted
+sudo portal on [A.B.C.D/LEN]   # diagnostic opening; without a browser it expires after a minute
 sudo portal off                # if a side cannot be closed, retries every minute
 sudo portal status             # wan, fw1, fw2; verdict on, off, mixed or unknown
 ```
@@ -162,6 +175,15 @@ sudo devices allow tb <id>     # Thunderbolt PCIe tunnel, until unplugged
 
 Both ask you to type `yes`. USB approvals are written to `/etc/usbguard/rules.conf`.
 
+For the Dell dock's Realtek Ethernet, allow its USBGuard device number first, then run
+`sys wired status` to read its serial and `sys wired attach 0bda:8153 SERIAL` (or omit arguments
+for prompts). Confirm the exact identity shown. The `wired-uplink` Incus USB device persists on
+wan and matches that vendor, product and serial on replug; another adapter does not qualify.
+An empty or ambiguous serial is refused. `sys wired remove` removes the role, including future
+automatic attachment, without revoking the USBGuard approval. Unplugging alone keeps the role.
+The host never runs DHCP or assigns addresses to the NIC. Wan uses it as `eth1`, prefers its
+wired default route, and retries DHCP on replug at its next check (within a minute).
+
 ## DNS: blocklist and own records
 
 The firewalls resolve all DNS. Cron downloads the blocklist weekly (URL and limits in
@@ -171,10 +193,36 @@ back on both. The owner's files are on the laptop:
 - `/var/lib/convergent/dns/allow`: domains exempt from the blocklist, one per line, `#` comments.
 - `/var/lib/convergent/dns/records`: Unbound `local-data` and `local-data-ptr` lines.
 
+Use `sys dns list`, then `sys dns add printer.home.arpa 192.168.1.50` or
+`sys dns remove printer.home.arpa`. The editor manages IPv4 A records; other record types can
+still be maintained in the owner file. Names are normalized to lowercase; duplicate names,
+invalid addresses and built-in name conflicts are refused. Removing a name with non-A records
+requires editing the owner file. A local DNS record does not grant firewall access to that address.
+
+`sys dns allow example.org` adds a blocklist exception for that name and its subdomains;
+`sys dns unallow example.org` removes it. Each edit shows a diff and needs `yes` before applying
+to both firewalls. Failed or interrupted edits restore the previous owner files and firewall data;
+if a firewall is unreachable, recovery stays pending until the next push can reach both.
+Run `sudo dns-push` once if there is no stored blocklist. `sys dns push` reapplies the current
+files with the stored blocklist. `sys dns list` shows the last successful push time in UTC.
+
 ```sh
 sudo dns-push          # download, validate, push the blocklist and records
 sudo dns-push local    # push the stored blocklist with the current files
 ```
+
+## Firewall maintenance
+
+`sys firewall status` (or `sys fw`) shows fw1 and fw2 CARP roles for transit, host, svc, web,
+admin and guests, PF state counts, Unbound status, and the last successful DNS push to both.
+Unreachable guests and pending DNS recovery are shown explicitly.
+
+`sys fw maintenance` checks the six-segment MASTER/BACKUP pair, PF, pfsync with defer, Unbound
+and a local DNS answer before asking to demote the master. It verifies that the peer owns all
+six segments. A failed handover is undone; an interrupted action retains recovery information.
+After maintenance, run `sys fw undo`: both firewalls must be healthy, and normal fw1-master /
+fw2-backup roles are checked after releasing the demotion. Finish maintenance before guest updates.
+If undo cannot reach a firewall, retry it after restoring management access.
 
 ## Backups
 

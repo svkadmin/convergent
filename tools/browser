@@ -37,14 +37,14 @@ runtime=/run/user/$uid
 case $display in /*) ;; *) display=$runtime/$display ;; esac
 [ -S "$display" ] && [ -S "$ipc" ] && [ -S "$runtime/pipewire-0" ] || die 'missing session sockets'
 cd /
-ic() { incus --force-local --project default "$@"; }
+ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
 owner() {
     set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs env -i \
         PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" \
         XDG_CONFIG_HOME=/nonexistent XDG_STATE_HOME="$run/state" \
         WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"
-    if [ "${background:-}" = yes ]; then exec "$@"; fi
-    "$@"
+    if [ "${background:-}" = yes ]; then exec "$@" 9>&- 8>&- 7>&- 6>&-; fi
+    "$@" 9>&- 8>&- 7>&- 6>&-
 }
 device() {
     dev=$1; shift
@@ -117,7 +117,10 @@ cleanup() {
     if [ -n "$grafana" ]; then
         if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory=350MiB || result=1; else result=1; fi
     fi
-    if [ -n "$portal" ]; then /usr/local/sbin/portal off || result=1; fi
+    if [ -n "$portal" ]; then
+        if [ "$result" = 0 ]; then why=closed; else why=interrupted; fi
+        /usr/local/sbin/portal off "$why" || result=1
+    fi
     if [ -n "$browser" ]; then kill "$browser" 2>/dev/null; wait "$browser" 2>/dev/null; fi
     for child in $children; do kill "$child" 2>/dev/null; done
     for child in $children; do wait "$child" 2>/dev/null; done
@@ -135,7 +138,6 @@ rm -rf -- "$run"
 install -d -o root -g "$gid" -m 0750 "$run"
 install -d -o root -g "$gid" -m 0730 "$run/sockets"
 install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
-if [ "$role" = portal ]; then portal_on || die 'portal mode is not on'; portal=1; fi
 owner swaymsg "for_window [app_id=\"^convergent-$role\$\"] title_format \"[$role] %title\"" |
     jq -e 'all(.[]; .success)' >/dev/null || die 'cannot label Sway windows'
 # The container first: a first start creates it, which takes long, and the sockets below should not
@@ -146,6 +148,10 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
+fi
+if [ "$role" = portal ]; then
+    portal=1
+    /usr/local/sbin/portal begin || die 'cannot open portal mode'
 fi
 active=1
 if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
@@ -213,7 +219,7 @@ for child in $children; do
     kill -0 "$child" 2>/dev/null || die "the Wayland or audio proxy exited before the browser started (logs: $run/*.log)"
 done
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
-    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" &
+    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" 9>&- 8>&- 7>&- 6>&- &
 browser=$!
 flock -u 9
 exec 9>&-

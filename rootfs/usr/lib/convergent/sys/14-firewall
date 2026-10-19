@@ -1,0 +1,105 @@
+title=Firewalls
+alias=fw
+actions='status	Show both firewalls and DNS push status	root
+maintenance	Move all segments to the healthy peer	root
+undo	End maintenance demotion	root'
+
+firewall_state() { echo 'fw1 / fw2: CARP, PF, DNS'; }
+firewall_rsh() {
+	host=$1; shift
+	run timeout 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$host" "$@" 9>&- 8>&-
+}
+firewall_role() {
+	output=$(firewall_rsh "$1" ifconfig) || return
+	printf '%s\n' "$output" | awk -v want="$2" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n==6 && !bad)}'
+}
+firewall_pair() { firewall_role "$1" MASTER && firewall_role "$2" BACKUP; }
+firewall_healthy() {
+	output=$(firewall_rsh "$1" 'ifconfig pfsync0') || return
+	printf '%s\n' "$output" | grep -q RUNNING && printf '%s\n' "$output" | grep -q 'defer: on' || return 1
+	output=$(firewall_rsh "$1" 'pfctl -si') || return
+	printf '%s\n' "$output" | grep -q '^Status: Enabled' || return 1
+	firewall_rsh "$1" 'pfctl -nf /etc/pf.conf && rcctl check unbound && unbound-control status' >/dev/null || return
+	output=$(firewall_rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1') || return
+	printf '%s\n' "$output" | grep -q 'has address 100.80.2.10'
+}
+firewall_status() (
+	noargs "$@"
+	[ "$(id -u)" = 0 ] || { page run sudo sys firewall status; exit $?; }
+	result=0
+	for fw in fw1 fw2; do
+		echo "$fw:"
+		if output=$(firewall_rsh "$fw" ifconfig); then
+			printf '%s\n' "$output" | awk '
+			BEGIN {split("transit host svc web admin guests",seg," ")}
+			/^carp[0-5]:/ {i=substr($1,5,1)+1}
+			/carp: / {print "  " seg[i] ": " $2; n++}
+			END {if (n!=6) exit 1}' || result=1
+		else result=1; fi
+		firewall_rsh "$fw" 'set -e; info=$(pfctl -si); printf "%s\n" "$info" | sed -n "/^Status:/p; /current entries/p"; rcctl check unbound; unbound-control status' || result=1
+	done
+	printf 'Last successful DNS push to both (UTC): '
+	cat /var/lib/convergent/dns/last-push 2>/dev/null || echo unknown
+	[ ! -e /var/lib/convergent/dns/pending ] || echo 'DNS rollback pending: run sudo dns-push local'
+	if [ -e /var/lib/convergent/firewall-maintenance ]; then
+		printf 'Maintenance demotion (sys firewall undo): '; cat /var/lib/convergent/firewall-maintenance
+	fi
+	exit "$result"
+)
+firewall_release() {
+	# Removing our group also removes only our demotion, even after an uncertain SSH result.
+	firewall_rsh "$master" 'set -e
+for i in carp0 carp1 carp2 carp3 carp4 carp5; do
+    info=$(ifconfig "$i")
+    groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
+    case " $groups " in *" sysmaint "*) ifconfig "$i" -group sysmaint ;; esac
+done' || return
+	rm -f "$journal"
+}
+firewall_wait() {
+	for attempt in 1 2 3 4 5 6; do
+		firewall_pair "$1" "$2" && return 0
+		sleep 2
+	done
+	return 1
+}
+firewall_change() (
+	op=$1; shift; noargs "$@"
+	[ "$(id -u)" = 0 ] || { run sudo sys firewall "$op"; exit $?; }
+	mkdir -p /run/convergent /var/lib/convergent || exit 1
+	exec 9>/run/convergent/guests.lock
+	flock -n 9 || die 'another guest operation is running'
+	exec 8>/run/convergent/dns-push.lock
+	flock -n 8 || die 'DNS push in progress'
+	journal=/var/lib/convergent/firewall-maintenance
+	if [ "$op" = undo ]; then
+		[ -f "$journal" ] || die 'no maintenance demotion recorded'
+		master=$(cat "$journal")
+		case $master in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) die 'invalid maintenance journal' ;; esac
+		firewall_healthy "$master" && firewall_healthy "$peer" || die 'both firewalls must be healthy before undo'
+		confirm "Release $master maintenance demotion" || exit 1
+		firewall_release || die 'undo failed; journal retained, retry sys firewall undo'
+		firewall_wait fw1 fw2 || die 'demotion removed but normal fw1 MASTER / fw2 BACKUP roles not restored; inspect sys fw status'
+		echo 'Maintenance ended; fw1 is master on all six segments.'
+		exit 0
+	fi
+	[ ! -e "$journal" ] || die 'maintenance already recorded; use sys firewall undo'
+	[ ! -e /var/lib/convergent/dns/pending ] || die 'recover the pending DNS push first'
+	if firewall_pair fw1 fw2; then master=fw1 peer=fw2
+	elif firewall_pair fw2 fw1; then master=fw2 peer=fw1
+	else die 'need one master and one backup across all six segments'; fi
+	firewall_healthy "$peer" && firewall_healthy "$master" || die 'peer or master is unhealthy; no failover attempted'
+	confirm "Demote $master and move all six segments to $peer until sys firewall undo" || exit 1
+	printf '%s\n' "$master" >"$journal.new" && mv "$journal.new" "$journal" || exit 1
+	sync
+	trap 'rc=$?; trap - 0; trap "" HUP INT TERM; firewall_release || echo "Undo pending: run sys firewall undo" >&2; exit "$rc"' 0
+	trap 'exit 1' HUP INT TERM
+	firewall_rsh "$master" 'set -e
+for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group sysmaint; done
+ifconfig -g sysmaint carpdemote 128' || die 'demotion failed; undoing'
+	firewall_wait "$peer" "$master" && firewall_healthy "$peer" || die 'peer did not take over healthily; undoing'
+	trap - 0 HUP INT TERM
+	echo "$peer is master on all six segments; $master is in maintenance. Run sys firewall undo when finished."
+)
+firewall_maintenance() { firewall_change maintenance "$@"; }
+firewall_undo() { firewall_change undo "$@"; }

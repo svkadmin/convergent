@@ -1,0 +1,17 @@
+title=Wired
+actions='status	Show wired uplink role and approved USB NICs	root
+attach	Assign dock NIC to wan [VENDOR:PRODUCT SERIAL]	root
+remove	Remove wired uplink role	root confirm'
+
+wired_state() { echo 'USB uplink in wan'; }
+wired_status() { noargs "$@"; page run sudo /usr/local/sbin/devices wired status; }
+wired_attach() {
+	case $# in
+	0) wired_status; ask 'Vendor:product (Dell dock: 0bda:8153)'; nic=$answer; ask 'USB serial'; serial=$answer ;;
+	2) nic=$1; serial=$2 ;;
+	*) usage ;;
+	esac
+	text_valid "$nic"; text_valid "$serial"
+	run sudo /usr/local/sbin/devices wired attach "$nic" "$serial"
+}
+wired_remove() { noargs "$@"; run sudo /usr/local/sbin/devices wired remove; }

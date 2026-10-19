@@ -56,14 +56,28 @@ trap 'exit 1' HUP INT TERM"
 restore="cd $rdir && if [ -e blocklist.rpz.prev ]; then cp -p blocklist.rpz.prev blocklist.rpz &&
 cp -p local-owner.conf.prev local-owner.conf && unbound-control reload >/dev/null; fi"
 rollback() {
-	[ -e "$state/pending" ] || return 0
+	if [ -e "$state/committed" ]; then
+		rm -f "$state/pending" || return 1
+		rm -rf "$state/edit.before" || return 1
+		rm -f "$state/committed" || return 1
+		return 0
+	fi
 	_failed=0
-	for _f in $fws; do
-		rsh "$_f" "$lock
+	if [ -e "$state/pending" ]; then
+		for _f in $fws; do
+			rsh "$_f" "$lock
 $restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _failed=1; }
-	done
-	rm -f "$state/stamp"
-	[ "$_failed" = 0 ] && rm -f "$state/pending"
+		done
+		rm -f "$state/stamp" "$state/last-push"
+	fi
+	[ "$_failed" = 0 ] || return 1
+	if [ -d "$state/edit.before" ]; then
+		for file in allow records; do
+			cp "$state/edit.before/$file" "$state/$file.new" && mv "$state/$file.new" "$state/$file" || return 1
+		done
+		rm -rf "$state/edit.before" || return 1
+	fi
+	rm -f "$state/pending"
 }
 cleanup() {
 	_rc=$?
@@ -145,16 +159,87 @@ function isdom(s, n, i, a) {
 	return 1
 }'
 
+edit() {
+	op=$1; shift
+	case $op:$# in add:2|remove:1|allow:1|unallow:1) ;; *) die 'usage: dns-push add NAME IPv4 | remove NAME | allow DOMAIN | unallow DOMAIN' ;; esac
+	name=$(printf '%s\n' "$1" | tr 'A-Z' 'a-z' | sed 's/\.$//')
+	case $name in ''|*[!a-z0-9_.-]*) die 'invalid DNS name' ;; esac
+	printf '%s\n' "$name" | awk "$domain"'NF != 1 || !isdom($0) {exit 1}' || die 'invalid DNS name'
+	for file in allow records; do
+		: >"$work/$file.before"
+		[ ! -f "$state/$file" ] || cp "$state/$file" "$work/$file.before"
+	done
+	case $op in
+	add|remove)
+		file=records
+		# Match canonical owner names across record types, case and trailing dots.
+		awk -v name="$name" '
+		$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); if (tolower(s)==name) print}
+		' "$work/records.before" >"$work/matches"
+		if [ "$op" = add ]; then
+			[ ! -s "$work/matches" ] || die 'record name already exists; remove it first'
+			case $2 in ''|*[!0-9.]*) die 'invalid IPv4 address' ;; esac
+			printf '%s\n' "$2" | awk -F . 'NF != 4 {exit 1} {for (i=1;i<=4;i++) if ($i !~ /^[0-9]+$/ || $i ~ /^0[0-9]/ || length($i)>3 || $i>255) exit 1}' || die 'invalid IPv4 address'
+			for fw in $fws; do
+				rsh "$fw" "cat $rdir/local-names.conf" >"$work/builtins" || die "cannot check built-in names on $fw"
+				awk -v name="$name" '$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); if (tolower(s)==name) exit 1}' "$work/builtins" || die 'name conflicts with a built-in record'
+			done
+			cp "$work/records.before" "$work/edit"
+			printf '\nlocal-data: "%s. A %s"\n' "$name" "$2" >>"$work/edit"
+		else
+			[ -s "$work/matches" ] || die 'no local record with that name'
+			awk 'NF != 4 || $3 != "A" {exit 1}' "$work/matches" || die 'name has non-A records; edit the owner file manually'
+			awk -v name="$name" '$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); if (tolower(s)==name) next} {print}' "$work/records.before" >"$work/edit"
+		fi ;;
+	allow|unallow)
+		file=allow
+		awk '{sub(/#.*/, ""); gsub(/^[ \t]+|[ \t]+$/, ""); sub(/\.$/, ""); if ($0 != "") print tolower($0)}' "$work/allow.before" >"$work/normalized"
+		if [ "$op" = allow ]; then
+			if grep -Fxq "$name" "$work/normalized"; then die 'exception already exists'; fi
+			cp "$work/allow.before" "$work/edit"
+			printf '\n%s\n' "$name" >>"$work/edit"
+		else
+			grep -Fxq "$name" "$work/normalized" || die 'exception does not exist'
+			awk -v name="$name" '{s=$0; sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); sub(/\.$/, "", s); if (tolower(s)!=name) print}' "$work/allow.before" >"$work/edit"
+		fi ;;
+	esac
+	echo "Proposed $file change (both firewalls):"
+	diff -u "$work/$file.before" "$work/edit" || [ $? = 1 ] || die 'cannot show diff'
+	printf 'Apply this change? [yes/No] '
+	IFS= read -r answer || die 'input cancelled'
+	[ "$answer" = yes ] || die 'not applied'
+	# Journal local inputs too; a failed or interrupted push restores both layers.
+	mkdir "$state/edit.before.new"
+	cp "$work/allow.before" "$state/edit.before.new/allow"
+	cp "$work/records.before" "$state/edit.before.new/records"
+	mv "$state/edit.before.new" "$state/edit.before"
+	sync
+	cp "$work/edit" "$state/$file.new"
+	mv "$state/$file.new" "$state/$file"
+}
+
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# -le 1 ] || die "usage: dns-push [local | auto]"
 mode=${1:-full}
-case $mode in full | local | auto) ;; *) die "usage: dns-push [local | auto]" ;; esac
+case $mode in
+full|local|auto|list) [ $# -le 1 ] || die 'too many arguments' ;;
+add|remove|allow|unallow) ;;
+*) die 'usage: dns-push [local | auto | list | add NAME IPv4 | remove NAME | allow DOMAIN | unallow DOMAIN]' ;;
+esac
 mkdir -p "$state" "$run"
 exec 9>"$run/dns-push.lock"
 flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 rollback || die "recover both firewalls before another push"
+rm -rf "$state/edit.before.new"
+if [ "$mode" = list ]; then
+	for file in records allow; do
+		echo "$file:"
+		[ ! -f "$state/$file" ] || cat "$state/$file"
+	done
+	[ ! -f "$state/last-push" ] || { printf 'Last successful push (UTC): '; cat "$state/last-push"; }
+	exit 0
+fi
 if [ "$mode" = auto ]; then
 	last=$(cat "$state/stamp" 2>/dev/null || :)
 	case $last in '' | *[!0-9]*) last=0 ;; esac
@@ -165,6 +250,10 @@ case ${BLOCKLIST_MAX_BYTES:-} in '' | *[!0-9]*) die "invalid size cap" ;; esac
 case ${BLOCKLIST_MIN_DOMAINS:-} in '' | *[!0-9]*) die "invalid entry minimum" ;; esac
 [ "$BLOCKLIST_MAX_BYTES" -gt 0 ] && [ "$BLOCKLIST_MIN_DOMAINS" -gt 0 ] || die "limits must be positive"
 work=$(mktemp -d "$run/dns-push.XXXXXX")
+case $mode in add|remove|allow|unallow)
+	[ -s "$state/list.rpz" ] || die 'no stored blocklist; run sudo dns-push first'
+	edit "$@"; mode=local ;;
+esac
 if [ "$mode" = local ]; then cp "$state/list.rpz" "$work/list.raw"; else download; fi
 validate
 : >"$work/allow.in"
@@ -223,5 +312,9 @@ cp "$work/list.raw" "$state/list.rpz.new"
 mv "$state/list.rpz.new" "$state/list.rpz"
 [ "$mode" = local ] || date +%s >"$state/stamp"
 sync
-rm "$state/pending"
+date -u '+%Y-%m-%dT%H:%M:%SZ' >"$state/last-push.new"
+mv "$state/last-push.new" "$state/last-push"
+: >"$state/committed"
+sync
+rollback
 echo "dns-push: updated both firewalls"

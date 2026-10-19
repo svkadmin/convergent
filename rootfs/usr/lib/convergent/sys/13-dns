@@ -1,0 +1,28 @@
+title=DNS
+actions='list	List local records and blocklist exceptions	root
+add	Add local A record [NAME IPv4]	root
+remove	Remove local A record [NAME]	root
+allow	Add blocklist exception [DOMAIN]	root
+unallow	Remove blocklist exception [DOMAIN]	root
+push	Push current DNS files	root'
+
+dns_state() { echo 'Local records / blocklist exceptions'; }
+dns_list() { noargs "$@"; page run sudo /usr/local/sbin/dns-push list; }
+dns_add() {
+	case $# in
+	0) ask 'DNS name'; name=$answer; ask 'IPv4 address'; addr=$answer ;;
+	2) name=$1; addr=$2 ;;
+	*) usage ;;
+	esac
+	text_valid "$name"; text_valid "$addr"
+	run sudo /usr/local/sbin/dns-push add "$name" "$addr"
+}
+dns_edit() {
+	op=$1; shift
+	onearg 'DNS name' "$@"; text_valid "$answer"
+	run sudo /usr/local/sbin/dns-push "$op" "$answer"
+}
+dns_remove() { dns_edit remove "$@"; }
+dns_allow() { dns_edit allow "$@"; }
+dns_unallow() { dns_edit unallow "$@"; }
+dns_push() { noargs "$@"; run sudo /usr/local/sbin/dns-push local; }

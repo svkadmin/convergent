@@ -11,10 +11,11 @@ max=30
 conf=/etc/convergent/ssh_config
 run=/run/convergent
 stamp=$run/portal
+reason=$run/portal.reason
 
 die() { logger -t portal "$*"; echo "portal: $*" >&2; exit 1; }
 log() { logger -t portal "$*"; echo "portal: $*"; }
-usage() { echo "usage: portal on [A.B.C.D/LEN] | off | status | expire" >&2; exit 2; }
+usage() { echo "usage: portal on [A.B.C.D/LEN] | begin | off [closed|interrupted] | status | expire" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # Expiry yields to an active sys action.
@@ -28,6 +29,11 @@ else
 fi
 
 rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+note() { printf '%s\n' "$*" >"$reason.new" && mv "$reason.new" "$reason"; }
+browser_active() {
+	mkdir -p "$run/browser"
+	(exec 8>"$run/browser/portal.lock"; ! flock -n 8)
+}
 
 # Normalize an external IPv4 /16..30 network.
 net_of() {
@@ -83,31 +89,41 @@ close_all() {
 }
 
 off() {
+	note "${1:-owner requested closure}" || die 'cannot record closure reason'
+	echo 0 >"$stamp" || die 'cannot journal closure'
 	if close_all; then
 		rm -f "$stamp"
 		log "portal mode off: fw1, fw2 and wan closed"
 	else
 		# Retry closure next minute.
 		echo 0 >"$stamp"
+		note "${1:-owner requested closure}; closure pending:$bad"
 		die "portal mode NOT closed on:$bad; trying again every minute"
 	fi
 }
 
 on() {
+	# Always clean stale remote rules, even if the last host process lost its journal.
+	off 'recovering previous session' || return
 	if [ $# -ge 1 ]; then
 		lan=$(net_of "$1") || die "not an IPv4 network of 16 to 30 bits outside $net.0.0/16: $1"
 	else
 		lan=$(upstream_net) || die "wan has no upstream address to take the network from; give it: portal on A.B.C.D/LEN"
 	fi
 	{ date +%s >"$stamp.new" && mv "$stamp.new" "$stamp"; } || die "could not write $stamp"
+	note 'opening portal session'
+	trap 'off "interrupted while opening"; exit 1' HUP INT TERM
 	for _s in wan fw1 fw2; do
 		if ! open_side "$_s"; then
+			note "opening failed on $_s"
 			logger -t portal "could not open portal mode on $_s; closing"
 			close_all || :
 			if [ -z "$bad" ]; then rm -f "$stamp"; else echo 0 >"$stamp"; fi
 			die "could not open portal mode on $_s; everything closed again${bad:+ except:$bad (retrying every minute)}"
 		fi
 	done
+	trap - HUP INT TERM
+	note "active; expires after $max minutes or when the browser closes"
 	log "portal mode on for $portal_addr toward $lan, for at most $max minutes"
 }
 
@@ -115,7 +131,8 @@ on() {
 status_side() {
 	case $1 in
 	wan) _r=$(rsh wan portal status) || return 1 ;;
-	*) _r=$(rsh "$1" 'echo "dns $(pfctl -t portal_dns -T show | wc -l) lan $(pfctl -t portal_lan -T show | wc -l)"') || return 1 ;;
+	*) _r=$(rsh "$1" 'dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show) &&
+printf "dns %s lan %s\n" "$(printf "%s" "$dns" | wc -w)" "$(printf "%s" "$lan" | wc -w)"') || return 1 ;;
 	esac
 	case $1 in
 	wan) printf '%s\n' "$_r" | awk '$1 == "on" || $1 == "off" { print; f = 1 } END { exit !f }' ;;
@@ -124,6 +141,7 @@ status_side() {
 }
 
 status() {
+	expire
 	n_on=0 n_off=0 n_bad=0
 	for _s in wan fw1 fw2; do
 		if _r=$(status_side "$_s" 2>"$run/portal.err"); then
@@ -138,22 +156,40 @@ status() {
 	elif [ "$n_on" = 3 ]; then v=on
 	elif [ "$n_off" = 3 ]; then v=off
 	else v=mixed; fi
+	if [ "$n_on" -gt 0 ] && [ ! -e "$stamp" ]; then
+		v=mixed
+		note 'untracked rules remain; run sys portal off'
+	fi
 	echo "portal: $v"
+	printf 'reason: %s\n' "$(cat "$reason" 2>/dev/null || echo 'no session this boot')"
 	[ "$v" = on ] || [ "$v" = off ]
 }
 
 expire() {
-	[ -e "$stamp" ] || exit 0
+	[ -e "$stamp" ] || return 0
 	t=$(cat "$stamp" 2>/dev/null || :)
 	case $t in '' | *[!0-9]*) t=0 ;; esac
-	[ $(( $(date +%s) - t )) -ge $(( max * 60 )) ] || exit 0
-	[ "$t" = 0 ] || log "portal mode is $max minutes old"
-	off
+	if [ "$t" = 0 ]; then
+		why=$(cat "$reason" 2>/dev/null); why=${why%%; closure pending:*}
+		off "${why:-interrupted session}"
+	elif [ $(( $(date +%s) - t )) -ge $(( max * 60 )) ] || [ "$t" -gt "$(date +%s)" ]; then
+		off 'timeout'
+	elif [ $(( $(date +%s) - t )) -ge 60 ] && ! browser_active; then
+		off 'interrupted session: browser no longer running'
+	fi
+	return 0
 }
 
 case ${1:-} in
-on) shift; [ $# -le 1 ] || usage; on "$@" ;;
-off) [ $# = 1 ] || usage; off ;;
+on) shift; [ $# -le 1 ] || usage; browser_active && die 'portal browser already running'; on "$@" ;;
+begin) [ $# = 1 ] || usage; browser_active || die 'begin requires the browser session lock'; on ;;
+off)
+	case $#:${2:-} in
+	1:) off ;;
+	2:closed) [ ! -e "$stamp" ] || off 'browser closed' ;;
+	2:interrupted) [ ! -e "$stamp" ] || off 'browser interrupted or launch failed' ;;
+	*) usage ;;
+	esac ;;
 status) [ $# = 1 ] || usage; status ;;
 expire) [ $# = 1 ] || usage; expire ;;
 *) usage ;;
