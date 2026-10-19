@@ -76,7 +76,7 @@ if [ "$recovery" = 1 ]; then
 	arm_watchdog
 fi
 
-# Prepare this release's /var atomically from the good release.
+# Prepare this release's /var atomically; cached policy is rebuilt once per release.
 if [ ! -d "$state/var-$release" ]; then
 	new="$state/var-$release.new"
 	[ ! -d "$new" ] || btrfs -q subvolume delete "$new"
@@ -94,7 +94,7 @@ if [ ! -d "$state/var-$release" ]; then
 	else
 		# First install: /var starts from the image's own.
 		btrfs -q subvolume create "$new" && cp -a "$NEWROOT/var/." "$new/"
-	fi && sync && mv "$new" "$state/var-$release" ||
+	fi && rm -rf "$new/cache/apparmor" && sync && mv "$new" "$state/var-$release" ||
 		die "state: could not prepare /var for release $release"
 fi
 [ -d "$state/home" ] || btrfs -q subvolume create "$state/home"

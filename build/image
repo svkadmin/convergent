@@ -103,9 +103,65 @@ done
 for symbol in NOVA_CORE DRM_NOVA; do
 	! grep -Eq "^CONFIG_${symbol}=[ym]$" "$config" || die "the kernel enables $symbol (rebuild sys-kernel/gentoo-kernel)"
 done
-# Intel CPU microcode, loaded before the initramfs (the UKI's first initrd).
-[ -s "$root/boot/intel-uc.img" ] || die "no Intel microcode in the staging root (sys-firmware/intel-microcode)"
-cp "$root/boot/intel-uc.img" "$out/microcode.cpio"
+# Keep the actual config for driver selection and release review.
+cp "$config" "$out/kernel.config"
+config="$out/kernel.config"
+chroot_mount
+profiles=
+trap '[ -z "$profiles" ] || rm -rf "$BUILDER$profiles"; chroot_umount' EXIT
+bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
+rel=/releases/$release
+# Early microcode: one uncompressed newc archive, as intel-uc.img uses.
+mkdir -p "$out/microcode/kernel/x86/microcode"
+ucode="$out/microcode/kernel/x86/microcode/GenuineIntel.bin"
+: >"$ucode"
+for cpu in $MICROCODE_KEEP; do
+	fw="/staging/usr/lib/firmware/intel-ucode/$cpu"
+	if [ -s "$BUILDER$fw" ]; then
+		cat "$BUILDER$fw" >>"$ucode"
+	elif [ -s "$BUILDER$fw.zst" ]; then
+		bld zstd -dc "$fw.zst" >>"$ucode"
+	elif [ -s "$BUILDER$fw.xz" ]; then
+		bld xz -dc "$fw.xz" >>"$ucode"
+	else
+		die "no microcode for $cpu (sys-firmware/intel-microcode)"
+	fi
+done
+bld sh -c 'cd "$1" && find kernel -print | cpio -o -H newc --owner=0:0 --reproducible' sh \
+	"$rel/microcode" >"$out/microcode.cpio"
+[ "$(stat -c %s "$out/microcode.cpio")" -lt 1048576 ] || die 'early microcode exceeds 1 MiB'
+rm -rf "$out/microcode"
+
+# Remove hardware classes, retaining dependencies of every surviving module.
+bld depmod -b /image-root "$kver"
+modules="$root/lib/modules/$kver"
+(cd "$modules" && find kernel -type f -name '*.ko*' | sort) >"$out/modules.before"
+(
+	set -f
+	drop=$(printf '%s\n' "$MODULE_DROP" | sed 's/#.*//')
+	while read -r f; do
+		for pattern in $MODULE_KEEP; do case ${f#kernel/} in $pattern) continue 2 ;; esac; done
+		for pattern in $drop; do
+			case ${f#kernel/} in $pattern) echo "$f"; break ;; esac
+		done
+	done <"$out/modules.before"
+) >"$out/modules.candidates"
+awk 'FILENAME == ARGV[1] {drop[$1]=1; next}
+	{gsub(/:/, ""); line[++n]=$0}
+	END {
+		do {
+			changed=0
+			for (i=1;i<=n;i++) {
+				count=split(line[i], field)
+				if (field[1] in drop) continue
+				for (j=2;j<=count;j++) if (field[j] in drop) {delete drop[field[j]]; changed=1}
+			}
+		} while (changed)
+		for (f in drop) print f
+	}' "$out/modules.candidates" "$modules/modules.dep" | sort >"$out/modules.removed"
+while read -r f; do rm -f "$modules/$f"; done <"$out/modules.removed"
+rm "$out/modules.candidates"
+(cd "$modules" && find kernel -type f -name '*.ko*' | sort) >"$out/modules.after"
 gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
 # Super+d lists apps by their desktop entries: helpers that are not apps to pick go.
 rm -f "$root"/usr/share/applications/footclient.desktop "$root"/usr/share/applications/foot-server.desktop \
@@ -116,6 +172,8 @@ rm -rf "$root"/usr/src "$root"/usr/include "$root"/usr/share/doc "$root"/usr/sha
 	"$root"/etc/kernel "${root:?}"/boot/* "$root"/usr/libexec/gcc "$gccdir/include" "$gccdir/plugin"
 find "$root/usr/lib" "$root/usr/lib64" -name '*.a' -delete
 find "$gccdir" -maxdepth 1 \( -name '*.o' -o -name '*.la' \) -delete
+# Unused multilib and SPIR-V tools; the library check below backs this.
+(cd "$root" && rm -rf $IMAGE_DROP)
 # The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
 find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name 'cc' -o -name 'cpp' \
 	-o -name 'x86_64-pc-linux-gnu-*' \) -delete
@@ -160,23 +218,22 @@ for s in boot/keymaps boot/convergent-firewall boot/usbguard boot/auditd boot/ap
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
 done
 
-# 2. Firmware: only what the laptop's own devices load. The Wi-Fi card's lives in the wan VM;
-#    the NVIDIA card has no host driver at all.
+# 2. Firmware: copy selected paths with links resolved before dropping other generations.
+mkdir -p "$out/firmware"
 (
 	cd "$root/usr/lib/firmware"
 	find . ! -type d | while read -r f; do
 		for k in $FIRMWARE_KEEP; do
-			case ${f#./} in "$k"*) continue 2 ;; esac
+			case ${f#./} in "$k"*) cp -aL --parents "$f" "$out/firmware/"; break ;; esac
 		done
-		rm -f "$f"
 	done
-	find . -type d -empty -delete
 )
-
-chroot_mount
-profiles=
-trap '[ -z "$profiles" ] || rm -rf "$BUILDER$profiles"; chroot_umount' EXIT
-bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
+rm -rf "$root/usr/lib/firmware"
+mv "$out/firmware" "$root/usr/lib/firmware"
+for fw in mtl_dmc.bin mtl_guc_70.bin mtl_huc_gsc.bin mtl_gsc_1.bin; do
+	f="$root/usr/lib/firmware/i915/$fw"
+	[ -s "$f" ] || [ -s "$f.zst" ] || [ -s "$f.xz" ] || die "missing Arrow Lake firmware: $fw"
+done
 
 # C.UTF-8 (foot and other programs need a UTF-8 locale; the image has no locale-gen) and LANG
 # from rootfs/etc/env.d into profile.env.
@@ -214,8 +271,6 @@ if [ -f "$keys/$CHANNEL.pub" ]; then
 else
 	echo "image: no $keys/$CHANNEL.pub; this release accepts only unsigned writes" >&2
 fi
-rel=/releases/$release
-
 # 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
 #    so Convergent's module is put there for the run; afterwards dracut leaves the image, which
 #    never builds an initramfs itself.
@@ -224,11 +279,49 @@ chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh "$root/usr/lib/dra
 # The links to the kernel sources and build files point at nothing once /usr/src is gone.
 find "$root/lib/modules/$kver" -maxdepth 1 -xtype l -delete
 bld depmod -b /image-root "$kver"
-# i915 in the initramfs: the panel is driven before the passphrase prompt, which the EFI framebuffer
-# alone did not show on the laptop.
+# Check the built kernel, not the build host: the prompt needs both input and a framebuffer.
+for symbol in VT VT_CONSOLE FRAMEBUFFER_CONSOLE DRM_FBDEV_EMULATION SERIAL_8250_CONSOLE; do
+	grep -qx "CONFIG_$symbol=y" "$config" || die "no built-in $symbol for the passphrase console"
+done
+drivers=
+for pair in DRM_I915:i915 BLK_DEV_DM:dm_mod DM_CRYPT:dm_crypt DM_VERITY:dm_verity BTRFS_FS:btrfs \
+	BLK_DEV_NVME:nvme VMD:vmd USB_XHCI_HCD:xhci_hcd USB_XHCI_PCI:xhci_pci USB_STORAGE:usb_storage USB_UAS:uas \
+	BLK_DEV_SD:sd_mod SERIO_I8042:i8042 KEYBOARD_ATKBD:atkbd HID_GENERIC:hid_generic USB_HID:usbhid \
+	VIRTIO_PCI:virtio_pci VIRTIO_BLK:virtio_blk SCSI_VIRTIO:virtio_scsi DRM_VIRTIO_GPU:virtio_gpu \
+	VIRTIO_CONSOLE:virtio_console VIRTIO_NET:virtio_net THUNDERBOLT:thunderbolt; do
+	symbol=${pair%:*}
+	module=${pair#*:}
+	case $(sed -n "s/^CONFIG_$symbol=//p" "$config") in
+		y) ;;
+		m) bld modinfo -b /image-root -k "$kver" "$module" >/dev/null || die "missing $module"
+		   drivers="$drivers $module" ;;
+		*) die "no $symbol for laptop/QEMU boot" ;;
+	esac
+done
+# Modular console fallbacks, USB/HID variants and the dock's Type-C/I2C/pinctrl path.
+# File discovery excludes built-ins; dracut brings each module's dependencies.
+extra=$(find "$modules/kernel" -type f -name '*.ko*' | while read -r f; do
+	case ${f#"$modules/kernel/"} in
+		drivers/hid/* | drivers/input/keyboard/* | drivers/input/serio/* | \
+		drivers/usb/core/* | drivers/usb/host/* | drivers/usb/storage/* | drivers/usb/typec/* | \
+		drivers/usb/common/* | drivers/usb/roles/* | drivers/usb/misc/onboard_usb* | \
+		drivers/thunderbolt/* | drivers/pinctrl/intel/* | drivers/i2c/busses/i2c-designware* | \
+		drivers/mfd/intel-lpss* | drivers/platform/x86/intel/pmc/* | drivers/tty/serial/8250/* | \
+		drivers/gpu/drm/sysfb/* | \
+		drivers/gpu/drm/tiny/simpledrm.ko* | drivers/video/fbdev/efifb.ko* | \
+		crypto/* | arch/x86/crypto/*)
+			f=${f##*/}; echo "${f%%.ko*}" ;;
+	esac
+done)
+drivers=$(printf '%s\n' $drivers $extra | sort -u)
+printf '%s\n' "$drivers" >"$out/initramfs.drivers"
+# Firmware is needed even when i915 is built in.
+i915_fw=$(find "$root/usr/lib/firmware/i915" -type f | sed "s|^$root||")
 bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
-	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
-	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" --add-drivers i915 \
+	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" --drivers "$drivers" \
+	--fwdir /image-root/usr/lib/firmware --filesystems "btrfs erofs" \
+	--install "$i915_fw" \
+	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" \
 	"$rel/initramfs.img"
 # Rescue is inside the verity image; no new release files or manifest fields.
 profiles=$(bld mktemp -d /tmp/convergent-rescue.XXXXXX)
@@ -256,9 +349,18 @@ fi
 echo "image: rescue initramfs $(stat -c %s "$BUILDER$profiles/initramfs.img") bytes; UKI $(stat -c %s "$root/usr/lib/convergent/rescue.efi") bytes"
 rm -rf "$BUILDER$profiles"
 profiles=
+bld lsinitrd "$rel/initramfs.img" >"$out/initramfs.list"
+awk '$NF ~ /\/kernel\/.*\.ko(\..*)?$/ {sub(/^.*\/kernel\//, "kernel/", $NF); print $NF}' \
+	"$out/initramfs.list" | sort -u >"$out/initramfs.modules"
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \
 	"$root"/usr/bin/dracut* "$root/usr/bin/lsinitrd"
 
+# ldd can mistake an ELF with a missing 32-bit loader for a static binary.
+bld sh -c 'command -v readelf >/dev/null || exit 1
+find /image-root/usr -type f -perm /111 | while read -r f; do
+	loader=$(LC_ALL=C readelf -l "$f" 2>/dev/null | sed -n "s/.*Requesting program interpreter: \(.*\)]/\1/p")
+	[ -z "$loader" ] || [ -e "/image-root$loader" ] || { echo "$f: missing $loader" >&2; exit 1; }
+done' || die 'ELF interpreter missing after trimming'
 # Every program and library still finds its libraries after the trimming above (about 30 s).
 [ -x "$root/usr/bin/ldd" ] || die "no ldd in the image root for the library check"
 missing=$(chroot "$root" /bin/sh -c 'find /usr/bin /usr/sbin /usr/libexec /usr/lib64 /usr/lib -xdev -type f \

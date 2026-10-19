@@ -180,6 +180,10 @@ build_node() {
 		try=$((try + 1))
 	done
 
+	# The patch boot zeroed free space; convert before smoke-testing the shipped base.
+	qemu-img convert -O qcow2 "$out/$n.qcow2" "$out/$n.compact.qcow2"
+	mv "$out/$n.compact.qcow2" "$out/$n.qcow2"
+
 	# Smoke-boot overlays with the seven production NICs.
 	log=$out/$n.boot.log
 	: >"$log"
