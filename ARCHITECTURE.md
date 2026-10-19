@@ -483,7 +483,9 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
   node_exporter reports. The few figures nothing else provides are written as small text files
   by the scripts of section 12: on each firewall its CARP, pf and unbound state; on the host,
   once per boot, the release numbers, Secure Boot, lockdown, the LUKS header hash and crash records,
-  daily the NVMe health and NTS state. Guest updates record their timestamps in the update journal
+  at boot and daily the NVMe health and certificate expiry; every minute the NTS state.
+  NTS alerts allow five minutes to synchronise while an uplink is up; collector alerts allow
+  five minutes for boot collection. Guest updates record their timestamps in the update journal
   (`/var/lib/convergent/guests/updates`), not in the metrics.
 - **Logs:** VictoriaLogs receives syslog over TLS from the host, the firewalls and wan, including
   forwarded host audit records.

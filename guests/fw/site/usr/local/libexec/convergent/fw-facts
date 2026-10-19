@@ -25,7 +25,10 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 			printf "convergent_carp_advskew{interface=\"%s\"} %d\n", ifn, a
 		}'
 	echo "convergent_carp_preempt $(sysctl -n net.inet.carp.preempt)"
-	ifconfig -g carp 2>/dev/null | awk '/demote/ { print "convergent_carp_demotion " $NF; exit }'
+	for group in carp wanwatch upgrade; do
+		ifconfig -g "$group" 2>/dev/null | awk -v g="$group" '
+			/demote/ { printf "convergent_carp_demotion{group=\"%s\"} %d\n", g, $NF; exit }'
+	done
 
 	# pfsync: link running, and defer on.
 	ifconfig pfsync0 2>/dev/null | awk '

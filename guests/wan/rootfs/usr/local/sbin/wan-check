@@ -5,16 +5,29 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/wan/wan.conf
 . /usr/local/lib/wan-lib.sh
 
-if [ "${1:-}" = --delay ]; then
-	sleep "${2:-2}"
-fi
+case ${1:-}:$# in
+:0 | retry:1) ;;
+--delay:1 | --delay:2) sleep "${2:-2}" ;;
+*) echo "usage: wan-check [retry | --delay [seconds]]" >&2; exit 2 ;;
+esac
 
 d=/run/wan
 m=/run/node_exporter
 mkdir -p "$d" "$m"
 chmod 755 "$d" "$m"
 exec 9> "$d/check.lock"
-flock -n 9 || exit 0
+flock -n 9 || { [ "${1:-}" != retry ]; exit $?; }
+
+rc=0
+# Retry only configured wired uplinks; keep the alarm until a safe lease arrives.
+if [ "${1:-}" = retry ]; then
+	for ifc in $UP_IFS; do
+		[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
+		[ -e "/sys/class/net/$ifc" ] || continue
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || exit 1
+		ifup "$ifc" 9>&- >/dev/null 2>&1 || rc=1
+	done
+fi
 
 # A wired uplink (USB NIC) has no hotplug handler here: bring it up once it appears, unless
 # its lease was refused; ifup is a no-op for an interface already up.
@@ -36,6 +49,7 @@ for ifc in $UP_IFS; do
 			if [ "$ifc" = "$WIFI_IF" ]; then
 				timeout 10 iwctl station "$ifc" disconnect >/dev/null 2>&1
 			else
+				ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 				ip addr flush dev "$ifc" 2>/dev/null
 				ip link set dev "$ifc" down 2>/dev/null
 			fi
@@ -72,4 +86,4 @@ portal=0
 } > "$m/wan.prom.tmp"
 chmod 644 "$m/wan.prom.tmp"
 mv "$m/wan.prom.tmp" "$m/wan.prom"
-exit 0
+exit "$rc"

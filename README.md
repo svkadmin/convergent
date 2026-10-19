@@ -132,9 +132,12 @@ default.
    Done when: no line says FAIL (SKIP is fine).
 
 The bar's `alerts` shows `?` until svc runs, then counts (`1c 2w`). Expected with Secure Boot
-off: SecureBootNotVerified, CheckerFailed; without an accepted baseline also FirewallRulesetDrift.
+off: SecureBootNotVerified, CheckerFailed; without an accepted baseline also CollectorBroken.
+FirewallRulesetDrift requires an expected hash and reports only a mismatch.
 Details: `sys browser admin` (Grafana, user `owner`; password:
-`sudo cat /var/lib/convergent/guests/tls/admin-password`). Anything else is real.
+`sudo cat /var/lib/convergent/guests/tls/admin-password`). Inspect the named alerts rather than
+inferring faults from the counts. NTS refreshes every minute and alerts after five minutes with
+an uplink; collector warnings allow five minutes for startup.
 
 Something off: [RECOVERY.md](RECOVERY.md); logs: `sys logs`; every command: `sys help`.
 

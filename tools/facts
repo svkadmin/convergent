@@ -14,7 +14,7 @@ cert=/var/lib/incus/server.crt
 
 die() { logger -t facts "$*"; echo "facts: $*" >&2; exit 1; }
 log() { logger -t facts "$*"; }
-usage() { echo "usage: facts boot | daily | auto" >&2; exit 2; }
+usage() { echo "usage: facts boot | daily | nts | auto" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 umask 022
@@ -150,7 +150,10 @@ fact_nvme() {
 
 # Count selected/combined sources with NTS cookies.
 fact_nts() {
-	n=$({ chronyc -n -c sources 2>/dev/null | sed 's/^/S,/'; chronyc -n authdata 2>/dev/null | sed 's/^/A /'; } | awk '
+	sources=$(chronyc -n -c sources 2>/dev/null) && authdata=$(chronyc -n authdata 2>/dev/null) || {
+		bad "chronyc gave no answer"; return
+	}
+	n=$({ printf '%s\n' "$sources" | sed 's/^/S,/'; printf '%s\n' "$authdata" | sed 's/^/A /'; } | awk '
 		/^S,/ { split($0, f, ","); if (f[3] ~ /^[*+]$/) agree[f[4]] = 1; next }
 		/^A / { if ($3 == "NTS" && $(NF - 1) > 0) auth[$2] = 1 }
 		END { for (k in agree) if (k in auth) c++; print c + 0 }')
@@ -183,9 +186,17 @@ hourly() {
 daily() {
 	new_buf
 	fact_nvme
-	fact_nts
 	fact_certs
 	publish daily daily
+}
+
+nts() {
+	# Retry incomplete boot facts; retire the old daily NTS series.
+	if ! grep -qx 'cv_collector_success{collector="daily"} 1' "$out/daily.prom" 2>/dev/null ||
+		grep -q '^cv_nts_authenticated_sources ' "$out/daily.prom" 2>/dev/null; then daily; fi
+	new_buf
+	fact_nts
+	publish nts nts
 }
 
 # --- auto ---
@@ -204,8 +215,9 @@ auto() {
 }
 
 case ${1:-} in
-boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; boot; hourly ;;
+boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; daily; hourly; nts; boot ;;
 daily) [ $# = 1 ] || usage; flock -w 120 9 || die "another facts is running"; daily ;;
+nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts ;;
 auto) [ $# = 1 ] || usage; flock -n 9 || exit 0; auto ;;
 *) usage ;;
 esac

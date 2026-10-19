@@ -130,6 +130,9 @@ The radio belongs to wan; `sys wifi` runs the commands in it over SSH.
 
 Hidden networks: `sys wifi hidden`. An upstream network that overlaps
 100.80.0.0/16 is refused and raises UpstreamOverlap.
+After moving a refused wired adapter to a safe network, retry DHCP with
+`sudo ssh -F /etc/convergent/ssh_config wan 'check retry'`. This retries only configured wired
+uplinks and rechecks the lease; the overlap latch clears only after a safe lease arrives.
 
 ## Captive portals
 
