@@ -4,10 +4,10 @@ actions='status	Show Bluetooth power and known devices
 on	Turn Bluetooth on	
 off	Turn Bluetooth off	
 scan	Scan Bluetooth for 10 seconds	
-pair	Pair Bluetooth MAC	
-connect	Connect Bluetooth MAC	
-disconnect	Disconnect Bluetooth MAC	
-forget	Forget Bluetooth MAC	confirm'
+pair	Scan and pick a device to pair [MAC]	
+connect	Pick a device to connect [MAC]	
+disconnect	Pick a device to disconnect [MAC]	
+forget	Pick a device to forget [MAC]	confirm'
 
 bluetooth_state() {
 	value=$(timeout -k 0.2 1 bluetoothctl show 2>/dev/null) || value=
@@ -18,10 +18,40 @@ bluetooth_status() { noargs "$@"; page bluetooth_show; }
 bluetooth_show() { run bluetoothctl show && run bluetoothctl devices; }
 bluetooth_on() { noargs "$@"; run bluetoothctl power on; }
 bluetooth_off() { noargs "$@"; run bluetoothctl power off; }
-bluetooth_scan() { noargs "$@"; run bluetoothctl --timeout 10 scan on; }
+bluetooth_scan() {
+	noargs "$@"
+	reply=$(run bluetoothctl --timeout 10 scan on); result=$?
+	printf '%s\n' "$reply" | tr -d '\000-\010\013-\037\177'
+	return "$result"
+}
+bluetooth_pick() {
+	devices=$(run bluetoothctl devices) || return
+	devices=$(printf '%s\n' "$devices" | tr -d '\000-\010\013-\037\177' | sed -n 's/^Device //p')
+	[ -n "$devices" ] || die 'no devices; turn Bluetooth on and scan first'
+	if [ -t 0 ]; then
+		choice=$(printf '%s\n' "$devices" | FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= fzf --no-multi --prompt 'Bluetooth: ') || return 1
+	else
+		sway
+		choice=$(printf '%s\n' "$devices" | bemenu -i -l 15 -p Bluetooth \
+			--tb '#005577' --tf '#eeeeee' --fb '#222222' --ff '#bbbbbb' \
+			--nb '#222222' --nf '#bbbbbb' --ab '#222222' --af '#bbbbbb' \
+			--hb '#005577' --hf '#eeeeee') || return 1
+	fi
+	[ -n "$choice" ] || return 1
+	text_valid "$choice"
+	printf '%s\n' "$devices" | grep -Fx -- "$choice" >/dev/null || die 'pick a listed device'
+	answer=${choice%% *}
+}
 bluetooth_device() {
 	operation=$1; shift
-	onearg 'Bluetooth MAC' "$@"; mac "$answer"
+	[ "$#" -le 1 ] || usage
+	if [ "$#" = 0 ]; then
+		[ "$operation" != pair ] || bluetooth_scan >&2 || return
+		bluetooth_pick || return
+	else
+		answer=$1
+	fi
+	mac "$answer"
 	run bluetoothctl "$operation" "$answer"
 }
 bluetooth_pair() { bluetooth_device pair "$@" && run bluetoothctl trust "$answer"; }

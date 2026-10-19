@@ -1,0 +1,52 @@
+title=Touchpad
+actions='status	Show touchpad settings	
+set	Apply and save OPTION VALUE	'
+
+touchpad_state() {
+	[ -n "${SWAYSOCK:-}" ] || { echo 'needs the sway session'; return; }
+	value=$(timeout -k 0.2 1 swaymsg -r -t get_inputs 2>/dev/null) || { echo unknown; return; }
+	printf '%s\n' "$value" | jq -er '[.[] | select(.type == "touchpad") | .name] | if length > 0 then join(", ") else "no touchpad" end' || echo unknown
+}
+touchpad_status() {
+	noargs "$@"; sway
+	json=$(run swaymsg -r -t get_inputs) || return
+	printf '%s\n' "$json" | page jq '.[] | select(.type == "touchpad") | {identifier, libinput, scroll_factor}'
+}
+touchpad_set() {
+	sway; path "$HOME"
+	if [ "$#" = 0 ]; then
+		touchpad_status || return
+		ask 'Option (pointer_accel/accel_profile/tap/natural_scroll/dwt/scroll_method/scroll_factor/middle_emulation)'; setting=$answer
+		case $setting in
+		pointer_accel) prompt='Speed (-1 to 1)' ;;
+		accel_profile) prompt='Profile (adaptive/flat)' ;;
+		tap|natural_scroll|dwt|middle_emulation) prompt='Value (enabled/disabled)' ;;
+		scroll_method) prompt='Method (none/two_finger/edge/on_button_down)' ;;
+		scroll_factor) prompt='Scroll multiplier (0-10; 1 is normal)' ;;
+		*) die 'unknown touchpad option' ;;
+		esac
+		ask "$prompt"; set -- "$setting" "$answer"
+	fi
+	[ "$#" = 2 ] || usage
+	setting=$1; value=$2; text_valid "$setting"; text_valid "$value"
+	case $setting:$value in
+	pointer_accel:*)
+		printf '%s\n' "$value" | grep -Eq '^-?[01](\.[0-9]{1,3})?$' &&
+			awk -v n="$value" 'BEGIN {exit !(n >= -1 && n <= 1)}' || die 'pointer_accel must be -1 to 1' ;;
+	scroll_factor:*)
+		printf '%s\n' "$value" | grep -Eq '^[0-9]{1,2}(\.[0-9]{1,3})?$' &&
+			awk -v n="$value" 'BEGIN {exit !(n >= 0 && n <= 10)}' || die 'scroll_factor must be 0-10' ;;
+	accel_profile:adaptive|accel_profile:flat|tap:enabled|tap:disabled|natural_scroll:enabled|natural_scroll:disabled|dwt:enabled|dwt:disabled|middle_emulation:enabled|middle_emulation:disabled|scroll_method:none|scroll_method:two_finger|scroll_method:edge|scroll_method:on_button_down) ;;
+	*) die 'invalid touchpad option or value' ;;
+	esac
+	file=$HOME/.config/sway/config.d/touchpad
+	settings=
+	if [ -e "$file" ]; then
+		settings=$(awk -v key="$setting" '!($1 == "input" && $2 == "type:touchpad" && $3 == key)' "$file") || return
+	fi
+	swayrun input type:touchpad "$setting" "$value" || return
+	{
+		[ -z "$settings" ] || printf '%s\n' "$settings"
+		printf 'input type:touchpad %s %s\n' "$setting" "$value"
+	} | save_config touchpad
+}

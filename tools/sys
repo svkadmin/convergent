@@ -93,7 +93,7 @@ usb_count() {
 }
 save_config() (
 	path "$HOME"
-	case $1 in outputs|input) ;; *) die 'invalid config name' ;; esac
+	case $1 in outputs|input|touchpad) ;; *) die 'invalid config name' ;; esac
 	config=$HOME/.config/sway/config.d
 	run mkdir -p "$config" || exit 1
 	file=$(mktemp "$config/.$1.XXXXXX") || exit 1

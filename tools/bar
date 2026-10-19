@@ -61,6 +61,9 @@ poll_alerts() {
 }
 
 poll_inputs() {
+	mic=$(timeout -k 1 2 wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null) || mic=unknown
+	case $mic in *'[MUTED]'*) mic=off ;; 'Volume: '*) mic=on ;; *) mic=unknown ;; esac
+	printf '%s\n' "$mic" >"$work/.mic" && mv "$work/.mic" "$work/mic"
 	timeout -k 1 2 ip -4 route show default 2>/dev/null |
 		awk '{for (i=1;i<NF;i++) if ($i == "dev") {print $(i+1); exit}}' >"$work/.route"
 	mv "$work/.route" "$work/route"
@@ -213,6 +216,8 @@ while :; do
 			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : ""), grey, "", 1)
 		block("rel " rel " " bl,bl == "good" ? grey : red)
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
+		mic=get(work "/mic")
+		if (mic == "on") block("MIC", orange); else if (mic != "off") block("MIC?", grey)
 		# Firing alerts as Archer counts them: critical, warning, info.
 		if (split(get(work "/alerts"),count," ") == 3)
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "", 1)

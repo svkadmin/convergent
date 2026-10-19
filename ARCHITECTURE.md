@@ -561,12 +561,30 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 How the owner uses it is in USAGE.md. The design points:
 
 - **Status bar:** the path (wan, which firewall is active, svc), alert counts or "unknown", the
-  release state, the idle-lock state, and the usual system figures.
+  release state, the idle-lock state, the default microphone's mute state, and the usual system figures.
 - **Locking:** after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes;
   the idle lock can be paused from the bar. Never suspends.
 - **Menu (`sys`):** `sys AREA [ACTION] [ARGS]`; each area's first action is its default.
   Short aliases work at the command line; the fzf menu (Archer's look) shows long names, status and command
   previews. Each action prints its commands; bemenu remains the quick picker.
+- **Screenshots:** Print selects an area; Shift+Print captures the focused output after one second.
+  Both use `sys screenshot`, save timestamped PNGs in `~/Pictures/screenshots` (created as needed),
+  copy the image to the clipboard and send a three-second mako notification with the file name.
+  libnotify supplies `notify-send`; mako's stock or owner-configured look applies.
+- **Touchpad:** `sys touchpad set` validates and applies Sway's libinput options live: pointer speed,
+  acceleration profile, tap, natural scrolling, disable while typing, scroll method and multiplier,
+  middle emulation. It saves each change in the owner's `~/.config/sway/config.d/touchpad` include,
+  keeping other touchpad choices and the separate keyboard and output includes. Hardware support varies.
+- **Microphone:** present in firmware; the Sway session retries muting the default PipeWire source
+  until it appears or the session ends. This runs at login only. `sys audio mic on|off` controls it;
+  the mic key toggles when unlocked and only mutes when locked, using separate Sway bindings.
+  The bar polls the default source every five seconds: orange `MIC` means unmuted, grey `MIC?`
+  means unknown, and muted is hidden. This is mute state, not a recording detector; other sources
+  and later default-source changes are not automatically muted. Browser audio remains playback-only.
+- **Bluetooth:** off at boot (`AutoEnable=false`), enabled explicitly from `sys`. Pairing without
+  a MAC scans for ten seconds; device actions offer known and discovered devices through fzf in
+  a terminal or bemenu in Sway. Picker output must match a listed row and pass MAC validation;
+  explicit MAC arguments and the confirmation before forgetting are retained.
 - **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.

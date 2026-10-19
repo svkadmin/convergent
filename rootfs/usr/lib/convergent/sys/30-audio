@@ -3,6 +3,7 @@ actions='status	List audio sinks and sources
 out	Choose default output ID	
 vol	Set output volume PERCENT (0-150)	
 mute	Toggle output mute	
+mic	Turn microphone on or off	
 micmute	Toggle microphone mute	'
 
 audio_state() {
@@ -12,6 +13,8 @@ audio_state() {
 	printf 'Output: %s\n' "${name:-unknown}"
 	value=$(timeout -k 0.2 1 wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null) || value=unknown
 	printf '%s\n' "${value:-unknown}"
+	value=$(timeout -k 0.2 1 wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null) || value=unknown
+	case $value in *'[MUTED]'*) echo 'Mic: off' ;; 'Volume: '*) echo 'Mic: LIVE' ;; *) echo 'Mic: unknown' ;; esac
 }
 audio_session() { [ -S "${XDG_RUNTIME_DIR:-}/pipewire-0" ] || die 'needs the sway session (PipeWire)'; }
 audio_status() { noargs "$@"; audio_session; page run wpctl status; }
@@ -27,4 +30,9 @@ audio_vol() {
 	run wpctl set-volume @DEFAULT_AUDIO_SINK@ "$answer%"
 }
 audio_mute() { noargs "$@"; audio_session; run wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle; }
+audio_mic() {
+	audio_session; onearg 'Microphone (on/off)' "$@"
+	case $answer in on) value=0 ;; off) value=1 ;; *) die 'use on or off' ;; esac
+	run wpctl set-mute @DEFAULT_AUDIO_SOURCE@ "$value"
+}
 audio_micmute() { noargs "$@"; audio_session; run wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle; }

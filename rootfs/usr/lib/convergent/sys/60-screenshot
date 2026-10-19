@@ -1,32 +1,38 @@
 title=Screenshot
 alias=shot
-actions='area	Save a selected area to Pictures	
-screen	Save focused output in 1 s (Shift+Print: clipboard)	'
+actions='area	Save and copy a selected area	
+screen	Save and copy focused output in 1 s	'
 
 screenshot_state() {
-	if [ -n "${SWAYSOCK:-}" ]; then echo 'Save to ~/Pictures'; else echo 'needs the sway session'; fi
+	if [ -n "${SWAYSOCK:-}" ]; then echo 'Save to ~/Pictures/screenshots and copy to clipboard'; else echo 'needs the sway session'; fi
 }
 screenshot_path() {
 	sway; path "$HOME"
-	run mkdir -p "$HOME/Pictures" || return
-	shot=$HOME/Pictures/screenshot-$(date +%Y%m%d-%H%M%S).png
+	run mkdir -p "$HOME/Pictures/screenshots" || return
+	shot=$HOME/Pictures/screenshots/screenshot-$(date +%Y%m%d-%H%M%S).png
 	[ ! -e "$shot" ] && [ ! -L "$shot" ] || die 'screenshot already exists; try again in a second'
 }
+screenshot_saved() {
+	printf '%s\n' "$shot"
+	run wl-copy -t image/png <"$shot" || return
+	run notify-send -t 3000 'Screenshot saved' "${shot##*/}"
+}
+screenshot_capture() (set -C; run grim "$@" - >"$shot")
 screenshot_area() {
 	noargs "$@"; screenshot_path || return
 	# Esc in slurp is a cancel, not a failure.
 	geometry=$(run slurp) || return 0
 	printf '%s\n' "$geometry" | grep -Eq '^-?[0-9]{1,6},-?[0-9]{1,6} [1-9][0-9]{0,5}x[1-9][0-9]{0,5}$' || die 'invalid selection'
-	run grim -g "$geometry" "$shot" || return
-	printf '%s\n' "$shot"
+	screenshot_capture -g "$geometry" || return
+	screenshot_saved
 }
 screenshot_screen() {
 	noargs "$@"; screenshot_path || return
 	json=$(run swaymsg -r -t get_outputs) || return
 	output=$(printf '%s\n' "$json" | jq -er '.[] | select(.focused and .active) | .name') || die 'no focused active output'
 	token "$output"
-	echo 'Capturing in 1 s; move this terminal away. Shift+Print copies the same output to the clipboard.'
+	echo 'Capturing in 1 s; move this terminal away.'
 	sleep 1
-	run grim -o "$output" "$shot" || return
-	printf '%s\n' "$shot"
+	screenshot_capture -o "$output" || return
+	screenshot_saved
 }
