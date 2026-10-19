@@ -159,7 +159,7 @@ while :; do
 		if (held ~ /^[0-9]+$/) used=used>held+0 ? used-held : 0
 		block(sprintf("RAM %.1f/%.0fG SWP %.1f/%.0fG",used/1048576,
 			mem["MemTotal:"]/1048576,(mem["SwapTotal:"]-mem["SwapFree:"])/1048576,mem["SwapTotal:"]/1048576), "")
-		iface=get(work "/route"); tx=""; rx=""; rate="NET tx- rx- Mb/s"
+		iface=get(work "/route"); tx=""; rx=""; rate="NET tx - rx - Mb/s"
 		if (iface ~ /^[[:alnum:]_.:-]+$/) {
 			tx=get("/sys/class/net/" iface "/statistics/tx_bytes")
 			rx=get("/sys/class/net/" iface "/statistics/rx_bytes")
@@ -167,7 +167,7 @@ while :; do
 		split(get("/proc/uptime"), uptime," "); elapsed=uptime[1]-prev[3]
 		if (iface != "" && iface == prev[4] && elapsed>0 && tx ~ /^[0-9]+$/ && rx ~ /^[0-9]+$/ &&
 			prev[5] ~ /^[0-9]+$/ && prev[6] ~ /^[0-9]+$/ && tx+0>=prev[5]+0 && rx+0>=prev[6]+0)
-			rate=sprintf("NET tx%.1f rx%.1f Mb/s",(tx-prev[5])*8/elapsed/1000000,(rx-prev[6])*8/elapsed/1000000)
+			rate=sprintf("NET tx %.1f rx %.1f Mb/s",(tx-prev[5])*8/elapsed/1000000,(rx-prev[6])*8/elapsed/1000000)
 		block(rate, "")
 		printf "%.0f %.0f %.2f %s %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
 			tx == "" ? "-" : tx,rx == "" ? "-" : rx > (work "/previous")

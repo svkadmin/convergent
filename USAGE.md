@@ -225,7 +225,7 @@ Refreshed every second. Blocks are shown here with `|` between them; the bar dra
 separators:
 
 ```
-CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx0.8 rx12.4 Mb/s
+CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
 WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 202610170000 good | NL | 0 1 0 | PORTAL
 US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 ```
