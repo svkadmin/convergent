@@ -48,13 +48,17 @@ dl=$work/dl
 mkdir -p "$www/sets" "$www/pkg" "$tftp/etc" "$dl"
 
 httppid=
-qemupid=
+nodepids=
 cleanup() {
-	[ -z "$qemupid" ] || kill "$qemupid" 2>/dev/null || true
+	trap '' HUP INT TERM
+	for pid in $nodepids; do kill "$pid" 2>/dev/null || true; done
+	for pid in $nodepids; do wait "$pid" 2>/dev/null || true; done
 	[ -z "$httppid" ] || kill "$httppid" 2>/dev/null || true
+	[ -z "$httppid" ] || wait "$httppid" 2>/dev/null || true
 	rm -rf "$work"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
 
 # Verify sets with the pinned release key before serving them.
 echo "build: fetching OpenBSD $ver"
@@ -125,14 +129,22 @@ kill -0 "$httppid" 2>/dev/null || die "cannot serve on 127.0.0.1:80 ($(tail -n 1
 
 # Unattended install, then the patch boot; reboot ends QEMU. A node is redone from scratch
 # up to three times: the unpatched kernel has panicked mid-syspatch in nested test VMs.
+run_qemu() {
+	timeout "$@" &
+	qemupid=$!
+	rc=0
+	wait "$qemupid" || rc=$?
+	qemupid=
+	return "$rc"
+}
 install_node() {
 	log=$out/$n.console.log
 	img=$out/$n.qcow2
-	rm -f "$img"
-	qemu-img create -q -f qcow2 "$img" "$FW_DISK"
-	cp "$ovmf_vars" "$work/$n.vars.fd"
+	rm -f "$img" || return 1
+	qemu-img create -q -f qcow2 "$img" "$FW_DISK" || return 1
+	cp "$ovmf_vars" "$work/$n.vars.fd" || return 1
 	echo "build: installing $n (console log: $log)"
-	timeout 1800 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+	run_qemu 1800 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
@@ -144,7 +156,7 @@ install_node() {
 	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
 	log=$out/$n.syspatch.log
 	echo "build: patching $n (console log: $log)"
-	timeout 900 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+	run_qemu 900 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
@@ -153,16 +165,21 @@ install_node() {
 		-device e1000,netdev=patch || { echo "build: $n: patch boot failed or timed out; see $log" >&2; return 1; }
 	[ "$(console_value CONVERGENT-SYSPATCH-OK "$log")" = "$n" ] || { echo "build: $n: syspatch did not finish; see $log" >&2; return 1; }
 }
-for n in $nodes; do
+build_node() {
+	n=$1
+	qemupid=
+	trap 'rc=$?; trap "" HUP INT TERM
+		[ -z "$qemupid" ] || kill "$qemupid" 2>/dev/null || true
+		[ -z "$qemupid" ] || wait "$qemupid" 2>/dev/null || true
+		printf "%s\n" "$rc" >"$work/$n.status"' 0
+	trap 'exit 1' HUP INT TERM
 	try=1
 	until install_node; do
 		[ "$try" -lt 3 ] || die "$n: install and patch failed three times"
 		try=$((try + 1))
 	done
-done
 
-# Smoke-boot overlays with the seven production NICs.
-for n in $nodes; do
+	# Smoke-boot overlays with the seven production NICs.
 	log=$out/$n.boot.log
 	: >"$log"
 	qemu-img create -q -f qcow2 -b "$out/$n.qcow2" -F qcow2 "$work/$n.smoke.qcow2"
@@ -216,10 +233,29 @@ for n in $nodes; do
 		[ "$(wc -l <"$out/$n.$kind.sha256")" = 1 ] || die "$n: missing $kind digest"
 	done
 	echo "build: $n boots"
-done
-
-for n in $nodes; do
 	(cd "$out" && sha256sum "$n.qcow2" >"$n.qcow2.sha256")
+}
+for n in $nodes; do
+	build_node "$n" &
+	nodepids="$nodepids $!"
 done
+# Check both workers so either failure stops the other promptly.
+pending=$nodes
+while [ -n "$pending" ]; do
+	remaining=
+	for n in $pending; do
+		if [ -s "$work/$n.status" ]; then
+			[ "$(cat "$work/$n.status")" = 0 ] || die "$n: build failed"
+		else
+			remaining="$remaining $n"
+		fi
+	done
+	pending=$remaining
+	[ -z "$pending" ] || sleep 1
+done
+for pid in $nodepids; do
+	wait "$pid" || die "worker failed"
+done
+nodepids=
 (cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 >SHA256SUMS)
 echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2"
