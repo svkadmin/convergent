@@ -18,13 +18,15 @@ if [ "${1:-}:$#" = status:1 ]; then
     status=/run/convergent/status
     install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
     exec 9>"$status/lock"; flock -n 9 || exit 0
-    # Bound probes in parallel so a dead guest cannot stall cron.
+    # Read portal state under its action lock; a transition is unknown until the next run.
+    umask 077
+    exec 8>/run/convergent/portal.lock
+    umask 022
+    portal_locked=0
+    flock -n 8 && portal_locked=1
+    # Parallel guests, sequential sessions within each guest: no cold ControlMaster race.
     (
-        portal=$(timeout -k 1 25 portal status 9>&- 2>/dev/null) || portal='portal: unknown'
-        printf '%s\n' "$portal" | awk '$1 == "portal:" {print $2}' >"$status/.portal"
-    ) &
-    (
-        if instances=$(timeout -k 1 10 incus --force-local --project default list --format json 9>&- 2>/dev/null); then
+        if instances=$(timeout -k 1 10 incus --force-local --project default list --format json 9>&- 8>&- 2>/dev/null); then
             printf '%s\n' "$instances" | jq -er 'map(select(.status == "Running")) |
                 [any(.[]; .name == "wan"), any(.[]; .name == "fw1"),
                  any(.[]; .name == "fw2"), any(.[]; .name == "svc"),
@@ -35,15 +37,33 @@ if [ "${1:-}:$#" = status:1 ]; then
     ) &
     for node in fw1 fw2; do
         (
-            if carp=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" 'ifconfig carp' 9>&- 2>/dev/null); then
+            echo unknown >"$status/.portal-$node"
+            cmd='ifconfig carp'
+            if [ "$portal_locked" = 1 ]; then
+                cmd="$cmd"'; if dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show); then
+                    if [ -n "$dns$lan" ]; then echo "portal on"; else echo "portal off"; fi
+                    else echo "portal unknown"; fi'
+            fi
+            if carp=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" "$cmd" 9>&- 8>&- 2>/dev/null); then
                 # All six carp interfaces must agree; anything mixed is degraded.
                 printf '%s\n' "$carp" | awk '/carp: / {n++; if ($2 == "MASTER") m++; else if ($2 == "BACKUP") b++}
                     END {print n == 6 && m == 6 ? "master" : n == 6 && b == 6 ? "backup" : n ? "degraded" : "down"}' >"$status/.$node"
+                printf '%s\n' "$carp" | awk '$1 == "portal" {print $2}' >"$status/.portal-$node"
             else echo down >"$status/.$node"; fi
         ) &
     done
     (
-        if diag=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan diag 9>&- 2>/dev/null); then
+        # Keep the former portal worker's 25-second budget across sequential WAN probes.
+        read -r uptime rest </proc/uptime
+        deadline=$((${uptime%.*} + 25))
+        wan_probe() {
+            read -r uptime rest </proc/uptime
+            remaining=$((deadline - ${uptime%.*}))
+            [ "$remaining" -gt 0 ] || return 1
+            [ "$remaining" -le 10 ] || remaining=10
+            timeout -k 1 "$remaining" ssh -F /etc/convergent/ssh_config wan "$@" 9>&- 8>&-
+        }
+        if diag=$(wan_probe diag 2>/dev/null); then
             printf '%s\n' "$diag" | awk '
                 /^== / {section=$2; next}
                 section == "addresses" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=1}
@@ -60,11 +80,16 @@ if [ "${1:-}:$#" = status:1 ]; then
                     # The uplink kind for the bar: a Wi-Fi radio or a passed-through wired NIC.
                     print up ? "up " (dev ~ /^wl/ ? "wlan" : "eth") : "nolink " (eth ? "eth" : wlan ? "wlan" : "-")}' >"$status/.wan"
         else echo nolink - >"$status/.wan"; fi
+        if wifi=$(wan_probe wifi status 2>/dev/null); then
+            # Valid UTF-8 only: the bar's markup breaks on anything else.
+            printf '%s\n' "$wifi" | iconv -c -f UTF-8 -t UTF-8 | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
+        else echo '?' >"$status/.wifi"; fi
+        echo unknown >"$status/.portal-wan"
+        if [ "$portal_locked" = 1 ] &&
+            portal=$(wan_probe portal status 2>/dev/null); then
+            printf '%s\n' "$portal" | awk '$1 == "on" || $1 == "off" {print $1}' >"$status/.portal-wan"
+        fi
     ) &
-    if wifi=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan wifi status 9>&- 2>/dev/null); then
-        # Valid UTF-8 only: the bar's markup breaks on anything else.
-        printf '%s\n' "$wifi" | iconv -c -f UTF-8 -t UTF-8 | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
-    else wifi=; echo '?' >"$status/.wifi"; fi
     # What the guests hold, which the bar leaves out of the host's use: container cgroups, and VM
     # processes outside them.
     kib=0
@@ -77,6 +102,10 @@ if [ "${1:-}:$#" = status:1 ]; then
     done
     echo "$kib" >"$status/.guestmem"
     wait
+    exec 8>&-
+    awk '{n++; if ($0 == "on") on++; if ($0 == "off") off++}
+        END {print n == 3 && on == 3 ? "on" : n == 3 && off == 3 ? "off" : "unknown"}' \
+        "$status/.portal-fw1" "$status/.portal-fw2" "$status/.portal-wan" >"$status/.portal"
     # A failed inventory must age out, rather than publish false down states.
     if [ -s "$status/.running" ]; then
         read -r wan fw1 fw2 svc browsers <"$status/.running"

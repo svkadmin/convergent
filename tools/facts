@@ -44,10 +44,16 @@ fact_release() {
 	up=$(cut -d. -f1 /proc/uptime)
 	while :; do
 		st=$(slot status 2>/dev/null) || st=
-		rel=$(echo "$st" | awk '$1 == "booted" { print $2 }')
-		slt=$(echo "$st" | awk '$1 == "booted" { print $4 }')
-		good=$(echo "$st" | awk '$1 == "good" { print $2 }')
-		high=$(echo "$st" | awk '$1 == "highest" { print $2 }')
+		rel= slt= good= high=
+		while read -r kind value label slot rest; do
+			case $kind in
+			booted) rel=$value; slt=$slot ;;
+			good) good=$value ;;
+			highest) high=$value ;;
+			esac
+		done <<EOF
+$st
+EOF
 		# Wait for this boot's bless.
 		[ "$up" -lt 600 ] && [ "$good" != "$rel" ] && [ "$i" -lt 18 ] || break
 		i=$((i + 1)); sleep 10

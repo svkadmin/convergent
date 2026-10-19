@@ -77,7 +77,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles. *(Planned:* signing with the owner's key*)* |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the UKI command line; the root hash will be covered by the Secure Boot signature *(planned)* |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
-| Memory | No disk swap; zram swap of 32 GiB (a ceiling, not a reservation; its index costs about 128 MiB), zswap off *(planned)* |
+| Memory | No disk swap configured; zram and disabling zswap are planned, with no setup in this tree |
 | Seat and session | seatd; greetd with tuigreet on tty1 (user name typed every time); Sway, foot, bemenu, mako, swaylock, swayidle; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
 | Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels need approval from the menu where the firmware asks; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
@@ -478,7 +478,8 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 ## 8. Observability
 
 - **Metrics:** VictoriaMetrics scrapes node_exporter on the host, the firewalls and wan, and
-  Incus' own metrics endpoint for instance state. Time and synchronisation come from
+  Incus' own metrics endpoint for instance state, every 30 seconds; retention is 14 days.
+  Time and synchronisation come from
   node_exporter's time collector; staleness of any extra figure from the file's own age, which
   node_exporter reports. The few figures nothing else provides are written as small text files
   by the scripts of section 12: on each firewall its CARP, pf and unbound state; on the host,
@@ -487,8 +488,9 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
   (`/var/lib/convergent/guests/updates`), not in the metrics.
 - **Logs:** VictoriaLogs receives syslog over TLS from the host, the firewalls and wan, including
   forwarded host audit records.
-  Retention is bounded by size and age.
-- **Alerts:** vmalert evaluates the rules; the status bar shows the counts, or "unknown" when svc
+  Retention is seven days or 4 GiB, within a 6 GiB volume quota. Authentication, audit and firewall
+  logging remain unchanged.
+- **Alerts:** vmalert evaluates the rules every 30 seconds; the status bar shows the counts, or "unknown" when svc
   does not answer; Grafana shows the details. Rules, carried from Archer and adapted:
 
 | Area | Alerts |
@@ -578,12 +580,69 @@ log *(planned)*, not by enrolling Microsoft's third-party certificate.
 | wan (512 cap, plus QEMU overhead) | 500 |
 | fw1 + fw2 (1 GiB each, plus QEMU overhead, unbound with the blocklist) | 2 200 |
 | svc | 350 |
-| zram index for 32 GiB | 130 |
-| Total, idle, browsers closed | about 4 080 |
+| Total, idle, browsers closed; excludes planned zram | about 3 950 |
 
 On the laptop 384 MiB firewalls ran out of memory at boot (the kernel relink beside the
-blocklist), killing sshd and unbound while CARP kept the master role. If memory gets tight, the
-first levers are the zram size and the browsers' caps, not the firewalls.
+blocklist), killing sshd and unbound while CARP kept the master role. Keep both firewalls at
+1 GiB. The other limits stay at wan 512 MiB, svc 350 MiB (768 MiB with Grafana), web/tmp 2 GiB,
+admin 1 GiB and portal 512 MiB. Container limits are ceilings, not idle reservations; lowering
+them without measured peaks risks OOM without proving an idle saving.
+
+### 11.1 Work removed without changing sampling intervals
+
+These are work counts from the code, not measured watts or battery minutes.
+
+| Change | Expected saving |
+|---|---|
+| `tools/bar`: cache an unchanged Sway layout name | About 24 helper launches/minute (awk and grep at five-second intervals), plus repeated reads of the XKB rules list; a failed Sway query invalidates the cache |
+| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute and all but one chip-name read per sensor chip per frame; temperature, clock, lock-health and input polling stay unchanged |
+| `tools/check status`: combine CARP and portal-table reads on each firewall; serialize wan sessions | Five SSH sessions/minute instead of seven, no concurrent connection creation to the same guest within this run, and four fewer remote wc processes/minute; existing pinned keys and 60-second multiplexing remain |
+| `tools/facts`: parse each slot status in shell | Four awk processes removed per boot-status attempt; no change to boot, daily or hourly checks |
+| `tools/power`: read sysfs with shell builtins; log only changes or failures | Up to four cat processes per CPU policy removed per AC event, plus supply/config reads; duplicate events produce no power log to store or forward |
+
+Status probes still run every minute, with bounded requests and one worker per guest. Portal
+reads hold the existing action lock; a busy lock, failed query or inconsistent sides yields
+unknown. Failed Incus inventory still ages out rather than publishing false down states. The
+WAN's three sequential probes share a 25-second budget plus kill grace, measured with monotonic
+uptime; healthy requests reuse one SSH connection. The bar's 180-second stale limit and WAN's
+forced-command allowlist are unchanged.
+
+No cron interval was lengthened: the minute jobs enforce portal expiry, publish fresh network
+facts or notice boot/update changes. `check auto` already gates expensive successful scans to
+daily and failed scans to five minutes. Host facts already run hourly/daily. The firewall's
+two-second wan-watch probe is a failover control, not merely a dashboard refresh.
+
+### 11.2 Proposals, not enabled
+
+| Proposal | Saving and trade-off | Recommendation |
+|---|---|---|
+| USB autosuspend except HID/audio | May let USB devices/controllers idle; composite devices, approved uplinks and storage can still stall or fail on resume | Test an explicit device allowlist first, including every interface of composite devices; keep USBGuard and HID/audio exclusions |
+| PCIe ASPM powersave policy | May reduce link idle power; resume latency and firmware/device compatibility need measurement | Keep firmware/kernel defaults until tested; never force ASPM or change IOMMU isolation |
+| SATA link PM / NVMe APST tuning | SATA has no demonstrated target here; deeper NVMe states trade exit latency and device reliability for idle power | Keep driver defaults and quirks; inspect the actual NVMe power states before tuning, never force APST |
+| HDA audio power saving | May idle the codec/controller; wake delay and clicks are possible | Test speaker, headset, microphone and PipeWire resume first; do not apply an HDA option blindly to another audio driver |
+| Disable NMI watchdog | Removes hard-lockup detector activity, but loses hard-lockup diagnostics; the boot hardware watchdog is a different mechanism | Keep it until that diagnostic loss is explicitly accepted |
+| Longer dirty writeback/expiry intervals | Can batch writes, but leaves more recent data vulnerable to sudden power loss and can increase write bursts | Keep defaults, especially for logs and guest disks; read-only root does not make writable state disposable |
+| KSM across fw1/fw2 | Potential shared-page RAM saving, at scanning CPU cost and with cross-guest deduplication side channels | Do not enable; the two firewalls remain separate trust compartments |
+| Lower CPU caps, disable turbo or stronger EPP | Can lower load power at the cost of burst response and throughput; idle savings are not established | Keep the existing configurable 4.2 GHz cap and source-specific EPP; compare energy per task before further caps |
+| Static hugepages or different THP policy | Possible TLB benefit, but reservations/fragmentation or compaction can hurt memory flexibility and latency | Keep current defaults; benchmark VM throughput and desktop tail latency first |
+| Disable mitigations or relax hardening | Possible CPU saving by removing protections | Reject; keep mitigations, strict IOMMU, lockdown, verity, audit and guest confinement |
+| Longer bar, scrape/eval or health intervals | A 60-second scrape/eval interval roughly halves those operations but delays detection and reduces history resolution; slower CARP probes delay failover | Keep the current cadences. All vmalert groups explicitly set 30s, so changing only its command-line default would not help |
+| Shorter retention or suppress routine SSH/cron logs | Less disk use and query work, but less incident/debug history | Keep 14-day metrics and seven-day/4-GiB logs; keep auth/audit/firewall logs. Only redundant power messages are suppressed at source |
+| Smaller guest limits or zram | Lower VM RAM may help, but KARL already disproved small firewalls; container caps do not reserve their full size. Zram adds metadata and compression work and changes OOM behaviour | Keep guest limits. Zram's old 32-GiB budget was only a plan: there is no enabled device here to shrink. Measure peak memory/pressure before choosing a size; do not claim a RAM saving from a documentation change |
+
+The kernel documents the limitations of [USB runtime PM](https://docs.kernel.org/driver-api/usb/power-management.html),
+[audio power saving](https://docs.kernel.org/sound/designs/powersave.html),
+[writeback intervals](https://docs.kernel.org/admin-guide/sysctl/vm.html),
+[lockup detection](https://docs.kernel.org/admin-guide/lockup-watchdogs.html) and
+[zram allocation](https://docs.kernel.org/admin-guide/blockdev/zram.html).
+Incus documents [memory ceilings](https://linuxcontainers.org/incus/docs/main/reference/instance_options/),
+and vmalert documents [group evaluation intervals](https://docs.victoriametrics.com/victoriametrics/vmalert/).
+
+On the laptop, compare the same display brightness, radio connection and closed-browser workload
+on battery before/after: battery energy over a long idle window, CPU time/context switches,
+package idle residency, SSH sessions and log bytes. Also exercise layout changes, missing guests,
+portal transitions, AC changes and browser load. No laptop wattage or runtime gain has been
+measured from this checkout.
 
 ---
 

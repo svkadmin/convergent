@@ -5,7 +5,7 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ac_epp=balance_performance
 cap=4200000
-[ ! -f /usr/lib/convergent/cpu-cap-khz ] || cap=$(cat /usr/lib/convergent/cpu-cap-khz)
+[ ! -f /usr/lib/convergent/cpu-cap-khz ] || read -r cap </usr/lib/convergent/cpu-cap-khz
 bat_epp=power
 
 cpu=/sys/devices/system/cpu/cpufreq
@@ -19,9 +19,13 @@ source_now() {
 	bat=
 	for s in "$ps"/*; do
 		[ -e "$s/type" ] || continue
-		case $(cat "$s/type") in
+		read -r type <"$s/type" || continue
+		case $type in
 		Battery) bat=1 ;;
-		Mains | USB*) [ "$(cat "$s/online" 2>/dev/null || echo 0)" = 1 ] && { echo ac; return; } ;;
+		Mains | USB*)
+			online=0
+			[ ! -r "$s/online" ] || read -r online <"$s/online"
+			[ "$online" = 1 ] && { echo ac; return; } ;;
 		esac
 	done
 	if [ -n "$bat" ]; then echo battery; else echo ac; fi
@@ -34,11 +38,14 @@ ac | battery) src=$1 ;;
 esac
 if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
 
-rc=0
+rc=0 changed=0
 set_file() {
 	[ -e "$1" ] || return 0
-	[ "$(cat "$1" 2>/dev/null)" = "$2" ] && return 0
-	echo "$2" >"$1" 2>/dev/null || { echo "power: could not set $1 to $2" >&2; rc=1; }
+	current=
+	read -r current <"$1" 2>/dev/null || :
+	[ "$current" = "$2" ] && return 0
+	if echo "$2" >"$1" 2>/dev/null; then changed=1
+	else echo "power: could not set $1 to $2" >&2; rc=1; fi
 }
 
 for p in "$cpu"/policy[0-9]*; do
@@ -47,11 +54,13 @@ for p in "$cpu"/policy[0-9]*; do
 		set_file "$p/scaling_governor" powersave
 		set_file "$p/energy_performance_preference" "$epp"
 	fi
-	max=$(cat "$p/cpuinfo_max_freq" 2>/dev/null || echo "$cap")
+	max=$cap
+	[ ! -r "$p/cpuinfo_max_freq" ] || read -r max <"$p/cpuinfo_max_freq" || max=$cap
 	if [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
 	set_file "$p/scaling_max_freq" "$want"
 done
 [ -d "$cpu" ] || { echo "power: no cpufreq in sysfs" >&2; exit 1; }
 
-logger -t power "$src: energy preference $epp, clock cap $cap kHz"
+# Duplicate AC events need no log write; changes and failures still do.
+[ "$changed:$rc" = 0:0 ] || logger -t power "$src: energy preference $epp, clock cap $cap kHz, status $rc"
 exit "$rc"
