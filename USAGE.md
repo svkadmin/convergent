@@ -49,9 +49,10 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 | Super+f | fullscreen |
 | Super+Shift+c | reload the sway configuration |
 | Super+Shift+e | exit sway |
-| Print | select an area and copy it to the clipboard (Escape cancels) |
-| Shift+Print | copy the focused screen to the clipboard |
-| Volume, mute and mic-mute keys | `wpctl` on PipeWire |
+| Print | select an area, save it to `~/Pictures/screenshots` and copy it (Escape cancels) |
+| Shift+Print | save and copy the focused screen after 1 s |
+| Volume and mute keys | `wpctl` on PipeWire |
+| Mic-mute key | toggle the default microphone; while locked, only mute |
 | Brightness keys | `sys display bright -5` / `+5` (5 % steps) |
 
 ## The sys tool
@@ -70,12 +71,13 @@ Super+a runs one action by name.
 |---|---|
 | `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
 | `portal` | `status`, `on`, `off` |
-| `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair MAC`, `connect MAC`, `disconnect MAC`, `forget MAC` * |
+| `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair [MAC]`, `connect [MAC]`, `disconnect [MAC]`, `forget [MAC]` * (device picker without MAC) |
 | `usb` | `status`, `allow N\|ID` * |
-| `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `micmute` |
+| `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `mic on\|off`, `micmute` |
 | `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]`, `save`, `reset` * |
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
-| `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures`) |
+| `touchpad` | `status`, `set OPTION VALUE` (apply and save; options below) |
+| `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to clipboard) |
 | `browser` (`br`) | `status`, `web`, `tmp`, `admin`, `portal` |
 | `security` (`sec`) | `status`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
@@ -89,6 +91,29 @@ Not built in `sys`: owner guest management, firewall failover and printing.
 
 Screen too big: `sys display set eDP-1 scale 1.2`, then `sys display save` (every login). Release
 default: `display_scale` in config.yaml ([README, Build](README.md#build-a-release)).
+
+Touchpad: `sys touchpad set` prompts, or pass an option and value directly, for example
+`sys touchpad set pointer_accel 0.3`. Settings apply live to all touchpads and are saved in
+`~/.config/sway/config.d/touchpad` for every login, independently of keyboard and display settings.
+Support depends on the hardware; `sys touchpad status` shows the current libinput settings.
+
+| Option | Values |
+|---|---|
+| `pointer_accel` | -1 to 1 (pointer speed/sensitivity; 0 is normal) |
+| `accel_profile` | `adaptive`, `flat` |
+| `tap`, `natural_scroll`, `dwt`, `middle_emulation` | `enabled`, `disabled`; `dwt` disables the touchpad while typing |
+| `scroll_method` | `none`, `two_finger`, `edge`, `on_button_down` (uses the device's scroll button) |
+| `scroll_factor` | 0–10 (scroll speed multiplier; 1 is normal, 0 stops scrolling) |
+
+Screenshots create the directory if missing and use `screenshot-YYYYmmdd-HHMMSS.png` names.
+After saving and copying, mako shows **Screenshot saved** with the file name for 3 seconds,
+using its usual look. A second capture with the same timestamp is refused instead of overwriting.
+
+Leave the microphone enabled in firmware. At each Sway login, the session waits for PipeWire's
+default source and mutes it. `sys audio mic on` enables it; `sys audio mic off` mutes it.
+The bar shows orange `MIC` while the default source is unmuted (refreshed every 5 s), or grey
+`MIC?` if its state is unknown. This indicates permission to record, not active recording.
+Config reloads do not reset mute. Browser containers still have playback-only audio.
 
 ## Browsers
 
@@ -152,7 +177,12 @@ USBGuard blocks every device not in the allow-list. A disk image starts with a p
 (input, storage, hubs); replace it with a per-device one after the first boot (README, First boot
 step 4; there is no `sys` action for it). `sys usb status` shows the blocked USB and
 unauthorized Thunderbolt devices; `sys usb allow N|ID` allows a USB number or Thunderbolt ID.
-`sys bluetooth` shows power and known devices. By hand:
+`sys bluetooth` shows power and known devices. Bluetooth stays off at boot; use
+`sys bluetooth on` first. `sys bluetooth pair` scans for 10 seconds, then lists discovered and
+known devices by MAC and name. `connect`, `disconnect` and `forget` use the current device list;
+run `sys bluetooth scan` to refresh it. Pick with fzf in a terminal or bemenu outside one;
+Escape cancels without changing a device. Explicit MAC arguments still work and are validated.
+`forget` still asks for `yes` in the terminal before opening the picker. By hand:
 
 ```sh
 sudo devices list
@@ -241,6 +271,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | Topology | the uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
+| `MIC` | default microphone unmuted (orange); hidden when muted, `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
