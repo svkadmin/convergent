@@ -161,8 +161,8 @@ while :; do
 		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
 		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
 		close("/proc/meminfo")
-		# The host and its programs: what the guests hold (check status, every minute) is left out.
-		used=mem["MemTotal:"]-mem["MemAvailable:"]; held=get(st "/guestmem")
+		# Include cache before subtracting guest cgroups and VM processes.
+		used=mem["MemTotal:"]-mem["MemFree:"]; held=get(st "/guestmem")
 		if (held ~ /^[0-9]+$/) used=used>held+0 ? used-held : 0
 		block(sprintf("RAM %.1f/%.0fG SWP %.1f/%.0fG",used/1048576,
 			mem["MemTotal:"]/1048576,(mem["SwapTotal:"]-mem["SwapFree:"])/1048576,mem["SwapTotal:"]/1048576), "")

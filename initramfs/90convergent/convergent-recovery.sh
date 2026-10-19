@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export LC_ALL=C
 { set +ax; } 2>/dev/null
 umask 077
 
@@ -30,7 +31,8 @@ reset_password() (
 	stty "$saved" || return 1
 	[ "$pass" = "$again" ] || { echo 'The passwords differ.'; return 1; }
 	# As the installer asks.
-	[ "${#pass}" -ge 12 ] || { echo 'Use at least 12 characters.'; return 1; }
+	[ "${#pass}" -ge 12 ] || { echo 'Use at least 12 bytes.'; return 1; }
+	[ "${#pass}" -le 256 ] || { echo 'Use at most 256 bytes.'; return 1; }
 	hash=$(printf '%s\n' "$pass" | openssl passwd -6 -stdin) || return 1
 	unset pass again
 	case $hash in '$6$'*) ;; *) return 1 ;; esac

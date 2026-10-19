@@ -13,8 +13,9 @@ python3 -I guests/svc/dashboards/build.py --check
 Only the standard library is used; output is deterministic UTF-8 with LF endings.
 `build/lint` checks drift, or reports a skip when python3 is unavailable. JSON is shipped by
 the existing svc build. `build/test --guests-update` waits for scrapes after svc rollback and
-runs `check-data` inside svc against every metric panel target in the installed JSON. It
-replaces rate/interval macros with 2m/1m and selects default/svc for instance queries. Every
+runs `check-data` on the booted host against repository-copied JSON through svc. This checks
+source queries, not installed dashboard packaging. It replaces rate/interval macros with 2m/1m
+and selects default/svc for instance queries. Every
 query error fails; an empty result fails unless its target has a `cvOptional` reason. Optional
 currently means battery, hwmon sensors, NVMe health, or no firing alerts. Missing metrics are
 never turned into a healthy zero, except explicit counts (alerts and closed browsers).
@@ -27,8 +28,8 @@ scope the four senders without assuming the host's name. Noise is filtered in qu
 discarded at ingestion; all logs have an Explore link. CARP annotations are disabled by
 default and use actual role-transition messages, not every nonzero CARP scrape. Percentage
 graphs have fixed 0–100 bounds; other graphs have zero minima and unit-appropriate soft
-maxima that expand with the data, so a traffic spike is not clipped. svc carries curl/jq for
-the integration check; neither Python nor the generators is needed at runtime.
+maxima that expand with the data, so a traffic spike is not clipped. The host supplies curl/jq for
+the integration check; svc needs neither client, Python nor the generators at runtime.
 
 Sources: `tools/facts`, `tools/check`, firewall `fw-facts`, WAN `wan-check`, node_exporter's
 configured/default collectors, Incus `/1.0/metrics`, and vmalert `ALERTS`. pf pass/block label

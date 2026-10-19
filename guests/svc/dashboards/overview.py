@@ -49,7 +49,8 @@ def path(page):
     c.text(3, 94, 696, "Downstream segments route through CARP", size=13, align="center")
     browser_rows = []
     for n in ("web", "admin", "tmp", "portal"):
-        field(n, '((count(incus_cpu_seconds_total{project="default",name="%s"}) > bool 0) or on() vector(0)) and on() (max(up{job="incus"}) == 1)' % n,
+        selector = 'name=~"tmp-[2-9][0-9]"' if n == "tmp" else 'name="%s"' % n
+        field(n, '((count(incus_cpu_seconds_total{project="default",%s}) > bool 0) or on() vector(0)) and on() (max(up{job="incus"}) == 1)' % selector,
               mappings=vmap([(0, "closed", NEUTRAL), (1, "RUNNING", CYAN)]))
         browser_rows.append((n, n))
     browsers = card("browsers", "Browsers", "web / tmp / portal · web segment; admin · admin", 734, 153, browser_rows)
@@ -81,8 +82,8 @@ def generate():
     p.stat("", [q], grid(12, 0, 6, 2),
            "Source: VictoriaLogs syslog severity 0–4, last hour; routine audit records and kernel stack continuations excluded. Lines, not incidents.", th=BAD)["datasource"] = LOGS
     p.stat("", [target('min(cv_collector_success)', "collectors", instant=True),
-                target('max(time() - node_textfile_mtime_seconds{file=~".*(audit|convergent_fw|wan)[.]prom"})', "live facts age")],
-           grid(18, 0, 6, 2), "Source: tools/facts collector success and node_exporter textfile mtimes. Live facts update each minute; amber after three minutes. Daily/boot facts are on Security.",
+                target('max(time() - node_textfile_mtime_seconds{file=~".*(convergent_fw|wan)[.]prom"})', "live facts age")],
+           grid(18, 0, 6, 2), "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
            overrides=[ov("collectors", mappings=OK), ov("live facts age", unit="s", thresholds=thresholds(("text", None), (AMBER, 180)))])
     p.table("Active alerts · now", [target('max by (alertname,node,severity) (ALERTS{alertstate="firing"})', optional="No firing alerts is normal.")],
             grid(7, 2, 17, 5), ["alertname", "node", "severity"], ["state"],
@@ -99,5 +100,5 @@ def generate():
     guests_table(p, grid(7, 17, 17, 7), compact=True)
     p.logs("Recent actionable logs", ACTIONABLE, grid(7, 24, 17, 7),
            "Source: VictoriaLogs TLS syslog from host, wan, fw1/fw2. Warnings/errors, AppArmor denials, USB blocks, faillock, sudo and firewall changes. Routine EXECVE and kernel stack continuation records excluded; all records remain in Explore.")
-    p.footer(SCREEN_ROWS, "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; configured VM memory limits; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments.")
+    p.footer(SCREEN_ROWS, "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments.")
     return p.dashboard("cv-overview", "Convergent · Overview", "The path, attention, host and guests on one screen.")

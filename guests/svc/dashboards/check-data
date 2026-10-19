@@ -6,7 +6,7 @@ dir=${1:?dashboards directory}
 base=${2:-http://100.80.2.10:9428}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
-jq -r '.title as $d | .panels[] | .title as $p | .targets[]? |
+jq -r '.title as $d | .panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
     [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
 [ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }
@@ -26,7 +26,7 @@ while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
         [ "$optional" != required ] || fail=1
     fi
 done <"$work/targets"
-jq -r '.title as $d | (.panels[] | .title as $p | .targets[]? |
+jq -r '.title as $d | (.panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "logs") | [$d, $p, .queryType, (.expr | @base64)]),
     (.annotations.list[] | [$d, .name, .target.queryType, (.target.expr | @base64)]) | @tsv' "$dir/"*.json >"$work/logs"
 logs=0

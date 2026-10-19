@@ -297,8 +297,9 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
    boot); an interrupted grow
    finishes on a later boot. It selects the `/var` that belongs to this slot, takes a cold snapshot
    of it on the first boot of a new slot, mounts `/var` and `/home`, bind-mounts the listed `/etc`
-   entries, mounts `/run` and `/tmp` as tmpfs, arms the hardware watchdog, and switches to the real
-   root.
+   entries after merging missing image system accounts (IDs below 1000, preserving existing entries
+   and warning on ID collisions), mounts `/run` and `/tmp` as tmpfs, arms the hardware watchdog,
+   and switches to the real root.
 5. OpenRC starts the host, then Incus, then the guests: fw1, fw2, wan, svc. Nothing in the start
    sequence needs a name before the firewalls' resolvers answer.
 
@@ -442,7 +443,9 @@ copies nothing from the old one; after `guests update fw`, the host pushes its s
 records (`dns-push local`, when a blocklist is stored). A new wan gets the saved Wi-Fi networks of
 the old one: they are read in userspace from a copy of the old disk's partition (debugfs as an
 unprivileged user, keeping only the iwd network files `.psk`, `.open` and `.8021x`); the old disk is
-never mounted.
+never mounted. Browser updates retain both web/admin backups until both replacements pass, then
+advance the image used for new tmp/portal instances. A failed replacement restores both browsers
+and their shared profiles.
 
 Firmware updates use signed capsules only, applied from the menu *(planned)*.
 

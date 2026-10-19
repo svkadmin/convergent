@@ -71,7 +71,7 @@ Super+a runs one action by name.
 | `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
 | `portal` | `status`, `on`, `off` |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair MAC`, `connect MAC`, `disconnect MAC`, `forget MAC` * |
-| `usb` | `status`, `allow N\|ID` |
+| `usb` | `status`, `allow N\|ID` * |
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `micmute` |
 | `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]`, `save`, `reset` * |
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
@@ -233,7 +233,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | Block | Shows | Look or fix with |
 |---|---|---|
 | `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | `sys power status` lists every sensor |
-| `RAM`, `SWP` | used/total GiB; RAM counts the host and its programs, not what the guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
+| `RAM`, `SWP` | used/total GiB; RAM includes cache (`MemTotal - MemFree`) and subtracts what the guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
 | Topology | the uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
@@ -268,12 +268,13 @@ applying and GUESTS failed on failure. Close browsers and run `sys guests update
 browser update. Updating `browser` also moves the image used for future tmp and portal instances;
 `web` or `admin` replaces that instance only. One guest operation runs at a time. Writing a release
 and manual guest updates: [README, Update](README.md#update).
+An interrupted browser update blocks launches until the guest update is retried.
 
 ## Power and locking
 
 - The screen locks after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes
-  (swayidle, swaylock); a minute after the lock the screen turns off. NL in the bar pauses both.
-  `sys power lock` locks now. Pause or resume the idle lock with the `NL` block in the bar.
+  (swayidle, swaylock). Display-off follows `idle_lock_minutes + 1` minutes of inactivity.
+  `sys power lock` locks now. NL pauses idle locking and display-off only; manual and lid locking still work.
 - `power` sets the CPU energy preference and a clock cap for AC or battery (4.2 GHz by default,
   `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
   `sys power battery` (`sudo power [ac|battery]`).

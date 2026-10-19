@@ -585,6 +585,7 @@ for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-cop
 t grep -qx "c1:12345:respawn:/usr/bin/greetd" /etc/inittab
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
+t getent passwd greetd
 t grep -qxF 'output * bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(stat -c "%G %A" /usr/sbin/unix_chkpwd)" = "shadow -rwxr-sr-x" ]'
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'

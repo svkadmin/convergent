@@ -54,7 +54,7 @@ work= loop= mapper= image_mounted= state_mounted= esp_mounted=
 
 cleanup() {
 	bad=0
-	if [ -n "$tty_mode" ]; then stty "$tty_mode" <&3 || bad=1; fi
+	if [ -n "$tty_mode" ]; then stty "$tty_mode" <&3 || echo 'install: cannot restore terminal settings' >&2; fi
 	pass= again= answer= owner_hash=
 	if [ -n "$esp_mounted" ]; then
 		if umount "$work/esp"; then esp_mounted=; else bad=1; fi

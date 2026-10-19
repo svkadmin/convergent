@@ -133,6 +133,52 @@ mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var
 	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec tmpfs "$NEWROOT/tmp" ||
 	die "state: could not mount the writable places"
 
+# Add image accounts before the persistent files hide them.
+append_account() {
+	tmp=$(mktemp "$state/etc/.$1.XXXXXX") || return 1
+	cp -p "$state/etc/$1" "$tmp" && printf '%s\n' "$2" >>"$tmp" &&
+		sync && mv -f "$tmp" "$state/etc/$1" && sync || { rm -f "$tmp"; return 1; }
+}
+merge_accounts() {
+	while IFS=: read -r name password number rest; do
+		case $number in '' | *[!0-9]*) continue ;; esac
+		[ "$number" -lt 1000 ] || continue
+		awk -F: -v n="$name" '$1 == n {found=1} END {exit !found}' "$state/etc/$1" && continue
+		other=$(awk -F: -v id="$number" '$3 == id {print $1}' "$state/etc/$1") || return 1
+		if [ -n "$other" ]; then
+			warn "state: skipping $1 account $name: ID $number belongs to $other"
+			continue
+		fi
+		if [ "$1" = passwd ]; then
+			gid=${rest%%:*}
+			group=$(awk -F: -v id="$gid" '$3 == id {print $1}' "$NEWROOT/etc/group") || return 1
+			other=$(awk -F: -v id="$gid" -v n="$group" '$3 == id && $1 != n {print $1}' "$state/etc/group") || return 1
+			if [ -n "$other" ]; then
+				warn "state: skipping passwd account $name: GID $gid belongs to $other"
+				continue
+			fi
+		fi
+		if ! awk -F: -v n="$name" '$1 == n {found=1} END {exit !found}' "$state/etc/$2"; then
+			line=$(awk -F: -v n="$name" '$1 == n {print; exit}' "$NEWROOT/etc/$2")
+			# Gentoo leaves some groups out of gshadow: then a locked entry.
+			if [ -z "$line" ]; then
+				if [ "$2" = shadow ]; then line="$name:!::0:::::"; else line="$name:!::"; fi
+			fi
+			# The locked entry lands first, so an interrupted merge can resume.
+			append_account "$2" "$line" || return 1
+		fi
+		append_account "$1" "$name:$password:$number:$rest" || return 1
+	done <"$NEWROOT/etc/$1"
+}
+for entry in passwd group shadow gshadow; do
+	[ ! -e "$state/etc/$entry" ] || continue
+	tmp=$(mktemp "$state/etc/.$entry.XXXXXX") || die "state: could not seed /etc/$entry"
+	cp -p "$NEWROOT/etc/$entry" "$tmp" && sync && mv "$tmp" "$state/etc/$entry" && sync ||
+		{ rm -f "$tmp"; die "state: could not seed /etc/$entry"; }
+done
+merge_accounts group gshadow && merge_accounts passwd shadow ||
+	warn "state: could not merge the image's new system accounts; a new service may not start"
+
 # Seed and bind the image's writable /etc list.
 while read -r entry; do
 	case $entry in '' | '#'*) continue ;; esac

@@ -88,7 +88,7 @@ cached() {
 	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | cut -c 1-100
 }
 usb_count() {
-	value=$(timeout -k 0.2 1 usbguard list-devices -b 2>/dev/null) || { echo unknown; return; }
+	value=$(timeout -k 0.2 1 sudo -n usbguard list-devices -b 2>/dev/null) || { echo unknown; return; }
 	printf '%s\n' "$value" | awk 'NF {n++} END {print n+0}'
 }
 save_config() (
