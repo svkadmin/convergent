@@ -60,7 +60,13 @@ scan)
 	;;
 status)
 	run 10 iwctl station "$WIFI_IF" show
-	ip -4 -o addr show dev "$WIFI_IF" 2>/dev/null | awk '{print "address", $4}'
+	rc=$?
+	if addresses=$(ip -4 -o addr show dev "$WIFI_IF" 2>/dev/null); then
+		printf '%s\n' "$addresses" | awk 'NF {print "address", $4}'
+	else
+		[ "$rc" -ne 0 ] || rc=1
+	fi
+	exit "$rc"
 	;;
 add)
 	read_ssid

@@ -18,6 +18,9 @@ case ${SSH_ORIGINAL_COMMAND:-} in
 "check")
 	exec /usr/local/sbin/wan-check
 	;;
+"check retry")
+	exec /usr/local/sbin/wan-check retry
+	;;
 esac
 echo "wan-ssh: command refused" >&2
 exit 126

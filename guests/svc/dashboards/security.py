@@ -21,7 +21,7 @@ def generate():
                       ov("archived crashes", thresholds=BAD)])
     p.table("Collectors · now", [target('max by (collector) (cv_collector_success)')],
             grid(0, 2, 8, 6), ["collector"], ["result"],
-            "Source: tools/facts boot, daily and audit collector success. One instant row per collector; a failed daily collector can still publish readable certificate/NTS figures. Checker is separate in the band above.", [ov("result", mappings=OK)])
+            "Source: tools/facts boot, daily, NTS and audit collector success. One instant row per collector; a failed daily collector can still publish readable certificate figures. Checker is separate in the band above.", [ov("result", mappings=OK)])
     p.table("Certificates · time remaining", [target('min by (certificate) (cv_certificate_not_after_seconds - time())')],
             grid(8, 2, 8, 6), ["certificate"], ["remaining"],
             "Source: tools/facts daily openssl x509 enddate. Only the Incus server certificate is collected; syslog and client certificates are outside this inventory.",
@@ -29,7 +29,7 @@ def generate():
     p.stat("Time and audit", [target('max(cv_nts_authenticated_sources)', "NTS agreeing authenticated"),
                               target('max(cv_audit_lost_total)', "audit records lost"),
                               target('max(node_sysctl_kernel_tainted{node="host"})', "kernel taint")],
-           grid(16, 2, 8, 6), "Source: tools/facts daily chronyc sources/authdata and hourly auditctl lost; host node_exporter configured sysctl collector kernel.tainted. Taint is a bitmask, not a verdict about compromise.",
+           grid(16, 2, 8, 6), "Source: tools/facts nts (every minute) chronyc sources/authdata and hourly auditctl lost; host node_exporter configured sysctl collector kernel.tainted. Taint is a bitmask, not a verdict about compromise.",
            overrides=[ov("NTS agreeing authenticated", thresholds=thresholds((RED, None), ("text", 2))),
                       ov("audit records lost", thresholds=BAD),
                       ov("kernel taint", mappings=vmap([(0, "CLEAN", NEUTRAL)]), thresholds=BAD)])

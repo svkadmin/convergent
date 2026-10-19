@@ -1,6 +1,6 @@
 # ARCHITECTURE 8
 # cv_* booleans: 0/1; timestamps: Unix seconds; atomic textfiles, no sample times.
-# Producers: host boot/daily/checker.prom; fw convergent_fw.prom; wan wan.prom.
+# Producers: host boot/daily/nts/audit/checker.prom; fw convergent_fw.prom; wan wan.prom.
 # Expected pf hash: pfctl -sr with __automatic_<id> table names normalised, | sha256, including its prefix.
 # Checker supplies autostart expectations; closed on-demand browsers are not expected.
 # Host forwards Incus lifecycle logs with app_name incus-event.
@@ -29,7 +29,7 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'Expected firewall default route absent: {{ $labels.node }}'}
       - alert: FirewallRulesetDrift
-        expr: convergent_pf_ruleset_info{node=~"fw1|fw2"} unless on (node,loaded) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")
+        expr: (convergent_pf_ruleset_info{node=~"fw1|fw2"} and on (node) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")) unless on (node,loaded) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")
         labels: {severity: critical}
         annotations: {summary: 'pf ruleset differs from release on {{ $labels.node }}'}
       - alert: StateTableHigh
@@ -125,7 +125,8 @@ groups:
         labels: {severity: warning}
         annotations: {summary: 'Clock offset high on {{ $labels.node }}'}
       - alert: NtsUnauthenticated
-        expr: cv_nts_authenticated_sources < 2
+        expr: (cv_nts_authenticated_sources < 2) and on () (max(convergent_wan_upstream_up{node="wan"}) == 1)
+        for: 5m
         labels: {severity: critical}
         annotations: {summary: 'Fewer than two authenticated agreeing NTS sources'}
       - alert: CrashRecorded
@@ -145,6 +146,8 @@ groups:
           (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180)
           or (time() - node_textfile_mtime_seconds{node="host",file=~".*(daily|checker).prom"} > 129600)
           or (time() - node_textfile_mtime_seconds{node="host",file=~".*audit.prom"} > 7200)
+          or (time() - node_textfile_mtime_seconds{node="host",file=~".*nts.prom"} > 180)
+          or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*nts.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*audit.prom"})
           or (node_textfile_mtime_seconds{job="node"} > time() + 60)
           or (time() - node_textfile_mtime_seconds{node="wan",file=~".*wan.prom"} > 180)
@@ -154,7 +157,7 @@ groups:
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*daily.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*checker.prom"})
           or (node_textfile_mtime_seconds{node="host",file=~".*boot.prom"} < on (node) group_left node_boot_time_seconds{node="host"})
-        for: 2m
+        for: 5m
         labels: {severity: warning}
         annotations: {summary: 'Collector file absent, stale, from a previous boot or dated in the future'}
       - alert: CollectorBroken
@@ -190,7 +193,7 @@ groups:
           or (up{job="node",node="host"} == 1 unless on (node) node_sysctl_kernel_tainted)
           or (up{job="node",node=~"host|wan"} == 1 unless on (node) node_timex_offset_seconds)
           or (up{job="node"} == 1 unless on (node) node_time_seconds)
-        for: 2m
+        for: 5m
         labels: {severity: warning}
         annotations: {summary: 'Collector failed, textfile is malformed or required facts are missing'}
       - alert: CheckerFailed

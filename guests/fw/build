@@ -41,6 +41,7 @@ domain=$(sed -n 's/^DOMAIN=//p' "$here/site/etc/convergent/net")
 [ -n "$domain" ] || die "no DOMAIN in site/etc/convergent/net"
 
 mkdir -p "$out"
+out=$(cd "$out" && pwd)
 work=$(mktemp -d)
 www=$work/www
 tftp=$work/tftp
