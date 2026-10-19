@@ -103,7 +103,7 @@ cleanup() {
             echo "${browser_pending:-}" >/run/convergent/status/guests-pending
             chmod 0644 /run/convergent/status/guests-pending
         fi
-        if [ "$result" = 0 ]; then update_status done; else update_status failed; fi
+        if [ "$result" = 0 ]; then update_status 'done'; else update_status failed; fi
     fi
     exit "$result"
 }
