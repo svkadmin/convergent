@@ -106,7 +106,8 @@ Save once docked and once undocked. Profiles use the connected set of monitor ma
 identities, including disabled panels; connector names and connection order can change.
 The session applies the matching profile at login and whenever the connected set changes.
 Unrecognised sets enable connected screens at their preferred modes (laptop panel scale 1.2,
-external scale 1). Identical identities cannot be saved unambiguously; `save` refuses them.
+external scale 1), unless an older `~/.config/sway/config.d/outputs` file still applies; it stays in
+charge until the first save. Identical identities cannot be saved unambiguously; `save` refuses them.
 `reset` removes only the current set's saved profile; it leaves the live layout alone.
 Profiles live in `~/.config/convergent/displays/`; saving retires the old
 `~/.config/sway/config.d/outputs` file. The `display_scale` build setting still sets the initial
@@ -185,7 +186,7 @@ uplinks and rechecks the lease; the overlap latch clears only after a safe lease
 
 `sys portal on` starts the portal browser, which owns portal mode for its lifetime. It opens two pf rules
 on both firewalls and wan's DNS pass-through, for the portal browser only; the bar shows `PORTAL`.
-It ends when the browser closes, with `sys portal off`, or after 30 minutes.
+It works over Wi-Fi or wired; it ends when the browser closes, with `sys portal off`, or after 30 minutes.
 `sys browser portal` and `browser portal` use the same lifecycle. A new launch closes stale rules
 on all three guests before opening any; it refuses to open if closure fails. Cron also detects an
 abandoned browser session and retries incomplete closure every minute. `sys portal status` shows
