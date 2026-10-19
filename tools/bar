@@ -225,6 +225,9 @@ while :; do
 		portal=get(st "/portal")
 		# Shown only while on; "unknown" before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)
+		camera=get("/var/lib/convergent/devices/camera")
+		video=get("/sys/module/videodev/refcnt")
+		if (camera == "on" || video != "") block(camera == "on" ? "CAM" : "CAM!", orange)
 		# First boot of a disk image: guests being created (convergent-setup).
 		setup=get(st "/setup")
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
@@ -234,6 +237,8 @@ while :; do
 		days=int(uptime[1]/86400)
 		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")
 		block(clock, "")
+		profile=get("/run/convergent-power.profile")
+		block("PWR " (profile == "ac" || profile == "battery" ? profile : "?"), "")
 		if (bat == "") block("AC", "")
 		else {
 			cap=get(bat "/capacity"); bs=get(bat "/status"); color=""

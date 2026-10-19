@@ -2,6 +2,7 @@
 # ARCHITECTURE 3.1
 set -u
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 022
 
 ac_epp=balance_performance
 cap=4200000
@@ -31,26 +32,87 @@ source_now() {
 	if [ -n "$bat" ]; then echo battery; else echo ac; fi
 }
 
-case ${1:-} in
-'') src=$(source_now) ;;
-ac | battery) src=$1 ;;
-*) echo "usage: power [ac | battery]" >&2; exit 2 ;;
-esac
-if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
-
 rc=0 changed=0
 set_file() {
 	[ -e "$1" ] || return 0
 	current=
 	read -r current <"$1" 2>/dev/null || :
 	[ "$current" = "$2" ] && return 0
-	if echo "$2" >"$1" 2>/dev/null; then changed=1
-	else echo "power: could not set $1 to $2" >&2; rc=1; fi
+	if echo "$2" >"$1" 2>/dev/null; then
+		changed=1
+		read -r current <"$1" && [ "$current" = "$2" ] || { echo "power: $1 did not retain $2" >&2; rc=1; return 1; }
+	else echo "power: could not set $1 to $2" >&2; rc=1; return 1; fi
 }
 
+save_choice() {
+	mkdir -p /var/lib/convergent/power || die 'cannot create power state'
+	file=$(mktemp /var/lib/convergent/power/.choice.XXXXXX) || exit 1
+	printf '%s\n' "$2" >"$file" && chmod 0644 "$file" &&
+		mv -f "$file" "/var/lib/convergent/power/$1" || die 'cannot save power choice'
+}
+charge() {
+	case $1 in off) end=100; start=95; charge_type=Standard ;;
+	[5-9][0-9]|100) [ "$1" -ge 55 ] || die 'charge limit must be 55-100 or off'; end=$1; start=$((end - 5)); charge_type=Custom ;;
+	*) die 'charge limit must be 55-100 or off' ;;
+	esac
+	found=0
+	for s in "$ps"/*; do
+		[ -e "$s/charge_control_end_threshold" ] || continue
+		found=1
+		# Raise the end first, so neither intermediate pair has start >= end.
+		old=100
+		read -r old <"$s/charge_control_end_threshold" || { rc=1; continue; }
+		case $old in ''|*[!0-9]*) rc=1; continue ;; esac
+		if [ "$end" -ge "$old" ]; then
+			set_file "$s/charge_control_end_threshold" "$end" || continue
+			set_file "$s/charge_control_start_threshold" "$start" || continue
+		else
+			set_file "$s/charge_control_start_threshold" "$start" || continue
+			set_file "$s/charge_control_end_threshold" "$end" || continue
+		fi
+		# Dell thresholds only take effect in Custom mode; off restores Standard.
+		if [ -e "$s/charge_types" ]; then
+			types=$(cat "$s/charge_types") || { rc=1; continue; }
+			case $types in *"[$charge_type]"*) ;;
+			*)
+				if echo "$charge_type" >"$s/charge_types"; then changed=1
+				else echo "power: cannot select $charge_type charging" >&2; rc=1; fi ;;
+			esac
+		fi
+	done
+}
+thermal() {
+	case $1 in quiet|balanced|performance) ;; *) die 'thermal profile must be quiet, balanced or performance' ;; esac
+	found=0
+	[ -e /sys/firmware/acpi/platform_profile ] || return 0
+	found=1
+	choices=$(cat /sys/firmware/acpi/platform_profile_choices) || { rc=1; return; }
+	case " $choices " in *" $1 "*) set_file /sys/firmware/acpi/platform_profile "$1" ;;
+	*) echo "power: unsupported thermal profile: $1 ($choices)" >&2; rc=1 ;;
+	esac
+}
+
+exec 9>/run/convergent-power.lock
+flock -x 9 || exit 1
+case ${1:-} in
+'') [ "$#" = 0 ] || exit 2; src=$(source_now) ;;
+ac|battery) [ "$#" = 1 ] || exit 2; src=$1 ;;
+charge|thermal)
+	[ "$#" = 2 ] || die 'use power charge off|55-100 or power thermal quiet|balanced|performance'
+	"$1" "$2"
+	[ "$found" = 1 ] || { echo "power: $1 unsupported (no sysfs control)"; exit 0; }
+	[ "$rc" = 0 ] || exit "$rc"
+	save_choice "$1" "$2"
+	exit 0 ;;
+*) echo 'usage: power [ac|battery|charge off|55-100|thermal quiet|balanced|performance]' >&2; exit 2 ;;
+esac
+if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
+
+policies=0
 for p in "$cpu"/policy[0-9]*; do
 	[ -d "$p" ] || continue
 	if [ -e "$p/energy_performance_preference" ]; then
+		policies=$((policies + 1))
 		set_file "$p/scaling_governor" powersave
 		set_file "$p/energy_performance_preference" "$epp"
 	fi
@@ -59,7 +121,24 @@ for p in "$cpu"/policy[0-9]*; do
 	if [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
 	set_file "$p/scaling_max_freq" "$want"
 done
-[ -d "$cpu" ] || { echo "power: no cpufreq in sysfs" >&2; exit 1; }
+[ -d "$cpu" ] || { echo 'power: no cpufreq in sysfs' >&2; rc=1; }
+# Publish only a successfully applied CPU profile, including manual overrides.
+profile=unknown
+[ "$rc" != 0 ] || [ "$policies" = 0 ] || profile=$src
+file=$(mktemp /run/.convergent-power.XXXXXX) || exit 1
+printf '%s\n' "$profile" >"$file" && chmod 0644 "$file" &&
+	mv -f "$file" /run/convergent-power.profile || die 'cannot publish profile'
+
+limit=off
+[ ! -r /var/lib/convergent/power/charge ] || read -r limit </var/lib/convergent/power/charge
+charge "$limit"
+if [ -r /var/lib/convergent/power/thermal ]; then
+	read -r mode </var/lib/convergent/power/thermal && thermal "$mode" || rc=1
+fi
+# Retry camera probing once state is mounted, even if early udev denied a load.
+if [ ! -e /run/convergent-camera-restored ]; then
+	/usr/local/sbin/devices camera restore && : >/run/convergent-camera-restored || rc=1
+fi
 
 # Duplicate AC events need no log write; changes and failures still do.
 [ "$changed:$rc" = 0:0 ] || logger -t power "$src: energy preference $epp, clock cap $cap kHz, status $rc"

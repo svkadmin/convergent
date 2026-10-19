@@ -2,9 +2,10 @@ title=Display
 alias=disp
 actions='status	List output modes, scale and position	
 bright	Set panel brightness PERCENT, +N or -N	
-set	Set OUTPUT mode|scale|position|enable|disable [VALUE]	
-save	Save current outputs for sway startup	
-reset	Remove saved outputs	confirm'
+set	Preview OUTPUT mode|scale|position|enable|disable [VALUE] for 15 seconds
+save	Save this connected monitor set
+reset	Remove the profile for this connected monitor set	confirm
+watch	Apply monitor profiles at login and on hotplug (session hook)	'
 
 # The udev rule gives group video (the owner) write access to the backlight.
 display_bright() {
@@ -50,7 +51,7 @@ display_value() {
 	*) usage ;;
 	esac
 }
-display_set() {
+display_set() (
 	sway
 	if [ "$#" = 0 ]; then
 		display_status || return
@@ -67,42 +68,160 @@ display_set() {
 	fi
 	[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
 	output=$1; setting=$2; token "$output"
+	display_lock
 	json=$(display_json) || return
 	printf '%s\n' "$json" | jq -e --arg name "$output" 'any(.[]; .name == $name)' >/dev/null || die 'unknown output'
+	printf '%s\n' "$json" | display_key >/dev/null || die 'ambiguous monitor identities'
 	case $setting in
 	enable|disable)
 		[ "$#" = 2 ] || usage
 		if [ "$setting" = disable ]; then
 			printf '%s\n' "$json" | jq -e --arg name "$output" 'any(.[]; .name != $name and .active)' >/dev/null || die 'another output must stay active'
 		fi
-		swayrun output "$output" "$setting" ;;
+		command="output $output $setting" ;;
 	mode|scale|position)
 		[ "$#" = 3 ] || usage
 		display_value "$setting" "$3"
 		if [ "$setting" = position ]; then
-			swayrun output "$output" position "${3%,*}" "${3#*,}"
+			command="output $output position ${3%,*} ${3#*,}"
 		else
-			swayrun output "$output" "$setting" "$3"
+			command="output $output $setting $3"
 		fi ;;
 	*) usage ;;
 	esac
+	work=$(mktemp -d "$XDG_RUNTIME_DIR/display-preview.XXXXXX") || exit 1
+	printf '%s\n' "$json" | display_snapshot >"$work/before" || exit 1
+	printf 'keep\n' >"$work/keep"; printf 'revert\n' >"$work/revert"
+	timer=
+	display_cleanup() {
+		trap - 0
+		if ln "$work/revert" "$work/decision" 2>/dev/null; then
+			[ -z "$timer" ] || kill "$timer" 2>/dev/null || :
+			display_restore "$work/before"
+		elif [ "$(cat "$work/decision")" = keep ]; then
+			[ -z "$timer" ] || kill "$timer" 2>/dev/null || :
+		fi
+		# If the timer claimed the rollback, let it finish before releasing the lock.
+		[ -z "$timer" ] || wait "$timer" 2>/dev/null || :
+		rm -rf "$work"
+	}
+	trap display_cleanup 0
+	trap 'exit 1' HUP INT TERM
+	# A separate rollback worker survives loss of the terminal or caller.
+	(
+		trap - 0 INT TERM
+		trap '' HUP
+		sleep 15 & sleeper=$!
+		trap 'kill "$sleeper" 2>/dev/null || :; exit 0' TERM
+		wait "$sleeper" || exit 0
+		trap - TERM
+		if ln "$work/revert" "$work/decision" 2>/dev/null; then display_restore "$work/before"; fi
+	) </dev/null >"$work/rollback.log" 2>&1 &
+	timer=$!
+	display_command "$command" || exit 1
+	printf 'Preview: %s\nKeep this layout? Type yes within 15 seconds: ' "$command"
+	if timeout --foreground -k 1 15 sh -c 'IFS= read -r a && [ "$a" = yes ]' && ln "$work/keep" "$work/decision" 2>/dev/null; then
+		echo 'Kept. Use sys display save to remember this monitor set.'
+	else
+		echo 'Reverting display preview.'
+		exit 1
+	fi
+)
+
+display_lock() {
+	path "$HOME"; path "${XDG_RUNTIME_DIR:-}"
+	exec 9>"$XDG_RUNTIME_DIR/convergent-display.lock"
+	flock -x 9 || die 'cannot lock display settings'
+	profiles=$HOME/.config/convergent/displays
 }
-display_save() {
-	noargs "$@"
-	json=$(display_json) || return
-	rows=$(printf '%s\n' "$json" | jq -er '.[] | (if .active then [.name, .active, "\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz", ((.scale // 1)*1000|round/1000), "\(.rect.x),\(.rect.y)", (.transform // "normal")] else [.name, .active] end) | @tsv') || return
-	config=$(printf '%s\n' "$rows" | while IFS="$tab" read -r name active mode scale position transform; do
+display_key() {
+	identities=$(jq -ce '[.[] | [.make // "", .model // "", .serial // ""]] | sort |
+		if length > 0 and length == (unique | length) then . else error("ambiguous monitor identities") end') || return 1
+	printf '%s\n' "$identities" | sha256sum | cut -d ' ' -f 1
+}
+display_snapshot() {
+	jq -e '[.[] | {id: [.make // "", .model // "", .serial // ""], active,
+		mode: (if .active then "\(.current_mode.width)x\(.current_mode.height)@\(.current_mode.refresh/1000)Hz" else "" end),
+		scale: ((.scale // 1)*1000 | round/1000), position: "\(.rect.x),\(.rect.y)", transform: (.transform // "normal")}]'
+}
+display_command() {
+	reply=$(run timeout -k 1 3 swaymsg -r -- "$1") || return 1
+	printf '%s\n' "$reply" | jq -e 'length > 0 and all(.[]; .success == true)' >/dev/null || {
+		printf '%s\n' "$reply" >&2; return 1;
+	}
+}
+display_apply() (
+	current=$(display_json) || exit 1
+	# Match identities to today's connectors; never use saved connector names or shell code.
+	rows=$(jq -er --argjson current "$current" '
+		if type != "array" or length == 0 or (all(.[]; (.id | type == "array" and length == 3) and (.active | type == "boolean")) | not)
+		then error("invalid display profile") else . end |
+		[.[] as $s | $current[] | select([.make // "", .model // "", .serial // ""] == $s.id) |
+		[$s.active, .name, $s.mode, $s.scale, $s.position, $s.transform]] |
+		sort_by(.[0]) | reverse | .[] | @tsv' "$1") || exit 1
+	# Validate the whole profile before changing any output. Enable survivors before disabling others.
+	commands=$(printf '%s\n' "$rows" | while IFS="$tab" read -r active name mode scale position transform; do
 		token "$name"
-		if [ "$active" = false ]; then printf 'output %s disable\n' "$name"; continue; fi
-		[ "$active" = true ] || die 'invalid output state'
+		if [ "$active" = false ]; then
+			printf 'output %s disable\n' "$name"; continue
+		fi
 		display_value mode "$mode"; display_value scale "$scale"; display_value position "$position"
 		case $transform in normal|90|180|270|flipped|flipped-90|flipped-180|flipped-270) ;; *) die 'invalid transform' ;; esac
 		printf 'output %s enable mode %s scale %s position %s %s transform %s\n' "$name" "$mode" "$scale" "${position%,*}" "${position#*,}" "$transform"
-	done) || return
-	printf '%s\n' "$config"
-	printf '%s\n' "$config" | save_config outputs
+	done) || exit 1
+	printf '%s\n' "$rows" | grep -q '^true' || exit 1
+	printf '%s\n' "$commands" | while IFS= read -r command; do display_command "$command" || exit 1; done
+)
+display_defaults() {
+	json=$(display_json) || return
+	names=$(printf '%s\n' "$json" | jq -r '.[].name') || return
+	for name in $names; do
+		token "$name"
+		case $name in eDP-*|LVDS-*) scale=1.2 ;; *) scale=1 ;; esac
+		display_command "output $name enable mode --preferred scale $scale" || return
+	done
 }
-display_reset() {
-	noargs "$@"; path "$HOME"
-	run rm -f "$HOME/.config/sway/config.d/outputs"
-}
+display_restore() { display_apply "$1" || display_defaults; }
+display_save() (
+	noargs "$@"
+	display_lock
+	json=$(display_json) || return
+	key=$(printf '%s\n' "$json" | display_key) || exit 1
+	run mkdir -p "$profiles" || exit 1
+	file=$(mktemp "$profiles/.profile.XXXXXX") || exit 1
+	trap 'rm -f "$file"' 0
+	trap 'exit 1' HUP INT TERM
+	printf '%s\n' "$json" | display_snapshot >"$file" && run mv -f "$file" "$profiles/$key.json" || exit 1
+	# Retire the old connector-based startup file after the new profile is saved.
+	run rm -f "$HOME/.config/sway/config.d/outputs" || exit 1
+	echo 'Saved for this monitor set, at login and on dock/undock.'
+)
+display_reset() (
+	noargs "$@"; display_lock
+	json=$(display_json) || exit 1
+	key=$(printf '%s\n' "$json" | display_key) || exit 1
+	run rm -f "$profiles/$key.json" "$HOME/.config/sway/config.d/outputs"
+)
+display_watch() (
+	noargs "$@"; sway; path "${XDG_RUNTIME_DIR:-}"
+	exec 8>"$XDG_RUNTIME_DIR/convergent-display-watch.lock"
+	flock -n 8 || exit 0
+	# Sway sends an initial tick after subscribing, closing the login/hotplug race.
+	swaymsg -m -r -t subscribe '["output","tick"]' | (
+		previous=
+		while IFS= read -r event; do
+			next=$(
+				display_lock
+				json=$(display_json) || exit 1
+				key=$(printf '%s\n' "$json" | display_key) || exit 1
+				# Connector changes trigger remapping too; layout changes do not.
+				stamp=$(printf '%s\n' "$json" | jq -c 'sort_by(.name) | map([.name,.make,.model,.serial])') || exit 1
+				if [ "$stamp" != "$previous" ]; then
+					if [ -f "$profiles/$key.json" ]; then display_restore "$profiles/$key.json"; else display_defaults; fi || exit 1
+				fi
+				printf '%s\n' "$stamp"
+			) || continue
+			previous=$next
+		done
+	)
+)
