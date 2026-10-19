@@ -379,7 +379,8 @@ A release is built in these steps (the commands are in the README):
 8. Publish: the five release files to `<channel>/<release>/` in a public object store (Cloudflare
    R2 today), then `<channel>/latest`, signed too. The manifest gives each file's size, so a
    download stops there. Two releases per channel; the bucket stays under about 9 GiB.
-   Disk images (they hold the owner's account) and guest images are not published.
+   Guest images go up too, listed in `guests.manifest` (7.2). Disk images (they hold the owner's
+   account) are not published.
 
 ---
 

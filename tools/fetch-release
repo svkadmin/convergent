@@ -135,13 +135,16 @@ rm -rf "$pointer"
 num "$latest" && num "$signed" || die "the update server's latest is malformed"
 case $gsum in '' | none) ;; *[!0-9a-f]*) die "the update server's latest is malformed" ;; *) [ "${#gsum}" = 64 ] || die "the update server's latest is malformed" ;; esac
 age=$(( ($(date +%s) - signed) / 86400 ))
-uptodate="up to date: release $booted (newest published: $latest, signed $age days ago)"
+signed_ago="signed $age days ago"
+[ "$age" -ge 0 ] || signed_ago='signed in the future'
+uptodate="up to date: release $booted (newest published: $latest, $signed_ago)"
 # Up to date, but the booted release's own guests can still be missing (a host-only update).
 sync=
 if ! expr "$latest" '>' "$floor" >/dev/null; then
 	[ "$latest" = "$booted" ] || { echo "$uptodate"; exit 0; }
 	sync=1
 fi
+[ -n "$sync" ] || [ "$mode" = check ] || echo "release $latest ($signed_ago)"
 # Fail now, not after the download: a guest update holds this for up to half an hour.
 exec 8>/run/convergent/guests.lock
 flock -s -n 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
@@ -160,18 +163,24 @@ verify "$dir/manifest" || { rm -rf "$dir"; die "the manifest signature does not 
 [ "$(field release "" "$dir/manifest")" = "$latest" ] || { rm -rf "$dir"; die "the manifest is not release $latest"; }
 # Guests travel in a second signed file, which older releases' tools never read; none means none.
 gm=$dir/guests.manifest
-if [ "$gsum" = none ]; then
+if [ ! -e /var/lib/convergent/guests/initialized ]; then
+	# Never created: sys guests setup makes them from the installed images, not from here.
+	echo 'guests are not set up yet; they come from sys guests setup, not from updates'
+	: >"$gm"
+elif [ "$gsum" = none ]; then
 	: >"$gm"
 else
-	code=$(get --max-time 120 --max-filesize 65536 -o "$gm" -w '%{http_code}' "$url/$latest/guests.manifest" 2>/dev/null) || :
-	case $code in
-	200)
+	rc=0
+	code=$(get --max-time 120 --max-filesize 65536 -o "$gm" -w '%{http_code}' "$url/$latest/guests.manifest" 2>/dev/null) || rc=$?
+	case $rc,$code in
+	0,200)
 		get --max-time 120 --max-filesize 1024 -o "$gm.sig" "$url/$latest/guests.manifest.sig" || die "guests.manifest.sig download failed"
 		verify "$gm" || { rm -rf "$dir"; die "the guests.manifest signature does not verify"; }
 		[ "$(field release "" "$gm")" = "$latest" ] || { rm -rf "$dir"; die "guests.manifest is not release $latest"; }
 		;;
-	404) [ -z "$gsum" ] || die "guests.manifest is missing from the update server"; : >"$gm" ;;
-	*) die "guests.manifest download failed (HTTP ${code:-none})" ;;
+	22,404) [ -z "$gsum" ] || die "guests.manifest is missing from the update server"; : >"$gm" ;;
+	# $dir stays: a cut-off or over-limit body is not a bad signature, and slot.img resumes.
+	*) die "guests.manifest download failed (curl $rc, HTTP ${code:-none}); run again" ;;
 	esac
 	# The signed latest names it, so a mirror can neither withhold nor swap it.
 	[ -z "$gsum" ] || [ "$(sha256sum <"$gm" | cut -d' ' -f1)" = "$gsum" ] ||
@@ -206,7 +215,7 @@ if [ "$mode" = check ]; then
 	if [ -n "$sync" ]; then
 		echo "release $booted is up to date, but its guests are not:$changed (sys update install fetches them)"
 	else
-		echo "release $latest is available (booted: $booted; signed $age days ago)"
+		echo "release $latest is available (booted: $booted; $signed_ago)"
 		[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
 	fi
 	exit 0
