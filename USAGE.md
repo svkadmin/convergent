@@ -281,3 +281,5 @@ An interrupted browser update blocks launches until the guest update is retried.
 - `power` sets the CPU energy preference and a clock cap for AC or battery (4.2 GHz by default,
   `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
   `sys power battery` (`sudo power [ac|battery]`).
+  Repeated events with no setting changes are silent; changes and failures are logged.
+  The resource review and unimplemented tuning proposals are in ARCHITECTURE section 11.
