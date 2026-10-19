@@ -11,6 +11,7 @@ key=/etc/convergent/release.pub
 ssh_conf=/etc/convergent/ssh_config
 # Root's own directory on state: nothing the owner can create or rename in.
 work=/var/lib/convergent/update
+staged=/var/lib/convergent/guest-updates
 fws="fw2 fw1"
 src_open=
 
@@ -48,6 +49,30 @@ verify() { openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$1" -sigfile
 field() { awk -v k="$1" -v f="${2:-}" '$1 == k && (f == "" || $2 == f) { print $NF; n++ } END { exit n != 1 }' "$3"; }
 num() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
 have() { [ -f "$dir/$1" ] && stat -c %s "$dir/$1" || echo 0; }
+guest_path() {
+	printf '%s\n' "$1" | grep -Eq '^guests/((fw|wan|svc|browser)/[A-Za-z0-9._-]+|browser/incus/[A-Za-z0-9._-]+\.yaml)$' || return 1
+	case ${1##*/} in . | ..) return 1 ;; esac
+}
+bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" ]; }; }
+private() {
+	[ ! -L "$1" ] || die "$1 is a symlink"
+	[ -d "$1" ] || mkdir -m 0700 "$1"
+	[ "$(stat -c '%u %a %F' "$1")" = "0 700 directory" ] || die "$1 is not root's private directory"
+}
+download() {
+	f=$1
+	size=$(field size "$f" "$dir/manifest")
+	want=$(awk -v f="$f" '$2 == f && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {print tolower($1); n++} END {exit n != 1}' "$dir/manifest") || die "no hash for $f"
+	mkdir -p "$(dirname "$dir/$f")"
+	if [ "$(have "$f")" != "$size" ]; then
+		echo "downloading $f"
+		# A dropped connection resumes on the next run; a refused or ignored range starts over.
+		get --max-time 7200 --max-filesize "$size" --retry 5 -C - -o "$dir/$f" "$url/$latest/$f" ||
+			{ rc=$?; case $rc in 22 | 33 | 36) rm -f "$dir/$f" ;; esac; die "download of $f failed; run again"; }
+	fi
+	[ "$(have "$f")" = "$size" ] && [ "$(sha256sum <"$dir/$f" | cut -d' ' -f1)" = "$want" ] ||
+		{ rm -f "$dir/$f"; die "$f does not match the manifest; run again"; }
+}
 
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# -le 1 ] || die "usage: fetch-release [check]"
@@ -93,9 +118,7 @@ get() {
 }
 
 # The work directory: root's, a real directory, nothing else in it but this release.
-[ ! -L "$work" ] || die "$work is a symlink"
-[ -d "$work" ] || mkdir -m 0700 "$work"
-[ "$(stat -c '%u %a %F' "$work")" = "0 700 directory" ] || die "$work is not root's private directory"
+private "$work"
 pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
 get --max-time 60 --max-filesize 1024 -o "$pointer/latest" "$url/latest" &&
 	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot reach $host"; }
@@ -108,17 +131,13 @@ if ! expr "$latest" '>' "$floor" >/dev/null; then
 	echo "up to date: release $booted (newest published: $latest, signed $age days ago)"
 	exit 0
 fi
-if [ "$mode" = check ]; then
-	echo "release $latest is available (booted: $booted; signed $age days ago)"
-	exit 0
-fi
-
-for _d in "$work"/* "$work"/.[!.]*; do
+for _d in "$work"/* "$work"/.[!.]* "$work"/..?*; do
 	[ -e "$_d" ] || [ -L "$_d" ] || continue
 	[ "$_d" = "$work/$latest" ] && [ -d "$_d" ] && [ ! -L "$_d" ] || rm -rf "$_d"
 done
 dir=$work/$latest
-[ -d "$dir" ] || mkdir -m 0700 "$dir"
+private "$dir"
+[ -z "$(find "$dir" -type l -print)" ] || die "$dir contains symlinks"
 get --max-time 120 --max-filesize 65536 -o "$dir/manifest" "$url/$latest/manifest" &&
 	get --max-time 120 --max-filesize 1024 -o "$dir/manifest.sig" "$url/$latest/manifest.sig" ||
 	die "manifest download failed"
@@ -126,29 +145,87 @@ verify "$dir/manifest" || { rm -rf "$dir"; die "the manifest signature does not 
 [ "$(field release "" "$dir/manifest")" = "$latest" ] || { rm -rf "$dir"; die "the manifest is not release $latest"; }
 
 files="slot.img convergent-$latest-a.efi convergent-$latest-b.efi"
+guest_files=$(awk '$2 ~ /^guests\// {
+	if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
+}' "$dir/manifest") || die 'invalid guest path in manifest'
+changed=
+awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser)$/ || length($3) != 64 || $3 ~ /[^0-9a-fA-F]/ || seen[$2]++) exit 1; print $2, tolower($3)}' \
+	"$dir/manifest" >"$dir/guest-ids" || die 'invalid guest identity in manifest'
+while read -r g guest_id; do
+	installed=
+	[ ! -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] ||
+		installed=$(sha256sum <"/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" | cut -d' ' -f1)
+	[ "$installed" != "$guest_id" ] || { rm -rf "$dir/guests/$g"; continue; }
+	changed="$changed $g"
+	paths=$(printf '%s\n' "$guest_files" | awk -v p="guests/$g/" 'index($0, p) == 1 {printf "%s ", $0}')
+	[ -n "$paths" ] || die "no files for $g"
+	files="$files $paths"
+done <"$dir/guest-ids"
+if [ "$mode" = check ]; then
+	echo "release $latest is available (booted: $booted; signed $age days ago)"
+	[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
+	exit 0
+fi
+if [ -d "$dir/guests" ]; then
+	find "$dir/guests" -type f | while IFS= read -r path; do
+		f=${path#"$dir/"}
+		case " $files " in *" $f "*) ;; *) rm -f "$path" ;; esac
+	done
+	find "$dir/guests" -depth -type d -empty -delete
+fi
 # Room for what is still missing, plus 1 GiB.
 need=0
 for f in $files; do
-	size=$(field size "$f" "$dir/manifest") && num "$size" || { rm -rf "$dir"; die "the manifest gives no size for $f"; }
+	size=$(field size "$f" "$dir/manifest") && bytes "$size" || { rm -rf "$dir"; die "the manifest gives no size for $f"; }
 	[ "$(have "$f")" -le "$size" ] || rm -f "$dir/$f"
 	need=$((need + size - $(have "$f")))
+	case $f in
+	*.zst)
+		unpacked=$(field unpacked "${f%.zst}" "$dir/manifest") && bytes "$unpacked" || die "no unpacked size for $f"
+		need=$((need + unpacked))
+		;;
+	esac
 done
 [ "$(( $(df -Pk "$work" | awk 'NR == 2 { print $4 }') * 1024 ))" -gt $((need + 1073741824)) ] ||
 	die "not enough free space in /var: $((need / 1048576)) MiB to download, plus 1 GiB"
 
-for f in $files; do
-	size=$(field size "$f" "$dir/manifest")
-	want=$(awk -v f="$f" '$2 == f && length($1) == 64 { print $1 }' "$dir/manifest")
-	if [ "$(have "$f")" != "$size" ]; then
-		echo "downloading $f"
-		# A dropped connection resumes on the next run; a refused or ignored range starts over.
-		get --max-time 7200 --max-filesize "$size" --retry 5 -C - -o "$dir/$f" "$url/$latest/$f" ||
-			{ rc=$?; case $rc in 22 | 33 | 36) rm -f "$dir/$f" ;; esac; die "download of $f failed; run again"; }
-	fi
-	[ "$(have "$f")" = "$size" ] && [ "$(sha256sum <"$dir/$f" | cut -d' ' -f1)" = "$want" ] ||
-		{ rm -f "$dir/$f"; die "$f does not match the manifest; run again"; }
-done
+for f in $files; do download "$f"; done
 close_src || die "a firewall kept the update source open; it expires within 4 hours"
 
+for g in $changed; do
+	[ "$(sha256sum <"$dir/guests/$g/SHA256SUMS" | cut -d' ' -f1)" = "$(field guest "$g" "$dir/manifest" | tr A-F a-f)" ] || die "$g identity mismatch"
+	for f in $files; do
+		case $f in guests/"$g"/*.zst) ;; *) continue ;; esac
+		unpacked=$(field unpacked "${f%.zst}" "$dir/manifest")
+		(rc=0; zstd -q -d --long=27 -c "$dir/$f" || rc=$?; echo "$rc" >"$dir/unpack-status") |
+			head -c $((unpacked + 1)) >"$dir/${f%.zst}"
+		[ "$(cat "$dir/unpack-status")" = 0 ] && [ "$(have "${f%.zst}")" = "$unpacked" ] ||
+			{ rm -f "$dir/${f%.zst}"; die "$f unpacked size mismatch"; }
+		rm "$dir/$f"
+	done
+	# SHA256SUMS cannot name anything outside this guest's signed file list.
+	awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+		{ sub(/^\*/, "", $2); print $2 }' "$dir/guests/$g/SHA256SUMS" >"$dir/artifacts" || die "invalid $g/SHA256SUMS"
+	while read -r artifact; do
+		f=guests/$g/$artifact
+		guest_path "$f" || die "invalid checksum path: $f"
+		case " $files " in *" $f "* | *" $f.zst "*) ;; *) die "unsigned artifact: $f" ;; esac
+	done <"$dir/artifacts"
+	(cd "$dir/guests/$g" && sha256sum -c SHA256SUMS) || die "$g checksum mismatch"
+done
 slot write "$dir"
+exec 8>/run/convergent/guests.lock
+flock -w 600 8 || die 'another guests operation is running'
+private "$staged"
+for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
+	[ -e "$_d" ] || [ -L "$_d" ] || continue
+	[ ! -L "$_d" ] || die "$_d is a symlink"
+	rm -rf "$_d"
+done
+if [ -n "$changed" ]; then
+	mv "$dir/guests" "$staged/$latest"
+	chmod 0700 "$staged/$latest"
+	echo "guests will update after the reboot:$changed"
+fi
 rm -rf "$dir"

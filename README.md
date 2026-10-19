@@ -20,8 +20,9 @@ sign, publish ──────────────────────
 ```
 
 Nothing is compiled on the laptop. A release is one verified root image plus two boot files (one
-per slot). The laptop keeps two slots, A and B: an update writes the slot not in use and boots it
-with three tries; if it is never marked good (healthy), the other slot boots again.
+per slot), with optional guest images and profiles. The laptop keeps two slots, A and B: an update
+writes the slot not in use and boots it with three tries; if it is never marked good (healthy),
+the other slot boots again.
 
 ## The design in one page
 
@@ -60,8 +61,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 |---|---|
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
 | Proven on the laptop | boot, blind unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch) |
-| Built, laptop test to finish | browsers, audio, Bluetooth, power |
-| Not built | Secure Boot signing (Secure Boot stays off), guest images online, a recovery boot entry |
+| Built, laptop test to finish | browsers, audio, Bluetooth, power, online guest delivery |
+| Not built | Secure Boot signing (Secure Boot stays off), a recovery boot entry |
 
 Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
 after a release has also run on the laptop. Releases are tags on `stable`.
@@ -138,8 +139,11 @@ Something off: [RECOVERY.md](RECOVERY.md); logs: `sys logs`; every command: `sys
 ## Update
 
 **Online** (Wi-Fi up): `sys update check` prints `up to date: release …` or `release N is
-available`. `sys update install` downloads the newest release of the image's channel (about 1 GB),
-checks its signature and hashes, writes the other slot and offers the reboot. The same by hand:
+available`. `sys update install` downloads the newest host release of the image's channel (about 1 GB)
+and only guests that changed. After reboot and marking the host good, guests apply in order:
+svc, wan, fw, browser. The bar shows GUESTS while applying, GUESTS failed on failure. A running
+browser waits; close it and run `sys guests update` to retry. The downloader checks the signature
+and hashes, writes the other slot and offers the reboot. The same by hand:
 `sudo fetch-release` (`check` only reports). The firewalls open the download addresses only while
 it runs; if closing them fails, they expire within 4 hours. Failures: RECOVERY 12.
 
@@ -162,8 +166,8 @@ good; `sudo slot status` shows both slots. If it fails three times, the previous
 with its own `/var`. During these counted boots the hardware watchdog, if the laptop has one, resets
 a boot that is not good within about 13 minutes of unlocking; otherwise hold the power button.
 
-Guests update separately, on a slot already marked good, with every browser closed. Copy the new
-guest images to the laptop; `$g` is that directory. Each guest is exported first and restored if
+Guests can also update manually, on a slot already marked good, with every browser closed. Copy
+the new guest images to the laptop; `$g` is that directory. Each guest is exported first and restored if
 the new one fails its checks:
 
 ```sh
@@ -205,6 +209,7 @@ guests/fw/build $g/fw                              # OpenBSD 7.9 with its errata
 WAN_COUNTRY=SK guests/wan/build $g/wan             # Wi-Fi regulatory country
 guests/svc/build && cp guests/svc/out/* guests/svc/incus.yaml $g/svc/
 guests/browser/build && cp guests/browser/out/* $g/browser/ && cp guests/browser/incus/*.yaml $g/browser/incus/
+build/guests <release-dir> $g                     # add guests for online delivery; re-sign when the key is present
 build/stick <release> $g <out.img> [size]          # disk image; size: 30G by default
 zstd -T0 <out.img>                                 # compress it for the copy
 ```
@@ -236,8 +241,9 @@ from USB with `CONVERGENT_UNSIGNED=1`.
 `build/publish <release-dir>` uploads to the public R2 bucket named in
 `/etc/convergent/r2-<channel>.env` (mode 600: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY` of a token limited to the bucket, `R2_BUCKET`, `R2_PUBLIC_URL`, and
-`R2_ENDPOINT` for an EU bucket). Only the five release files go up, only with a valid signature, to
-`<channel>/<release>/`; then the signed `<channel>/latest` points at it (`build/sign` writes it). A
+`R2_ENDPOINT` for an EU bucket). Only the five host files and manifest-listed guest files go up,
+only with a valid signature, to `<channel>/<release>/`; then the signed `<channel>/latest` points
+at it (`build/sign` writes it). A
 mirror cannot forge the pointer, but can hold back newer releases by replaying an older signed one;
 `fetch-release` shows how old the signature is. Two releases per channel stay; it refuses to grow
 the bucket past about 9 GiB (R2's free tier is 10 GB).

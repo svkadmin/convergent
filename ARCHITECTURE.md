@@ -395,6 +395,11 @@ stopped, so the fw build's seedless smoke boot leaves the release unpersonalised
    board; passing the checks disarms it, even after feeding stopped. A release already good disarms
    it before the checks.
 
+Releases carry guest images and their Incus profiles under the same signed manifest. Online
+updates download only guests whose SHA256SUMS identity changed. After reboot and marking the host
+good, staged guests apply in order: svc, wan, fw, browser; the bar shows GUESTS (red on failure).
+A running browser waits for a later `guests apply`. Host-only releases remain valid.
+
 Guests are updated only on a host slot already marked good, one at a time, each after an instance
 export and snapshots of its custom state volumes; the last three backups per guest are kept. The
 firewalls go one at a time: fw2 first, checked (CARP state, pfsync, pf ruleset hash, a resolution

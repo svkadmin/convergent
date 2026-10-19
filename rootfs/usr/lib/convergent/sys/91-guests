@@ -1,5 +1,6 @@
 title=Guests
 actions='status	Show guest status	root
+update	Apply downloaded guest updates now	root
 setup	Create the guests now (first boot does it; resumes)	root'
 
 guests_state() {
@@ -8,6 +9,17 @@ guests_state() {
 	failed) echo 'Setup: failed; run sys guests setup' ;;
 	*) echo 'Setup: done' ;;
 	esac
+	case $(cached /run/convergent/status/guests-update) in
+	running) echo 'Updates: applying downloaded guests' ;;
+	failed) echo 'Updates: failed; run sys guests update' ;;
+	*)
+		case $(cached /run/convergent/status/guests-pending) in ''|unknown) ;; *)
+			echo 'Updates: the browsers wait; close them, then sys guests update'
+			;;
+		esac
+		;;
+	esac
 }
 guests_status() { noargs "$@"; page run sudo /usr/local/sbin/guests status; }
 guests_setup() { noargs "$@"; run sudo /usr/local/sbin/guests init /var/lib/convergent/release-guests; }
+guests_update() { noargs "$@"; run sudo /usr/local/sbin/guests apply; }

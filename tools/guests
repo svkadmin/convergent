@@ -12,6 +12,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touched=
+applying=
 step=setup
 
 fail() { echo "guests: $step: $*" >&2; return 1; }
@@ -19,12 +20,12 @@ die() { fail "$*" || :; exit 1; }
 # Keep lock descriptors out of clients and any helpers they leave running.
 ic() {
     case $1 in
-    query) incus --force-local "$@" 9>&- 8>&- 7>&- ;; # query takes no --project
-    *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- ;;
+    query) incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
+    *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
     esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
 }
 # Fresh connections only: a shared one could still reach a guest this tool just replaced.
-rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
+rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- 6>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 retry() {
     # VMs boot slowly; the svc container is up in seconds.
     case "$*" in *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;; *) wait=$boot_timeout ;; esac
@@ -42,7 +43,7 @@ volumes() {
     esac
 }
 unmount_root() {
-    if [ -n "$mounted" ]; then umount "$work/root" 9>&- 8>&- 7>&- || return; mounted=; fi
+    if [ -n "$mounted" ]; then umount "$work/root" 9>&- 8>&- 7>&- 6>&- || return; mounted=; fi
     if [ -n "$loop" ]; then losetup -d "$loop" || return; loop=; fi
 }
 clear_probes() {
@@ -79,7 +80,7 @@ cleanup() {
     set +e
     [ "$result" = 0 ] || printf 'guests: %s: operation failed (status %s); cleaning up\n' "$failed_step" "$failed_status" >&2
     step=cleanup
-    unmount_root || { fail "cannot detach root mount or loop device"; exit 1; }
+    unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
     if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
     if [ -n "$starting" ]; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
@@ -91,7 +92,21 @@ cleanup() {
     fi
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
+    if [ -n "$applying" ]; then
+        if [ "$result" = 0 ]; then
+            echo "${browser_pending:-}" >/run/convergent/status/guests-pending
+            chmod 0644 /run/convergent/status/guests-pending
+        fi
+        if [ "$result" = 0 ]; then update_status done; else update_status failed; fi
+    fi
     exit "$result"
+}
+update_status() {
+    mkdir -p /run/convergent/status
+    chmod 0755 /run/convergent/status
+    echo "$1" >/run/convergent/status/guests-update
+    chmod 0644 /run/convergent/status/guests-update
+    echo "guests: update $1"
 }
 
 # Secrets are generated once on this laptop, never on the build host.
@@ -172,7 +187,7 @@ pin() {
     expected=$(tr -d '\r' <"$work/console" | awk -v n="$1" -v id="$(cat "$state/seeds/$1.id")" \
         '{ i = index($0, "CONVERGENT-HOSTKEY "); if (!i) next; split(substr($0, i), f, " ") } f[2] == n && f[3] == id { key = f[4] } END { print key }')   # console lines interleave
     [ -n "$expected" ] || { fail 'no host key announcement for this seed'; return 1; }
-    ssh-keyscan -T 5 -t ed25519 "$address" >"$work/scan" 2>/dev/null 9>&- 8>&- 7>&- || { fail 'host key scan failed'; return 1; }
+    ssh-keyscan -T 5 -t ed25519 "$address" >"$work/scan" 2>/dev/null 9>&- 8>&- 7>&- 6>&- || { fail 'host key scan failed'; return 1; }
     [ "$(ssh-keygen -E sha256 -lf "$work/scan" | awk '{print $2}')" = "$expected" ] || { fail 'scanned host key differs from console'; return 1; }
     awk -v n="$1" '{print n, $2, $3}' "$work/scan" >"$work/pin" || return
     [ -f "$keys/known_hosts" ] || : >"$keys/known_hosts" || return
@@ -187,10 +202,10 @@ healthy() {
     wan) rsh wan check ;;
     svc)
         ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || { fail 'VictoriaMetrics health check failed'; return 1; }
-        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null 9>&- 8>&- 7>&- || { fail 'metrics proxy health check failed'; return 1; }
-        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null 9>&- 8>&- 7>&- || { fail 'VictoriaLogs query check failed'; return 1; }
+        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null 9>&- 8>&- 7>&- 6>&- || { fail 'metrics proxy health check failed'; return 1; }
+        curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null 9>&- 8>&- 7>&- 6>&- || { fail 'VictoriaLogs query check failed'; return 1; }
         timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
-            -verify_ip 100.80.2.10 -verify_return_error </dev/null >"$work/tls-check" 2>&1 9>&- 8>&- 7>&- ||
+            -verify_ip 100.80.2.10 -verify_return_error </dev/null >"$work/tls-check" 2>&1 9>&- 8>&- 7>&- 6>&- ||
             { fail "syslog TLS check failed: $(tr '\n' ' ' <"$work/tls-check")"; return 1; }
         ;;
     esac
@@ -245,7 +260,7 @@ seed_create() {
     truncate -s 16M "$work/seed.img"
     mkfs.vfat -F 16 -n CVSEED "$work/seed.img" >/dev/null
     loop=$(losetup --find --show "$work/seed.img")
-    mount -t vfat -o nodev,nosuid,noexec,umask=077 "$loop" "$work/root" 9>&- 8>&- 7>&-
+    mount -t vfat -o nodev,nosuid,noexec,umask=077 "$loop" "$work/root" 9>&- 8>&- 7>&- 6>&-
     mounted=1
     openssl rand -hex 16 >"$state/seeds/$1.id"
     cp "$state/seeds/$1.id" "$work/root/seed-id"
@@ -396,7 +411,7 @@ EOF
     chmod 0700 "$work/wan-read/out"
     chmod 0711 "$work/wan-read"
     (cd "$work/wan-read" && setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
-        debugfs -R 'rdump /var/lib/iwd out' partition) >"$work/wan-debugfs" 2>&1 9>&- 8>&- 7>&-
+        debugfs -R 'rdump /var/lib/iwd out' partition) >"$work/wan-debugfs" 2>&1 9>&- 8>&- 7>&- 6>&-
     if [ -d "$work/wan-read/out/iwd" ] && [ ! -L "$work/wan-read/out/iwd" ]; then
         for file in "$work/wan-read/out/iwd/"* "$work/wan-read/out/iwd/".[!.]* "$work/wan-read/out/iwd/"..?*; do
             [ -f "$file" ] && [ ! -L "$file" ] || continue
@@ -421,7 +436,7 @@ wan_mount() {
     mkdir -p "$work/root"
     loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img")
     retry test -b "${loop}p2"
-    mount -t ext4 -o nodev,nosuid,noexec "${loop}p2" "$work/root" 9>&- 8>&- 7>&-
+    mount -t ext4 -o nodev,nosuid,noexec "${loop}p2" "$work/root" 9>&- 8>&- 7>&- 6>&-
     mounted=1
 }
 prune() {
@@ -467,7 +482,7 @@ replace() {
         ;;
     web|admin)
         ic file pull "$guest/usr/local/bin/browser-launch" "$work/browser-launch"
-        sh -n "$work/browser-launch" 9>&- 8>&- 7>&-
+        sh -n "$work/browser-launch" 9>&- 8>&- 7>&- 6>&-
         ;;
     esac
     case $guest in
@@ -488,7 +503,7 @@ commit_update() {
     prune "$guest"
 }
 good_slot() {
-    slot status >"$work/slot" 9>&- 8>&- 7>&-
+    slot status >"$work/slot" 9>&- 8>&- 7>&- 6>&-
     awk '$1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "highest" {h=$2}
         $1 == "slot" {release[$2]=$3; status[$2]=$4}
         END {exit !(r ~ /^[0-9]+$/ && r == g && r <= h && release[s] == r && status[s] == "good")}' "$work/slot" ||
@@ -498,7 +513,7 @@ good_slot() {
 init() {
     step=init
     [ ! -e "$state/initialized" ] || die 'already initialized'
-    rc-service incus status >/dev/null 9>&- 8>&- 7>&- || rc-service incus start 9>&- 8>&- 7>&-
+    rc-service incus status >/dev/null 9>&- 8>&- 7>&- 6>&- || rc-service incus start 9>&- 8>&- 7>&- 6>&-
     retry ic query /1.0 >/dev/null
     release=$(cd "$1" && pwd)
     for kind in fw wan svc browser; do
@@ -525,19 +540,19 @@ init() {
     ic admin init --preseed <"$lib/preseed.yaml"
     init_done preseed
     if [ ! -f "$state/init/server" ]; then
-        if ! rc-service incus stop 9>&- 8>&- 7>&-; then
+        if ! rc-service incus stop 9>&- 8>&- 7>&- 6>&-; then
             # Right after the preseed the power-off stop (SIGPWR, 40 s) can run out. No instance
             # exists yet, so a plain stop loses nothing.
             start-stop-daemon --stop --retry TERM/60/KILL/5 --pidfile /run/incus.pid || die 'incus did not stop'
-            rc-service incus zap 9>&- 8>&- 7>&-
+            rc-service incus zap 9>&- 8>&- 7>&- 6>&-
         fi
         install -m 600 "$tls/incus-server.key" /var/lib/incus/server.key
         install -m 644 "$tls/incus-server.crt" /var/lib/incus/server.crt
-        rc-service incus start 9>&- 8>&- 7>&-
+        rc-service incus start 9>&- 8>&- 7>&- 6>&-
         retry ic query /1.0 >/dev/null
         init_done server
     fi
-    sh "$lib/host-net" 9>&- 8>&- 7>&-
+    sh "$lib/host-net" 9>&- 8>&- 7>&- 6>&-
     trust=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
     ic config trust list --format json | jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
@@ -576,7 +591,7 @@ init() {
     mkdir -p /var/lib/convergent/syslog-ca /var/lib/syslog-ng
     ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
     install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0"
-    rc-service syslog-ng reload 9>&- 8>&- 7>&-
+    rc-service syslog-ng reload 9>&- 8>&- 7>&- 6>&-
     for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart=true; done
     sync
     touch "$state/initialized"
@@ -623,6 +638,7 @@ update() {
         ;;
     wan|svc)
         [ "$1" != wan ] || ic profile device set wan eth0 security.ipv4_filtering=false
+        [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || profile svc "$image_dir/incus.yaml"
         replace "$1"
         commit_update
         ;;
@@ -633,8 +649,81 @@ update() {
         replace "$1"
         commit_update
         ;;
-    *) die 'update accepts fw (the pair), wan, svc, web or admin' ;;
+    browser)
+        browser_pending=
+        # Browser sessions hold this lock through shutdown; new launches also need the guests lock.
+        exec 6>/run/convergent/browser-update.lock
+        if ! flock -n 6; then
+            echo 'guests: browser is running; browser update waits for a later guests apply'
+            browser_pending=1
+            exec 6>&-
+            return
+        fi
+        ic list --format json >"$work/browsers"
+        if jq -e '.[] | select(.status == "Running" and (.profiles | index("browser-base")))' "$work/browsers" >/dev/null; then
+            echo 'guests: browser is running; browser update waits for a later guests apply'
+            browser_pending=1
+            exec 6>&-
+            return
+        fi
+        for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
+        import_image browser
+        for node in web admin; do
+            jq -e --arg n "$node" '.[] | select(.name == $n)' "$work/browsers" >/dev/null || continue
+            if running "$node"; then
+                echo "guests: $node is running; browser update waits for a later guests apply"
+                browser_pending=1
+                continue
+            fi
+            replace "$node"
+            commit_update
+        done
+        exec 6>&-
+        ;;
+    *) die 'update accepts fw (the pair), wan, svc, browser, web or admin' ;;
     esac
+}
+apply() {
+    applying=1
+    update_status running
+    good_slot
+    [ -f "$state/initialized" ] || die 'init has not completed'
+    booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+    case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+    staged=/var/lib/convergent/guest-updates
+    [ ! -L "$staged" ] || die "$staged is a symlink"
+    [ -d "$staged" ] || return 0
+    [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
+    for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        [ ! -L "$entry" ] || die "$entry is a symlink"
+        # A newer release waits for its reboot; an older one is a fallback boot or superseded.
+        name=${entry##*/}
+        case $name in *[!0-9]*) ;; *) [ "$name" -le "$booted" ] || continue ;; esac
+        [ "$entry" = "$staged/$booted" ] || rm -rf "$entry"
+    done
+    staged=$staged/$booted
+    [ -d "$staged" ] || return 0
+    [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
+    [ -z "$(find "$staged" -type l -print)" ] || die "$staged contains symlinks"
+    installed=/var/lib/convergent/release-guests
+    [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
+    mkdir -p "$installed/guests"
+    for kind in svc wan fw browser; do
+        [ -d "$staged/$kind" ] || continue
+        echo "guests: applying $kind from release $booted"
+        update "$kind" "$staged/$kind"
+        [ "$kind" != browser ] || [ -z "$browser_pending" ] || continue
+        [ ! -L "$installed/guests/$kind" ] && [ ! -L "$installed/guests/$kind.old" ] || die 'installed guest is a symlink'
+        if [ -e "$installed/guests/$kind" ]; then
+            rm -rf "$installed/guests/$kind.old"
+            mv "$installed/guests/$kind" "$installed/guests/$kind.old"
+        fi
+        mv "$staged/$kind" "$installed/guests/$kind"
+        rm -rf "$installed/guests/$kind.old"
+        echo "guests: applied $kind from release $booted"
+    done
+    rmdir "$staged" 2>/dev/null || :
 }
 
 # Capture the command status before diagnostics or rollback can change it.
@@ -642,7 +731,7 @@ trap 'cleanup "$?"' 0
 trap 'die "received HUP"' HUP
 trap 'die "received INT"' INT
 trap 'die "received TERM"' TERM
-case ${1:-}:$# in init:2|update:3|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | status' ;; esac
+case ${1:-}:$# in init:2|update:3|apply:1|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | apply | status' ;; esac
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ "$1" = status ]; then
     step=status
@@ -654,9 +743,14 @@ mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
+if [ "$1" != apply ] && [ "${2:-}" != browser ]; then
+    exec 6>/run/convergent/browser-update.lock
+    flock -w 600 6 || die 'close browsers before updating guests'
+fi
 exec 8>/run/convergent/dns-push.lock
 flock -w 120 8 || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
 flock -w 60 7 || die 'a portal change is still running'
 work=$(mktemp -d "$state/work.XXXXXX")
-case $1 in init) init "$2" ;; update) update "$2" "$3" ;; esac
+case $1 in init) init "$2" ;; update) update "$2" "$3" ;; apply) apply ;;
+esac

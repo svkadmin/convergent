@@ -9,6 +9,7 @@
 #   build/test --guests <release> <guests-dir>
 #   build/test --guests-update <release> <guests-dir> <broken-svc-dir>
 set -eu
+umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
@@ -169,6 +170,50 @@ make_broken_svc() {
 	rm -rf "$BUILDER$work/broken-root"
 }
 
+test_guest_delivery() {
+	delivery=$BUILDER$work/delivery
+	mkdir -p "$delivery/build" "$delivery/keys" "$delivery/release"
+	cp "$here/guests" "$here/sign" "$here/build.conf" "$delivery/build/"
+	chmod 0755 "$delivery/build/sign"
+	# Test signing uses its own key; the build host's channel key may be offline.
+	sed -i "s|^keys=.*|keys=$delivery/keys|" "$delivery/build/guests"
+	sed -i "s|/etc/convergent/keys/|$delivery/keys/|g" "$delivery/build/sign"
+	openssl genpkey -algorithm ed25519 -out "$delivery/keys/$CHANNEL.key"
+	openssl pkey -in "$delivery/keys/$CHANNEL.key" -pubout -out "$delivery/keys/$CHANNEL.pub"
+	for f in manifest slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
+		cp --reflink=auto "$BUILDER/releases/$release/$f" "$delivery/release/"
+	done
+	# A release may already carry guests; start with just its host manifest entries.
+	sed -i '/^guest /d; / guests\//d' "$delivery/release/manifest"
+	sh "$delivery/build/guests" "$delivery/release" "$guests"
+	openssl pkeyutl -verify -pubin -inkey "$delivery/keys/$CHANNEL.pub" -rawin \
+		-in "$delivery/release/manifest" -sigfile "$delivery/release/manifest.sig" >/dev/null || die 'guest manifest signature failed'
+	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
+	for kind in fw wan svc browser; do
+		id=$(sha256sum <"$guests/$kind/SHA256SUMS" | cut -d' ' -f1)
+		grep -qx "guest $kind $id" "$delivery/release/manifest" || die "missing $kind identity"
+	done
+	awk '$1 == "size" && $2 ~ /^guests\// {print $2, $3}' "$delivery/release/manifest" |
+		while read -r path bytes; do
+			[ "$(stat -c %s "$delivery/release/$path")" = "$bytes" ] || die "wrong size for $path"
+		done
+	awk '$1 == "unpacked" {print $2, $3}' "$delivery/release/manifest" |
+		while read -r path bytes; do
+			[ ! -e "$delivery/release/$path" ] || die "raw transport image: $path"
+			zstd -q -d --long=27 "$delivery/release/$path.zst" -o "$delivery/release/$path"
+			[ "$(stat -c %s "$delivery/release/$path")" = "$bytes" ] || die "wrong unpacked size for $path"
+		done
+	for kind in fw wan svc browser; do
+		(cd "$delivery/release/guests/$kind" && sha256sum -c SHA256SUMS) || die "$kind round trip failed"
+	done
+	cmp "$guests/svc/incus.yaml" "$delivery/release/guests/svc/incus.yaml" || die 'svc profile differs'
+	for role in base web tmp portal admin; do
+		cmp "$guests/browser/incus/$role.yaml" "$delivery/release/guests/browser/incus/$role.yaml" || die "browser $role profile differs"
+	done
+	if sh "$delivery/build/guests" "$delivery/release" "$guests"; then die 'duplicate guest manifest accepted'; fi
+	rm -rf "$delivery"
+}
+
 inject_update() {
 	open_state rw
 	var="$state/var-$release"
@@ -304,6 +349,17 @@ curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null 
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || result=1
 timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
 	-verify_ip 100.80.2.10 -verify_return_error </dev/null >/var/log/guests-update-tls.log 2>&1 || result=1
+booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+staged=/var/lib/convergent/guest-updates/$booted
+installed=/var/lib/convergent/release-guests/guests/svc
+(umask 077; mkdir -p "$staged" "$installed"; cp -a "$release/guests/svc" "$staged/") || result=1
+echo old >"$installed/SHA256SUMS"
+updates=$(wc -l <"$state/updates")
+sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-apply.log || result=1
+[ "$(wc -l <"$state/updates")" -gt "$updates" ] || result=1
+grep -q '^+ ic rebuild candidate-svc svc$' /var/log/guests-update-apply.log || result=1
+cmp "$release/guests/svc/SHA256SUMS" "$installed/SHA256SUMS" || result=1
+[ ! -e "$staged" ] && [ "$(cat /run/convergent/status/guests-update)" = done ] || result=1
 /usr/local/sbin/guests status
 status=$?
 echo CV-UPDATE status "$status"
@@ -696,7 +752,10 @@ refused() {
 		grep -Eq 'verity:.*(data|metadata) block [0-9]+ is corrupted' "$log"
 }
 
-[ "$mode" != guests-update ] || make_broken_svc
+if [ "$mode" = guests-update ]; then
+	test_guest_delivery
+	make_broken_svc
+fi
 make_disk
 write_slot "$release" 2
 make_state

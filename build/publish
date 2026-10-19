@@ -1,9 +1,11 @@
 #!/bin/sh
 # publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
 # <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
-# free tier is 10 GB). Only the five files a laptop needs go up; the bucket is public.
+# free tier is 10 GB). Only the five host files and listed guests go up; the bucket is public.
 #   build/publish <release-dir>
 set -eu
+export LC_ALL=C
+umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
@@ -18,6 +20,11 @@ dir=$1
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest" 2>/dev/null) || :
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 files="slot.img convergent-$release-a.efi convergent-$release-b.efi manifest.sig manifest"
+guest_files=$(awk '$2 ~ /^guests\// {
+	if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
+}' "$dir/manifest") || die 'invalid guest path in manifest'
+files="$files $guest_files"
 for f in $files latest latest.sig; do
 	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
 done
@@ -47,8 +54,11 @@ case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket"
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
 total=$(printf '%s\n' "$objects" | awk '{ s += $1 } END { print s + 0 }')
 new=0
-for f in $files; do new=$((new + $(stat -c %s "$dir/$f"))); done
-[ "$(stat -c %s "$dir/slot.img")" -lt $((5 * 1024 * 1024 * 1024)) ] || die "slot.img is over R2's 5 GiB single upload"
+for f in $files; do
+	n=$(stat -c %s "$dir/$f")
+	[ "$n" -lt $((5 * 1024 * 1024 * 1024)) ] || die "$f is over R2's 5 GiB single upload"
+	new=$((new + n))
+done
 # Only a missing latest means none; any other failure stops here.
 latest=0
 if cur=$(s3 "$ep/$CHANNEL/latest" 2>&1); then

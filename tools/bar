@@ -186,6 +186,8 @@ while :; do
 		# First boot of a disk image: guests being created (convergent-setup).
 		setup=get(st "/setup")
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
+		guests=get(st "/guests-update")
+		if (guests == "running") block("GUESTS", orange); else if (guests == "failed") block("GUESTS failed", red)
 		rel="?"; n=split(get("/proc/cmdline"),words," ")
 		for (i=1;i<=n;i++) if (words[i] ~ /^convergent.release=/) {rel=words[i]; sub(/^[^=]*=/,"",rel)}
 		block("rel " rel " " bl,bl == "good" ? grey : red)
