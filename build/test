@@ -183,21 +183,21 @@ test_guest_delivery() {
 	for f in manifest slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
 		cp --reflink=auto "$BUILDER/releases/$release/$f" "$delivery/release/"
 	done
-	# A release may already carry guests; start with just its host manifest entries.
-	sed -i '/^guest /d; / guests\//d' "$delivery/release/manifest"
 	sh "$delivery/build/guests" "$delivery/release" "$guests"
 	openssl pkeyutl -verify -pubin -inkey "$delivery/keys/$CHANNEL.pub" -rawin \
-		-in "$delivery/release/manifest" -sigfile "$delivery/release/manifest.sig" >/dev/null || die 'guest manifest signature failed'
-	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
+		-in "$delivery/release/guests.manifest" -sigfile "$delivery/release/guests.manifest.sig" >/dev/null || die 'guest manifest signature failed'
+	# The host manifest stays as older releases and the installer parse it.
+	cmp "$BUILDER/releases/$release/manifest" "$delivery/release/manifest" || die 'guests changed the host manifest'
+	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
 	for kind in fw wan svc browser; do
 		id=$(sha256sum <"$guests/$kind/SHA256SUMS" | cut -d' ' -f1)
-		grep -qx "guest $kind $id" "$delivery/release/manifest" || die "missing $kind identity"
+		grep -qx "guest $kind $id" "$delivery/release/guests.manifest" || die "missing $kind identity"
 	done
-	awk '$1 == "size" && $2 ~ /^guests\// {print $2, $3}' "$delivery/release/manifest" |
+	awk '$1 == "size" && $2 ~ /^guests\// {print $2, $3}' "$delivery/release/guests.manifest" |
 		while read -r path bytes; do
 			[ "$(stat -c %s "$delivery/release/$path")" = "$bytes" ] || die "wrong size for $path"
 		done
-	awk '$1 == "unpacked" {print $2, $3}' "$delivery/release/manifest" |
+	awk '$1 == "unpacked" {print $2, $3}' "$delivery/release/guests.manifest" |
 		while read -r path bytes; do
 			[ ! -e "$delivery/release/$path" ] || die "raw transport image: $path"
 			zstd -q -d --long=27 "$delivery/release/$path.zst" -o "$delivery/release/$path"

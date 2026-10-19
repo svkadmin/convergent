@@ -175,9 +175,7 @@ write() {
 	for f in slot.img "convergent-$new-a.efi" "convergent-$new-b.efi"; do
 		grep -q "  $f\$" "$m" || die "the manifest does not list $f"
 	done
-	awk -v a="convergent-$new-a.efi" -v b="convergent-$new-b.efi" \
-		'length($1) == 64 && ($2 == "slot.img" || $2 == a || $2 == b) {print}' "$m" |
-		(cd "$dir" && sha256sum -c --quiet -) ||
+	grep -E '^[0-9a-f]{64}  ' "$m" | (cd "$dir" && sha256sum -c --quiet -) ||
 		die "the release does not match its manifest"
 
 	booted

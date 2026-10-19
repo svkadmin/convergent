@@ -1,8 +1,8 @@
 #!/bin/sh
 # sign: sign a release's manifest with the channel key (ARCHITECTURE section 6, step 7).
 #   build/sign <release-dir> [key]      key defaults to /etc/convergent/keys/<CHANNEL>.key
-# Writes manifest.sig, latest and latest.sig. An encrypted key (the offline stable key) asks for
-# its passphrase.
+# Writes manifest.sig, guests.manifest.sig when there are guests, latest and latest.sig. An
+# encrypted key (the offline stable key) asks for its passphrase.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -16,12 +16,16 @@ pub=/etc/convergent/keys/$CHANNEL.pub
 [ -f "$key" ] || die "no key $key"
 [ -f "$pub" ] || die "no public key $pub"
 # What the signature vouches for: the manifest and the files it lists.
-(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) || die "the release does not match its manifest"
+for f in manifest guests.manifest; do
+	[ -f "$dir/$f" ] || continue
+	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' "$f" | sha256sum -c --quiet -) || die "the release does not match its $f"
+done
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 # latest: what build/publish points the channel at; signed, so a mirror cannot pick the release.
 printf 'release %s\nsigned %s\n' "$release" "$(date -u +%s)" >"$dir/latest"
 # An encrypted key asks once per file; it is never written out decrypted.
-for f in manifest latest; do
+for f in manifest guests.manifest latest; do
+	[ -f "$dir/$f" ] || continue
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$dir/$f" -out "$dir/$f.sig.new" || die "signing $f failed"
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/$f" -sigfile "$dir/$f.sig.new" >/dev/null ||
 		die "the signature of $f does not verify with $pub"

@@ -241,7 +241,7 @@ from USB with `CONVERGENT_UNSIGNED=1`.
 `build/publish <release-dir>` uploads to the public R2 bucket named in
 `/etc/convergent/r2-<channel>.env` (mode 600: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY` of a token limited to the bucket, `R2_BUCKET`, `R2_PUBLIC_URL`, and
-`R2_ENDPOINT` for an EU bucket). Only the five host files and manifest-listed guest files go up,
+`R2_ENDPOINT` for an EU bucket). Only the five host files, `guests.manifest` and the guest files it lists go up,
 only with a valid signature, to `<channel>/<release>/`; then the signed `<channel>/latest` points
 at it (`build/sign` writes it). A
 mirror cannot forge the pointer, but can hold back newer releases by replaying an older signed one;

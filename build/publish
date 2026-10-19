@@ -1,7 +1,8 @@
 #!/bin/sh
 # publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
 # <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
-# free tier is 10 GB). Only the five host files and listed guests go up; the bucket is public.
+# free tier is 10 GB). Only the five host files go up, and guests.manifest with its signature and
+# the guest files it lists; the bucket is public.
 #   build/publish <release-dir>
 set -eu
 export LC_ALL=C
@@ -20,18 +21,25 @@ dir=$1
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest" 2>/dev/null) || :
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 files="slot.img convergent-$release-a.efi convergent-$release-b.efi manifest.sig manifest"
-guest_files=$(awk '$2 ~ /^guests\// {
-	if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
-	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
-}' "$dir/manifest") || die 'invalid guest path in manifest'
-files="$files $guest_files"
+[ -f "$pub" ] || die "no public key $pub"
+manifests=manifest
+if [ -f "$dir/guests.manifest" ]; then
+	manifests="manifest guests.manifest"
+	grep -qx "release $release" "$dir/guests.manifest" || die "guests.manifest is not for release $release"
+	guest_files=$(awk '$2 ~ /^guests\// {
+		if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+		if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
+	}' "$dir/guests.manifest") || die 'invalid guest path in guests.manifest'
+	files="$files guests.manifest.sig guests.manifest $guest_files"
+fi
 for f in $files latest latest.sig; do
 	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
 done
-[ -f "$pub" ] || die "no public key $pub"
-openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/manifest" -sigfile "$dir/manifest.sig" >/dev/null ||
-	die "the manifest is not signed with the $CHANNEL key"
-(cd "$dir" && grep -E '^[0-9a-f]{64}  ' manifest | sha256sum -c --quiet -) || die "the release does not match its manifest"
+for m in $manifests; do
+	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/$m" -sigfile "$dir/$m.sig" >/dev/null ||
+		die "$m is not signed with the $CHANNEL key"
+	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' "$m" | sha256sum -c --quiet -) || die "the release does not match its $m"
+done
 openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/latest" -sigfile "$dir/latest.sig" >/dev/null &&
 	grep -qx "release $release" "$dir/latest" || die "latest is not signed for release $release"
 
