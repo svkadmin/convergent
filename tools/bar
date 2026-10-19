@@ -48,9 +48,9 @@ poll_alerts() {
         select(.[0].data.alerts | type == "array") |
         select(.[1].data.groups | type == "array") |
         select(all(.[1].data.groups[].rules[]; .health == "ok")) |
-        [.[0].data.alerts[] | select(.state == "firing")] |
-        (map(select(.labels.severity == "critical")) | length) as $c |
-        if length == 0 then "0" else "\($c)c \(length - $c)w" end') || alerts='?'
+        [.[0].data.alerts[] | select(.state == "firing") | .labels.severity] |
+        "\(map(select(. == "critical")) | length) \(map(select(. == "warning")) | length) \(map(select(. != "critical" and . != "warning")) | length)"') ||
+        alerts='?'
     printf '%s\n' "$alerts" >"$work/.alerts" && mv "$work/.alerts" "$work/alerts"
 }
 
@@ -89,7 +89,7 @@ while :; do
 	# One formatter per frame; procfs/sysfs reads need no helper processes.
 	awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
-		-v master="$theme_master" -v backup="$theme_backup" -v warning="$theme_alert_warn" -v fg="$theme_text" \
+		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
 		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" '
 	function get(path, value) {
 		if ((getline value < path) <= 0) value=""
@@ -154,7 +154,10 @@ while :; do
 		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
 		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
 		close("/proc/meminfo")
-		block(sprintf("RAM %.1f/%.0fG SWP %.1f/%.0fG",(mem["MemTotal:"]-mem["MemAvailable:"])/1048576,
+		# The host and its programs: what the guests hold (check status, every minute) is left out.
+		used=mem["MemTotal:"]-mem["MemAvailable:"]; held=get(st "/guestmem")
+		if (held ~ /^[0-9]+$/) used=used>held+0 ? used-held : 0
+		block(sprintf("RAM %.1f/%.0fG SWP %.1f/%.0fG",used/1048576,
 			mem["MemTotal:"]/1048576,(mem["SwapTotal:"]-mem["SwapFree:"])/1048576,mem["SwapTotal:"]/1048576), "")
 		iface=get(work "/route"); tx=""; rx=""; rate="NET tx- rx- Mb/s"
 		if (iface ~ /^[[:alnum:]_.:-]+$/) {
@@ -173,13 +176,24 @@ while :; do
 		n=split(get(st "/topology"), fields," ")
 		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
 		browsers=topo["browsers"] ~ /^[0-9]+$/ ? topo["browsers"] : "?"
-		block(span("WAN",topo["wan"]) "--[" span("FW1",topo["fw1"]) " " span("FW2",topo["fw2"]) "]--" \
+		# The uplink first: a passed-through wired NIC, or the Wi-Fi network ("-" none, "?" no answer).
+		if (topo["uplink"] == "eth") uplink=span("ETH",topo["wan"])
+		else {
+			ssid=get(st "/wifi"); if (ssid == "") ssid="?"
+			if (length(ssid)>16) ssid=substr(ssid,1,14) ".."
+			uplink=span("WLAN:" ssid,ssid == "?" ? "" : ssid == "-" ? "down" : "up")
+		}
+		block(uplink "--" span("WAN",topo["wan"]) "--[" span("FW1",topo["fw1"]) " " span("FW2",topo["fw2"]) "]--" \
 			span(get("/proc/sys/kernel/hostname"),"up") "--" span("SVC",topo["svc"]) "--" \
 			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : ""), grey, "", 1)
+		rel="?"; n=split(get("/proc/cmdline"),words," ")
+		for (i=1;i<=n;i++) if (words[i] ~ /^convergent.release=/) {rel=words[i]; sub(/^[^=]*=/,"",rel)}
+		block("rel " rel " " bl,bl == "good" ? grey : red)
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
-		wifi=get(st "/wifi"); block("wifi " (wifi == "" ? "?" : wifi), "")
-		alerts=get(work "/alerts"); if (alerts == "") alerts="?"
-		block("alerts " alerts,alerts == "?" ? grey : alerts == "0" ? green : alerts+0>0 ? red : warning)
+		# Firing alerts as Archer counts them: critical, warning, info.
+		if (split(get(work "/alerts"),count," ") == 3)
+			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "", 1)
+		else block("? ? ?", grey)
 		portal=get(st "/portal")
 		# Shown only while on; "unknown" before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)
@@ -188,9 +202,6 @@ while :; do
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
 		guests=get(st "/guests-update")
 		if (guests == "running") block("GUESTS", orange); else if (guests == "failed") block("GUESTS failed", red)
-		rel="?"; n=split(get("/proc/cmdline"),words," ")
-		for (i=1;i<=n;i++) if (words[i] ~ /^convergent.release=/) {rel=words[i]; sub(/^[^=]*=/,"",rel)}
-		block("rel " rel " " bl,bl == "good" ? grey : red)
 		layout=get(work "/layout"); block(layout == "" ? "?" : layout, "")
 		days=int(uptime[1]/86400)
 		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")

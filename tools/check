@@ -53,28 +53,41 @@ if [ "${1:-}:$#" = status:1 ]; then
                 section == "links" && /[<,]UP[,>]/ && /[<,]LOWER_UP[,>]/ {
                     name=$2; sub(/:$/, "", name); sub(/@.*/, "", name); link[name]=1
                 }
-                END {for (name in route) if (name != "eth0" && address[name] && link[name]) up=1
-                    print up ? "up" : "nolink"}' >"$status/.wan"
-        else echo nolink >"$status/.wan"; fi
+                END {for (name in route) if (name != "eth0" && address[name] && link[name]) {up=1; dev=name}
+                    # The uplink kind for the bar: a Wi-Fi radio or a passed-through wired NIC.
+                    print up ? "up " (dev ~ /^wl/ ? "wlan" : "eth") : "nolink -"}' >"$status/.wan"
+        else echo nolink - >"$status/.wan"; fi
     ) &
     if wifi=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config wan wifi status 9>&- 2>/dev/null); then
         printf '%s\n' "$wifi" | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
     else wifi=; echo '?' >"$status/.wifi"; fi
+    # What the guests hold, which the bar leaves out of the host's use: container cgroups, and VM
+    # processes outside them.
+    kib=0
+    for f in /sys/fs/cgroup/lxc.payload.*/memory.current; do
+        [ -r "$f" ] && read -r bytes <"$f" && kib=$((kib + bytes / 1024))
+    done
+    for pid in $(pgrep -x qemu-system-x86 2>/dev/null); do
+        grep -q lxc.payload "/proc/$pid/cgroup" 2>/dev/null && continue
+        rss=$(awk '$1 == "VmRSS:" {print $2}' "/proc/$pid/status" 2>/dev/null) && kib=$((kib + ${rss:-0}))
+    done
+    echo "$kib" >"$status/.guestmem"
     wait
     # A failed inventory must age out, rather than publish false down states.
     if [ -s "$status/.running" ]; then
         read -r wan fw1 fw2 svc browsers <"$status/.running"
         if [ "$wan" = true ]; then
-            read -r wan <"$status/.wan"
-        else wan=down; fi
+            read -r wan uplink <"$status/.wan"
+        else wan=down uplink=-; fi
         if [ "$fw1" = true ]; then read -r fw1 <"$status/.fw1"; else fw1=down; fi
         if [ "$fw2" = true ]; then read -r fw2 <"$status/.fw2"; else fw2=down; fi
         if [ "$svc" = true ]; then svc=up; else svc=down; fi
-        printf 'wan=%s fw1=%s fw2=%s svc=%s browsers=%s\n' "$wan" "$fw1" "$fw2" "$svc" "$browsers" >"$status/.topology"
+        printf 'uplink=%s wan=%s fw1=%s fw2=%s svc=%s browsers=%s\n' "$uplink" "$wan" "$fw1" "$fw2" "$svc" "$browsers" >"$status/.topology"
         chmod 644 "$status/.topology" && mv "$status/.topology" "$status/topology" || exit 1
     fi
-    chmod 644 "$status/.wifi" "$status/.portal" &&
-        mv "$status/.wifi" "$status/wifi" && mv "$status/.portal" "$status/portal"
+    chmod 644 "$status/.wifi" "$status/.portal" "$status/.guestmem" &&
+        mv "$status/.wifi" "$status/wifi" && mv "$status/.portal" "$status/portal" &&
+        mv "$status/.guestmem" "$status/guestmem"
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac

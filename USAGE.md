@@ -226,27 +226,28 @@ separators:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx0.8 rx12.4 Mb/s
-WAN--[FW1 FW2]--laptop--SVC--BR:2 | NL | wifi home | alerts 0 | PORTAL
-rel 202610170000 good | US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
+WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 202610170000 good | NL | 0 1 0 | PORTAL
+US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 ```
 
 | Block | Shows | Look or fix with |
 |---|---|---|
 | `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | `sys power status` lists every sensor |
-| `RAM`, `SWP` | used/total GiB | |
+| `RAM`, `SWP` | used/total GiB; RAM counts the host and its programs, not what the guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
-| Topology | wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
+| Topology | the uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
+| `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
-| `wifi` | network name, `-` if none, `?` if wan does not answer; every minute | `sys wifi status` |
-| `alerts` | `0` (green), `1c 2w` (critical, warning; red with any critical, yellow otherwise), `?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
+| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
-| `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
 | `BAT` | capacity, `+` charging or `-` discharging; orange below 30 %, red below 15 % discharging; `AC` without a battery | `sys power status` |
 
-Topology: `WAN` green when Wi-Fi is connected, orange without a network, red when wan is down.
+Topology: the uplink first, `WLAN:<network>` (green connected, red with no network, grey when wan
+does not answer; names over 16 characters are cut) or `ETH` for a passed-through wired NIC. `WAN`
+green with an uplink, orange without one, red when wan is down.
 Each firewall is bold bright green as CARP master, dim green as standby, orange when its CARP
 interfaces disagree, red when down. `SVC` green or red; the host name green; `BR:n` counts running
 browser containers (grey at zero). Cron refreshes it every minute; older than three minutes, it
