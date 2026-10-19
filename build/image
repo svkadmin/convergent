@@ -169,7 +169,8 @@ done
 )
 
 chroot_mount
-trap chroot_umount EXIT
+profiles=
+trap '[ -z "$profiles" ] || rm -rf "$BUILDER$profiles"; chroot_umount' EXIT
 bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
 
 # C.UTF-8 (foot and other programs need a UTF-8 locale; the image has no locale-gen) and LANG
@@ -266,10 +267,18 @@ for slot in a b; do
 			"$root/usr/lib/os-release"
 		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\n' "$release"
 	} >"$out/os-release-$slot"
+	profiles=$(bld mktemp -d /tmp/convergent-profile.XXXXXX)
+	sed 's/ init=/ convergent.recovery=1 init=/' "$out/cmdline-$slot" >"$BUILDER$profiles/cmdline"
+	bld ukify build --profile 'ID=recovery
+TITLE=Recovery' --cmdline "@$profiles/cmdline" --os-release '' --output "$profiles/p1.efi" >/dev/null
+	# ukify supplies profile 0 here; joining a p0 fragment would add a third profile.
 	bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" \
 		--initrd "$rel/initramfs.img" --cmdline "@$rel/cmdline-$slot" \
 		--os-release "@$rel/os-release-$slot" --uname "$kver" \
+		--profile 'ID=main' --join-profile "$profiles/p1.efi" \
 		--output "$rel/convergent-$release-$slot.efi" >/dev/null
+	rm -rf "$BUILDER$profiles"
+	profiles=
 	# Kept: build/test makes its UKIs with the same metadata.
 done
 

@@ -73,8 +73,8 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; every NVIDIA function bound to vfio-pci before any driver probes it and left powered down; the Wi-Fi function must sit alone in its IOMMU group, with no ACS override |
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
 | Audit | auditd with immutable rules for identity files, the guests' SSH keys, the accepted check baseline, the DNS files, authentication, privilege changes, boot files, keys, module loading, policy changes and commands run as root; records forwarded to svc |
-| Accounts | root locked; the owner in `wheel`, `seat`, `audio` and `video` only; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt; faillock after 5 failures for 15 minutes; restrictive umask |
-| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one unified kernel image (UKI) per slot. *(Planned:* signing with the owner's key, a recovery UKI*)* |
+| Accounts | root locked; the owner in `wheel`, `seat`, `audio` and `video` only; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt (SHA-512 crypt for an initramfs recovery reset); faillock after 5 failures for 15 minutes; restrictive umask |
+| Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles. *(Planned:* signing with the owner's key*)* |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the UKI command line; the root hash will be covered by the Secure Boot signature *(planned)* |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
 | Memory | No disk swap; zram swap of 32 GiB (a ceiling, not a reservation; its index costs about 128 MiB), zswap off *(planned)* |
@@ -275,7 +275,7 @@ router; the firewalls are.
 
 | Partition | Content |
 |---|---|
-| ESP | systemd-boot, the UKIs of both slots, the recovery UKI *(planned)* |
+| ESP | systemd-boot, one UKI per slot with normal and recovery profiles |
 | slot A, slot B | EROFS images with their dm-verity hash trees |
 | state | LUKS2 (Argon2id), Btrfs: `/var` (with a snapshot per slot generation), `/home`, `/etc` entries, the Incus pool |
 
@@ -286,7 +286,9 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
 ### 5.2 Boot
 
 1. Firmware verifies systemd-boot with the owner's key *(planned)*.
-2. systemd-boot picks the slot (section 7.3) and starts its UKI.
+2. systemd-boot picks the slot (section 7.3) and starts profile 0 of its UKI. Each UKI also has
+   profile 1, `ID=recovery`, `TITLE=Recovery`, selectable in the menu with the same kernel,
+   initramfs and verity root. Its command line adds only `convergent.recovery=1` before `init=`.
 3. The kernel creates the dm-verity device for the slot from the UKI command line.
 4. The initramfs mounts the verity device read-only as the new root. It refuses to boot while more
    than one disk has a `cv-state` partition, asks for the LUKS passphrase and opens the state
@@ -301,6 +303,31 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
    sequence needs a name before the firewalls' resolvers answer.
 
 Verity checks every block when it is read: a tampered block fails to read, at boot or later.
+
+With the recovery flag, after LUKS unlock and the state mount, the initramfs offers a console
+menu before binding `/etc` or switching root: root shell (exit returns), owner password reset,
+continue, reboot, power off. It shows the release, slot and read-write state path `/run/cv-state`.
+The reset finds uid 1000 in the state's passwd, hashes two matching password entries with
+`openssl passwd -6`, and atomically replaces the owner's shadow field with root:shadow 0640.
+The watchdog is armed after leaving recovery. No network or daemon is started; `rd.shell=0`,
+`rd.emergency=poweroff`, lockdown, verity and the disabled boot editor stay in force.
+
+The normal title is unchanged, e.g. `Gentoo Linux <release> (slot a)`; recovery appends
+`(Recovery)`. Entry IDs are `convergent-<release>-a.efi` and
+`convergent-<release>-a.efi@recovery`, with boot counters stripped from both IDs.
+In systemd-boot 260.1, entries sort by descending IMAGE_VERSION and filename, then profiles
+retain their discovery order (0 first) in its stable sort. Thus `default convergent-*` still
+selects the newest non-exhausted UKI's normal profile. Both profiles use the same counted
+file, e.g. `convergent-<release>-a+3.efi`: entering recovery on an unblessed release consumes
+one try. Continuing runs the usual health checks; `slot bless` renames that shared file to
+`convergent-<release>-a.efi`, blessing both profiles.
+
+Ukify 260 creates profile 0 in the final build (`--profile 'ID=main'`); only the recovery
+fragment is joined. Joining separate p0 and p1 fragments would add a third profile because
+ukify automatically supplies a base profile. Fragments live in a temporary directory and are
+removed: release files, manifest entries and installed UKI names stay the same. Kernel and
+initrd occur once; the profiles add only metadata and the recovery command line. The
+installer's ESP check uses the actual UKI size, including these sections.
 
 ### 5.3 What is writable
 
@@ -437,9 +464,9 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 - **Backups:** from the menu, an export of `/home`, the writable `/etc` entries, the owner's
   guests and the custom volumes to LUKS-encrypted external media. Not in it: the infrastructure
   instances and `/var/lib/convergent`.
-- **Recovery:** RECOVERY.md, numbered recipes for the failures known so far; each failure found on
-  the laptop adds one. *(Planned:* the recovery UKI, restoring a guest snapshot, a restore tool
-  for the backups.*)*
+- **Recovery:** each slot UKI's recovery profile (section 5.2), plus RECOVERY.md's numbered recipes
+  for the failures known so far; each failure found on the laptop adds one. *(Planned:* restoring
+  a guest snapshot, a restore tool for the backups.*)*
 
 ---
 

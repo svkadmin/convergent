@@ -70,16 +70,20 @@ grow_state || warn "state: could not grow the state volume; it keeps its size"
 pass=''
 
 # Arm without magic close; a hang must reset the board.
-if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
-	# TCO watchdog: LPC or SMBus, depending on chipset.
-	modprobe -q lpc_ich
-	modprobe -q i2c_i801
-	if modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ]; then
-		printf '.' >/dev/watchdog
-	else
-		warn "state: no hardware watchdog; a hang needs a manual reset"
+arm_watchdog() {
+	if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
+		# TCO watchdog: LPC or SMBus, depending on chipset.
+		modprobe -q lpc_ich
+		modprobe -q i2c_i801
+		if modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ]; then
+			printf '.' >/dev/watchdog
+		else
+			warn "state: no hardware watchdog; a hang needs a manual reset"
+		fi
 	fi
-fi
+}
+recovery=$(getarg convergent.recovery=) || recovery=
+[ "$recovery" = 1 ] || arm_watchdog
 
 mkdir -p "$state"
 mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
@@ -87,6 +91,14 @@ mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
 # A no-op at full size; finishes a grow that stopped after the partition or LUKS step.
 btrfs -q filesystem resize max "$state" >/dev/null ||
 	warn "state: Btrfs did not grow; run btrfs filesystem resize max /var"
+
+# Replace shadow before binding it, and leave the watchdog idle while the owner works.
+if [ "$recovery" = 1 ]; then
+	slot=$(getarg dm-mod.waitfor=)
+	sh /sbin/convergent-recovery "$release" "${slot#PARTLABEL=cv-slot-}" "$state" ||
+		die "state: recovery stopped"
+	arm_watchdog
+fi
 
 # Prepare this release's /var atomically from the good release.
 if [ ! -d "$state/var-$release" ]; then

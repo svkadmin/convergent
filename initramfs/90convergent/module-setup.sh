@@ -15,6 +15,7 @@ installkernel() {
 }
 
 install() {
-	inst_multiple cryptsetup btrfs mount umount mkdir cp cat mv sync modprobe stty tr readlink awk sgdisk partx blockdev blkid wc sleep chown chmod
+	inst_multiple cryptsetup btrfs mount umount mkdir cp cat mv sync modprobe stty tr readlink awk sgdisk partx blockdev blkid wc sleep chown chmod openssl mktemp rm reboot poweroff
+	inst_simple "$moddir/convergent-recovery.sh" /sbin/convergent-recovery
 	inst_hook pre-pivot 50 "$moddir/convergent-state.sh"
 }
