@@ -80,8 +80,8 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Memory | No disk swap configured; zram and disabling zswap are planned, with no setup in this tree |
 | Seat and session | seatd; greetd with tuigreet on tty1 (user name typed every time); Sway, foot, bemenu, mako, swaylock, swayidle; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
-| Devices | USBGuard, default deny, including devices present at boot; an allow-list for the internal keyboard, touchpad and the owner's devices, changed only by root from the menu, plus a recovery-stick entry. Thunderbolt PCIe tunnels need approval from the menu where the firmware asks; DisplayPort over USB-C works without approval. Bluetooth off; switched on from the menu |
-| Power | Never suspends. CPU energy preference and a clock cap (`cpu_cap_khz`, 4.2 GHz by default) set per power source by a small handler on AC events; runtime power management for the NVIDIA GPU and audio functions; thermal control left to the firmware; a known-noisy ACPI event masked, never the embedded controller's *(planned)* |
+| Devices | USBGuard, default deny; `sys usb enrol` reviews each generated per-device rule before replacing the current policy, `review` lists named rules and live decisions, `revoke` removes an allowance and denies that device even against overlapping rules. Existing `allow` remains. Policy changes use USBGuard IPC because the rules file is state-bound; enrol/revoke restart the daemon to apply policy to present devices. Thunderbolt PCIe tunnels still require separate approval where firmware asks. Bluetooth off; switched on from the menu. Camera drivers gated by modprobe install rules and an explicit persistent owner choice, off by default |
+| Power | Never suspends. CPU energy preference and a clock cap (`cpu_cap_khz`, 4.2 GHz by default) set at boot and per power source on AC events; runtime power management for NVIDIA GPU/audio. Optional battery charge end/start thresholds (off by default: 100/95), and firmware `platform_profile` selection (quiet/balanced/performance only if offered). Firmware retains fan control. A known-noisy ACPI event masked, never the embedded controller's *(planned)* |
 | Host firewall | nftables: input accepted only on the `host` interface and only from the listed sources (section 4.2); forwarding off |
 | Logs | syslog-ng, forwarded to svc over TLS; a bounded local buffer for when svc is down |
 | Crashes | Kernel crash records from pstore archived at boot by `facts`, run from cron, and reported to svc |
@@ -561,7 +561,31 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 How the owner uses it is in USAGE.md. The design points:
 
 - **Status bar:** the path (wan, which firewall is active, svc), alert counts or "unknown", the
-  release state, the idle-lock state, and the usual system figures.
+  release state, the idle-lock state, applied CPU power profile, camera enabled/remaining driver
+  warning, and the usual system figures. Camera indication is availability, not recording.
+- **Displays:** `sys display save` stores JSON under `~/.config/convergent/displays`, keyed by
+  a hash of sorted make/model/serial triples for all connected outputs, including disabled ones.
+  Duplicate identities are refused. A Sway output/tick subscriber applies profiles at login and
+  on hotplug, mapping identities to current connectors; layout-only events do not reapply them.
+  Unknown sets enable preferred modes with laptop scale 1.2, external scale 1. `set` previews for
+  15 seconds; a separate rollback worker and exit traps restore the previous layout unless the
+  owner types `yes`. A session lock serializes hotplug, saves and previews. If original screens
+  disappear during rollback, remaining screens are enabled as a fallback. Profiles are data,
+  never sourced as shell or Sway configuration. Saving retires the old connector-based file.
+- **Power and camera state:** root writes choices under `/var/lib/convergent/power` and
+  `/var/lib/convergent/devices/camera`; these follow the existing per-release `/var` snapshot.
+  The boot/AC handler serializes updates, publishes the successfully applied CPU profile under
+  `/run`, and restores optional charge/thermal choices. Charge start is five percentage points
+  below end, with write order preserving a valid pair; absent sysfs controls are skipped.
+  Dell's separate `charge_types` control selects Custom for a limit and Standard for off when
+  present; writing thresholds alone does not activate them. Sysfs values are read back after writes.
+  It also retries camera probing once after state is mounted. The video core and retained camera
+  controllers have modprobe install gates that deny loading unless the choice is `on`.
+  `on` loads UVC and matching Intel PCI camera drivers immediately; `off` denies new loads before
+  trying to unload existing drivers, without force. Busy drivers cause an error and `CAM!`.
+  USBGuard approval is independent. Camera drivers must remain modules in the laptop kernel;
+  verify this and the actual camera/controller IDs on the laptop. Meeting compartments and
+  screen sharing remain deferred.
 - **Locking:** after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes;
   the idle lock can be paused from the bar. Never suspends.
 - **Menu (`sys`):** `sys AREA [ACTION] [ARGS]`; each area's first action is its default.
@@ -571,7 +595,7 @@ How the owner uses it is in USAGE.md. The design points:
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.
 - *(Planned:* guest and firewall actions in the menu, printing (off by default; IPP printers on
-  the upstream network for the web browsers), display profiles, clipboard clearing.*)*
+  the upstream network for the web browsers), clipboard clearing.*)*
 
 ---
 
@@ -685,7 +709,8 @@ measured from this checkout.
 Convergent writes as little as it can:
 
 - **No daemons of our own.** Each piece is a short script started by OpenRC, cron, acpid or the
-  owner, and exits when done; the bar and the watchdog feeder are the long-running exceptions.
+  owner, and exits when done; the bar, watchdog feeder and Sway display-event subscriber are
+  the long-running exceptions.
 - **Existing tools first.** What an exporter, Incus, OpenRC or a base-system tool already does is
   not written again.
 - **POSIX shell** where it suffices; nothing that needs a runtime of its own.
@@ -709,7 +734,7 @@ Convergent writes as little as it can:
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
 | `portal`, `devices`, `backup` | from the menu | Captive-portal mode; USB and Thunderbolt approval; the backup (section 7.4) |
 | `account` | by hand; from the menu (`sys security password`) | Changes a login password on the state volume and rebinds `/etc/shadow` |
-| `power` | at boot; acpid, on AC events | Sets the CPU energy preference and clock cap |
+| `power` | at boot; acpid, on AC events; sys actions | Sets CPU preference/cap, publishes profile, restores optional battery/thermal settings and camera choice |
 | `fw-facts` | cron on each firewall | Writes CARP, pf and unbound state for node_exporter |
 
 ---

@@ -2,25 +2,36 @@ title=Power
 actions='status	Show power profile, battery and temperatures	
 ac	Use the AC power profile	root
 battery	Use the battery power profile	root
+charge	Set battery charge limit off or 55-100 percent	root
+thermal	Set firmware fan profile quiet|balanced|performance	root
 lock	Lock the sway session	
 logout	Log out of sway	confirm
 reboot	Reboot the host	root confirm
 off	Power off the host	root confirm'
 
 power_state() {
+	printf 'Profile: %s\n' "$(cached /run/convergent-power.profile)"
 	printf 'CPU governor: %s\n' "$(cached /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
 }
 power_status() {
 	noargs "$@"
 	power_state
 	preference=$(cached /sys/devices/system/cpu/cpu0/cpufreq/energy_performance_preference)
-	case $preference in balance_performance) profile=ac ;; power) profile=battery ;; *) profile=unknown ;; esac
-	printf 'Profile: %s (energy preference: %s)\n' "$profile" "$preference"
+	printf 'Energy preference: %s\n' "$preference"
+	printf 'Thermal: %s\n' "$(cached /sys/firmware/acpi/platform_profile)"
+	printf 'Thermal choices: %s\n' "$(cached /sys/firmware/acpi/platform_profile_choices)"
+	limit=off
+	[ ! -r /var/lib/convergent/power/charge ] || IFS= read -r limit </var/lib/convergent/power/charge
+	printf 'Charge limit choice: %s (off = full charge)\n' "$limit"
 	battery=0
 	for d in /sys/class/power_supply/*; do
 		[ -r "$d/type" ] && [ "$(cat "$d/type")" = Battery ] || continue
 		battery=1
 		printf '%s: %s%%, %s\n' "${d##*/}" "$(cached "$d/capacity")" "$(cached "$d/status")"
+		if [ -r "$d/charge_control_end_threshold" ]; then
+			printf '  Charge start/end: %s/%s%%\n' "$(cached "$d/charge_control_start_threshold")" "$(cached "$d/charge_control_end_threshold")"
+			[ ! -r "$d/charge_types" ] || printf '  Charge modes: %s\n' "$(cached "$d/charge_types")"
+		else echo '  Charge thresholds unsupported'; fi
 	done
 	[ "$battery" = 1 ] || echo 'No battery'
 	# Every sensor but the per-core ones (the package covers them); the bar's second number is the hottest.
@@ -34,6 +45,16 @@ power_status() {
 }
 power_ac() { noargs "$@"; run sudo /usr/local/sbin/power ac; }
 power_battery() { noargs "$@"; run sudo /usr/local/sbin/power battery; }
+power_charge() {
+	onearg 'Charge limit (off or 55-100)' "$@"; text_valid "$answer"
+	case $answer in off) ;; *) number "$answer"; [ "$answer" -ge 55 ] && [ "$answer" -le 100 ] || die 'use off or 55-100' ;; esac
+	run sudo /usr/local/sbin/power charge "$answer"
+}
+power_thermal() {
+	onearg 'Thermal profile (quiet/balanced/performance)' "$@"; text_valid "$answer"
+	case $answer in quiet|balanced|performance) ;; *) die 'use quiet, balanced or performance' ;; esac
+	run sudo /usr/local/sbin/power thermal "$answer"
+}
 power_lock() { noargs "$@"; sway; run swaylock -f; }
 power_logout() { noargs "$@"; sway; run swaymsg exit; }
 power_reboot() { noargs "$@"; run sudo reboot; }

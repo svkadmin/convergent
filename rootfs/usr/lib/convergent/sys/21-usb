@@ -1,9 +1,19 @@
 title=USB
 actions='status	List blocked USB and Thunderbolt devices	root
-allow	Allow USB number or Thunderbolt ID	root'
+allow	Allow USB number or Thunderbolt ID	root
+enrol	Review attached USB devices and replace the policy	root
+review	Show USB policy and allowed/blocked devices with names	root
+revoke	Remove an allowed USB rule by rule number	root'
 
 usb_state() { echo 'USB / Thunderbolt'; }
 usb_status() { noargs "$@"; page run sudo /usr/local/sbin/devices list; }
+usb_enrol() { noargs "$@"; run sudo /usr/local/sbin/devices enrol; }
+usb_review() { noargs "$@"; page run sudo /usr/local/sbin/devices review; }
+usb_revoke() {
+	onearg 'USB rule number (sys usb review)' "$@"
+	text_valid "$answer"; number "$answer"
+	run sudo /usr/local/sbin/devices revoke "$answer"
+}
 usb_allow() {
 	onearg 'USB number or Thunderbolt ID' "$@"
 	text_valid "$answer"

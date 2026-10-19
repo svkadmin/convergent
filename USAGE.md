@@ -54,6 +54,10 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 | Volume, mute and mic-mute keys | `wpctl` on PipeWire |
 | Brightness keys | `sys display bright -5` / `+5` (5 % steps) |
 
+Use Super+a for `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
+During a display preview, type `yes` then Enter within 15 seconds to keep it; any other answer,
+Escape then Enter, or no answer restores the previous layout. Dock/undock needs no key.
+
 ## The sys tool
 
 Use `sys AREA [ACTION] [ARGS]`; the first action in each row is the default. An unrecognized
@@ -71,24 +75,33 @@ Super+a runs one action by name.
 | `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
 | `portal` | `status`, `on`, `off` |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair MAC`, `connect MAC`, `disconnect MAC`, `forget MAC` * |
-| `usb` | `status`, `allow N\|ID` * |
+| `usb` | `status`, `allow N\|ID` *, `enrol` *, `review`, `revoke RULE` * |
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `micmute` |
-| `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]`, `save`, `reset` * |
+| `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]` (15-second preview), `save`, `reset` *, `watch` (session hook) |
+| `camera` | `status`, `on`, `off` |
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures`) |
 | `browser` (`br`) | `status`, `web`, `tmp`, `admin`, `portal` |
 | `security` (`sec`) | `status`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
-| `power` | `status`, `ac`, `battery`, `lock`, `logout` *, `reboot` *, `off` * |
+| `power` | `status`, `ac`, `battery`, `charge off\|55-100`, `thermal quiet\|balanced\|performance`, `lock`, `logout` *, `reboot` *, `off` * |
 | `backup` | `run [MOUNTPOINT PROJECT]` |
 | `logs` | `host` (`/var/log/messages`), `services` (`rc-status -a`) |
 | `selftest` | `run` |
 
 Not built in `sys`: owner guest management, firewall failover and printing.
 
-Screen too big: `sys display set eDP-1 scale 1.2`, then `sys display save` (every login). Release
-default: `display_scale` in config.yaml ([README, Build](README.md#build-a-release)).
+Screen too big: `sys display set eDP-1 scale 1.2`, confirm with `yes`, then `sys display save`.
+Save once docked and once undocked. Profiles use the connected set of monitor make/model/serial
+identities, including disabled panels; connector names and connection order can change.
+The session applies the matching profile at login and whenever the connected set changes.
+Unrecognised sets enable connected screens at their preferred modes (laptop panel scale 1.2,
+external scale 1). Identical identities cannot be saved unambiguously; `save` refuses them.
+`reset` removes only the current set's saved profile; it leaves the live layout alone.
+Profiles live in `~/.config/convergent/displays/`; saving retires the old
+`~/.config/sway/config.d/outputs` file. The `display_scale` build setting still sets the initial
+Sway scale before the profile hook runs.
 
 ## Browsers
 
@@ -148,10 +161,18 @@ sudo portal status             # wan, fw1, fw2; verdict on, off, mixed or unknow
 
 ## Devices
 
-USBGuard blocks every device not in the allow-list. A disk image starts with a policy by class
-(input, storage, hubs); replace it with a per-device one after the first boot (README, First boot
-step 4; there is no `sys` action for it). `sys usb status` shows the blocked USB and
-unauthorized Thunderbolt devices; `sys usb allow N|ID` allows a USB number or Thunderbolt ID.
+USBGuard denies devices without an allowance. Attach only trusted devices and run `sys usb enrol`:
+review each named device (including hubs), type `yes` for each one you trust, then confirm the
+complete replacement. Nothing is saved until that final confirmation. This replaces the existing
+policy, including a block-all list or the older installer's input/storage/hub class policy.
+Devices you decline remain blocked; there is no blanket approval of attached devices.
+`sys usb review` shows saved allow/block rules with names, including unplugged devices, and the
+current attached-device decisions. `sys usb revoke RULE` takes an allowed **rule number** from
+that review, removes it and adds a device-specific deny against overlapping old allowances.
+Enrol first if the only existing allowance is a broad class rule. Enrol and revoke restart
+USBGuard to apply the policy now; revoking an input device or storage can disconnect it.
+`sys usb status` shows blocked USB and unauthorized Thunderbolt devices;
+`sys usb allow N|ID` still takes an attached USB **device number** or Thunderbolt ID.
 `sys bluetooth` shows power and known devices. By hand:
 
 ```sh
@@ -161,6 +182,15 @@ sudo devices allow tb <id>     # Thunderbolt PCIe tunnel, until unplugged
 ```
 
 Both ask you to type `yes`. USB approvals are written to `/etc/usbguard/rules.conf`.
+
+The camera starts disabled. `sys camera on` saves the choice and loads the camera driver now;
+`sys camera off` saves disabled first, then unloads it. If an application holds the driver,
+close it and retry `off`; unloading is never forced. `sys camera status` shows both the saved
+choice and whether the video core is loaded. `CAM` in the bar means enabled (not necessarily
+recording); `CAM!` means a video driver remains loaded despite the disabled choice.
+The choice survives reboot in `/var/lib/convergent/devices/camera`, following the release's
+state snapshot on update/rollback. USB cameras also need their own USBGuard allowance.
+Meeting compartments and screen sharing are not part of this release.
 
 ## DNS: blocklist and own records
 
@@ -230,7 +260,7 @@ separators:
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
 WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 202610170000 good | NL | 0 1 0 | PORTAL
-US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
+US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 ```
 
 | Block | Shows | Look or fix with |
@@ -243,6 +273,8 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
+| `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
+| `PWR` | last successfully applied CPU profile: `ac` or `battery`; `?` if unavailable or failed | `sys power status` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
@@ -282,4 +314,16 @@ An interrupted browser update blocks launches until the guest update is retried.
   `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
   `sys power battery` (`sudo power [ac|battery]`).
   Repeated events with no setting changes are silent; changes and failures are logged.
+  The bar shows the applied profile, including a manual override until the next plug event.
+  AC uses `balance_performance`, battery uses `power`; both keep the configured clock cap.
+- `sys power charge 80` stops charging at 80 %, with a start threshold of 75 % where supported.
+  Valid limits are 55-100. `sys power charge off` (the default) allows full charging: end 100 %,
+  start 95 %. Where Dell exposes `charge_types`, a limit selects Custom mode and off selects
+  Standard mode. This does not discharge a battery already above the limit.
+- `sys power thermal quiet|balanced|performance` selects a profile offered by the firmware;
+  firmware still controls fan speeds. No thermal override is applied until one is selected.
+  Charge and thermal choices persist in `/var/lib/convergent/power/`, are restored at boot and
+  AC events, and follow the release's state snapshot on update/rollback. Missing sysfs controls
+  are optional: actions report unsupported, and other power controls continue to work.
+  `sys power status` shows the actual thresholds, thermal profile and available choices.
   The resource review and unimplemented tuning proposals are in ARCHITECTURE section 11.

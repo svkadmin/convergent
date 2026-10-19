@@ -1,0 +1,15 @@
+title=Camera
+actions='status	Show camera choice and loaded drivers
+on	Enable camera persistently and load its driver	root
+off	Disable camera persistently and unload its driver	root'
+
+camera_state() {
+	choice=off
+	[ ! -r /var/lib/convergent/devices/camera ] || IFS= read -r choice </var/lib/convergent/devices/camera
+	loaded=no
+	[ ! -d /sys/module/videodev ] || loaded=yes
+	printf 'Camera: %s (video driver loaded: %s)\n' "$choice" "$loaded"
+}
+camera_status() { noargs "$@"; camera_state; }
+camera_on() { noargs "$@"; run sudo /usr/local/sbin/devices camera on; }
+camera_off() { noargs "$@"; run sudo /usr/local/sbin/devices camera off; }

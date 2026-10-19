@@ -2,11 +2,12 @@
 # ARCHITECTURE 3.1, 9, 10
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
 
 tb=/sys/bus/thunderbolt/devices
 
 die() { echo "devices: $*" >&2; exit 1; }
-usage() { echo "usage: devices list | allow ID | allow tb ID" >&2; exit 2; }
+usage() { echo "usage: devices list | review | enrol | revoke RULE | allow ID | allow tb ID | camera on|off|restore|load [MODULE]" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # ask: show the question, accept only the word yes from a terminal.
@@ -76,8 +77,127 @@ allow_tb() {
 	die "no Thunderbolt device with unique id $id"
 }
 
+review() {
+	echo 'USB policy (rule numbers; names included, even when unplugged):'
+	lines=$(usbguard list-rules) || die 'cannot read policy'
+	printf '%s\n' "$lines" | tr -d '\000-\010\013-\037\177'
+	echo 'Attached USB (device numbers, allow/block/reject and names):'
+	lines=$(usbguard list-devices) || die 'cannot read devices'
+	printf '%s\n' "$lines" | tr -d '\000-\010\013-\037\177'
+}
+
+enrol() (
+	[ -t 0 ] || die 'enrol needs a terminal'
+	work=$(mktemp -d) || exit 1
+	trap 'rm -rf "$work"' 0
+	trap 'exit 1' HUP INT TERM
+	usbguard generate-policy >"$work/generated" || die 'cannot generate policy'
+	usbguard list-rules >"$work/old" || die 'cannot read policy'
+	: >"$work/approved"
+	echo 'Only attached devices individually approved here will be allowed. Review hubs too.'
+	while IFS= read -r rule <&3; do
+		case $rule in ''|'#'*) continue ;; esac
+		case $rule in allow\ id\ *\ hash\ \"*\") ;; allow\ id\ *\ hash\ \"*\"\ *) ;; *) die 'generator returned a non-device rule' ;; esac
+		printf '\n%s\n' "$rule" | tr -d '\000-\010\013-\037\177'
+		printf 'Trust this device? [yes/No] '
+		IFS= read -r a || die 'review cancelled'
+		[ "$a" != yes ] || printf '%s\n' "$rule" >>"$work/approved"
+	done 3<"$work/generated"
+	tr -d '\000-\010\013-\037\177' <"$work/approved"
+	ask 'Replace the entire USB policy with these devices? Unlisted devices will be blocked.'
+	usbguard list-rules >"$work/current" && cmp -s "$work/old" "$work/current" || die 'policy changed during review; retry'
+	# Insert reviewed rules before any old catch-all, then remove the old policy.
+	while IFS= read -r rule; do
+		usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
+	done <"$work/approved"
+	while IFS= read -r rule; do
+		id=${rule%%:*}
+		case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac
+		usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
+	done <"$work/old"
+	# The daemon applies the saved policy to present devices on startup.
+	rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
+	logger -t devices 'USB policy replaced after individual review'
+)
+
+revoke() {
+	case $1 in ''|*[!0-9]*) die 'invalid rule number' ;; esac
+	rules=$(usbguard list-rules) || die 'cannot read policy'
+	line=$(printf '%s\n' "$rules" | grep "^$1: allow ") || die 'not an allowed rule (use review)'
+	case $line in *\ hash\ \"*\"*) ;; *) die 'not a device-specific rule; enrol individual devices first' ;; esac
+	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
+	ask 'Remove this allowance and reapply the remaining policy? This can disconnect input or storage.'
+	# A specific deny also defeats any overlapping allowance left in an older policy.
+	usbguard append-rule -a 0 "block ${line#*: allow }" >/dev/null || die 'cannot block device'
+	usbguard remove-rule "$1" || die 'cannot remove rule'
+	rc-service usbguard restart || die 'rule removed; USBGuard restart failed'
+	logger -t devices "USB rule $1 revoked"
+}
+
+camera_unload() {
+	# Sensor modules can hold the video core even after the controller has gone.
+	for holder in "/sys/module/$1/holders/"*; do
+		[ -e "$holder" ] || continue
+		camera_unload "${holder##*/}" || return 1
+	done
+	[ ! -d "/sys/module/$1" ] || modprobe -r "$1"
+}
+
+camera() {
+	choice=/var/lib/convergent/devices/camera
+	case ${1:-} in
+	load)
+		[ "$#" = 2 ] || usage
+		case $2 in videodev|uvcvideo|intel_ipu6|intel_ipu6_isys|ipu3_cio2|ipu3_imgu|atomisp) ;; *) die 'invalid camera module' ;; esac
+		exec 7>/run/convergent-camera-load.lock
+		flock -s 7
+		[ "$(cat "$choice" 2>/dev/null || :)" = on ] || die 'camera is off (sys camera on)'
+		exec modprobe --ignore-install "$2" ;;
+	on|off|restore) [ "$#" = 1 ] || usage ;;
+	*) usage ;;
+	esac
+	mkdir -p -m 0755 /var/lib/convergent/devices
+	exec 8>/run/convergent-camera.lock
+	flock -x 8
+	if [ "$1" = off ]; then
+		exec 7>/run/convergent-camera-load.lock
+		flock -x 7
+	fi
+	if [ "$1" != restore ]; then
+		file=$(mktemp /var/lib/convergent/devices/.camera.XXXXXX) || exit 1
+		printf '%s\n' "$1" >"$file" && chmod 0644 "$file" && mv -f "$file" "$choice" || die 'cannot save camera choice'
+	fi
+	if [ "$(cat "$choice" 2>/dev/null || :)" = on ]; then
+		modprobe uvcvideo || die 'camera enabled, but UVC driver failed to load'
+		# Load only camera PCI drivers whose aliases match attached hardware.
+		for f in /sys/bus/pci/devices/*/modalias; do
+			[ -r "$f" ] || continue
+			for m in $(modprobe -R "$(cat "$f")" 2>/dev/null || :); do
+				case $m in intel_ipu6|intel_ipu6_isys|ipu3_cio2|ipu3_imgu|atomisp) modprobe "$m" || die "cannot load $m" ;; esac
+			done
+		done
+	else
+		# Block new loads before unloading; never force a module used by an application.
+		failed=0
+		camera_unload videodev || failed=1
+		for m in uvcvideo intel_ipu6_isys intel_ipu6 ipu3_imgu ipu3_cio2 atomisp videodev; do
+			[ ! -d "/sys/module/$m" ] || modprobe -r "$m" || failed=1
+		done
+		[ "$failed" = 0 ] || die 'camera disabled for future loads; close camera applications and retry off'
+	fi
+}
+
+case ${1:-} in
+camera) shift; camera "$@"; exit ;;
+esac
+# Serialize owner policy changes, including the review interval.
+exec 9>/run/convergent-usb.lock
+flock -x 9
 case ${1:-} in
 list) [ $# = 1 ] || usage; list ;;
+review) [ $# = 1 ] || usage; review ;;
+enrol) [ $# = 1 ] || usage; enrol ;;
+revoke) [ $# = 2 ] || usage; revoke "$2" ;;
 allow)
 	case $# in
 	2) allow_usb "$2" ;;
