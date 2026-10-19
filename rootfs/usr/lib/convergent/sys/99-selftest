@@ -93,9 +93,10 @@ CHECK
 s=$(sudo -n dmesg); printf '%s\n' "$s" | awk '/Direct firmware load .* failed with error -2/ {next} tolower($0) ~ /(firmware|ucode|microcode)/ && tolower($0) ~ /(fail|error|not found|could not|unable to|timed out)/ {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " firmware load errors"; printf "%s", lines; exit (n>0)}'
 CHECK
 	# Laptop firmware always logs some err-level lines (ACPI BIOS bugs, UEFI certificates, USB disk
-	# caching): those are shown as SKIP; emerg, alert and crit fail.
+	# caching): those are shown as SKIP; emerg, alert and crit fail, except the armed watchdog the
+	# initramfs leaves running on purpose ("did not stop").
 	check kernel 10 <<'CHECK'
-s=$(sudo -n dmesg --level=emerg,alert,crit); printf '%s\n' "$s" | awk 'NF {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " critical kernel messages"; printf "%s", lines; exit (n>0)}' || exit 1
+s=$(sudo -n dmesg --level=emerg,alert,crit); printf '%s\n' "$s" | awk '/watchdog did not stop!/ {next} NF {n++; if(n<=5) lines=lines $0 "\n"} END {print n+0 " critical kernel messages"; printf "%s", lines; exit (n>0)}' || exit 1
 e=$(sudo -n dmesg --level=err); [ -z "$e" ] || { printf '%s\n' "$e" | awk 'NF {n++; if(n<=5) l=l $0 "\n"} END {print n " err-level lines (review):"; printf "%s", l}'; exit 77; }
 CHECK
 	# Keep at least three quarters of the audit queue free.

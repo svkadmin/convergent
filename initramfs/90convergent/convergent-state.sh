@@ -135,5 +135,12 @@ while read -r entry; do
 done <"$NEWROOT/usr/lib/convergent/etc-state"
 
 [ -s "$state/etc/machine-id" ] || tr -d - </proc/sys/kernel/random/uuid >"$state/etc/machine-id"
+# root:shadow 0640 for shadow and gshadow, also on installs made before this was right: the lock
+# screen checks passwords through unix_chkpwd, which is setgid shadow.
+g=$(awk -F: '$1 == "shadow" { print $3 }' "$state/etc/group")
+case $g in "" | *[!0-9]*) warn "state: no shadow group; the lock screen cannot check passwords" ;;
+*) chown "0:$g" "$state/etc/shadow" "$state/etc/gshadow" && chmod 0640 "$state/etc/shadow" "$state/etc/gshadow" ||
+	warn "state: could not set shadow permissions" ;;
+esac
 
 umount "$state"
