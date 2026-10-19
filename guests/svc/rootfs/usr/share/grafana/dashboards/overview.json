@@ -1,314 +1,4337 @@
 {
   "uid": "cv-overview",
-  "title": "Overview",
-  "schemaVersion": 39,
-  "version": 1,
-  "editable": false,
-  "timezone": "browser",
+  "title": "Convergent · Overview",
+  "description": "The path, attention, host and guests on one screen.",
   "tags": [
-    "system"
+    "convergent"
   ],
-  "refresh": "30s",
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "1m",
   "time": {
-    "from": "now-6h",
+    "from": "now-1h",
     "to": "now"
   },
-  "annotations": {
-    "list": [
-      {
-        "name": "Firewall failover",
-        "expr": "changes(convergent_carp_state{node=\"fw1\",vhid=\"3\"}[1m]) > 0",
-        "titleFormat": "CARP transition",
-        "textFormat": "fw1 svc CARP master state changed",
-        "iconColor": "#f59e0b",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "metrics"
-        },
-        "enable": true,
-        "hide": false,
-        "step": "30s",
-        "useValueForTime": false
-      }
-    ]
-  },
+  "schemaVersion": 41,
+  "version": 1,
   "panels": [
     {
       "id": 1,
-      "title": "Scrape reachability",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
+      "type": "canvas",
+      "title": "The network path",
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
-        "h": 8
+        "w": 7,
+        "h": 31
       },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "up",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "No data"
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 2,
-      "title": "Active alerts",
-      "type": "table",
+      "description": "Source: node up, Incus CPU series, fw-facts CARP/pf and wan-check upstream lease. This is a logical path, not host forwarding: each downstream segment uses a CARP gateway. Both roles agree when all six interfaces have the same role; Network shows each segment. UP on wan means an accepted lease, not a Wi-Fi association or an Internet probe.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
       },
-      "gridPos": {
-        "x": 12,
-        "y": 0,
-        "w": 12,
-        "h": 8
-      },
       "targets": [
         {
-          "refId": "A",
-          "expr": "ALERTS{alertstate=\"firing\"}",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+          "refId": "uplink",
+          "expr": "max(convergent_wan_upstream_up{node=\"wan\"})",
+          "legendFormat": "uplink",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "wan",
+          "expr": "max(up{job=\"node\",node=\"wan\"})",
+          "legendFormat": "wan",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "overlap",
+          "expr": "max(convergent_wan_upstream_overlap{node=\"wan\"})",
+          "legendFormat": "overlap",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw1",
+          "expr": "min(convergent_carp_state{node=\"fw1\"})",
+          "legendFormat": "fw1",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw1_max",
+          "expr": "max(convergent_carp_state{node=\"fw1\"})",
+          "legendFormat": "fw1_max",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw1_pf",
+          "expr": "max(convergent_pf_enabled{node=\"fw1\"})",
+          "legendFormat": "fw1_pf",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw2",
+          "expr": "min(convergent_carp_state{node=\"fw2\"})",
+          "legendFormat": "fw2",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw2_max",
+          "expr": "max(convergent_carp_state{node=\"fw2\"})",
+          "legendFormat": "fw2_max",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "fw2_pf",
+          "expr": "max(convergent_pf_enabled{node=\"fw2\"})",
+          "legendFormat": "fw2_pf",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "host",
+          "expr": "max(up{job=\"node\",node=\"host\"})",
+          "legendFormat": "host",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "cpu",
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[2m])))",
+          "legendFormat": "cpu",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "ram",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{node=\"host\"} / node_memory_MemTotal_bytes{node=\"host\"})",
+          "legendFormat": "ram",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "svc",
+          "expr": "(count(incus_cpu_seconds_total{project=\"default\",name=\"svc\"}) > bool 0) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "svc",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "web",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"web\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "web",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "admin",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"admin\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "admin",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "tmp",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"tmp\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "tmp",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
+        },
+        {
+          "refId": "portal",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"portal\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "portal",
+          "instant": true,
+          "range": false,
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          }
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "noValue": "No data"
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "uplink"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "wan"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "overlap"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "clear",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "REFUSED",
+                        "color": "#EDB873"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw1"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "INIT",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "BACKUP",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "MASTER",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw1_max"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "INIT",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "BACKUP",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "MASTER",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw1_pf"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw2"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "INIT",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "BACKUP",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "MASTER",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw2_max"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "INIT",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "BACKUP",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "MASTER",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "fw2_pf"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "host"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ram"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "svc"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "STOPPED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "admin"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "tmp"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "portal"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "closed",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "inlineEditing": false,
+        "showAdvancedTypes": true,
+        "panZoom": false,
+        "infinitePan": false,
+        "zoomToContent": false,
+        "tooltip": {
+          "mode": "none",
+          "disableForOneClick": true
+        },
+        "root": {
+          "type": "frame",
+          "name": "path",
+          "elements": [
+            {
+              "type": "rectangle",
+              "name": "radio",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 6,
+                "height": 84
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 0.0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.0,
+                    "y": 1
+                  },
+                  "targetName": "wan_box",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#A6B0BC"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "name": "t1",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Radio / wired uplink"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 14,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t2",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Owned by wan · radio details not collected"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 37,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t3",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "upstream lease"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 62,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v4",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "uplink",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "uplink",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 62,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "wan_box",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 116,
+                "height": 107
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": -0.5,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.0,
+                    "y": 1
+                  },
+                  "targetName": "fw1_box",
+                  "path": "straight",
+                  "color": {
+                    "field": "fw1",
+                    "fixed": "#8A93A3"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                },
+                {
+                  "source": {
+                    "x": 0.5,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.0,
+                    "y": 1
+                  },
+                  "targetName": "fw2_box",
+                  "path": "straight",
+                  "color": {
+                    "field": "fw2",
+                    "fixed": "#8A93A3"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "name": "t6",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "wan"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 124,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t7",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Alpine VM · the only NAT"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 147,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t8",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "exporter"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 172,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v9",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "wan",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "wan",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 172,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t10",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "reserved overlap"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 195,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v11",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "overlap",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "overlap",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 195,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "fw1_box",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 52,
+                "top": 252,
+                "height": 130
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 0.0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": -0.5,
+                    "y": 1
+                  },
+                  "targetName": "host_box",
+                  "path": "straight",
+                  "color": {
+                    "field": "fw1",
+                    "fixed": "#8A93A3"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "name": "t13",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "fw1"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 55,
+                "top": 260,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t14",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "OpenBSD · CARP + pf"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 55,
+                "top": 283,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t15",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "lowest role"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 67.9,
+                "top": 308,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v16",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw1",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw1",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 28.65,
+                "right": 53.8,
+                "top": 308,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t17",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "highest role"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 67.9,
+                "top": 331,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v18",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw1_max",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw1_max",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 28.65,
+                "right": 53.8,
+                "top": 331,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t19",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "pf"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 67.9,
+                "top": 354,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v20",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw1_pf",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw1_pf",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 28.65,
+                "right": 53.8,
+                "top": 354,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "fw2_box",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 52,
+                "right": 3,
+                "top": 252,
+                "height": 130
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 0.0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.5,
+                    "y": 1
+                  },
+                  "targetName": "host_box",
+                  "path": "straight",
+                  "color": {
+                    "field": "fw2",
+                    "fixed": "#8A93A3"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "name": "t22",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "fw2"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 55,
+                "right": 6,
+                "top": 260,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t23",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "OpenBSD · CARP + pf"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 55,
+                "right": 6,
+                "top": 283,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t24",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "lowest role"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 55,
+                "right": 18.9,
+                "top": 308,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v25",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw2",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw2",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 77.65,
+                "right": 4.8,
+                "top": 308,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t26",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "highest role"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 55,
+                "right": 18.9,
+                "top": 331,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v27",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw2_max",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw2_max",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 77.65,
+                "right": 4.8,
+                "top": 331,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t28",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "pf"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 55,
+                "right": 18.9,
+                "top": 354,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v29",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "fw2_pf",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "fw2_pf",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 77.65,
+                "right": 4.8,
+                "top": 354,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t30",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Six CARP gateways · mixed roles need attention"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 397,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "host_box",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 438,
+                "height": 130
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              },
+              "connections": [
+                {
+                  "source": {
+                    "x": 0.0,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.0,
+                    "y": 1
+                  },
+                  "targetName": "svc_box",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#A6B0BC"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                },
+                {
+                  "source": {
+                    "x": 0.9,
+                    "y": -1
+                  },
+                  "target": {
+                    "x": 0.9,
+                    "y": 1
+                  },
+                  "targetName": "browsers",
+                  "path": "straight",
+                  "color": {
+                    "fixed": "#A6B0BC"
+                  },
+                  "size": {
+                    "fixed": 2,
+                    "min": 1,
+                    "max": 10
+                  },
+                  "direction": {
+                    "mode": "fixed",
+                    "fixed": "none"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "name": "t32",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "host"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 446,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t33",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Incus host · host segment only"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 469,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t34",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "exporter"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 494,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v35",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "host",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "host",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 494,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t36",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "CPU busy"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 517,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v37",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "cpu",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "cpu",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 517,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t38",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "RAM used"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 540,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v39",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "ram",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "ram",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 540,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "svc_box",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 596,
+                "height": 84
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              }
+            },
+            {
+              "type": "text",
+              "name": "t41",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "svc"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 604,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t42",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Metrics · logs · alerts · Grafana"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 627,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t43",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Incus state"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 652,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v44",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "svc",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "svc",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 652,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t45",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Downstream segments route through CARP"
+                },
+                "size": 13,
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 696,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "rectangle",
+              "name": "browsers",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": ""
+                },
+                "align": "center",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 3,
+                "right": 3,
+                "top": 734,
+                "height": 153
+              },
+              "background": {
+                "color": {
+                  "fixed": "#181b1f"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "#2c3038"
+                },
+                "width": 1,
+                "radius": 10
+              }
+            },
+            {
+              "type": "text",
+              "name": "t47",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "Browsers"
+                },
+                "size": 16,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#d5d9e0"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 742,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t48",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "web / tmp / portal · web segment; admin · admin"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle",
+                "color": {
+                  "fixed": "#A6B0BC"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 6,
+                "top": 765,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t49",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "web"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 790,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v50",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "web",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "web",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 790,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t51",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "admin"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 813,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v52",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "admin",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "admin",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 813,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t53",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "tmp"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 836,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v54",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "tmp",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "tmp",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 836,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "text",
+              "name": "t55",
+              "config": {
+                "text": {
+                  "mode": "fixed",
+                  "fixed": "portal"
+                },
+                "size": 13,
+                "align": "left",
+                "valign": "middle"
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 6,
+                "right": 39.48,
+                "top": 859,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            },
+            {
+              "type": "metric-value",
+              "name": "v56",
+              "config": {
+                "text": {
+                  "mode": "field",
+                  "field": "portal",
+                  "fixed": ""
+                },
+                "size": 14,
+                "align": "right",
+                "valign": "middle",
+                "color": {
+                  "field": "portal",
+                  "fixed": "#8A93A3"
+                }
+              },
+              "constraint": {
+                "horizontal": "scale",
+                "vertical": "top"
+              },
+              "placement": {
+                "left": 56.58,
+                "right": 6.76,
+                "top": 859,
+                "height": 20
+              },
+              "background": {
+                "color": {
+                  "fixed": "transparent"
+                }
+              },
+              "border": {
+                "color": {
+                  "fixed": "transparent"
+                },
+                "width": 0
+              }
+            }
+          ],
+          "background": {
+            "color": {
+              "fixed": "transparent"
+            }
+          },
+          "border": {
+            "color": {
+              "fixed": "transparent"
+            },
+            "width": 0
+          },
+          "constraint": {
+            "horizontal": "left",
+            "vertical": "top"
+          },
+          "placement": {
+            "left": 0,
+            "top": 0,
+            "width": 100,
+            "height": 100
+          }
+        }
+      },
+      "transparent": true
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "",
+      "gridPos": {
+        "x": 7,
+        "y": 0,
+        "w": 5,
+        "h": 2
+      },
+      "description": "Source: vmalert ALERTS, firing only; zero means no firing series.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count(ALERTS{alertstate=\"firing\"}) or on() vector(0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "firing alerts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "#EDB873",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
         },
         "overrides": []
       },
       "options": {
-        "showHeader": true
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
       }
     },
     {
       "id": 3,
-      "title": "Host CPU busy",
-      "type": "timeseries",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
+      "type": "stat",
+      "title": "",
       "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 12,
-        "h": 8
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 2
+      },
+      "description": "Source: VictoriaLogs syslog severity 0–4, last hour; routine audit records and kernel stack continuations excluded. Lines, not incidents.",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "logs"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[5m])))",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (severity:in(\"0\",\"1\",\"2\",\"3\",\"4\") OR level:in(\"emerg\",\"alert\",\"crit\",\"error\",\"err\",\"warn\",\"warning\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\") AND _time:1h | stats count() as errors",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "logs"
+          },
+          "editorMode": "code",
+          "legendFormat": "error / warning lines · 1 h",
+          "queryType": "stats"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "noValue": "No data"
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "#EDB873",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
         },
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi"
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
         }
       }
     },
     {
       "id": 4,
-      "title": "Host available memory",
-      "type": "timeseries",
+      "type": "stat",
+      "title": "",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 2
+      },
+      "description": "Source: tools/facts collector success and node_exporter textfile mtimes. Live facts update each minute; amber after three minutes. Daily/boot facts are on Security.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
       },
-      "gridPos": {
-        "x": 12,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "node_memory_MemAvailable_bytes{node=\"host\"}",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+          "expr": "min(cv_collector_success)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "collectors"
+        },
+        {
+          "refId": "B",
+          "expr": "max(time() - node_textfile_mtime_seconds{file=~\".*(audit|convergent_fw|wan)[.]prom\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "live facts age"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
-          "noValue": "No data"
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "collectors"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "live facts age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 180
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi"
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
         }
       }
     },
     {
       "id": 5,
-      "title": "State free space",
-      "type": "timeseries",
+      "type": "table",
+      "title": "Active alerts · now",
+      "gridPos": {
+        "x": 7,
+        "y": 2,
+        "w": 17,
+        "h": 5
+      },
+      "description": "Source: vmalert ALERTS instant query; one row per alert name, node and severity. Empty means no alerts firing.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
       },
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "node_filesystem_avail_bytes{node=\"host\",mountpoint=\"/var\"}",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+          "expr": "max by (alertname,node,severity) (ALERTS{alertstate=\"firing\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "cvOptional": "No firing alerts is normal.",
+          "format": "table"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
-          "noValue": "No data"
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "FIRING",
+                        "color": "#EDB873"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
         }
-      }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "state",
+              "Value": "state"
+            },
+            "includeByName": {
+              "alertname": true,
+              "node": true,
+              "severity": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "alertname": 0,
+              "node": 1,
+              "severity": 2,
+              "Value #A": 3
+            }
+          }
+        }
+      ]
     },
     {
       "id": 6,
-      "title": "Battery charge",
       "type": "timeseries",
+      "title": "Host CPU · busy",
+      "gridPos": {
+        "x": 7,
+        "y": 7,
+        "w": 8,
+        "h": 5
+      },
+      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
       },
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
       "targets": [
         {
           "refId": "A",
-          "expr": "node_power_supply_capacity{node=\"host\"}",
-          "legendFormat": "{{__name__}} {{node}} {{name}} {{device}} {{vhid}} {{service}}"
+          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[$__rate_interval])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "Host CPU · busy"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
-          "noValue": "No data"
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
         },
         "overrides": []
       },
       "options": {
         "legend": {
           "displayMode": "list",
-          "placement": "bottom"
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
         },
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },
     {
       "id": 7,
-      "title": "Recent infrastructure logs",
-      "type": "logs",
-      "datasource": {
-        "type": "victoriametrics-logs-datasource",
-        "uid": "logs"
-      },
+      "type": "timeseries",
+      "title": "Host RAM · used",
       "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 24,
-        "h": 8
+        "x": 15,
+        "y": 7,
+        "w": 9,
+        "h": 5
+      },
+      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\")",
-          "queryType": "instant",
-          "maxLines": 100
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{node=\"host\"} / node_memory_MemTotal_bytes{node=\"host\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "Host RAM · used"
         }
       ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "State disk · /var",
+      "gridPos": {
+        "x": 7,
+        "y": 12,
+        "w": 6,
+        "h": 5
+      },
+      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - node_filesystem_avail_bytes{node=\"host\",mountpoint=\"/var\"} / node_filesystem_size_bytes{node=\"host\",mountpoint=\"/var\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "State disk · /var"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Battery · charge",
+      "gridPos": {
+        "x": 13,
+        "y": 12,
+        "w": 5,
+        "h": 5
+      },
+      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_power_supply_capacity{node=\"host\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "Battery · charge",
+          "cvOptional": "No battery in QEMU."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Host temperature",
+      "gridPos": {
+        "x": 18,
+        "y": 12,
+        "w": 6,
+        "h": 5
+      },
+      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "node_hwmon_temp_celsius{node=\"host\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{chip}} {{sensor}}",
+          "cvOptional": "Hardware sensors are absent in QEMU."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "Instances · now",
+      "gridPos": {
+        "x": 7,
+        "y": 17,
+        "w": 17,
+        "h": 7
+      },
+      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; total is the container limit or guest RAM, not a separately collected configured VM limit. Guest memory needs guest support; blank cells on agentless VMs are unknown. Rates use two minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (project,name) (rate(incus_cpu_seconds_total{mode=~\"user|system\"}[2m]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (project,name) (incus_memory_MemTotal_bytes - incus_memory_MemAvailable_bytes)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "expr": "max by (project,name) (incus_memory_MemTotal_bytes)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "100 * max by (project,name) (1 - incus_memory_MemAvailable_bytes / incus_memory_MemTotal_bytes)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "state"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "STOPPED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "RUNNING",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "name"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "This instance",
+                    "url": "/d/cv-compartments?var-project=${__data.fields.project}&var-name=${__value.raw}&${__url_time_range}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU cores"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "suffix: cores"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RAM used"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RAM limit"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "RAM %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 80
+                    },
+                    {
+                      "color": "#F2495C",
+                      "value": 95
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "in"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "out"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "read"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Bps"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "written"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "Bps"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "state",
+              "Value #B": "CPU cores",
+              "Value #C": "RAM used",
+              "Value #D": "RAM limit",
+              "Value #E": "RAM %"
+            },
+            "includeByName": {
+              "project": true,
+              "name": true,
+              "Value #A": true,
+              "Value #B": true,
+              "Value #C": true,
+              "Value #D": true,
+              "Value #E": true
+            },
+            "indexByName": {
+              "project": 0,
+              "name": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "logs",
+      "title": "Recent actionable logs",
+      "gridPos": {
+        "x": 7,
+        "y": 24,
+        "w": 17,
+        "h": 7
+      },
+      "description": "Source: VictoriaLogs TLS syslog from host, wan, fw1/fw2. Warnings/errors, AppArmor denials, USB blocks, faillock, sudo and firewall changes. Routine EXECVE and kernel stack continuation records excluded; all records remain in Explore.",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (severity:in(\"0\",\"1\",\"2\",\"3\",\"4\") OR level:in(\"emerg\",\"alert\",\"crit\",\"error\",\"err\",\"warn\",\"warning\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (_msg:~\"apparmor=\\\"DENIED\\\"|pam_faillock|authentication failure|Failed password\" OR (app_name:=\"usbguard\" AND _msg:~\"(?i)block|reject|denied\") OR (app_name:=\"sudo\" AND _msg:~\"COMMAND=|incorrect password|not in the sudoers\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND hostname:~\"^fw[12]$\" AND (_msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" OR app_name:=\"ifstated\" OR app_name:=\"pfctl\") AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\"))",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "logs"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "maxLines": 50
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
       "options": {
         "showTime": true,
         "showLabels": true,
         "wrapLogMessage": true,
-        "sortOrder": "Descending"
+        "sortOrder": "Descending",
+        "dedupStrategy": "signature",
+        "enableLogDetails": true,
+        "showCommonLabels": false,
+        "enableInfiniteScrolling": false
+      },
+      "links": [
+        {
+          "title": "These lines in Explore",
+          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%28remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28severity%3Ain%28%5C%220%5C%22%2C%5C%221%5C%22%2C%5C%222%5C%22%2C%5C%223%5C%22%2C%5C%224%5C%22%29%20OR%20level%3Ain%28%5C%22emerg%5C%22%2C%5C%22alert%5C%22%2C%5C%22crit%5C%22%2C%5C%22error%5C%22%2C%5C%22err%5C%22%2C%5C%22warn%5C%22%2C%5C%22warning%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%20OR%20%28remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28_msg%3A~%5C%22apparmor%3D%5C%5C%5C%22DENIED%5C%5C%5C%22%7Cpam_faillock%7Cauthentication%20failure%7CFailed%20password%5C%22%20OR%20%28app_name%3A%3D%5C%22usbguard%5C%22%20AND%20_msg%3A~%5C%22%28%3Fi%29block%7Creject%7Cdenied%5C%22%29%20OR%20%28app_name%3A%3D%5C%22sudo%5C%22%20AND%20_msg%3A~%5C%22COMMAND%3D%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%20OR%20%28remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20hostname%3A~%5C%22%5Efw%5B12%5D%24%5C%22%20AND%20%28_msg%3A~%5C%22carp%5B0-9%5D%2B%3A.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20%28MASTER%7CBACKUP%7CINIT%29%5C%22%20OR%20app_name%3A%3D%5C%22ifstated%5C%22%20OR%20app_name%3A%3D%5C%22pfctl%5C%22%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+        },
+        {
+          "title": "All logs in Explore",
+          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "text",
+      "title": "Not collected",
+      "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; configured VM memory limits; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments."
       }
     }
   ],
+  "templating": {
+    "list": []
+  },
   "links": [
     {
       "title": "Overview",
       "type": "link",
       "url": "/d/cv-overview",
-      "keepTime": true
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": false,
+      "tags": []
     },
     {
-      "title": "Compartments",
-      "type": "link",
-      "url": "/d/cv-compartments",
-      "keepTime": true
-    },
-    {
-      "title": "Network path",
+      "title": "Network",
       "type": "link",
       "url": "/d/cv-network-path",
-      "keepTime": true
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": false,
+      "tags": []
+    },
+    {
+      "title": "Guests",
+      "type": "link",
+      "url": "/d/cv-compartments",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": false,
+      "tags": []
     },
     {
       "title": "Security",
       "type": "link",
       "url": "/d/cv-security",
-      "keepTime": true
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": false,
+      "tags": []
+    },
+    {
+      "title": "Explore · all logs",
+      "type": "link",
+      "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": false,
+      "tags": []
     }
-  ]
+  ],
+  "annotations": {
+    "list": [
+      {
+        "name": "CARP role changes · toggle",
+        "enable": false,
+        "hide": false,
+        "iconColor": "#BDACF0",
+        "datasource": {
+          "type": "victoriametrics-logs-datasource",
+          "uid": "logs"
+        },
+        "target": {
+          "refId": "A",
+          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND hostname:~\"^fw[12]$\" AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\"",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "logs"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "maxLines": 100
+        }
+      }
+    ]
+  }
 }

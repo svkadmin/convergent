@@ -464,9 +464,13 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 `guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
 
-- **Dashboards:** four views (overview, compartments, network path, security), with firewall
-  failover transitions marked on the timelines (update marks *(planned)*); opened from the menu in
-  the admin browser.
+- **Dashboards:** Overview (path and attention), Network (six CARP segments, pf and DNS), Guests
+  (Incus state and resources) and Security (boot facts, trust and denials), opened in the admin
+  browser. Stdlib Python generators in `guests/svc/dashboards` share Archer's palette, type scale,
+  Canvas path and first-screen sizing; current state uses instant queries. CARP role-change
+  annotations start off; actionable syslog panels link to all records in Explore. Footers name
+  collection gaps. `build/lint` checks JSON drift; `build/test --guests-update` checks every metric
+  panel query against real svc scrapes, allowing explicitly optional hardware and quiet alerts.
 - **Checker:** runs after every boot, after every update and daily; it compares the running system
   with the release (verity, pf ruleset hashes, Incus settings, the writable `/etc` entries, device
   ownership) and checks host and internal guest state. Upstream connectivity is not part of it:

@@ -1,0 +1,45 @@
+#!/bin/sh
+# check-data <dashboards-dir> [base-url]: run on the host after real scrapes, through svc's query
+# proxy; optional exempts emptiness, never query errors.
+set -eu
+dir=${1:?dashboards directory}
+base=${2:-http://100.80.2.10:9428}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+jq -r '.title as $d | .panels[] | .title as $p | .targets[]? |
+    select(.datasource.uid == "metrics") |
+    [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
+[ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }
+fail=0; count=0; empty=0
+while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
+    count=$((count + 1))
+    expr=$(printf '%s' "$expr" | base64 -d | sed 's/\$__rate_interval/2m/g; s/\$__interval/1m/g; s/${project:regex}/default/g; s/${name:regex}/svc/g')
+    if ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
+        "$base/api/v1/query" >"$work/result" ||
+        ! jq -e '.status == "success" and (.data.result | type == "array")' "$work/result" >/dev/null; then
+        echo "dashboards: query error: $dashboard / $panel / $ref: $expr"
+        cat "$work/result"
+        fail=1
+    elif ! jq -e '.data.result | length > 0' "$work/result" >/dev/null; then
+        empty=$((empty + 1))
+        echo "dashboards: empty ($optional): $dashboard / $panel / $ref: $expr"
+        [ "$optional" != required ] || fail=1
+    fi
+done <"$work/targets"
+jq -r '.title as $d | (.panels[] | .title as $p | .targets[]? |
+    select(.datasource.uid == "logs") | [$d, $p, .queryType, (.expr | @base64)]),
+    (.annotations.list[] | [$d, .name, .target.queryType, (.target.expr | @base64)]) | @tsv' "$dir/"*.json >"$work/logs"
+logs=0
+while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
+    logs=$((logs + 1))
+    expr=$(printf '%s' "$expr" | base64 -d)
+    endpoint=query; [ "$kind" != stats ] || endpoint=stats_query
+    if ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
+        --data-urlencode start=1h --data-urlencode end=now --data-urlencode limit=1 \
+        "$base/select/logsql/$endpoint" >"$work/result"; then
+        echo "dashboards: LogsQL error: $dashboard / $panel: $expr"
+        fail=1
+    fi
+done <"$work/logs"
+echo "dashboards: $count instant metric queries, $empty empty, $logs log queries, result=$fail"
+exit "$fail"

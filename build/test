@@ -300,6 +300,9 @@ after=$(ic config get svc volatile.base_image) || result=1
 restored=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
 [ "$after" = "$before" ] && [ "$restored" = "$service" ] || result=1
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || result=1
+# Let the restored svc scrape twice before checking dashboard queries.
+sleep 65
+sh "$release/dashboard-check" "$release/dashboards" || result=1
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || result=1
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || result=1
 timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
@@ -320,7 +323,11 @@ inject_guests() {
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
-	[ "$mode" != guests-update ] || inject_guest_update
+	if [ "$mode" = guests-update ]; then
+		cp "$here/../guests/svc/dashboards/check-data" "$var/lib/convergent/test-release/dashboard-check"
+		cp -r "$here/../guests/svc/rootfs/usr/share/grafana/dashboards" "$var/lib/convergent/test-release/"
+		inject_guest_update
+	fi
 	# The QEMU uplink goes to wan as eth1, as a USB NIC would; then DNS over TLS and egress end to end.
 	cat >"$var/lib/convergent/test-release/uplink-test" <<'EOF'
 nic=$(ip -o link | awk -F': ' '/52:54:00:c0:ff:ee/ {print $2; exit}')

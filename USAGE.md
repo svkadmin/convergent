@@ -189,6 +189,14 @@ unplugging. What it leaves out and how to restore: [RECOVERY 11](RECOVERY.md#11-
 
 ## Health and alerts
 
+Open **Admin dashboards** (`sys browser admin`) for Overview, Network, Guests and Security.
+Overview puts the path, alerts, collector freshness, host and guests on the first screen; the
+other pages share the same navigation. Guests has project/instance selectors. Current-state
+tables show one row per item; graphs show history. CARP role-change annotations are off until
+toggled on. Log panels show actionable records; **Explore · all logs** includes routine audit
+and full kernel traces. A dash means no data; each panel names its source and each footer lists
+what is not collected. Battery is always 0–100%.
+
 There are two checkers. `check` runs on the host and compares it with the accepted release:
 verity, the writable `/etc` files, autostart and SUID inventories, the guests' Incus settings, the
 radio's VFIO binding, CARP and pf on both firewalls. Cron runs it after boot and updates, and
