@@ -28,7 +28,9 @@ reset_password() (
 	IFS= read -r again || return 1
 	printf '\n'
 	stty "$saved" || return 1
-	[ -n "$pass" ] && [ "$pass" = "$again" ] || { echo 'Passwords empty or different.'; return 1; }
+	[ "$pass" = "$again" ] || { echo 'The passwords differ.'; return 1; }
+	# As the installer asks.
+	[ "${#pass}" -ge 12 ] || { echo 'Use at least 12 characters.'; return 1; }
 	hash=$(printf '%s\n' "$pass" | openssl passwd -6 -stdin) || return 1
 	unset pass again
 	case $hash in '$6$'*) ;; *) return 1 ;; esac

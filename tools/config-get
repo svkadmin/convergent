@@ -120,7 +120,8 @@ BEGIN {
 	if ($0 ~ /[[:cntrl:]]/) fail("control character")
 	if ($0 ~ /^ *$/ || $0 ~ /^#/) next
 	if ($0 ~ /^ /) fail("indentation")
-	line=$0; sub(/ *#.*/, "", line)
+	# YAML: a comment needs a space before its #; "a#b" is a value.
+	line=$0; sub(/ +#.*/, "", line)
 	colon=index(line, ":")
 	if (!colon) fail("expected key: value")
 	k=substr(line,1,colon-1); sub(/ *$/, "", k)

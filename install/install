@@ -14,6 +14,7 @@ input=/dev/null
 if [ "${1:-}" = --config ]; then
 	[ $# -ge 3 ] || die 'usage: install/install [--config <file>] <release-dir>'
 	input=$2; shift 2
+	[ -f "$input" ] || die "no config file: $input"
 fi
 [ $# = 1 ] || die 'usage: install/install [--config <file>] <release-dir>'
 here=$(cd "$(dirname "$0")" && pwd)
@@ -78,6 +79,8 @@ cleanup() {
 finish() {
 	status=$1
 	trap - 0
+	# A second interrupt must not cut this short: it removes the owner's hash and the mappings.
+	trap '' HUP INT TERM
 	cleanup || { echo 'install: cleanup failed; inspect mounts and mappings' >&2; status=1; }
 	[ "$status" = 0 ] || die "installation did not complete"
 }
@@ -87,9 +90,11 @@ trap 'die interrupted' HUP INT TERM
 ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "terminal closed"; }
 secret() {
 	if [ -n "$image_install" ]; then
-		if [ -n "$tty_mode" ]; then printf '%s: ' "$1" >&2; run stty -echo <&3; fi
-		IFS= read -r pass <&3 || die "missing $1 on stdin"
+		# Echo off before the prompt: a fast sender would otherwise be shown.
+		if [ -n "$tty_mode" ]; then run stty -echo <&3; printf '%s: ' "$1" >&2; fi
+		IFS= read -r pass <&3 || [ -n "$pass" ] || die "missing $1 on stdin"
 		if [ -n "$tty_mode" ]; then run stty "$tty_mode" <&3; printf '\n' >&2; fi
+		case $pass in *"$cr"*) die "the $1 has a carriage return (a Windows line ending)" ;; esac
 		[ "${#pass}" -ge 12 ] || die "use at least 12 characters"
 		return
 	fi
@@ -103,9 +108,11 @@ Repeat $1: "
 	run stty "$tty_mode" <&3
 	printf '\n' >&3
 	[ "$pass" = "$again" ] || die "the two entries differ"
+	case $pass in *"$cr"*) die "the $1 has a carriage return" ;; esac
 	[ "${#pass}" -ge 12 ] || die "use at least 12 characters"
 	again=
 }
+cr=$(printf '\r')
 
 # Parse only manifest fields; never source cmdline-*.
 dir=$(cd "$1" && pwd -P) || die "no release directory"
@@ -420,7 +427,9 @@ run mv "$dst.new" "$dst"
 run sync
 if [ -z "$image_install" ]; then
 	name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/usr/lib/os-release")
-	run efibootmgr --create --disk "$disk" --part 1 --label "${name:-Linux}" --loader '\EFI\systemd\systemd-bootx64.efi'
+	# EFI/BOOT/BOOTX64.EFI already boots it; a firmware that refuses the entry is not fatal.
+	efibootmgr --create --disk "$disk" --part 1 --label "${name:-Linux}" --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null ||
+		echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
 fi
 cleanup || die "could not close the installed system"
 printf 'Installed release %s on %s for %s.\nESP: %s MiB; slots: %s MiB each; encrypted state: remainder.\n' "$release" "$disk" "$owner" "$esp_mib" "$slot_mib"
