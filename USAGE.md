@@ -33,7 +33,7 @@ The firewalls run OpenBSD. You do not log in to them for daily use; for a look,
 
 Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 
-The look is defined in `/usr/lib/convergent/theme`; owners can override Sway, foot, mako and swaylock in their `~/.config/` directories.
+The look is stock Sway, foot, mako and swaylock on a black background and bar; owners can override each in their `~/.config/` directories.
 
 | Key | Does |
 |---|---|
@@ -61,8 +61,10 @@ second word becomes an argument to that default: `sys backup /mnt/x proj` works;
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
 errors. `sys help` lists actions and aliases; `*` asks for `yes` in the terminal (default No).
 
-`sys` (Super+m): areas left, status and commands right. Enter opens or runs, Esc goes back,
-Alt+Enter runs a typed `action args`. Super+a runs one action by name.
+`sys` (Super+m) looks like the Archer menu: the list left, the highlighted row's status and
+commands right, terminal colours with a blue highlight. Enter opens or runs, Esc goes back, typing
+filters, Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
+Super+a runs one action by name.
 
 | Area (alias) | Actions, default first |
 |---|---|
@@ -222,7 +224,7 @@ rel 202610170000 good | US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 
 | Block | Shows | Look or fix with |
 |---|---|---|
-| `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | |
+| `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | `sys power status` lists every sensor |
 | `RAM`, `SWP` | used/total GiB | |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
 | Topology | wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |

@@ -484,7 +484,7 @@ How the owner uses it is in USAGE.md. The design points:
 - **Locking:** after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes;
   the idle lock can be paused from the bar. Never suspends.
 - **Menu (`sys`):** `sys AREA [ACTION] [ARGS]`; each area's first action is its default.
-  Short aliases work at the command line; the fzf menu shows long names, status and command
+  Short aliases work at the command line; the fzf menu (Archer's look) shows long names, status and command
   previews. Each action prints its commands; bemenu remains the quick picker.
 - **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere

@@ -1,5 +1,5 @@
 title=Power
-actions='status	Show power profile and battery	
+actions='status	Show power profile, battery and temperatures	
 ac	Use the AC power profile	root
 battery	Use the battery power profile	root
 lock	Lock the sway session	
@@ -23,6 +23,14 @@ power_status() {
 		printf '%s: %s%%, %s\n' "${d##*/}" "$(cached "$d/capacity")" "$(cached "$d/status")"
 	done
 	[ "$battery" = 1 ] || echo 'No battery'
+	# Every sensor but the per-core ones (the package covers them); the bar's second number is the hottest.
+	for f in /sys/class/hwmon/hwmon*/temp*_input; do
+		t=$(cat "$f" 2>/dev/null) || continue
+		case $t in ''|*[!0-9]*) continue ;; esac
+		label=$(cat "${f%_input}_label" 2>/dev/null) || label=${f##*/}
+		case $label in Core\ *) continue ;; esac
+		printf '%s %s: %s C\n' "$(cat "${f%/*}/name" 2>/dev/null)" "${label%_input}" "$((t / 1000))"
+	done
 }
 power_ac() { noargs "$@"; run sudo /usr/local/sbin/power ac; }
 power_battery() { noargs "$@"; run sudo /usr/local/sbin/power battery; }

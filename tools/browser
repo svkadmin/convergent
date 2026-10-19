@@ -139,9 +139,13 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
 fi
 active=1
 if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+    # The socket paths are this launcher's, not the profile's: profiles stay as installed until
+    # a browser image update, and older ones name other paths.
+    # Fixed words ($name is web, admin, portal or tmp-NN), split on purpose; "$@" is the URLs.
+    sockets="-d wayland,source=$run/sockets/wayland-0 -d wayland,required=false -d pipewire,source=$run/sockets/pulse-0 -d pipewire,required=false"
     case $role in
-        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" ;;
-        *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" ;;
+        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" $sockets ;;
+        *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" $sockets ;;
     esac
 fi
 background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &

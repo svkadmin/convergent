@@ -108,8 +108,7 @@ keyboard `@` is Shift+2, and `y` and `z` are swapped). The console uses `console
 default.
 
 1. `Passphrase [1/3]:` appears; three wrong tries power it off. Done when: a login prompt.
-   The screen can stay black while the prompt waits: type the passphrase blind and press Enter.
-   Keys pressed meanwhile reappear as empty `host login:` prompts; ignore them.
+   Keys pressed while it boots reappear as empty `host login:` prompts; ignore them.
 2. Log in as the owner. Done when: the console prints `release <release> is good` (minutes).
 3. Run `dbus-run-session sway`. On a disk image the bar shows `SETUP` (orange) for 10 to 30 minutes
    while the guests are created; `SETUP failed` (red): `sys guests setup` resumes (log:

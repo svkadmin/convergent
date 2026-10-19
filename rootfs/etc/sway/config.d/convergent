@@ -1,62 +1,30 @@
 # ARCHITECTURE 9; the stock /etc/sway/config includes this directory last, so lines here win.
-# Sway cannot source shell: keep these in sync with /usr/lib/convergent/theme.
-set $theme_bg #0b0b0b
-set $theme_surface #202020
-set $theme_dim #999999
-set $theme_text #dddddd
-set $theme_accent #78a9ff
-set $theme_warn #ff8c00
-set $theme_crit #ff0000
-output * bg $theme_bg solid_color
-
-font pango:DejaVu Sans Mono 10
-default_border pixel 1
-default_floating_border pixel 1
-titlebar_border_thickness 1
-titlebar_padding 4 2
-gaps inner 0
-gaps outer 0
-# border, title background, text, split indicator, child border (tab/stack titles too).
-client.focused $theme_accent $theme_surface $theme_text $theme_accent $theme_accent
-client.focused_inactive $theme_surface $theme_bg $theme_dim $theme_surface $theme_surface
-client.unfocused $theme_surface $theme_bg $theme_dim $theme_surface $theme_surface
-client.urgent $theme_crit $theme_bg $theme_text $theme_crit $theme_crit
-client.placeholder $theme_surface $theme_bg $theme_dim $theme_surface $theme_surface
-client.background $theme_bg
+# Stock Sway on black: the background and the bar, nothing else restyled.
+output * bg #000000 solid_color
 
 # Bar: tools/bar speaks the i3bar protocol with pango markup and click events.
 bar bar-0 {
-    position top
-    font pango:DejaVu Sans Mono 10
     status_command /usr/local/sbin/bar
     colors {
-        background $theme_bg
-        statusline $theme_text
-        separator $theme_dim
-        focused_workspace $theme_accent $theme_surface $theme_text
-        active_workspace $theme_surface $theme_surface $theme_text
-        inactive_workspace $theme_bg $theme_bg $theme_dim
-        urgent_workspace $theme_crit $theme_bg $theme_text
-        binding_mode $theme_accent $theme_surface $theme_text
+        background #000000
     }
 }
 
-# Launcher and the sys tool.
-set $menu_colors --tb "$theme_bg" --tf "$theme_accent" --fb "$theme_bg" --ff "$theme_text" --cb "$theme_text" --cf "$theme_bg" --nb "$theme_bg" --nf "$theme_text" --ab "$theme_bg" --af "$theme_text" --hb "$theme_surface" --hf "$theme_accent" --sb "$theme_bg" --sf "$theme_dim"
-set $pick bemenu -i -l 15 --fn "DejaVu Sans Mono 11" $menu_colors
+# Launcher and the sys tool; wmenu's stock colours, which the stock config's launcher has.
+set $menu_colors --tb "#005577" --tf "#eeeeee" --fb "#222222" --ff "#bbbbbb" --nb "#222222" --nf "#bbbbbb" --ab "#222222" --af "#bbbbbb" --hb "#005577" --hf "#eeeeee"
+set $pick bemenu -i -l 15 $menu_colors
 unbindsym Mod4+d
-bindsym Mod4+d exec apps -i -l 15 --fn 'DejaVu Sans Mono 11' $menu_colors
+bindsym Mod4+d exec apps -i -l 15 $menu_colors
 bindsym Mod4+m exec foot -T sys -e sys
 # One sys action by name, run in its own terminal.
 unbindsym Mod4+a
 bindsym Mod4+a exec sh -c 'a=$(sys --pick | $pick -p action | cut -f1) && [ -n "$a" ] && sys --pick "$a"'
 
 # Browsers (Archer's keys).
-# A failed start says why instead of vanishing.
-set $nag_colors --background "$theme_bg" --text "$theme_text" --border "$theme_warn" --border-bottom "$theme_warn" --button-background "$theme_surface" --button-text "$theme_text" --button-border "$theme_warn"
+# A failed start says why instead of vanishing: the launcher's reason, not the logs it prints after.
 unbindsym Mod4+b
-bindsym Mod4+b exec sh -c 'browser web 2>"$XDG_RUNTIME_DIR/browser.log" || swaynag $nag_colors -t warning -m "browser web: $(tail -n 1 "$XDG_RUNTIME_DIR/browser.log")"'
-bindsym Mod4+Shift+t exec sh -c 'browser tmp 2>"$XDG_RUNTIME_DIR/browser.log" || swaynag $nag_colors -t warning -m "browser tmp: $(tail -n 1 "$XDG_RUNTIME_DIR/browser.log")"'
+bindsym Mod4+b exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser web 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l")"'
+bindsym Mod4+Shift+t exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser tmp 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l")"'
 
 # Brightness keys: the stock bindings call brightnessctl, which Gentoo does not have.
 unbindsym --locked XF86MonBrightnessDown
@@ -89,8 +57,8 @@ bindsym --locked XF86AudioMicMute exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ tog
 
 # Session services: audio (Gentoo's launcher starts WirePlumber once PipeWire is up), notifications.
 exec gentoo-pipewire-launcher
-# Prefer the owner config; retain the system palette when none exists.
-exec sh -c 'c=${XDG_CONFIG_HOME:-$HOME/.config}/mako/config; [ -r "$c" ] || c=/etc/xdg/mako/config; exec mako -c "$c"'
+# Stock look; an owner config in ~/.config/mako applies on its own.
+exec mako
 
 # The owner's own settings, written by `sys display save` and `sys keyboard set`.
 input type:keyboard xkb_layout "us"
