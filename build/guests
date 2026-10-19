@@ -10,6 +10,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 keys=/etc/convergent/keys
 die() { echo "guests: $*" >&2; exit 1; }
+# A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (fetch-release: the same).
+ident() { (cd "$1" && { cat SHA256SUMS; find . -type f -name '*.yaml' | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# = 2 ] || die "usage: build/guests <release-dir> <guests-dir>"
 dir=$1
@@ -19,7 +21,9 @@ src=$2
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 [ ! -e "$dir/guests" ] && [ ! -L "$dir/guests" ] || die "guests already exists in $dir"
-# Complete or absent: written aside, renamed before signing.
+# Complete or absent: a failure removes what this run made.
+finished=
+trap '[ -n "$finished" ] || rm -rf "$dir/guests" "$dir/guests.manifest.new" "$dir/guests.manifest" "$dir/guests.manifest.sig"' 0
 echo "release $release" >"$dir/guests.manifest.new"
 for g in fw wan svc browser; do
 	[ -d "$src/$g" ] || continue
@@ -43,7 +47,7 @@ for g in fw wan svc browser; do
 		cp "$src/$g/$f" "$dir/guests/$g/$f"
 	done
 	(cd "$dir/guests/$g" && sha256sum -c SHA256SUMS) || die "$g checksum mismatch"
-	echo "guest $g $(sha256sum <"$dir/guests/$g/SHA256SUMS" | cut -d' ' -f1)" >>"$dir/guests.manifest.new"
+	echo "guest $g $(ident "$dir/guests/$g")" >>"$dir/guests.manifest.new"
 	for f in SHA256SUMS $files; do
 		path=guests/$g/$f
 		case $f in
@@ -60,3 +64,4 @@ for g in fw wan svc browser; do
 done
 mv "$dir/guests.manifest.new" "$dir/guests.manifest"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$dir"
+finished=1

@@ -190,7 +190,8 @@ test_guest_delivery() {
 	cmp "$BUILDER/releases/$release/manifest" "$delivery/release/manifest" || die 'guests changed the host manifest'
 	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
 	for kind in fw wan svc browser; do
-		id=$(sha256sum <"$guests/$kind/SHA256SUMS" | cut -d' ' -f1)
+		# build/guests' identity: SHA256SUMS and the Incus profiles.
+		id=$( (cd "$guests/$kind" && { cat SHA256SUMS; find . -type f -name '*.yaml' | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1)
 		grep -qx "guest $kind $id" "$delivery/release/guests.manifest" || die "missing $kind identity"
 	done
 	awk '$1 == "size" && $2 ~ /^guests\// {print $2, $3}' "$delivery/release/guests.manifest" |

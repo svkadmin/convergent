@@ -82,6 +82,8 @@ cleanup() {
     step=cleanup
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
+    # Profiles first: the restored instance starts with what it ran with.
+    if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; }; fi
     if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
     if [ -n "$starting" ]; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
@@ -354,6 +356,18 @@ profile() {
     ic profile edit "$1" <"$2"
     init_done "profile-$1"
 }
+# Profiles as they were before this update; a failed update puts them back.
+profiles_save() {
+    mkdir -p "$state/profiles.before"
+    for p do [ -f "$state/profiles.before/$p.yaml" ] || ic profile show "$p" >"$state/profiles.before/$p.yaml" || return; done
+}
+profiles_restore() {
+    for f in "$state/profiles.before"/*.yaml; do
+        [ -f "$f" ] || continue
+        ic profile edit "$(basename "$f" .yaml)" <"$f" || return
+    done
+    rm -rf "$state/profiles.before"
+}
 init_guest() {
     node=$1
     shift
@@ -603,6 +617,7 @@ update() {
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
     [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+    [ ! -d "$state/profiles.before" ] || profiles_restore
     image_dir=$2
     verify_image "$1"
     case $1 in
@@ -638,16 +653,19 @@ update() {
         ;;
     wan|svc)
         [ "$1" != wan ] || ic profile device set wan eth0 security.ipv4_filtering=false
-        [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || profile svc "$image_dir/incus.yaml"
+        [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
         replace "$1"
         commit_update
+        rm -rf "$state/profiles.before"
         ;;
     web|admin)
         running "$1" && die 'close this browser with tools/browser before updating it'
         # The role profiles travel with the browser image.
+        profiles_save browser-base browser-web browser-tmp browser-portal browser-admin
         for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         replace "$1"
         commit_update
+        rm -rf "$state/profiles.before"
         ;;
     browser)
         browser_pending=
@@ -666,6 +684,7 @@ update() {
             exec 6>&-
             return
         fi
+        profiles_save browser-base browser-web browser-tmp browser-portal browser-admin
         for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         import_image browser
         for node in web admin; do
@@ -678,6 +697,7 @@ update() {
             replace "$node"
             commit_update
         done
+        rm -rf "$state/profiles.before"
         exec 6>&-
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, web or admin' ;;
