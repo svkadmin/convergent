@@ -16,4 +16,8 @@ entries=$(awk -F= '
 choice=$(printf '%s\n' "$entries" | cut -f1 | bemenu "$@" -p apps) || exit 0
 cmd=$(printf '%s\n' "$entries" | awk -F '\t' -v n="$choice" '$1 == n { print $2; exit }')
 [ -n "$cmd" ] || exit 0
-exec sh -c "$cmd"
+# A failed start says why, as Super+b does: the browser launcher's reason, else the last line.
+log=${XDG_RUNTIME_DIR:?}/apps.log
+sh -c "$cmd" 2>"$log" && exit 0
+why=$(grep '^browser: ' "$log" | tail -n 1 | grep . || tail -n 1 "$log" | grep . || echo failed)
+swaynag -t warning -m "$choice: $why"

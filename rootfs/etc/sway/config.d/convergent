@@ -23,8 +23,8 @@ bindsym Mod4+a exec sh -c 'a=$(sys --pick | $pick -p action | cut -f1) && [ -n "
 # Browsers (Archer's keys).
 # A failed start says why instead of vanishing: the launcher's reason, not the logs it prints after.
 unbindsym Mod4+b
-bindsym Mod4+b exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser web 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l")"'
-bindsym Mod4+Shift+t exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser tmp 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l")"'
+bindsym Mod4+b exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser web 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser web failed)"'
+bindsym Mod4+Shift+t exec sh -c 'l=$XDG_RUNTIME_DIR/browser.log; browser tmp 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser tmp failed)"'
 
 # Brightness keys: the stock bindings call brightnessctl, which Gentoo does not have.
 unbindsym --locked XF86MonBrightnessDown

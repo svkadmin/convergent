@@ -565,7 +565,7 @@ Convergent writes as little as it can:
 | `check` | cron: after boot and updates, daily | The checker (section 8) |
 | `bar` | in the session | The status bar; asks vmalert every 30 seconds |
 | `sys` | from a key binding | The menu: one file per area in `/usr/lib/convergent/sys` |
-| `apps` | Super+d | Lists the graphical apps from their desktop entries in bemenu and starts the chosen one |
+| `apps` | Super+d | Lists the graphical apps from their desktop entries in bemenu and starts the chosen one; a failed start shows why |
 | `browser` | from the menu or a key | Starts a browser container with its restricted Wayland and audio sockets |
 | `facts` | at boot; hourly cron | Writes the host's extra figures for node_exporter, archives pstore records |
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
