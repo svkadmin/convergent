@@ -59,7 +59,7 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 Use `sys AREA [ACTION] [ARGS]`; the first action in each row is the default. An unrecognized
 second word becomes an argument to that default: `sys backup /mnt/x proj` works;
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
-errors. `sys help` lists actions and aliases; `*` asks for `yes` in the terminal (default No).
+errors. `sys help` lists actions and aliases; `*` marks actions that ask for `yes` in the terminal (default No).
 
 `sys` (Super+m) looks like the Archer menu: the list left, the highlighted row's status and
 commands right, terminal colours with a blue highlight. Enter opens or runs, Esc goes back, typing

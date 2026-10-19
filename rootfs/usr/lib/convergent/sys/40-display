@@ -10,6 +10,10 @@ reset	Remove saved outputs	confirm'
 display_bright() {
 	onearg 'Brightness percent, +N or -N' "$@"
 	case $answer in [+-][0-9]|[+-][0-9][0-9]|[0-9]|[0-9][0-9]|100) ;; *) die 'use 0-100, +N or -N' ;; esac
+	case $answer in
+	[+-]0[0-9]) answer=${answer%??}${answer#??} ;;
+	0[0-9]) answer=${answer#0} ;;
+	esac
 	for d in /sys/class/backlight/*; do
 		[ -w "$d/brightness" ] || continue
 		max=$(cat "$d/max_brightness") && now=$(cat "$d/brightness") || return
@@ -35,9 +39,10 @@ display_json() { sway; run timeout -k 1 3 swaymsg -r -t get_outputs; }
 display_status() {
 	noargs "$@"
 	json=$(display_json) || return
-	printf '%s\n' "$json" | page jq -r '.[] | "\(.name): enabled=\(.active) mode=\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz scale=\(.scale) position=\(.rect.x),\(.rect.y)\n  modes: \([.modes[] | "\(.width)x\(.height)@\(.refresh/1000)Hz"] | join(" "))"'
+	printf '%s\n' "$json" | page jq -r '.[] | "\(.name): enabled=\(.active) mode=\(if .active then "\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz" else "-" end) scale=\(if .active then (.scale // 1) else "-" end) position=\(.rect.x),\(.rect.y)\n  modes: \([.modes[] | "\(.width)x\(.height)@\(.refresh/1000)Hz"] | join(" "))"'
 }
 display_value() {
+	text_valid "$2"
 	case $1 in
 	mode) printf '%s\n' "$2" | grep -Eq '^[1-9][0-9]{0,4}x[1-9][0-9]{0,4}(@[0-9]{1,3}(\.[0-9]{1,3})?(Hz)?)?$' || die 'invalid mode' ;;
 	scale) printf '%s\n' "$2" | grep -Eq '^[0-9](\.[0-9]{1,3})?$' && awk -v n="$2" 'BEGIN {exit !(n >= 0.25 && n <= 8)}' || die 'scale must be 0.25-8' ;;
@@ -85,7 +90,7 @@ display_set() {
 display_save() {
 	noargs "$@"
 	json=$(display_json) || return
-	rows=$(printf '%s\n' "$json" | jq -er '.[] | [.name, .active, "\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz", (.scale*1000|round/1000), "\(.rect.x),\(.rect.y)", .transform] | @tsv') || return
+	rows=$(printf '%s\n' "$json" | jq -er '.[] | (if .active then [.name, .active, "\(.current_mode.width)x\(.current_mode.height)@\((.current_mode.refresh // 0)/1000)Hz", ((.scale // 1)*1000|round/1000), "\(.rect.x),\(.rect.y)", (.transform // "normal")] else [.name, .active] end) | @tsv') || return
 	config=$(printf '%s\n' "$rows" | while IFS="$tab" read -r name active mode scale position transform; do
 		token "$name"
 		if [ "$active" = false ]; then printf 'output %s disable\n' "$name"; continue; fi
@@ -98,6 +103,6 @@ display_save() {
 	printf '%s\n' "$config" | save_config outputs
 }
 display_reset() {
-	noargs "$@"; sway; path "$HOME"
+	noargs "$@"; path "$HOME"
 	run rm -f "$HOME/.config/sway/config.d/outputs"
 }

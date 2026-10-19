@@ -9,7 +9,11 @@ connect	Connect Bluetooth MAC
 disconnect	Disconnect Bluetooth MAC	
 forget	Forget Bluetooth MAC	confirm'
 
-bluetooth_state() { echo Bluetooth; }
+bluetooth_state() {
+	value=$(timeout -k 0.2 1 bluetoothctl show 2>/dev/null) || value=
+	value=$(printf '%s\n' "$value" | awk '$1 == "Powered:" {if ($2 == "yes") print "on"; else if ($2 == "no") print "off"; exit}')
+	printf 'Bluetooth: %s\n' "${value:-unknown}"
+}
 bluetooth_status() { noargs "$@"; page bluetooth_show; }
 bluetooth_show() { run bluetoothctl show && run bluetoothctl devices; }
 bluetooth_on() { noargs "$@"; run bluetoothctl power on; }

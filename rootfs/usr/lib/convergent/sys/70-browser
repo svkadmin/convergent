@@ -7,10 +7,29 @@ admin	Open the admin browser
 portal	Open the portal browser	'
 
 browser_state() { echo 'web / tmp / admin / portal'; }
-browser_web() { noargs "$@"; run setsid -f /usr/local/sbin/browser web; }
-browser_tmp() { noargs "$@"; run setsid -f /usr/local/sbin/browser tmp; }
-browser_admin() { noargs "$@"; run setsid -f /usr/local/sbin/browser admin; }
-browser_portal() { noargs "$@"; run setsid -f /usr/local/sbin/browser portal; }
+browser_start() (
+	[ -n "${XDG_RUNTIME_DIR:-}" ] || die 'XDG_RUNTIME_DIR is not set'
+	log=$(mktemp "$XDG_RUNTIME_DIR/sys-browser-$1.XXXXXX") || exit 1
+	trace setsid -f -w /usr/local/sbin/browser "$1"
+	setsid -f -w /usr/local/sbin/browser "$1" </dev/null >"$log" 2>&1 &
+	pid=$!
+	for attempt in 1 2 3; do
+		sleep 1
+		kill -0 "$pid" 2>/dev/null || break
+	done
+	if ! kill -0 "$pid" 2>/dev/null; then
+		wait "$pid"; result=$?
+		if [ "$result" != 0 ]; then
+			reason=$(awk '/browser: / {reason=$0} {last=$0} END {print (reason != "" ? reason : last)}' "$log")
+			die "${reason:-browser exited ($result); see $log}"
+		fi
+	fi
+	echo 'Browser is starting.'
+)
+browser_web() { noargs "$@"; browser_start web; }
+browser_tmp() { noargs "$@"; browser_start tmp; }
+browser_admin() { noargs "$@"; browser_start admin; }
+browser_portal() { noargs "$@"; browser_start portal; }
 
 browser_status() {
 	noargs "$@"
