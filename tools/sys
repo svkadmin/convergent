@@ -168,7 +168,7 @@ state() {
 	printf '%s\n' "${value:-unknown}" | tr -d '\000-\010\013-\037\177' | head -n 3 | cut -c 1-100
 }
 command_line() {
-	printf 'sys %s %s  - %s\n' "$area" "$action" "$label"
+	printf 'sys %s %s\n' "$area" "$action"
 }
 status_preview() (
 	load "$1"
@@ -229,7 +229,9 @@ tui() (
 			wait
 			printf '%s' "$areas" | while IFS="$tab" read -r area title alias; do
 				load "$area"
-				printf '%s\t%s: %s\n' "$area" "$title" "$(head -n 1 "$states/$area")"
+				# The state without the area name it often repeats ("Wi-Fi: -" under Wi-Fi).
+				s=$(head -n 1 "$states/$area"); s=${s#"$title: "}; [ "$s" != "$title" ] || s=
+				printf '%s\t%s%s\n' "$area" "$title" "${s:+: $s}"
 				{
 					printf '%s\n\n' "$title"
 					cat "$states/status-$area"

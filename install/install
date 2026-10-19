@@ -381,7 +381,11 @@ for f in passwd shadow group gshadow subuid subgid; do
 done
 run chown 0:0 "$work/state/etc/"*
 run chmod 0644 "$work/state/etc/passwd" "$work/state/etc/group" "$work/state/etc/subuid" "$work/state/etc/subgid"
-run chmod 0600 "$work/state/etc/shadow" "$work/state/etc/gshadow"
+# root:shadow 0640: the lock screen checks passwords through unix_chkpwd, which is setgid shadow.
+shadow_gid=$(awk -F: '$1 == "shadow" { print $3 }' "$work/state/etc/group") || shadow_gid=
+case $shadow_gid in '' | *[!0-9]*) die "no shadow group in the image" ;; esac
+run chown "0:$shadow_gid" "$work/state/etc/shadow" "$work/state/etc/gshadow"
+run chmod 0640 "$work/state/etc/shadow" "$work/state/etc/gshadow"
 run chmod 0755 "$work/state/home" "$work/state/etc"
 run mkdir "$work/state/etc/usbguard"
 run cp "$work/usb.rules" "$work/state/etc/usbguard/rules.conf"
