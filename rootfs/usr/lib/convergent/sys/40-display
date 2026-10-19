@@ -217,7 +217,8 @@ display_watch() (
 				# Connector changes trigger remapping too; layout changes do not.
 				stamp=$(printf '%s\n' "$json" | jq -c 'sort_by(.name) | map([.name,.make,.model,.serial])') || exit 1
 				if [ "$stamp" != "$previous" ]; then
-					if [ -f "$profiles/$key.json" ]; then display_restore "$profiles/$key.json"; else display_defaults; fi || exit 1
+					if [ -f "$profiles/$key.json" ]; then display_restore "$profiles/$key.json"
+					elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi || exit 1
 				fi
 				printf '%s\n' "$stamp"
 			) || continue

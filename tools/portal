@@ -59,7 +59,12 @@ net_of() {
 }
 
 upstream_net() {
-	_a=$(rsh wan wifi status 2>/dev/null | awk '$1 == "address" { print $2; exit }')
+	_a=$(rsh wan diag 2>/dev/null | awk '
+		/^== / {section=$2; next}
+		section == "addresses" && $1 != "eth0" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=$2}
+		section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
+			for (i=1;i<NF;i++) if ($i == "dev" && address[$(i+1)] != "") {print address[$(i+1)]; exit}
+		}')
 	[ -n "$_a" ] || return 1
 	net_of "$_a"
 }

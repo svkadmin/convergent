@@ -26,7 +26,7 @@ wifi_pick() (
 	trap 'exit 1' HUP INT TERM
 	wifi_wan scan </dev/null >"$states/scan" || exit 1
 	# Use iwctl's column headings so spaces and security words in names survive.
-	awk '
+	LC_ALL=C awk '
 	/^[ \t]*Network name[ \t]+Security[ \t]+Signal[ \t]*$/ {
 		start=index($0,"Network name"); sec=index($0,"Security"); sig=index($0,"Signal"); next
 	}
