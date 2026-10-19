@@ -8,6 +8,11 @@ cd "${here%/build}" || exit 1
 fail=0
 bad() { echo "lint: $*"; fail=1; }
 sh tools/config-get --selftest || bad 'config-get selftest failed'
+if command -v python3 >/dev/null 2>&1; then
+	python3 -I guests/svc/dashboards/build.py --check || bad 'dashboard JSON drift'
+else
+	echo 'lint: python3 not installed, dashboard drift check skipped'
+fi
 
 # Tracked files; an exported tree (no .git) is checked whole.
 files=$(git ls-files 2>/dev/null) || files=$(find . -type f ! -path './.git/*' | sed 's|^\./||')
