@@ -73,7 +73,8 @@ portal_on() { /usr/local/sbin/portal status | grep -qx 'portal: on'; }
 wait_socket() {
     attempts=0
     until [ -S "$1" ] && [ ! -L "$1" ]; do
-        kill -0 "$2" 2>/dev/null || die "socket provider exited: $1"
+        # The log goes with $run on exit: its last lines travel in the message.
+        kill -0 "$2" 2>/dev/null || die "socket provider exited: $1: $(tail -n 2 "$3" 2>/dev/null | tr '\n' ' ')"
         attempts=$((attempts + 1))
         [ "$attempts" -lt 50 ] || die "socket timed out: $1"
         sleep .1
@@ -168,7 +169,7 @@ if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; 
 fi
 background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
-wait_socket "$run/sockets/wayland-0" "$wayland"
+wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
 # Only the Pulse socket crosses into the guest; all recording and module loading are denied.
 cat >"$run/pulse.conf" <<EOF
 context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }
@@ -189,7 +190,7 @@ chmod 644 "$run/pulse.conf"
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
     pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
-wait_socket "$run/sockets/pulse-0" "$audio"
+wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
 chmod 0710 "$run/sockets"
 for socket in wayland-0 pulse-0; do
     [ ! -L "$run/sockets/$socket" ] && [ -S "$run/sockets/$socket" ] || die 'invalid socket inode'
