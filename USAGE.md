@@ -90,7 +90,7 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save; options below) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to clipboard) |
 | `browser` (`br`) | `status`, `def`, `tmp`, `int` |
-| `security` (`sec`) | `status`, `check`, `report`, `password` |
+| `security` (`sec`) | `status`, `check`, `report`, `events`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
 | `power` | `status`, `ac`, `battery`, `charge off\|55-100`, `thermal quiet\|balanced\|performance`, `lock`, `logout` *, `reboot` *, `off` * |
@@ -314,6 +314,16 @@ toggled on. Log panels show actionable records; **Explore · all logs** includes
 and full kernel traces. A dash means no data; each panel names its source and each footer lists
 what is not collected. Battery is always 0–100%.
 
+Security's recent-events list includes successful/failed logins, sudo commands/password failures,
+USBGuard decisions, AppArmor denials, firewall takeovers, guest updates/failures and host
+update/bless/fallback records. It shows the latest 50 records in the selected range.
+`sys security events` works without svc: up to 100 matches from the last 5000 lines of each
+current host log (`/var/log/messages`, then `/var/log/audit/audit.log`), with source and original
+timestamp; files are not merged by time and rotated logs are not scanned. Missing logs are
+reported. Local firewall events cover maintenance and changes observed by the minute status
+probe; brief transitions between probes require the firewall logs in Grafana. Fallback records
+identify an older boot with an exhausted newer UKI. Audit and PAM may describe the same login.
+
 There are two checkers. `check` runs on the host and compares it with the accepted release:
 verity, the writable `/etc` files, autostart and SUID inventories, the guests' Incus settings, the
 radio's VFIO binding, CARP and pf on both firewalls. Cron runs it after boot and updates, and
@@ -323,6 +333,7 @@ checker's result reaches them as CheckerFailed and CheckerStale.
 ```sh
 sys security check                    # run the checker now (sudo check); report in /var/lib/convergent/check/last
 sys security report                   # read the last report
+sys security events                   # recent local security events, even without svc
 sudo check accept <release-dir>       # accept a trusted release as the baseline (once Secure Boot is on)
 sudo check accept-fw <guest-dir>/fw   # accept new firewall hashes after a firewall update (once Secure Boot is on)
 ```

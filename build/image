@@ -217,6 +217,9 @@ ln -sfn ../proc/self/mounts "$root/etc/mtab"   # as systemd-tmpfiles makes it
 # auditd loads audit.rules as it is; the fragments are put together here, as augenrules would.
 cat "$root"/etc/audit/rules.d/*.rules >"$root/etc/audit/audit.rules"
 chmod 0600 "$root/etc/audit/audit.rules"
+# USB decisions share auditd's local log and existing syslog forwarding.
+sed -i '/^[[:space:]#]*AuditBackend[[:space:]]*=/d' "$root/etc/usbguard/usbguard-daemon.conf"
+printf '\nAuditBackend=LinuxAudit\n' >>"$root/etc/usbguard/usbguard-daemon.conf"
 # What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"

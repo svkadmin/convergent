@@ -1,6 +1,6 @@
 """Boot evidence, checker, trust, hardware health and security lines."""
 from dashlib import (
-    AMBER, BAD, GREEN, NEUTRAL, OK, RED, SCREEN_ROWS, SECURITY, Page,
+    AMBER, BAD, GREEN, NEUTRAL, OK, RED, SCREEN_ROWS, SECURITY_EVENTS, Page,
     grid, ov, target, thresholds, vmap)
 
 
@@ -50,7 +50,8 @@ def generate():
             "Source: node_exporter textfile mtimes across host, fw1/fw2 and wan. Boot facts age with this boot; daily facts refresh after 20 hours; audit facts refresh hourly; firewall/wan facts every minute; checker after boot/update and daily. No single age threshold fits them all.", [ov("age", unit="s")])
     p.timeline("Checker · over the range", [target('max(cv_checker_success)', "checker")],
                grid(12, 14, 12, 7), "Source: tools/check result at each scrape. A gap means no result; failure stays visible until the checker passes.", mappings=OK)
-    p.logs("Security · denials, authentication and sudo", SECURITY, grid(0, 21, 24, 10),
-           "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. AppArmor DENIED, USBGuard block/reject, pam_faillock, login failures and sudo COMMAND records. Routine audit EXECVE/SYSCALL/PATH/CWD/PROCTITLE and stack continuations excluded. Labels retain hostname/app_name/level; all logs are in Explore.")
+    events = p.logs("Security · recent events", SECURITY_EVENTS, grid(0, 21, 24, 10),
+                    "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. Successful/failed logins (including greetd/tuigreet and su), sudo password failures and commands, USBGuard decisions, AppArmor denials, CARP takeovers, guest updates/failures, host updates, bless and exhausted-slot fallback. Latest 50 records in the selected range; hostname/app_name identify the source. Routine audit and stack continuations excluded; all logs are in Explore.")
+    events["options"]["dedupStrategy"] = "none"
     p.footer(SCREEN_ROWS, "Continuous UKI/ESP hashes, live dm-verity verification, TPM attestation, per-key audit counters, AppArmor/USBGuard policy inventories, file integrity sweeps, guest security state and certificates other than incus-server are not collected. Boot, daily and audit facts retain their last sample until rewritten: read freshness alongside the verdicts.")
     return p.dashboard("cv-security", "Convergent · Security", "Measured boot facts, trust, checker and security logs.", refresh="5m")

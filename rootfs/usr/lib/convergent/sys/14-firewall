@@ -81,6 +81,7 @@ firewall_change() (
 		firewall_release || die 'undo failed; journal retained, retry sys firewall undo'
 		firewall_wait fw1 fw2 || die 'demotion removed but normal fw1 MASTER / fw2 BACKUP roles not restored; inspect sys fw status'
 		echo 'Maintenance ended; fw1 is master on all six segments.'
+		logger -t sys-firewall 'maintenance ended: fw1 took over all six segments' || :
 		exit 0
 	fi
 	[ ! -e "$journal" ] || die 'maintenance already recorded; use sys firewall undo'
@@ -99,6 +100,7 @@ for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group sysmaint; d
 ifconfig -g sysmaint carpdemote 128' || die 'demotion failed; undoing'
 	firewall_wait "$peer" "$master" && firewall_healthy "$peer" || die 'peer did not take over healthily; undoing'
 	trap - 0 HUP INT TERM
+	logger -t sys-firewall "$peer took over all six segments; $master in maintenance" || :
 	echo "$peer is master on all six segments; $master is in maintenance. Run sys firewall undo when finished."
 )
 firewall_maintenance() { firewall_change maintenance "$@"; }

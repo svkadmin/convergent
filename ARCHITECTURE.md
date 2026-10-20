@@ -567,7 +567,11 @@ Firmware updates use signed capsules only, applied from the menu *(planned)*.
 - **Logs:** VictoriaLogs receives syslog over TLS from the host, the firewalls and wan, including
   forwarded host audit records.
   Retention is seven days or 4 GiB, within a 6 GiB volume quota. Authentication, audit and firewall
-  logging remain unchanged.
+  logging remain enabled. USBGuard uses LinuxAudit so device decisions reach audit.log and the
+  existing audit syslog forwarder. Local messages also retain authentication and selected
+  security programs below warning level. Guest update summaries and failures use syslog;
+  slot bless records exhausted-newer-slot fallback, and the minute status probe logs observed
+  firewall takeovers only when the last known coherent master changes.
 - **Alerts:** vmalert evaluates the rules every 30 seconds; the status bar shows the counts, or "unknown" when svc
   does not answer; Grafana shows the details. Rules, carried from Archer and adapted:
 
@@ -586,12 +590,14 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 `guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
 
 - **Dashboards:** Overview (path and attention), Network (six CARP segments, pf and DNS), Guests
-  (Incus state and resources) and Security (boot facts, trust and denials), opened in the int
+  (Incus state and resources) and Security (boot facts, trust and recent events), opened in the int
   browser. Stdlib Python generators in `guests/svc/dashboards` share Archer's palette, type scale,
   Canvas path and first-screen sizing; current state uses instant queries. CARP role-change
   annotations start off; actionable syslog panels link to all records in Explore. Footers name
   collection gaps. `build/lint` checks JSON drift; `build/test --guests-update` checks every metric
-  panel query against real svc scrapes, allowing explicitly optional hardware and quiet alerts.
+  panel query against real svc scrapes, allowing explicitly optional hardware and quiet alerts,
+  and every LogsQL target. Security has one bounded event list; `sys security events` filters
+  the two local host logs without svc (USAGE describes its bounds).
 - **Checker:** runs after every boot, after every update and daily; it compares the running system
   with the release (verity, pf ruleset hashes, Incus settings, the writable `/etc` entries, device
   ownership) and checks host and internal guest state. Upstream connectivity is not part of it:

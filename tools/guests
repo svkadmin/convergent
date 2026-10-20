@@ -15,7 +15,7 @@ work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touche
 applying=
 step=setup
 
-fail() { echo "guests: $step: $*" >&2; return 1; }
+fail() { logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
 # Keep lock descriptors out of clients and any helpers they leave running.
 ic() {
@@ -98,6 +98,7 @@ cleanup() {
     fi
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
+    [ "$result" = 0 ] || logger -p user.err -t guests "$failed_step: failed (status $result, original $failed_status); cleanup finished" 2>/dev/null || :
     if [ -n "$applying" ]; then
         if [ "$result" = 0 ]; then
             echo "${browser_pending:-}" >/run/convergent/status/guests-pending
@@ -113,6 +114,7 @@ update_status() {
     echo "$1" >/run/convergent/status/guests-update
     chmod 0644 /run/convergent/status/guests-update
     echo "guests: update $1"
+    logger -t guests "apply $1 (browser pending=${browser_pending:-0})" 2>/dev/null || :
 }
 
 # Secrets are generated once on this laptop, never on the build host.
@@ -751,6 +753,7 @@ init() {
 }
 update() {
     step="update $1"
+    logger -t guests "update $1 started: $2" 2>/dev/null || :
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
     case $1 in fw|wan|svc|browser|def|int) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;; esac
@@ -758,6 +761,7 @@ update() {
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
+        logger -t guests "update $1 deferred: browser is open" 2>/dev/null || :
         browser_pending=1
         return
     fi
@@ -833,6 +837,7 @@ update() {
         ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
         if jq -e '.[] | select(.status == "Running" and .name != "web" and .name != "admin" and .name != "portal" and (.profiles | index("browser-base")))' "$work/browsers" >/dev/null; then
             echo 'guests: browser is running; browser update waits for a later guests apply'
+            logger -t guests 'update browser deferred: browser is running' 2>/dev/null || :
             browser_pending=1
             exec 6>&-
             return
@@ -861,6 +866,7 @@ update() {
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
     esac
+    logger -t guests "update $1 done: $2" 2>/dev/null || :
 }
 apply() {
     applying=1

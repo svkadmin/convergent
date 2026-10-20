@@ -31,6 +31,13 @@ graphs have fixed 0–100 bounds; other graphs have zero minima and unit-appropr
 maxima that expand with the data, so a traffic spike is not clipped. The host supplies curl/jq for
 the integration check; svc needs neither client, Python nor the generators at runtime.
 
+Security's single recent-events panel adds successful/failed authentication, sudo commands,
+USBGuard decisions (including forwarded USER_DEVICE audit records), AppArmor denials, CARP
+takeovers and host/guest update, bless and fallback messages. It keeps 50 lines, scoped to the
+four infrastructure senders and selected time range, with no aggregation or deduplication.
+Overview's attention count keeps its narrower failure filter. `check-data` already runs this
+LogsQL target; empty event windows remain valid.
+
 Sources: `tools/facts`, `tools/check`, firewall `fw-facts`, WAN `wan-check`, node_exporter's
 configured/default collectors, Incus `/1.0/metrics`, and vmalert `ALERTS`. pf pass/block label
 counters and Wi-Fi radio metrics are not collected. The descriptions and footers say so.

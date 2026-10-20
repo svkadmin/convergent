@@ -137,6 +137,14 @@ copy_rescue() {
 bless() {
 	booted
 	esp_mount
+	# An exhausted newer UKI explains an automatic fallback to this release.
+	for other in "$esp/$linux"/convergent-*-*+0-*.efi "$esp/$linux"/convergent-*-*+0.efi; do
+		[ -f "$other" ] || continue
+		newer=$(uki_release "$other")
+		if expr "$newer" '>' "$release" >/dev/null; then
+			log "fallback: booted release $release in slot $slot; release $newer exhausted its tries"
+		fi
+	done
 	# shellcheck disable=SC2046
 	set -- $(ukis "$slot")
 	[ $# = 1 ] || die "expected one UKI for slot $slot on the ESP, found $#"
