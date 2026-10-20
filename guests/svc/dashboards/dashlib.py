@@ -51,6 +51,15 @@ SECURITY = (INFRA + ' AND (_msg:~' + json.dumps('apparmor="DENIED"|pam_faillock|
 CARP_CHANGES = INFRA + ' AND hostname:~"^fw[12]$" AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)"'
 FW_CHANGES = (INFRA + ' AND hostname:~"^fw[12]$" AND '
               '(_msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)" OR app_name:="ifstated" OR app_name:="pfctl") AND ' + QUIET)
+SECURITY_EVENTS = (INFRA + ' AND ('
+                   '(app_name:in("greetd","tuigreet","login","su","sudo","sshd") AND '
+                   '_msg:~"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=") '
+                   'OR (_msg:~"type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) " AND '
+                   '_msg:~' + json.dumps(r'exe="[^"]*/(greetd|tuigreet|login|su|sudo|sshd)"') + ') '
+                   'OR _msg:~' + json.dumps('apparmor="DENIED"|type=(USER_DEVICE|1137) ') + ' '
+                   'OR (app_name:~"^usbguard(-daemon)?$" AND _msg:~"(?i)allow|block|reject|denied") '
+                   'OR app_name:in("slot","fetch-release","guests","convergent-watchdog","sys-firewall") '
+                   'OR (hostname:~"^fw[12]$" AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND ' + QUIET)
 ACTIONABLE = '(' + ERRORS + ') OR (' + SECURITY + ') OR (' + FW_CHANGES + ')'
 
 

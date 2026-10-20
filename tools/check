@@ -114,6 +114,17 @@ if [ "${1:-}:$#" = status:1 ]; then
         else wan=down uplink=-; fi
         if [ "$fw1" = true ]; then read -r fw1 <"$status/.fw1"; else fw1=down; fi
         if [ "$fw2" = true ]; then read -r fw2 <"$status/.fw2"; else fw2=down; fi
+        # Remember only coherent pairs; a missed probe is not a takeover.
+        master=
+        case $fw1:$fw2 in master:backup) master=fw1 ;; backup:master) master=fw2 ;; esac
+        if [ -n "$master" ]; then
+            previous=$(cat "$status/firewall-master" 2>/dev/null) || previous=
+            case $previous in fw1|fw2)
+                [ "$previous" = "$master" ] ||
+                    logger -t sys-firewall "observed takeover: $previous -> $master (all six segments)" 2>/dev/null || : ;;
+            esac
+            printf '%s\n' "$master" >"$status/firewall-master"
+        fi
         if [ "$svc" = true ]; then svc=up; else svc=down; fi
         printf 'uplink=%s wan=%s fw1=%s fw2=%s svc=%s browsers=%s\n' "$uplink" "$wan" "$fw1" "$fw2" "$svc" "$browsers" >"$status/.topology"
         chmod 644 "$status/.topology" && mv "$status/.topology" "$status/topology" || exit 1

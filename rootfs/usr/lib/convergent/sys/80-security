@@ -4,6 +4,7 @@ actions="status	Show lockdown, boot, verity, USB and alerts	root
 alerts	List firing alerts
 check	Run the host security check	root
 report	Read the last security report	root
+events	List recent local security events	root
 password	Change the owner's login password	root"
 
 security_state() { printf 'Lockdown: %s\n' "$(cached /sys/kernel/security/lockdown)"; }
@@ -44,4 +45,32 @@ security_alert_list() {
 		end' || { echo 'Alerts unavailable: invalid vmalert response.' >&2; return 1; }
 }
 security_report() { noargs "$@"; root_page /var/lib/convergent/check/last; }
+security_events() (
+	noargs "$@"
+	[ "$(id -u)" = 0 ] || { page run sudo sys security events; exit $?; }
+	page security_event_lines
+)
+security_event_lines() {
+	echo 'Up to 100 matches per file, from its last 5000 lines; messages then audit (not merged by time).'
+	result=0
+	for log in /var/log/messages /var/log/audit/audit.log; do
+		[ -r "$log" ] || { echo "Unavailable: $log" >&2; result=1; continue; }
+		lines=$(run tail -n 5000 "$log") || { result=1; continue; }
+		printf '%s\n' "$lines" | awk -v source="$log" '
+		/type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE|1300|1302|1307|1309|1327) / {next}
+		{
+			s=tolower($0)
+			auth=s ~ /(greetd|tuigreet|login|su|sudo|sshd)(\[[0-9]+\])?:/ &&
+				s ~ /session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|command=/
+			audit=$0 ~ /type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) / &&
+				$0 ~ /exe="[^"]*\/(greetd|tuigreet|login|su|sudo|sshd)"/
+			usb=s ~ /usbguard(-daemon)?(\[[0-9]+\])?:/ && s ~ /allow|block|reject|denied/
+			if (auth || audit || usb || /apparmor="DENIED"|type=(USER_DEVICE|1137) / ||
+				s ~ /(slot|fetch-release|guests|convergent-watchdog|sys-firewall)(\[[0-9]+\])?:/ ||
+				/carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER/)
+				print source ": " $0
+		}' | tail -n 100
+	done
+	return "$result"
+}
 security_password() { noargs "$@"; run sudo /usr/local/sbin/account password; }

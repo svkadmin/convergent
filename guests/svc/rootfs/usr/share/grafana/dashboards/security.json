@@ -1378,14 +1378,14 @@
     {
       "id": 11,
       "type": "logs",
-      "title": "Security · denials, authentication and sudo",
+      "title": "Security · recent events",
       "gridPos": {
         "x": 0,
         "y": 21,
         "w": 24,
         "h": 10
       },
-      "description": "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. AppArmor DENIED, USBGuard block/reject, pam_faillock, login failures and sudo COMMAND records. Routine audit EXECVE/SYSCALL/PATH/CWD/PROCTITLE and stack continuations excluded. Labels retain hostname/app_name/level; all logs are in Explore.",
+      "description": "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. Successful/failed logins (including greetd/tuigreet and su), sudo password failures and commands, USBGuard decisions, AppArmor denials, CARP takeovers, guest updates/failures, host updates, bless and exhausted-slot fallback. Latest 50 records in the selected range; hostname/app_name identify the source. Routine audit and stack continuations excluded; all logs are in Explore.",
       "datasource": {
         "type": "victoriametrics-logs-datasource",
         "uid": "logs"
@@ -1393,7 +1393,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (_msg:~\"apparmor=\\\"DENIED\\\"|pam_faillock|authentication failure|Failed password\" OR (app_name:=\"usbguard\" AND _msg:~\"(?i)block|reject|denied\") OR (app_name:=\"sudo\" AND _msg:~\"COMMAND=|incorrect password|not in the sudoers\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")",
+          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND ((app_name:in(\"greetd\",\"tuigreet\",\"login\",\"su\",\"sudo\",\"sshd\") AND _msg:~\"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=\") OR (_msg:~\"type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) \" AND _msg:~\"exe=\\\"[^\\\"]*/(greetd|tuigreet|login|su|sudo|sshd)\\\"\") OR _msg:~\"apparmor=\\\"DENIED\\\"|type=(USER_DEVICE|1137) \" OR (app_name:~\"^usbguard(-daemon)?$\" AND _msg:~\"(?i)allow|block|reject|denied\") OR app_name:in(\"slot\",\"fetch-release\",\"guests\",\"convergent-watchdog\",\"sys-firewall\") OR (hostname:~\"^fw[12]$\" AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"
@@ -1427,7 +1427,7 @@
         "showLabels": true,
         "wrapLogMessage": true,
         "sortOrder": "Descending",
-        "dedupStrategy": "signature",
+        "dedupStrategy": "none",
         "enableLogDetails": true,
         "showCommonLabels": false,
         "enableInfiniteScrolling": false
@@ -1435,7 +1435,7 @@
       "links": [
         {
           "title": "These lines in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28_msg%3A~%5C%22apparmor%3D%5C%5C%5C%22DENIED%5C%5C%5C%22%7Cpam_faillock%7Cauthentication%20failure%7CFailed%20password%5C%22%20OR%20%28app_name%3A%3D%5C%22usbguard%5C%22%20AND%20_msg%3A~%5C%22%28%3Fi%29block%7Creject%7Cdenied%5C%22%29%20OR%20%28app_name%3A%3D%5C%22sudo%5C%22%20AND%20_msg%3A~%5C%22COMMAND%3D%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28%28app_name%3Ain%28%5C%22greetd%5C%22%2C%5C%22tuigreet%5C%22%2C%5C%22login%5C%22%2C%5C%22su%5C%22%2C%5C%22sudo%5C%22%2C%5C%22sshd%5C%22%29%20AND%20_msg%3A~%5C%22%28%3Fi%29session%20opened%7Csuccessful%20su%7Caccepted%20%28password%7Cpublickey%29%7Cauthentication%20%28failure%7Cfailed%7Cerror%7Csuccess%29%7Cfailed%20%28password%7Cpublickey%7Clogin%7Csu%29%7Cpam_authenticate%7Cpam_faillock%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%7CCOMMAND%3D%5C%22%29%20OR%20%28_msg%3A~%5C%22type%3D%28USER_AUTH%7CUSER_LOGIN%7CUSER_START%7C1100%7C1105%7C1112%29%20%5C%22%20AND%20_msg%3A~%5C%22exe%3D%5C%5C%5C%22%5B%5E%5C%5C%5C%22%5D%2A/%28greetd%7Ctuigreet%7Clogin%7Csu%7Csudo%7Csshd%29%5C%5C%5C%22%5C%22%29%20OR%20_msg%3A~%5C%22apparmor%3D%5C%5C%5C%22DENIED%5C%5C%5C%22%7Ctype%3D%28USER_DEVICE%7C1137%29%20%5C%22%20OR%20%28app_name%3A~%5C%22%5Eusbguard%28-daemon%29%3F%24%5C%22%20AND%20_msg%3A~%5C%22%28%3Fi%29allow%7Cblock%7Creject%7Cdenied%5C%22%29%20OR%20app_name%3Ain%28%5C%22slot%5C%22%2C%5C%22fetch-release%5C%22%2C%5C%22guests%5C%22%2C%5C%22convergent-watchdog%5C%22%2C%5C%22sys-firewall%5C%22%29%20OR%20%28hostname%3A~%5C%22%5Efw%5B12%5D%24%5C%22%20AND%20_msg%3A~%5C%22carp%5B0-9%5D%2B%3A.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20MASTER%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
         },
         {
           "title": "All logs in Explore",
