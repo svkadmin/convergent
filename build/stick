@@ -14,8 +14,11 @@ default_size=$(cfg image_size)
 . "$here/build.conf"
 . "$here/chroot.sh"
 die() { echo "stick: $*" >&2; exit 1; }
+. "$here/../install/options.sh"
+state_size=$(cfg install.state_size)
+swap=$(cfg install.swap)
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; the first boot grows it to the disk]"
+[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; auto state grows on first boot]"
 release=$1
 case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
 [ -s "$BUILDER/releases/$release/slot.img" ] || die "no release $release; run build/image first"
@@ -70,6 +73,7 @@ chroot_mount
 work=$(mktemp -d "$BUILDER/tmp/cv-stick.XXXXXX")
 inside=${work#"$BUILDER"}
 cp "$here/../install/install" "$work/install"
+cp "$here/../install/options.sh" "$work/options.sh"
 cp "$here/../tools/config-get" "$work/config-get"
 if [ -f "$input" ]; then cp "$input" "$work/config.yaml"; else : >"$work/config.yaml"; fi
 chmod 600 "$work/config.yaml"
@@ -80,6 +84,7 @@ mount -o remount,bind,ro "$work/guests"
 # Noclobber also refuses an output created since the existence check.
 (set -C; : >"$out") || die "cannot create output: $out"
 truncate -s "$size" "$out"
+install_size "$(stat -c %s "$out")" 12288
 loop=$(losetup --find --show --partscan "$out")
 CONVERGENT_UNSIGNED=1 CONVERGENT_INSTALL_DISK="$loop" CONVERGENT_INSTALL_OWNER="$owner" \
 	CONVERGENT_INSTALL_GUESTS="$inside/guests" bld sh "$inside/install" --config "$inside/config.yaml" "/releases/$release" <&4 4<&-
@@ -93,4 +98,4 @@ printf 'Check /dev/sdX carefully: this overwrites the entire device; it must fit
 quoted=$(printf '%s' "$out" | sed "s/'/'\\\\''/g")
 printf "dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
 printf 'Boot with Secure Boot OFF; unlock LUKS and log in as %s.\n' "$owner"
-printf 'The first boot grows the disk and creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
+printf 'The first boot grows auto-sized state and creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'

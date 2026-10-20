@@ -8,8 +8,12 @@ release=$(getarg convergent.release=)
 
 # Disk images are written small: grow state to the end of its disk, while the passphrase is still
 # here for the LUKS resize. Each step checks its own size, so an interrupted grow finishes on a
-# later boot; Btrfs follows after mounting. A failure only keeps the old size.
+# later boot; Btrfs follows the mapping resize. A failure only keeps the old size.
 grow_state() {
+	# Fixed and percentage installs keep their partition size across releases.
+	if [ -f "$state/install-state-size" ]; then
+		[ "$(cat "$state/install-state-size")" = auto ] || return 0
+	fi
 	part=$(readlink -f "$dev") && sys=/sys/class/block/${part##*/} && [ -r "$sys/partition" ] || return 0
 	num=$(cat "$sys/partition") && parent=$(readlink -f "$sys/..") && disk=/dev/${parent##*/} || return 0
 	start=$(cat "$sys/start") && end=$((start + $(cat "$sys/size"))) || return 1
@@ -42,6 +46,9 @@ grow_state() {
 	[ $(( $(cat "$sys/size") - $(blockdev --getsz /dev/mapper/cv-state) )) -gt 2097152 ] || return 0
 	printf '%s' "$pass" | cryptsetup resize --key-file - cv-state
 }
+mkdir -p "$state"
+mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
+	die "state: the state volume did not mount"
 grow_state || warn "state: could not grow the state volume; it keeps its size"
 pass=''
 
@@ -61,9 +68,6 @@ arm_watchdog() {
 recovery=$(getarg convergent.recovery=) || recovery=
 [ "$recovery" = 1 ] || arm_watchdog
 
-mkdir -p "$state"
-mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
-	die "state: the state volume did not mount"
 # A no-op at full size; finishes a grow that stopped after the partition or LUKS step.
 btrfs -q filesystem resize max "$state" >/dev/null ||
 	warn "state: Btrfs did not grow; run btrfs filesystem resize max /var"
@@ -108,6 +112,11 @@ mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var
 	mount -t btrfs -o "subvol=pool,noatime,nodev" /dev/mapper/cv-state "$NEWROOT/var/lib/incus-pool" &&
 	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec tmpfs "$NEWROOT/tmp" ||
 	die "state: could not mount the writable places"
+if [ -d "$state/swap" ]; then
+	mkdir -p "$NEWROOT/var/lib/convergent/swap" &&
+		mount -t btrfs -o subvol=swap,noatime,nodev,nosuid,noexec /dev/mapper/cv-state "$NEWROOT/var/lib/convergent/swap" ||
+		die "state: could not mount swap subvolume"
+fi
 
 # Add image accounts before the persistent files hide them.
 append_account() {

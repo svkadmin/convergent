@@ -1,32 +1,50 @@
-# Host name; internal host and svc aliases stay fixed.
+# Build/install input only; no passwords, hashes, keys or secrets, even in comments.
+# All keys are optional; values below are defaults. Unknown/duplicate keys are errors.
+# Scalars only, optionally double-quoted; install children use exactly two spaces.
+
+# Host label: 1..63 lowercase letters/digits/hyphens, no edge hyphens.
 hostname: host
-# Installed zoneinfo name.
+# Installed zoneinfo name: letters, _, +, -, and slash-separated components with digits.
 timezone: UTC
-# Console layout after boot; the LUKS prompt stays US.
+# Installed console keymap: letters/digits/_, +, -; the LUKS prompt stays US.
 console_keymap: us
-# Sway layouts, with optional variants such as us(dvorak).
+# Comma-separated 2..3 lowercase-letter layouts; optional (lowercase/digits/_/- variant).
 xkb_layouts: us
-# Release-wide output scale (0.5..4, at most two decimals); empty lets sway decide.
+# Empty or 0.5..4, at most two decimals; empty lets sway decide.
 display_scale: ""
-# Two-letter regulatory country; required for a WAN build unless WAN_COUNTRY is set.
+# Empty or two uppercase letters; a WAN build requires this or WAN_COUNTRY.
 wifi_country: ""
-# At least two distinct authenticated time sources.
+# Comma-separated DNS names (labels 1..63, names <=253 chars), at least two distinct.
 nts_servers: time.cloudflare.com,ptbtime1.ptb.de,ntppool1.time.nl
-# HTTPS RPZ blocklist.
+# HTTPS URL: lowercase DNS host; path/query chars letters/digits and ._~/%?=&+,-.
+# No credentials, port, fragment or secret query parameters.
 blocklist_url: https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/pro.mini.txt
-# CPU frequency ceiling in kHz.
+# CPU ceiling in kHz: integer 100000..99999999, no leading zeros.
 cpu_cap_khz: 4200000
-# Idle time before locking, in minutes.
+# Idle minutes before locking: integer 1..60.
 idle_lock_minutes: 10
-# Maximum state partition size in GiB; zero grows to the disk end, never shrinks.
-state_max_gib: 0
-# Install login; omit to prompt, CONVERGENT_INSTALL_OWNER overrides.
+# Login: 1..32 lowercase letters/digits/_/-, starts with letter or _.
+# Omit to prompt; CONVERGENT_INSTALL_OWNER overrides. Password always prompted.
 owner_login: owner
-# Optional yescrypt hash for installation only; empty prompts for a password.
-owner_password_hash: ""
-# ESP size in MiB (256..4096).
-esp_mib: 1024
-# Size of each root slot in MiB (4096..65536).
-slot_mib: 8192
-# Default stick image size; the positional size overrides it.
+# Stick image GiB: 1G..99999G; must fit the layout. Positional build/stick size overrides.
 image_size: 30G
+
+# Mandatory GPT ESP + A/B slots + LUKS2/Btrfs state; no encryption/topology switches.
+# Release fixes ESP at 1024 MiB and each slot at 8192 MiB.
+install:
+  # auto: exactly one nonremovable, non-hotplug internal NVMe/SATA/ATA SSD, excluding boot disk.
+  # Or /dev/disk/by-id/<whole-disk-id>; no slash in ID, no -partN suffix.
+  # ID starts with letter/digit/_; remaining chars letters/digits/_.:+-.
+  # Explicit targets still reject boot disks, mounts, active swap, holders and read-only disks.
+  # build/stick always targets its loop image; this key selects a physical install target.
+  disk: auto
+  # auto: all remaining space, grows after copying to a larger disk.
+  # 1%..100%: whole percentage of space after ESP, slots and GPT/alignment.
+  # 32GiB..999999GiB: whole GiB. Percent/GiB sizes stay fixed after installation.
+  # Must fit, leaving >=32 GiB state (>=12 GiB on build media) plus any state swap.
+  # On build/stick, sizes apply to the image; enlarge image_size for bounded state/swap.
+  state_size: auto
+  # none, zram:1GiB..zram:1024GiB, or state:1GiB..state:1024GiB.
+  # zram is logical uncompressed capacity; state is a swapfile inside encrypted state.
+  # No hibernation; disk swap stays outside /var snapshots.
+  swap: none

@@ -7,7 +7,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 cd "${here%/build}" || exit 1
 fail=0
 bad() { echo "lint: $*"; fail=1; }
-sh tools/config-get --selftest || bad 'config-get selftest failed'
+sh build/test --install-options || bad 'install options selftest failed'
 if command -v python3 >/dev/null 2>&1; then
 	python3 -I guests/svc/dashboards/build.py --check || bad 'dashboard JSON drift'
 else

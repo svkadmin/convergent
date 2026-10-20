@@ -21,12 +21,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 reader=$here/../tools/config-get
 if [ ! -f "$reader" ]; then reader=$here/config-get; fi
 cfg() { sh "$reader" "$input" "$1"; }
-owner=$(cfg owner_login)
-if ! grep -q '^owner_login *:' "$input" 2>/dev/null; then owner=; fi
-owner=${CONVERGENT_INSTALL_OWNER:-$owner}
-owner_hash=$(cfg owner_password_hash)
-esp_mib=$(cfg esp_mib)
-slot_mib=$(cfg slot_mib)
+options=$here/options.sh
+[ -f "$options" ] || options=/usr/lib/convergent/install-options.sh
+. "$options"
+cfg owner_login >/dev/null
 image_install=${CONVERGENT_INSTALL_DISK:-}
 for cmd in lsblk findmnt readlink blockdev sgdisk udevadm cryptsetup mkfs.vfat mkfs.btrfs \
 	btrfs losetup mount umount sha256sum stat awk sed grep cp cmp sync stty mktemp \
@@ -55,7 +53,7 @@ work= loop= mapper= image_mounted= state_mounted= esp_mounted=
 cleanup() {
 	bad=0
 	if [ -n "$tty_mode" ]; then stty "$tty_mode" <&3 || echo 'install: cannot restore terminal settings' >&2; fi
-	pass= again= answer= owner_hash=
+	pass= again= answer=
 	if [ -n "$esp_mounted" ]; then
 		if umount "$work/esp"; then esp_mounted=; else bad=1; fi
 	fi
@@ -119,6 +117,15 @@ dir=$(cd "$1" && pwd -P) || die "no release directory"
 [ -f "$dir/manifest" ] || die "no manifest"
 # Checked and used only as private copies: the source may change underneath.
 work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
+run cp "$input" "$work/config.yaml"
+input=$work/config.yaml
+# Revalidate the exact copy that will be retained.
+owner=$(cfg owner_login)
+if ! grep -q '^owner_login *:' "$input"; then owner=; fi
+owner=${CONVERGENT_INSTALL_OWNER:-$owner}
+target=$(cfg install.disk)
+state_size=$(cfg install.state_size)
+swap=$(cfg install.swap)
 cp "$dir/manifest" "$work/manifest" || die "cannot read manifest"
 # The booted Convergent system's release key; the build host's disk images pass CONVERGENT_UNSIGNED=1.
 if [ "${CONVERGENT_UNSIGNED:-}" != 1 ]; then
@@ -205,8 +212,7 @@ bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" { print $1 }')
 [ "$(cat /sys/class/drm/renderD128/device/vendor)" = 0x8086 ] ||
 	die "/dev/dri/renderD128 must be the Intel render node"
 run lsblk -p -o NAME,SIZE,TYPE,MODEL,SERIAL,MOUNTPOINTS
-ask 'Target disk path (all its data will be erased): '
-typed=$answer
+if [ "$target" = auto ]; then typed=$(install_target); else typed=$target; fi
 else
 	typed=$image_install
 fi
@@ -245,12 +251,11 @@ check_identity() {
 }
 serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
 disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
-# Leave at least 32 GiB for state, plus GPT/alignment space; a disk image needs only room for the
-# guest images, because the first boot grows state to the end of the disk it is written to.
-state_mib=32768
-[ -z "$image_install" ] || state_mib=12288
-[ "$disk_size" -ge $(((esp_mib + slot_mib * 2 + state_mib + 4) * 1048576)) ] || die "target is too small"
-printf 'Release %s; %s; ESP %s MiB; slots %s MiB each; state is the rest.\n' "$release" "$disk" "$esp_mib" "$slot_mib"
+minimum_mib=32768
+[ -z "$image_install" ] || minimum_mib=12288
+install_size "$disk_size" "$minimum_mib"
+printf 'Release %s; %s; ESP %s MiB; slots %s MiB each; state %s MiB (%s); swap %s.\n' \
+	"$release" "$disk" "$esp_mib" "$slot_mib" "$state_mib" "$state_size" "$swap"
 if [ -z "$image_install" ]; then
 ask "Type $typed again, or ERASE followed by a space and serial $serial: "
 if [ "$answer" != "$typed" ]; then
@@ -264,6 +269,15 @@ run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state
 loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 image_mounted=1
+if [ "$state_size" != auto ]; then
+	[ -f "$work/image/usr/lib/convergent/install-options.sh" ] || die "release does not support bounded install.state_size"
+fi
+if [ "$swap" != none ]; then
+	[ -f "$work/image/etc/init.d/convergent-swap" ] || die "release does not support install.swap"
+fi
+case $swap in
+	state:*) btrfs filesystem mkswapfile --help >/dev/null 2>&1 || die "btrfs needs filesystem mkswapfile support" ;;
+esac
 rescue=$work/image/usr/lib/convergent/rescue.efi
 rescue_size=0
 if [ -f "$rescue" ]; then
@@ -303,14 +317,9 @@ run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio,video \
 	-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
 run usermod -P "$work/accounts" -L root
 
-if [ -n "$owner_hash" ]; then
-	printf '%s:%s\n' "$owner" "$owner_hash" | chpasswd -P "$work/accounts" -e || die 'could not set password hash'
-	owner_hash=
-else
-	secret 'Owner password'
-	printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
-		die "could not hash password with yescrypt"
-fi
+secret 'Owner password'
+printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
+	die "could not hash password with yescrypt"
 pass=
 awk -F: -v u="$owner" '$1 == u && $2 ~ /^\$y\$/ { ok=1 } END { exit !ok }' \
 	"$work/accounts/etc/shadow" || die "owner password is not yescrypt"
@@ -358,7 +367,7 @@ check_identity
 run sgdisk --zap-all "$disk"
 check_identity
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
-	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:0 -t4:8309 -c4:cv-state "$disk"
+	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:"$state_end" -t4:8309 -c4:cv-state "$disk"
 run blockdev --rereadpt "$disk"
 run udevadm settle
 case $disk in *[0-9]) prefix=${disk}p ;; *) prefix=$disk ;; esac
@@ -410,11 +419,24 @@ run chmod 0600 "$work/state/etc/usbguard/rules.conf"
 if [ -d "$work/image/etc/skel" ]; then run cp -a "$work/image/etc/skel/." "$work/state/home/$owner/"; fi
 run chown -R "$uid:$gid" "$work/state/home/$owner"
 run chmod 0700 "$work/state/home/$owner"
-# Seed /var for build media; first boot records good/highest through the normal checks.
+# Keep swap outside /var snapshots; retain only non-secret install inputs.
+printf '%s\n' "$state_size" >"$work/state/install-state-size"
+var=$work/state/var-$release
+run btrfs -q subvolume create "$var"
+run cp -a "$work/image/var/." "$var/"
+run mkdir -p "$var/lib/convergent"
+run cp "$input" "$var/lib/convergent/config.yaml"
+run chmod 0600 "$var/lib/convergent/config.yaml"
+printf '%s\n' "$swap" >"$var/lib/convergent/swap-mode"
+case $swap in
+	state:*)
+		run btrfs -q subvolume create "$work/state/swap"
+		run chmod 0700 "$work/state/swap"
+		run btrfs filesystem mkswapfile --size "$((swap_mib * 1048576))" "$work/state/swap/swapfile"
+		;;
+esac
+# First boot records good/highest through the normal checks.
 if [ -n "$image_install" ]; then
-	var=$work/state/var-$release
-	run btrfs -q subvolume create "$var"
-	run cp -a "$work/image/var/." "$var/"
 	run mkdir -p "$var/lib/convergent/release-guests/guests"
 	run cp -a "$CONVERGENT_INSTALL_GUESTS/." "$var/lib/convergent/release-guests/guests/"
 fi
@@ -450,10 +472,11 @@ if [ -z "$image_install" ]; then
 		echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
 fi
 cleanup || die "could not close the installed system"
-printf 'Installed release %s on %s for %s.\nESP: %s MiB; slots: %s MiB each; encrypted state: remainder.\n' "$release" "$disk" "$owner" "$esp_mib" "$slot_mib"
+printf 'Installed release %s on %s for %s.\nESP: %s MiB; slots: %s MiB each; encrypted state: %s MiB (%s); swap: %s.\n' \
+	"$release" "$disk" "$owner" "$esp_mib" "$slot_mib" "$state_mib" "$state_size" "$swap"
 if [ -n "$image_install" ]; then
 	printf 'Slot A verified, three boot tries; slot B empty. Guest images copied.\nThe first boot creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
 	exit 0
 fi
-printf 'Slot A verified, three boot tries; slot B empty. First boot prepares /var and blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\nRemove the install stick after power-off, before booting.\n'
+printf 'Slot A verified, three boot tries; slot B empty. First boot blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\nRemove the install stick after power-off, before booting.\n'
 run poweroff

@@ -77,7 +77,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles, plus a standalone rescue UKI. *(Planned:* signing with the owner's key*)* |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the UKI command line; the root hash will be covered by the Secure Boot signature *(planned)* |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
-| Memory | No disk swap configured; zram and disabling zswap are planned, with no setup in this tree |
+| Memory | Install selects no swap (default), zram, or a swapfile on LUKS2 state; no hibernation |
 | Seat and session | seatd; greetd with tuigreet on tty1 (user name typed every time); Sway, foot, bemenu, mako, swaylock, swayidle; PipeWire and WirePlumber started by the session; sof-firmware and alsa-ucm-conf for the SoundWire audio |
 | Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
 | Devices | USBGuard, default deny; `sys usb enrol` reviews each generated per-device rule before replacing the current policy, `review` lists named rules and live decisions, `revoke` removes an allowance and denies that device even against overlapping rules. Existing `allow` remains. Policy changes use USBGuard IPC because the rules file is state-bound; enrol/revoke restart the daemon to apply policy to present devices. Thunderbolt PCIe tunnels still require separate approval where firmware asks. Bluetooth off; switched on from the menu. Camera drivers gated by modprobe install rules and an explicit persistent owner choice, off by default |
@@ -325,9 +325,10 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
 3. The kernel creates the dm-verity device for the slot from the UKI command line.
 4. The initramfs mounts the verity device read-only as the new root. It refuses to boot while more
    than one disk has a `cv-state` partition, asks for the LUKS passphrase and opens the state
-   volume. When the state partition is the last one and more than 1 GiB is free, it grows the
-   volume to the end of the disk, or to the `state_max_gib` cap (partition, LUKS, then Btrfs on every
-   boot); an interrupted grow
+   volume. Auto-sized installs grow the last state partition when more than 1 GiB is free
+   (partition, LUKS, then Btrfs); fixed/percentage installs retain their size through the
+   install-written `install-state-size` marker on state. Older images' `state-max-gib` cap is
+   still understood. An interrupted grow
    finishes on a later boot. It selects the `/var` that belongs to this slot, takes a cold snapshot
    of it on the first boot of a new slot, mounts `/var` and `/home`, bind-mounts the listed `/etc`
    entries after merging missing image system accounts (IDs below 1000, preserving existing entries
@@ -460,6 +461,15 @@ create LUKS and Btrfs, write slot A, install systemd-boot and slot A's UKI, regi
 also carries the guest images, and its first boot creates the guests. No network needed. *(Planned:*
 in Setup Mode, enrolling the owner's keys and the option ROM hashes, otherwise
 checking them; the stick as the recovery path when nothing on the laptop boots.*)*
+
+The build/install YAML has no secrets and is saved at `/var/lib/convergent/config.yaml` only
+for reference. Its `install` mapping selects a unique internal SSD/NVMe or explicit by-id disk,
+auto/percentage/GiB state, and none/zram/encrypted-state swap; both stick build and install
+validate it. ESP and A/B sizes stay release constants. The installer seeds `/var` and writes
+small runtime settings; nothing reads YAML at runtime. OpenRC starts swap before Incus.
+Disk swap uses a separate top-level Btrfs subvolume, mounted under `/var/lib/convergent/swap`,
+so release snapshots exclude its active file ([Btrfs swapfile constraints](https://btrfs.readthedocs.io/en/latest/Swapfile.html)).
+See [USAGE, Install](USAGE.md#install) for ranges and capacity checks.
 
 `guests init` creates the management key, the TLS credentials and one shared CARP password on
 the laptop; `/var/lib/convergent/guests/` keeps the last two across guest replacements. Images
@@ -706,7 +716,7 @@ log *(planned)*, not by enrolling Microsoft's third-party certificate.
 | wan (512 cap, plus QEMU overhead) | 500 |
 | fw1 + fw2 (1 GiB each, plus QEMU overhead, unbound with the blocklist) | 2 200 |
 | svc | 350 |
-| Total, idle, browsers closed; excludes planned zram | about 3 950 |
+| Total, idle, browsers closed; excludes optional zram | about 3 950 |
 
 On the laptop 384 MiB firewalls ran out of memory at boot (the kernel relink beside the
 blocklist), killing sshd and unbound while CARP kept the master role. Keep both firewalls at
