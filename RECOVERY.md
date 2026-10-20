@@ -266,7 +266,14 @@ does not become good).
 An oops now panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
 archives EFI pstore records in `/var/lib/convergent/crash/<UTC-timestamp>/`, accessible only to
 root. It verifies and syncs each copy before removing the firmware record. Older archives in
-`/var/lib/convergent/pstore` move to `crash` on the first run.
+`/var/lib/convergent/pstore` move to `crash` on the first run. The Security dashboard shows
+archived crash counts beside checker results; `CrashRecorded` reports unacknowledged records.
+
+`kernel.panic_on_oops=1` is KSPP hardening. For a repeatedly oopsing driver, run
+`sudo sysctl -w kernel.panic_on_oops=0` to disable that panic trigger until reboot. To keep the
+exception, set it to `0` in `rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release;
+the running root is read-only. If the reboot loop prevents that, boot the previous slot first
+(recipe 3).
 
 ```sh
 sudo find /var/lib/convergent/crash -type f

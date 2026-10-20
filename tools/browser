@@ -91,6 +91,10 @@ exec 9>/run/convergent/guests.lock
 flock -s -n 9 || die 'guest update in progress'
 exec 6>/run/convergent/browser-update.lock
 flock -s -n 6 || die 'browser update in progress'
+if { [ "$role" != tmp ] || [ -n "$portal_mode" ]; } &&
+    [ ! -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ]; then
+    die 'the browser image predates this release: run sys update install, or sys update usb with a stick that carries the guests'
+fi
 journal=/var/lib/convergent/guests
 if [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
     [ -f "$journal/profiles.before/browser-base.yaml" ] ||
@@ -149,8 +153,6 @@ rm -rf -- "$run"
 install -d -o root -g "$gid" -m 0750 "$run"
 install -d -o root -g "$gid" -m 0730 "$run/sockets"
 install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
-owner swaymsg "for_window [app_id=\"^convergent-$role\$\"] title_format \"[$role] %title\"" |
-    jq -e 'all(.[]; .success)' >/dev/null || die 'cannot label Sway windows'
 # The container first: a first start creates it, which takes long, and the sockets below should not
 # wait through that unused (a first browser once found its Wayland listener gone).
 instances=$(instances_json)
@@ -238,11 +240,35 @@ incus --force-local --project default exec "$name" --mode non-interactive --disa
 browser=$!
 flock -u 9
 exec 9>&-
-tick=0
+# One unprivileged timer; the root session loop only uses shell builtins.
+epoch=$(date +%s)
+read -r uptime idle </proc/uptime
+epoch=$((epoch - ${uptime%.*}))
+checked=${uptime%.*}
+: >"$run/portal.checked"
+mkfifo -m 600 "$run/tick"
+background=yes owner sh -c 'while :; do sleep 2; echo tick; done' >"$run/tick" &
+children="$children $!"
+exec 5<"$run/tick"
+rm "$run/tick"
 while kill -0 "$browser" 2>/dev/null; do
+    read -r tick <&5 || die 'session timer exited'
     for child in $children; do kill -0 "$child" 2>/dev/null || die 'socket or audio provider exited'; done
-    if [ -n "$portal_mode" ] && [ "$tick" = 0 ]; then portal_on || die 'portal mode ended'; fi
-    tick=$(( (tick + 1) % 5 ))
-    sleep 2
+    if [ -n "$portal_mode" ]; then
+        started=
+        [ ! -f /run/convergent/portal ] || read -r started </run/convergent/portal || :
+        case $started in ''|0|*[!0-9]*) die 'portal mode ended' ;; esac
+        read -r uptime idle </proc/uptime
+        now=$((epoch + ${uptime%.*}))
+        [ "$started" -le "$now" ] && [ $((now - started)) -lt 1800 ] || die 'portal mode ended'
+        # check status probes all three guests each minute; ignore pre-launch results.
+        if [ /run/convergent/status/portal -nt "$run/portal.checked" ]; then
+            read -r mode </run/convergent/status/portal || die 'portal status unavailable'
+            [ "$mode" = on ] || die 'portal mode ended'
+            : >"$run/portal.checked"
+            checked=${uptime%.*}
+        fi
+        [ $((${uptime%.*} - checked)) -lt 180 ] || die 'portal status is stale'
+    fi
 done
 wait "$browser" || die "the $role browser exited with status $?"

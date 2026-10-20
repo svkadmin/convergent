@@ -876,6 +876,9 @@ apply() {
     [ -f "$state/initialized" ] || die 'init has not completed'
     booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+    staged=/var/lib/convergent/guest-updates
+    [ ! -L "$staged" ] || die "$staged is a symlink"
+    [ -d "$staged/$booted" ] || [ -d "$state/browser.rename" ] || browser_legacy || return 0
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
@@ -883,19 +886,19 @@ apply() {
         browser_pending=1
         return 0
     fi
-    staged=/var/lib/convergent/guest-updates
-    [ ! -L "$staged" ] || die "$staged is a symlink"
     if [ ! -d "$staged/$booted/browser" ]; then
-        # Host-only USB updates have no staged image; use this host's profiles.
         [ ! -f "$state/browser.ready" ] || browser_commit
         [ ! -d "$state/profiles.before" ] || profiles_restore
         [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
-        image_dir=$lib/browser
-        browser_migrate
-        if [ -d "$state/browser.rename" ]; then
-            browser_profiles_prune
-            rm -rf "$state/profiles.before" "$state/browser.rename"
-            sync
+        # Old images do not understand def/int or tmp portal mode.
+        if [ -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ]; then
+            image_dir=$lib/browser
+            browser_migrate
+            if [ -d "$state/browser.rename" ]; then
+                browser_profiles_prune
+                rm -rf "$state/profiles.before" "$state/browser.rename"
+                sync
+            fi
         fi
     fi
     [ -d "$staged" ] || return 0

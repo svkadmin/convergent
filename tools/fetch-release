@@ -13,12 +13,14 @@ conf=/etc/convergent/update.conf
 # Root's own directory on state: nothing the owner can create or rename in.
 work=/var/lib/convergent/update
 staged=/var/lib/convergent/guest-updates
+pointer=
 
 die() { logger -p user.err -t fetch-release "$*"; echo "fetch-release: $*" >&2; exit 1; }
 cleanup() {
 	_rc=$?
 	trap - 0
 	trap '' HUP INT TERM
+	[ -z "$pointer" ] || rm -rf "$pointer"
 	[ -z "$src_open" ] || close_src || { echo "fetch-release: a firewall kept the update source open; it expires within 4 hours" >&2; _rc=1; }
 	exit "$_rc"
 }
@@ -177,6 +179,17 @@ guest_files=$(awk '$2 ~ /^guests\// {
 	if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
 	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
 }' "$gm") || die 'invalid guest path in guests.manifest'
+if [ -n "$usb" ] && [ -z "$guest_files" ] && [ -f /var/lib/convergent/guests/initialized ]; then
+	legacy=$(incus --force-local query '/1.0/instances?recursion=1&project=default') || die 'cannot list browsers'
+	volumes=$(incus --force-local --project default storage volume list default --format json) || die 'cannot list browser volumes'
+	profiles=$(incus --force-local --project default profile list --format json) || die 'cannot list browser profiles'
+	if printf '%s\n' "$legacy" "$volumes" "$profiles" | jq -se 'any(.[][];
+		.name == "web" or .name == "admin" or .name == "portal" or
+		.name == "browser-web-state" or .name == "browser-admin-state" or
+		.name == "browser-web" or .name == "browser-admin" or .name == "browser-portal")' >/dev/null; then
+		echo 'fetch-release: warning: this USB release carries no guests; legacy browsers stay unchanged; run sys update install, or sys update usb with a stick that carries the guests' >&2
+	fi
+fi
 changed=
 awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser)$/ || length($3) != 64 || $3 ~ /[^0-9a-fA-F]/ || seen[$2]++) exit 1; print $2, tolower($3)}' \
 	"$gm" >"$dir/guest-ids" || die 'invalid guest identity in guests.manifest'

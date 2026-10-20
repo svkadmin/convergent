@@ -163,12 +163,16 @@ and hashes, writes the other slot and offers the reboot. The same by hand:
 it runs; if closing them fails, they expire within 4 hours. Failures: RECOVERY 12.
 
 **From USB:** copy the release directory (`manifest`, `manifest.sig`, `slot.img`, both `.efi`
-files) to a stick, FAT32 or exFAT. Allow the stick (`sudo devices list`, `sudo devices allow
-<number>`); `sys update usb` mounts it and writes the release. By hand:
+files, `guests/`, `guests.manifest` and `guests.manifest.sig`) to a stick, FAT32 or exFAT. Allow
+the stick (`sudo devices list`, `sudo devices allow <number>`); `sys update usb` mounts it and
+writes the release. From a release before v10, run
+`sys update usb` a second time after booting v10, with the same stick, to install its guests.
+A stick without guests leaves the old browser image and web/admin objects intact; def/int and
+`tmp --portal` need `sys update install` or a USB release carrying guests. By hand on v10:
 
 ```sh
 sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb
-sudo slot write /run/usb/<release>
+sudo fetch-release usb /run/usb/<release>
 sudo umount /run/usb && sudo reboot
 ```
 

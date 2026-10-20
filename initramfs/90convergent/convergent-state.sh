@@ -45,12 +45,6 @@ grow_state() {
 	[ $(( $(cat "$sys/size") - $(blockdev --getsz /dev/mapper/cv-state) )) -gt 2097152 ] || return 0
 	printf '%s' "$pass" | cryptsetup resize --key-file - cv-state
 }
-mkdir -p "$state"
-mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
-	die "state: the state volume did not mount"
-grow_state || warn "state: could not grow the state volume; it keeps its size"
-pass=''
-
 # Arm without magic close; a hang must reset the board.
 arm_watchdog() {
 	if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
@@ -66,6 +60,12 @@ arm_watchdog() {
 }
 recovery=$(getarg convergent.recovery=) || recovery=
 [ "$recovery" = 1 ] || arm_watchdog
+
+mkdir -p "$state"
+mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
+	die "state: the state volume did not mount"
+grow_state || warn "state: could not grow the state volume; it keeps its size"
+pass=''
 
 # A no-op at full size; finishes a grow that stopped after the partition or LUKS step.
 btrfs -q filesystem resize max "$state" >/dev/null ||

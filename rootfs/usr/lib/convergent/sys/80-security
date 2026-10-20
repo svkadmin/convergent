@@ -68,10 +68,10 @@ security_event_lines() {
 			audit=$0 ~ /type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) / &&
 				$0 ~ /exe="[^"]*\/(greetd|tuigreet|login|su|sudo|sshd)"/
 			usb=s ~ /usbguard(-daemon)?(\[[0-9]+\])?:/ && s ~ /allow|block|reject|denied/
-			if (auth || audit || usb || /apparmor="DENIED"|type=(USER_DEVICE|1137) / ||
+			if (auth || audit || usb || /apparmor="(DENIED|ALLOWED)"|type=(USER_DEVICE|1137) / ||
 				s ~ /(slot|fetch-release|guests|convergent-watchdog|sys-firewall)(\[[0-9]+\])?:/ ||
 				/carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER/)
-				print source ": " $0
+				print source ": " (/apparmor="ALLOWED"/ ? "[complain] " : "") $0
 		}' | tail -n 100
 	done
 	return "$result"

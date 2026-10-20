@@ -330,8 +330,8 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
    than one disk has a `cv-state` partition, asks for the LUKS passphrase and opens the state
    volume. Auto-sized installs grow the last state partition when more than 1 GiB is free
    (partition, LUKS, then Btrfs); fixed/percentage installs retain their size through the
-   install-written `install-state-size` marker on state. Older images' `state-max-gib` cap is
-   still understood. An interrupted grow
+   install-written `install-state-size` marker on state. Installs without that marker never
+   grow; `state-max-gib` only caps growth when the marker says `auto`. An interrupted grow
    finishes on a later boot. It selects the `/var` that belongs to this slot, takes a cold snapshot
    of it on the first boot of a new slot, mounts `/var` and `/home`, bind-mounts the listed `/etc`
    entries after merging missing image system accounts (IDs below 1000, preserving existing entries
@@ -697,8 +697,9 @@ How the owner uses it is in USAGE.md. The design points:
   The browser launcher owns activation under its session lock and closes stale rules on all
   three guests before a new opening. Failure to close any side prevents opening. The portal
   tool journals closure before remote changes, retries partial closures each minute and records
-  a reason for `sys portal status`. Expiry is checked by cron and by browser status polling;
-  an orphaned session without a browser lock is closed after a one-minute startup allowance.
+  a reason for `sys portal status`. Expiry is checked by cron and by the browser session loop;
+  remote mode checks use the minute status cache, refusing results stale for three minutes.
+  An orphaned session without a browser lock is closed after a one-minute startup allowance.
 - *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on
   the upstream network for the def/tmp browsers), clipboard clearing.*)*
 

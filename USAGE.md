@@ -414,6 +414,11 @@ An oops triggers a kernel panic; the host reboots 10 seconds after a panic. At b
 copies EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700),
 verifies and syncs them, then clears pstore. `cv_crash_records` counts archived files; the
 existing `CrashRecorded` alert stays active until acknowledged (RECOVERY, recipe 13).
+Crash counts appear beside checker results in the Security dashboard. `kernel.panic_on_oops=1`
+is KSPP hardening. If a driver repeatedly oopses, `sudo sysctl -w kernel.panic_on_oops=0`
+disables that panic trigger until reboot. For a persistent exception, set it to `0` in
+`rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release; the running root is read-only.
+If it reboots before you can apply the override, boot the previous slot (RECOVERY, recipe 3).
 Host cron and anacron have mail disabled; their jobs and logging still run.
 
 ## The bar
@@ -472,6 +477,9 @@ An interrupted browser update blocks launches until the guest update is retried.
 The first full browser update renames existing web/admin instances and state volumes to def/int,
 keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on
 the next browser update; the old role names are not command aliases.
+
+If you added a root crontab as a stopgap for the v8/v9 cron bug, remove that stopgap with
+`sudo crontab -r` after the first v10 boot; otherwise those jobs run twice.
 
 ## Power and locking
 
