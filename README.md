@@ -10,8 +10,8 @@ This branch will carry stable releases once one has been promoted. There is none
 
 Convergent is in its first release cycle. Work happens on `dev`; builds that pass every test
 are published on `beta`. A beta that is meant for stable is tagged as a release candidate
-(`v0.1.0-rc1`, `v0.1.0-rc2`, ...). When a candidate has proven itself in daily use, the same
-images are promoted here unchanged and the release is tagged `v0.1.0`.
+(`v0.1.0-rc1`, `v0.1.0-rc2`, ...). When a candidate has proven itself in daily use, its exact
+commit is rebuilt for the stable channel, tested again, and tagged `v0.1.0` here.
 
 Until then:
 
