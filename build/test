@@ -359,7 +359,16 @@ ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || result=
 # The host's facts now (their cron runs later), then two scrapes before the dashboard queries.
 /usr/local/sbin/facts boot >/dev/null 2>&1 || result=1
 sleep 65
-sh "$release/dashboard-check" "$release/dashboards" || result=1
+sh "$release/dashboard-check" "$release/dashboards" || {
+    result=1
+    # Why: each scrape target's last error, and the routed paths svc -> host and wan.
+    ic exec svc -- wget -q -T 10 -O - 'http://127.0.0.1:8428/api/v1/targets?state=active' |
+        jq -r '.data.activeTargets[] | "CV-TARGET \(.labels.job) \(.labels.node) \(.health) \(.lastError)"'
+    ic exec svc -- ip -4 route; ic exec svc -- ip -4 neigh
+    for a in 100.80.1.10 100.80.0.10 100.80.2.1; do ic exec svc -- ping -c 2 -W 2 "$a" >/dev/null 2>&1 && echo "CV-PING svc $a ok" || echo "CV-PING svc $a FAIL"; done
+    ip -4 route get 100.80.2.10; nft list ruleset 2>&1 | grep -c .
+    for f in fw1 fw2; do timeout 20 ssh -F /etc/convergent/ssh_config "$f" 'pfctl -si | grep -E "current entries|match|state-mismatch"; pfctl -sr | grep -E "9100|8444" | head -n 4' 2>&1 | sed "s/^/CV-$f /"; done
+}
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || result=1
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || result=1
 timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
