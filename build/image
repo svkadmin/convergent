@@ -343,7 +343,8 @@ bld lsinitrd "$profiles/initramfs.img" >"$BUILDER$profiles/contents"
 for fw in $i915_fw; do
 	awk -v file="${fw#/}" '$NF == file {found=1} END {exit !found}' "$BUILDER$profiles/contents" || die "rescue initramfs lacks $fw"
 done
-for file in sbin/convergent-rescue sbin/slot lib/convergent-unlock.sh lib/convergent-recovery.sh; do
+# Merged /usr: /sbin is usr/bin here.
+for file in 's?bin/convergent-rescue' 's?bin/slot' lib/convergent-unlock.sh lib/convergent-recovery.sh; do
 	grep -Eq " (usr/)?$file$" "$BUILDER$profiles/contents" || die "rescue initramfs lacks $file"
 done
 ! grep -q 'convergent-state.sh' "$BUILDER$profiles/contents" || die "rescue contains the slot mount hook"
