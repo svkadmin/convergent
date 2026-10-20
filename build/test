@@ -332,6 +332,11 @@ for f in fw1 fw2; do
 	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || result=1
 	[ "$demote" = 'carp: carp demote count 0' ] || result=1
 done
+# wan must answer Incus's power button: a same-image replacement, no forced stop.
+sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-update-wan.log
+wan=$?
+echo CV-UPDATE wan "$wan"
+[ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; result=1; }
 # Who still holds the guests lock, if anyone.
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"

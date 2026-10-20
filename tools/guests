@@ -89,7 +89,7 @@ cleanup() {
         if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; pending=; }; fi
         if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
     fi
-    if [ -n "$starting" ]; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
+    if [ -n "$starting" ] && ! running "$starting"; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
     # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
     if [ -n "$fw_touched" ] && [ -f /var/lib/convergent/dns/list.rpz ]; then
@@ -351,7 +351,12 @@ seed_remove() {
 seed_start() {
     step="seed_start $1"
     if [ -z "$initializing" ] || [ -f "$state/seeds/$1.img" ] || [ ! -f "$state/init/seed-$1" ]; then
-        if running "$1"; then ic stop "$1" --timeout 60; fi
+        if running "$1"; then
+            ic stop "$1" --timeout 60 || {
+                echo "guests: graceful stop failed; forcing $1 off" >&2
+                ic stop "$1" --force
+            }
+        fi
         seed_attach "$1"
     fi
     running "$1" || ic start "$1"
@@ -494,7 +499,13 @@ replace() {
     case $guest in fw1|fw2) fw_touched=1 ;; esac
     step="backup $guest"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
-    if running "$guest"; then starting=$guest; ic stop "$guest" --timeout 60; fi
+    if running "$guest"; then
+        starting=$guest
+        ic stop "$guest" --timeout 60 || {
+            echo "guests: graceful stop failed; forcing $guest off" >&2
+            ic stop "$guest" --force
+        }
+    fi
     # Drop a local memory pin (by hand or update fw); the fw profile carries it now.
     case $guest in
     fw1|fw2)
