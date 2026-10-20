@@ -56,7 +56,7 @@ rollback() {
         backup=$state/backups/$guest-$snap.tar.gz
         [ -s "$backup" ] || { fail "missing backup $backup"; return 1; }
         echo "guests: restoring $guest/$snap" >&2
-        ic list --format json >"$work/instances" || return
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/instances" || return
         if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
             if running "$guest"; then ic stop "$guest" --force || return; fi
             seed_remove "$guest" || return
@@ -408,7 +408,7 @@ init_guest() {
     case $node in fw1|fw2) instance_type=virtual-machine; instance_profile=fw ;; wan) instance_type=virtual-machine ;; esac
     import_image "$node"
     fingerprint=$(ic query "/1.0/images/aliases/candidate-$node" | jq -er .target)
-    if ic list --format json | jq -e --arg n "$node" '.[] | select(.name == $n)' >/dev/null; then
+    if ic query '/1.0/instances?recursion=1&project=default' | jq -e --arg n "$node" '.[] | select(.name == $n)' >/dev/null; then
         ic query "/1.0/instances/$node" | jq -e --arg id "$init_id" --arg fp "$fingerprint" --arg t "$instance_type" --arg p "$instance_profile" \
             '.config["user.convergent.init"] == $id and .config["volatile.base_image"] == $fp and .type == $t and .profiles == [$p]' >/dev/null || die "$node differs from initialization"
     else
@@ -587,7 +587,7 @@ init() {
         verify_image "$kind"
     done
     if [ ! -f "$state/init/release" ]; then
-        [ "$(ic list --format json | jq length)" = 0 ] || die 'init needs an empty default project or its recovery journal'
+        [ "$(ic query '/1.0/instances?recursion=1&project=default' | jq length)" = 0 ] || die 'init needs an empty default project or its recovery journal'
         mkdir -p "$state/init"
         printf '%s\n' "$release" >"$work/release"
         mv "$work/release" "$state/init/release"
@@ -742,7 +742,7 @@ update() {
             exec 6>&-
             return
         fi
-        ic list --format json >"$work/browsers"
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
         if jq -e '.[] | select(.status == "Running" and (.profiles | index("browser-base")))' "$work/browsers" >/dev/null; then
             echo 'guests: browser is running; browser update waits for a later guests apply'
             browser_pending=1
@@ -831,7 +831,7 @@ case ${1:-}:$# in init:2|update:3|apply:1|status:1) ;; *) die 'usage: guests ini
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ "$1" = status ]; then
     step=status
-    instances=$(ic list --format json)
+    instances=$(ic query '/1.0/instances?recursion=1&project=default')
     printf '%s\n' "$instances" | jq -r 'sort_by(.name)[] | "\(.name) \(.status | ascii_downcase)"'
     exit
 fi

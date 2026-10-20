@@ -26,7 +26,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     flock -n 8 && portal_locked=1
     # Parallel guests, sequential sessions within each guest: no cold ControlMaster race.
     (
-        if instances=$(timeout -k 1 10 incus --force-local --project default list --format json 9>&- 8>&- 2>/dev/null); then
+        if instances=$(timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 2>/dev/null); then
             printf '%s\n' "$instances" | jq -er 'map(select(.status == "Running")) |
                 [any(.[]; .name == "wan"), any(.[]; .name == "fw1"),
                  any(.[]; .name == "fw2"), any(.[]; .name == "svc"),

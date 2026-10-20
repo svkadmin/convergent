@@ -38,6 +38,8 @@ case $display in /*) ;; *) display=$runtime/$display ;; esac
 [ -S "$display" ] && [ -S "$ipc" ] && [ -S "$runtime/pipewire-0" ] || die 'missing session sockets'
 cd /
 ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
+# Name, status and type only: a full list waits on each VM for state the agentless guests never give.
+instances_json() { incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
 owner() {
     set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs env -i \
         PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" \
@@ -56,12 +58,12 @@ device() {
     fi
 }
 stop_container() {
-    snapshot=$(ic list --format json) || return
+    snapshot=$(instances_json) || return
     state=$(printf '%s\n' "$snapshot" | jq -r --arg n "$name" '.[] | select(.name == $n) | .status') || return
     case $state in '') return ;; Stopped) ;; *) ic stop "$name" --force || return ;; esac
     case $role in
         tmp|portal)
-            snapshot=$(ic list --format json) || return
+            snapshot=$(instances_json) || return
             if printf '%s\n' "$snapshot" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
                 ic delete "$name" || return
             fi ;;
@@ -142,7 +144,7 @@ owner swaymsg "for_window [app_id=\"^convergent-$role\$\"] title_format \"[$role
     jq -e 'all(.[]; .success)' >/dev/null || die 'cannot label Sway windows'
 # The container first: a first start creates it, which takes long, and the sockets below should not
 # wait through that unused (a first browser once found its Wayland listener gone).
-instances=$(ic list --format json)
+instances=$(instances_json)
 if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
     printf '%s\n' "$instances" | jq -e --arg n "$name" --arg r "$role" \
         '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
@@ -154,7 +156,7 @@ if [ "$role" = portal ]; then
     /usr/local/sbin/portal begin || die 'cannot open portal mode'
 fi
 active=1
-if ! ic list --format json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
+if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
     # The socket paths are this launcher's, not the profile's: profiles stay as installed until
     # a browser image update, and older ones name other paths.
     # Fixed words ($name is web, admin, portal or tmp-NN), split on purpose; "$@" is the URLs.
