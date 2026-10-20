@@ -46,7 +46,19 @@ trap chroot_umount EXIT
 if [ "${1:-}" = --pretend ]; then
 	chroot "$BUILDER" $emerge --pretend --verbose $sets
 else
+	# The kernel fragment follows this tree, not the copy buildenv made at setup.
+	frag=$BUILDER/etc/kernel/config.d/50-convergent.config
+	install -D -m 0644 "$here/kernel.config" "$frag"
 	chroot "$BUILDER" $emerge --quiet-build=y --keep-going=y $sets
+	# A changed kernel fragment needs a rebuilt kernel: its package version does not change, and a
+	# cached binary would keep the old options. The stamp names the fragment the kernel was built with.
+	stamp=$BUILDER/var/lib/convergent/kernel-fragment.sha256
+	want=$(sha256sum <"$frag" | cut -d' ' -f1)
+	if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+		chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging \
+			--oneshot --quiet-build=y --usepkg-exclude=sys-kernel/gentoo-kernel sys-kernel/gentoo-kernel
+		mkdir -p "${stamp%/*}" && echo "$want" >"$stamp"
+	fi
 	# Remove packages no longer needed by the sets.
 	chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config \
 		emerge --root=/staging --depclean --quiet
