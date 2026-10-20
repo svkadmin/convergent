@@ -293,13 +293,13 @@ for f in passwd shadow group gshadow subuid subgid; do
 	if grep -q "^$owner:" "$work/accounts/etc/$f"; then die "account name already exists"; fi
 done
 printf 'CREATE_MAIL_SPOOL=no\n' >"$work/accounts/etc/default/useradd" || die "cannot write useradd defaults"
-# Gentoo's OpenRC seatd service owns its socket with -g seat; video may set the backlight (udev rule).
-for group in wheel seat audio video; do
+# seatd uses seat; video may set the backlight; Gentoo udev gives serial devices to dialout.
+for group in wheel seat audio video dialout; do
 	if ! grep -q "^$group:" "$work/accounts/etc/group"; then
 		run groupadd -P "$work/accounts" -r "$group"
 	fi
 done
-run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio,video \
+run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio,video,dialout \
 	-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
 run usermod -P "$work/accounts" -L root
 

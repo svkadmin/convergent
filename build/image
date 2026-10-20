@@ -251,6 +251,12 @@ mkdir -p "$root/usr/lib/locale"
 bld localedef --prefix=/image-root -i C -f UTF-8 C.UTF-8 || die "cannot compile C.UTF-8"
 bld env ROOT=/image-root env-update || die "env-update failed"
 grep -q "LANG='C.UTF-8'" "$root/etc/profile.env" || die "LANG is not in profile.env"
+grep -q "MC_SKIN='modarin256-defbg'" "$root/etc/profile.env" || die "MC_SKIN is not in profile.env"
+[ -s "$root/usr/share/mc/skins/modarin256-defbg.ini" ] || die "missing mc skin"
+for program in mc mcedit tio vim; do
+	chroot "$root" sh -c 'command -v "$1"' sh "$program" >/dev/null || die "missing $program"
+done
+chroot "$root" getent group dialout >/dev/null || die "missing serial device group"
 # Setuid, setgid and file capabilities only where the laptop needs them: nothing else gains
 # privilege by being run. cdrtools' CD-writing programs (Incus needs only mkisofs) go entirely.
 rm -f "$root"/usr/bin/rscsi "$root"/usr/bin/cdrecord "$root"/usr/bin/cdda2wav "$root"/usr/bin/readcd
@@ -307,6 +313,16 @@ for pair in DRM_I915:i915 BLK_DEV_DM:dm_mod DM_CRYPT:dm_crypt DM_VERITY:dm_verit
 		m) bld modinfo -b /image-root -k "$kver" "$module" >/dev/null || die "missing $module"
 		   drivers="$drivers $module" ;;
 		*) die "no $symbol for laptop/QEMU boot" ;;
+	esac
+done
+# Serial adapters are needed on the host, not in the initramfs.
+for pair in USB_SERIAL:usbserial USB_SERIAL_FTDI_SIO:ftdi_sio USB_SERIAL_CP210X:cp210x \
+	USB_SERIAL_PL2303:pl2303 USB_SERIAL_CH341:ch341 USB_ACM:cdc_acm; do
+	symbol=${pair%:*}; module=${pair#*:}
+	case $(sed -n "s/^CONFIG_$symbol=//p" "$config") in
+		y) ;;
+		m) bld modinfo -b /image-root -k "$kver" "$module" >/dev/null || die "missing $module" ;;
+		*) die "no $symbol for serial adapters" ;;
 	esac
 done
 # Modular console fallbacks, USB/HID variants and the dock's Type-C/I2C/pinctrl path.

@@ -73,7 +73,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; every NVIDIA function bound to vfio-pci before any driver probes it and left powered down; the Wi-Fi function must sit alone in its IOMMU group, with no ACS override |
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
 | Audit | auditd with immutable rules for identity files, the guests' SSH keys, the accepted check baseline, the DNS files, authentication, privilege changes, boot files, keys, module loading, policy changes and commands run as root; records forwarded to svc |
-| Accounts | root locked; the owner in `wheel`, `seat`, `audio` and `video` only; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt (SHA-512 crypt for an initramfs recovery reset); faillock after 5 failures for 15 minutes; restrictive umask |
+| Accounts | root locked; the owner in `wheel`, `seat`, `audio`, `video` and `dialout`; `su` limited to `wheel`; sudo with a 5-minute ticket, a PTY and its own log; passwords hashed with yescrypt (SHA-512 crypt for an initramfs recovery reset); faillock after 5 failures for 15 minutes; restrictive umask |
 | Boot | systemd-boot (the boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot with normal and recovery profiles, plus a standalone rescue UKI. *(Planned:* signing with the owner's key*)* |
 | Root filesystem | A read-only EROFS image per slot, A and B. The kernel creates the dm-verity device from the UKI command line; the root hash will be covered by the Secure Boot signature *(planned)* |
 | State | One LUKS2 volume (Argon2id) with Btrfs: `/var`, `/home`, a short list of machine-specific `/etc` files, the Incus pool; `/home`, `/tmp` and the state mounts `nodev`, `nosuid`, and `noexec` where nothing needs to run from them |
@@ -331,7 +331,8 @@ quota *(planned)* would keep guests and logs from filling the space `/var` and `
    finishes on a later boot. It selects the `/var` that belongs to this slot, takes a cold snapshot
    of it on the first boot of a new slot, mounts `/var` and `/home`, bind-mounts the listed `/etc`
    entries after merging missing image system accounts (IDs below 1000, preserving existing entries
-   and warning on ID collisions), mounts `/run` and `/tmp` as tmpfs, arms the hardware watchdog,
+   and warning on ID collisions) and adding the existing owner to `dialout` in group/gshadow,
+   mounts `/run` and `/tmp` as tmpfs, arms the hardware watchdog,
    and switches to the real root.
 5. OpenRC starts the host, then Incus, then the guests: fw1, fw2, wan, svc. Nothing in the start
    sequence needs a name before the firewalls' resolvers answer.
@@ -416,9 +417,13 @@ The build host is a dedicated machine (a VM today) that does nothing else. It ho
   builds where USE flags differ;
 - the outputs of each release.
 
-`portage/overlay` holds the two packages Gentoo does not offer as needed: `aa-exec` alone, with
+`portage/overlay` holds packages Gentoo does not offer as needed: `aa-exec` alone, with
 which Incus confines its image unpacker (the stock apparmor-utils would bring Python into the
 image), and `way-secure`, which gives each browser a restricted Wayland security context.
+It also pins GURU's `net-dialup/tio` 3.7 with its distfile hashes for serial consoles.
+The image keeps and checks FTDI, CP210x, PL2303, CH341 and CDC ACM drivers; Gentoo udev
+uses `dialout` for their device nodes. Files runs MC (internal editor, terminal-background
+skin via env.d); Notes runs Vim in `~/Documents/notes`. Both use foot.
 
 Releases are signed per channel with Ed25519 (OpenSSL): the image carries its channel's public
 key, and `slot write` takes only a manifest signed with it, unless `CONVERGENT_UNSIGNED=1` overrides
@@ -604,7 +609,8 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 
 How the owner uses it is in USAGE.md. The design points:
 
-- **Status bar:** the path (wan, which firewall is active, svc), alert counts or "unknown", the
+- **Status bar:** the path (wan, which firewall is active, svc), alert counts or "unknown"
+  (click for `sys security alerts` in foot), the
   release state, the idle-lock state, the default microphone's mute state, applied CPU power
   profile, camera enabled/remaining driver warning, and the usual system figures. Camera
   indication is availability, not recording.

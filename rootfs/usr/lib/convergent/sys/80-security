@@ -1,6 +1,7 @@
 title=Security
 alias=sec
 actions="status	Show lockdown, boot, verity, USB and alerts	root
+alerts	List firing alerts
 check	Run the host security check	root
 report	Read the last security report	root
 password	Change the owner's login password	root"
@@ -28,5 +29,19 @@ security_status() {
 	printf 'Alerts: %s\n' "$alerts"
 }
 security_check() { noargs "$@"; page run sudo /usr/local/sbin/check; }
+security_alerts() { noargs "$@"; page security_alert_list; }
+security_alert_list() {
+	alerts=$(curl -sf --connect-timeout 2 -m 4 http://100.80.2.10:8880/api/v1/alerts) ||
+		{ echo 'Alerts unavailable: cannot reach vmalert.' >&2; return 1; }
+	printf '%s\n' "$alerts" | jq -er '
+		def text: tostring | gsub("[\u0000-\u001f\u007f-\u009f]"; " ");
+		select(.status == "success" and (.data.alerts | type == "array")) |
+		[.data.alerts[] | select(.state == "firing")] |
+		sort_by(if .labels.severity == "critical" then 0 elif .labels.severity == "warning" then 1 else 2 end, .labels.alertname) |
+		if length == 0 then "No firing alerts."
+		else .[] |
+			"\((.labels.severity // "info") | text): \((.labels.alertname // "unnamed") | text)\n  \((.annotations.summary // .annotations.description // "-") | text)\n  Active since: \((.activeAt // "unknown") | text)\n"
+		end' || { echo 'Alerts unavailable: invalid vmalert response.' >&2; return 1; }
+}
 security_report() { noargs "$@"; root_page /var/lib/convergent/check/last; }
 security_password() { noargs "$@"; run sudo /usr/local/sbin/account password; }

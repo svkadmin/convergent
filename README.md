@@ -132,7 +132,9 @@ default.
 6. Run `sys selftest` (owner's password once); it writes `~/selftest-YYYYmmdd-HHMMSS.txt`.
    Done when: no line says FAIL (SKIP is fine).
 
-The bar's `alerts` shows `?` until svc runs, then counts (`1c 2w`). Expected with Secure Boot
+Files and Notes are in the app launcher (Super+d).
+The bar shows `? ? ?` until svc runs, then red/orange/white firing alert counts.
+Click for details, or run `sys alerts`. Expected with Secure Boot
 off: SecureBootNotVerified, CheckerFailed; without an accepted baseline also CollectorBroken.
 FirewallRulesetDrift requires an expected hash and reports only a mismatch.
 Details: `sys browser int` (Grafana, user `owner`; password:

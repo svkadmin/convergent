@@ -39,7 +39,7 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 |---|---|
 | Super+m | `sys`: the menu of areas and actions, in a terminal |
 | Super+a | pick one `sys` action by name and run it in its own terminal |
-| Super+d | an app by name: Default browser, Temporary browser, Internal dashboards, Settings, Screenshot, Foot |
+| Super+d | an app by name: Default browser, Temporary browser, Internal dashboards, Settings, Screenshot, Files, Notes, Foot |
 | Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
@@ -58,6 +58,11 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 Use Super+a for `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
 During a display preview, type `yes` then Enter within 15 seconds to keep it; any other answer,
 Escape then Enter, or no answer restores the previous layout. Dock/undock needs no key.
+
+Files (Super+d) opens Midnight Commander in foot, with its internal editor (`mcedit`) and
+`modarin256-defbg` dark skin using the terminal background. Notes opens Vim's directory list
+in `~/Documents/notes`, creating the folder if needed. Keep notes as plain `.md` files;
+`:e name.md` opens a note and `:w` saves it.
 
 ## The sys tool
 
@@ -90,7 +95,7 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save; options below) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to clipboard) |
 | `browser` (`br`) | `status`, `def`, `tmp`, `int` |
-| `security` (`sec`) | `status`, `check`, `report`, `password` |
+| `security` (`sec`) | `status`, `alerts` (`sys alerts`), `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
 | `power` | `status`, `ac`, `battery`, `charge off\|55-100`, `thermal quiet\|balanced\|performance`, `lock`, `logout` *, `reboot` *, `off` * |
@@ -232,6 +237,11 @@ sudo devices allow tb <id>     # Thunderbolt PCIe tunnel, until unplugged
 
 Both ask you to type `yes`. USB approvals are written to `/etc/usbguard/rules.conf`.
 
+For a USB serial adapter, approve it once with `sys usb allow NUMBER` (find NUMBER in
+`sys usb status`), then run `tio -b 115200 /dev/ttyUSB0`; change the baud rate to match the
+console. CDC ACM adapters use `/dev/ttyACM0`. Exit with Ctrl+t then q. The owner gets
+Gentoo's `dialout` group at installation and on the first boot of an updated image.
+
 For the Dell dock's Realtek Ethernet, allow its USBGuard device number first, then run
 `sys wired status` to read its serial and `sys wired attach 0bda:8153 SERIAL` (or omit arguments
 for prompts). Confirm the exact identity shown. The `wired-uplink` Incus USB device persists on
@@ -306,6 +316,10 @@ unplugging. What it leaves out and how to restore: [RECOVERY 11](RECOVERY.md#11-
 
 ## Health and alerts
 
+`sys alerts` (also `sys security alerts`) lists firing alerts from vmalert: severity, name,
+summary or description, and the API's active-since timestamp. The bar counts open the same
+list on left-click. An unavailable or invalid response reports an error, not an empty list.
+
 Open **Internal dashboards** (`sys browser int`) for Overview, Network, Guests and Security.
 Overview puts the path, alerts, collector freshness, host and guests on the first screen; the
 other pages share the same navigation. Guests has project/instance selectors. Current-state
@@ -363,7 +377,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted, `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
-| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser int` |
+| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `PWR` | last successfully applied CPU profile: `ac` or `battery`; `?` if unavailable or failed | `sys power status` |
