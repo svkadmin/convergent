@@ -680,6 +680,9 @@ elif [ "$1" = 0 ]; then
 	if line=$(timeout -k 5 60 fetch-release check 2>&1); then
 		printf '%s\n' "$line" | grep -E 'is available|up to date' | sed 's/^/CV-FETCH /'
 		printf '%s\n' "$line" | grep -Eq 'is available|up to date' || { echo 'CV-FETCH failed: response'; result=1; }
+	elif printf '%s\n' "$line" | grep -q 'no release is published on this channel yet'; then
+		# A channel before its first publication: the server answered, nothing signed to fetch.
+		echo 'CV-FETCH skipped (channel empty)'
 	else
 		printf '%s\n' "$line"
 		echo 'CV-FETCH failed: check'; result=1
