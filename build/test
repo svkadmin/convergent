@@ -602,7 +602,7 @@ t() {
 }
 for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
 	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet; do t command -v "$p"; done
-t grep -qx "c1:12345:respawn:/usr/bin/greetd" /etc/inittab
+t grep -qx "c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd" /etc/inittab
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
 t getent passwd greetd
