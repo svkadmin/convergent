@@ -42,6 +42,9 @@ rm -rf "$root"
 cp -a "$staging" "$root"
 # Owned by root whatever the checkout's owner; modes kept.
 cp -R --preserve=mode,timestamps,links "$repo/rootfs/." "$root/"
+# A git archive tree is group-writable throughout; cronie then skips cron.d files, and /etc became 0775.
+(cd "$repo/rootfs" && find . ! -type l ! -perm -1000 -perm /022 -print0) | (cd "$root" && xargs -0r chmod go-w)
+! find "$root/etc" "$root/usr/local" ! -type l ! -perm -1000 -perm /022 | grep . || die 'group- or world-writable files in the image (above)'
 rm -f "$root/etc/convergent/config.yaml"
 [ -f "$root/usr/share/zoneinfo/$timezone" ] || die "timezone is not installed: $timezone"
 ln -sfn "../usr/share/zoneinfo/$timezone" "$root/etc/localtime"

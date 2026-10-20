@@ -606,6 +606,9 @@ t grep -qx "c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd" /etc/initt
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
 t getent passwd greetd
+# cronie skips a group-writable cron.d file; the status job must have run on its own.
+t sh -c '[ "$(stat -c %a /etc/cron.d/convergent)" = 644 ] && ! find /etc /usr/local -xdev ! -type l ! -perm -1000 -perm /022 | grep .'
+t sh -c 'i=0; until [ -s /run/convergent/status/guestmem ] || [ $i -ge 150 ]; do sleep 5; i=$((i + 5)); done; [ -s /run/convergent/status/guestmem ]'
 t grep -qxF 'output * bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(stat -c "%G %A" /usr/sbin/unix_chkpwd)" = "shadow -rwxr-sr-x" ]'
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'
