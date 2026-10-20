@@ -300,11 +300,13 @@ export LC_ALL=C
 release=/var/lib/convergent/test-release
 state=/var/lib/convergent/guests
 result=0
+# Each failed check names its line in this script.
+bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
-before=$(ic config get svc volatile.base_image) || result=1
-service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
-[ -n "$before" ] && [ -n "$service" ] || result=1
+before=$(ic config get svc volatile.base_image) || bad $LINENO
+service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
+[ -n "$before" ] && [ -n "$service" ] || bad $LINENO
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
@@ -318,25 +320,25 @@ probe=$!
 fw=$?
 kill "$probe" 2>/dev/null
 echo CV-UPDATE fw "$fw"
-[ "$fw" = 0 ] || result=1
+[ "$fw" = 0 ] || bad $LINENO
 # Same-image replacements must still traverse both firewalls and the failover soak.
 awk '/^\+ replace fw2$/ && n == 0 {n++}
     /^\+ soak fw2 fw1$/ && n == 1 {n++}
     /^\+ replace fw1$/ && n == 2 {n++}
     /^\+ soak fw1 fw2$/ && n == 3 {n++}
-    END {exit !(n == 4)}' /var/log/guests-update-fw.log || result=1
+    END {exit !(n == 4)}' /var/log/guests-update-fw.log || bad $LINENO
 for f in fw1 fw2; do
 	case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
-	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || result=1
-	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || result=1
-	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || result=1
-	[ "$demote" = 'carp: carp demote count 0' ] || result=1
+	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || bad $LINENO
+	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || bad $LINENO
+	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || bad $LINENO
+	[ "$demote" = 'carp: carp demote count 0' ] || bad $LINENO
 done
 # wan must answer Incus's power button: a same-image replacement, no forced stop.
 sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-update-wan.log
 wan=$?
 echo CV-UPDATE wan "$wan"
-[ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; result=1; }
+[ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; bad $LINENO; }
 # Who still holds the guests lock, if anyone.
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
@@ -345,23 +347,23 @@ done
 GUEST_SVC_TIMEOUT=150 sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
 svc=$?
 echo CV-UPDATE svc "$svc"
-[ "$svc" != 0 ] || result=1
+[ "$svc" != 0 ] || bad $LINENO
 # Require a rebuilt candidate to reach health checks and then restore its snapshot.
 awk '/^\+ ic rebuild candidate-svc svc$/ && n == 0 {n++}
     /^\+ healthy svc$/ && n == 1 {n++}
     /^guests: restoring svc\/guests-/ && n == 2 {n++}
-    END {exit !(n == 3)}' /var/log/guests-update-svc.log || result=1
-[ ! -e "$state/pending" ] && [ ! -e "$state/seeds/svc.img" ] || result=1
-after=$(ic config get svc volatile.base_image) || result=1
-restored=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
-[ "$after" = "$before" ] && [ "$restored" = "$service" ] || result=1
-ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || result=1
+    END {exit !(n == 3)}' /var/log/guests-update-svc.log || bad $LINENO
+[ ! -e "$state/pending" ] && [ ! -e "$state/seeds/svc.img" ] || bad $LINENO
+after=$(ic config get svc volatile.base_image) || bad $LINENO
+restored=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
+[ "$after" = "$before" ] && [ "$restored" = "$service" ] || bad $LINENO
+ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 # The host's facts and checker now (cron skipped the checker during guest work), then two scrapes.
-/usr/local/sbin/facts boot >/dev/null 2>&1 || result=1
+/usr/local/sbin/facts boot >/dev/null 2>&1 || bad $LINENO
 /usr/local/sbin/check auto >/dev/null 2>&1 || :
 sleep 65
 sh "$release/dashboard-check" "$release/dashboards" || {
-    result=1
+    bad $LINENO
     # Why: each scrape target's last error, and the routed paths svc -> host and wan.
     ic exec svc -- wget -q -T 10 -O - 'http://127.0.0.1:8428/api/v1/targets?state=active' |
         jq -r '.data.activeTargets[] | "CV-TARGET \(.labels.job) \(.labels.node) \(.health) \(.lastError)"'
@@ -370,25 +372,25 @@ sh "$release/dashboard-check" "$release/dashboards" || {
     ip -4 route get 100.80.2.10; nft list ruleset 2>&1 | grep -c .
     for f in fw1 fw2; do timeout 20 ssh -F /etc/convergent/ssh_config "$f" 'pfctl -si | grep -E "current entries|match|state-mismatch"; pfctl -sr | grep -E "9100|8444" | head -n 4' 2>&1 | sed "s/^/CV-$f /"; done
 }
-curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || result=1
-curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || result=1
+curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || bad $LINENO
+curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || bad $LINENO
 timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
-	-verify_ip 100.80.2.10 -verify_return_error </dev/null >/var/log/guests-update-tls.log 2>&1 || result=1
+	-verify_ip 100.80.2.10 -verify_return_error </dev/null >/var/log/guests-update-tls.log 2>&1 || bad $LINENO
 booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 staged=/var/lib/convergent/guest-updates/$booted
 installed=/var/lib/convergent/release-guests/guests/svc
-(umask 077; mkdir -p "$staged" "$installed"; cp -a "$release/guests/svc" "$staged/") || result=1
+(umask 077; mkdir -p "$staged" "$installed"; cp -a "$release/guests/svc" "$staged/") || bad $LINENO
 echo old >"$installed/SHA256SUMS"
 updates=$(wc -l <"$state/updates")
-sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-apply.log || result=1
-[ "$(wc -l <"$state/updates")" -gt "$updates" ] || result=1
-grep -q '^+ ic rebuild candidate-svc svc$' /var/log/guests-update-apply.log || result=1
-cmp "$release/guests/svc/SHA256SUMS" "$installed/SHA256SUMS" || result=1
-[ ! -e "$staged" ] && [ "$(cat /run/convergent/status/guests-update)" = done ] || result=1
+sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-apply.log || bad $LINENO
+[ "$(wc -l <"$state/updates")" -gt "$updates" ] || bad $LINENO
+grep -q '^+ ic rebuild candidate-svc svc$' /var/log/guests-update-apply.log || bad $LINENO
+cmp "$release/guests/svc/SHA256SUMS" "$installed/SHA256SUMS" || bad $LINENO
+[ ! -e "$staged" ] && [ "$(cat /run/convergent/status/guests-update)" = done ] || bad $LINENO
 /usr/local/sbin/guests status
 status=$?
 echo CV-UPDATE status "$status"
-[ "$status" = 0 ] || result=1
+[ "$status" = 0 ] || bad $LINENO
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 sync
 echo CV-UPDATE-RESULT "$result"
