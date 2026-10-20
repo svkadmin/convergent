@@ -187,5 +187,5 @@ tar -C "$work/meta" -cJf "$out/wan-metadata.tar.xz" metadata.yaml
 	echo "metadata_sha256=$(sha256sum "$out/wan-metadata.tar.xz" | awk '{ print $1 }')"
 	sed 's/^/package=/' "$work/packages"
 } > "$out/wan.manifest"
-(cd "$out" && sha256sum wan.qcow2 wan-metadata.tar.xz >SHA256SUMS)
+(cd "$out" && sha256sum wan.qcow2 wan-metadata.tar.xz wan.manifest >SHA256SUMS)
 echo "build: wrote $out"

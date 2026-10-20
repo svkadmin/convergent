@@ -179,6 +179,13 @@ while read -r f; do rm -f "$modules/$f"; done <"$out/modules.removed"
 rm "$out/modules.candidates"
 (cd "$modules" && find kernel -type f -name '*.ko*' | sort) >"$out/modules.after"
 gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
+# Keep the copied root's inventory before trimming Portage's database.
+packages=$(
+	for p in "$root"/var/db/pkg/*/*; do
+		[ ! -d "$p" ] || printf 'package %s %s\n' "${p#"$root/var/db/pkg/"}" "$(cat "$p/SLOT")"
+	done
+)
+[ -n "$packages" ] || die "no image package inventory"
 # Super+d lists apps by their desktop entries: helpers that are not apps to pick go.
 rm -f "$root"/usr/share/applications/footclient.desktop "$root"/usr/share/applications/foot-server.desktop \
 	"$root"/usr/share/applications/qemu.desktop
@@ -473,5 +480,7 @@ done
 	# Exact sizes: a download stops at them.
 	for f in "$out/slot.img" "$out"/convergent-*.efi; do echo "size ${f##*/} $(stat -c %s "$f")"; done
 } >"$out/manifest"
+# The advisory gate's inventory: build host only, never published (laptops cap the manifest at 64 KiB).
+printf '%s\n' "$packages" >"$out/packages"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$out"
 echo "image: release $release in $out"
