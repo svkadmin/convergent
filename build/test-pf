@@ -14,9 +14,9 @@ cleanup() {
 	set +e
 	portal off || r=1
 	ic exec svc -- sh -c '
-		[ ! -f /run/cv-pf-8428.pid ] || {
-			kill "$(cat /run/cv-pf-8428.pid)" && rm /run/cv-pf-8428.pid
-		}
+		for p in 3000 8428; do
+			[ ! -f /run/cv-pf-$p.pid ] || { kill "$(cat /run/cv-pf-$p.pid)" && rm /run/cv-pf-$p.pid; }
+		done
 	' || r=1
 	for name in $created; do ic delete "$name" --force || r=1; done
 	echo "CV-PF-RESULT $r"
@@ -90,8 +90,10 @@ ic exec pf-lan -- sh -eu -c '
 	ip link set eth0 up
 '
 for port in 53 80 443 9100; do listen pf-lan 10.0.2.100 "$port"; done
-# 8428 is normally loopback-only: a live external listener makes denial meaningful.
+# 8428 is normally loopback-only and Grafana (3000) runs only with an int session: live
+# listeners make both allow and deny meaningful.
 listen svc 100.80.2.10 8428
+listen svc 100.80.2.10 3000
 for port in 3000 8428 8880 9428 6514; do probe allow svc 100.80.2.10 "$port"; done
 for address in 100.80.1.2 100.80.1.3; do probe allow host "$address" 22; done
 for port in 9100 8444; do probe allow host 100.80.1.10 "$port"; done
