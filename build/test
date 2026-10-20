@@ -781,10 +781,10 @@ confined() {
 	pids=$(pidof "$1") && [ -n "$pids" ] || return 1
 	for pid in $pids; do grep -qx "$1 ($2)" "/proc/$pid/attr/current" || return 1; done
 }
-t sh -c 'aa-status --json >/tmp/smoke-aa.json'
-# Desktop-facing profiles complain until the laptop runs clean; the rest enforce.
+# Loaded profiles and modes from the kernel (no aa-status: it needs Python). Desktop-facing
+# profiles complain until the laptop runs clean; the rest enforce.
 for p in chronyd:enforce node_exporter:enforce bluetoothd:complain way-secure:complain pipewire-pulse:complain; do
-	t jq -e --arg p "${p%%:*}" --arg m "${p#*:}" '.profiles[$p] == $m' /tmp/smoke-aa.json
+	t grep -qx "${p%%:*} (${p#*:})" /sys/kernel/security/apparmor/profiles
 done
 for d in chronyd:enforce node_exporter:enforce bluetoothd:complain; do t confined "${d%%:*}" "${d#*:}"; done
 t timeout 10 chronyc -n sources
