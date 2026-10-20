@@ -212,7 +212,7 @@ camera() {
 	on|off|restore) [ "$#" = 1 ] || usage ;;
 	*) usage ;;
 	esac
-	mkdir -p -m 0755 /var/lib/convergent/devices
+	install -d -m 0755 /var/lib/convergent/devices
 	exec 8>/run/convergent-camera.lock
 	flock -x 8
 	if [ "$1" = off ]; then

@@ -139,6 +139,7 @@ modules="$root/lib/modules/$kver"
 (
 	set -f
 	drop=$(printf '%s\n' "$MODULE_DROP" | sed 's/#.*//')
+	# shellcheck disable=SC2254 # the patterns are globs
 	while read -r f; do
 		for pattern in $MODULE_KEEP; do case ${f#kernel/} in $pattern) continue 2 ;; esac; done
 		for pattern in $drop; do
