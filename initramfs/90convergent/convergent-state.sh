@@ -155,6 +155,28 @@ done
 merge_accounts group gshadow && merge_accounts passwd shadow ||
 	warn "state: could not merge the image's new system accounts; a new service may not start"
 
+# Serial access for the existing owner, before binding the account files.
+merge_serial_group() {
+	owner=$(awk -F: 'NR == FNR {if ($1 == "wheel") {gid=$3; members="," $4 ","} next}
+		$3 >= 1000 && (gid != "" && $4 == gid || index(members, "," $1 ",")) {user=$1; n++}
+		END {if (n > 1) exit 1; print user}' "$state/etc/group" "$state/etc/passwd") || return 1
+	[ -n "$owner" ] || return 0
+	members=$(awk -F: '$1 == "dialout" {print $4; found=1} END {exit !found}' "$state/etc/group") || return 1
+	if ! awk -F: '$1 == "dialout" {found=1} END {exit !found}' "$state/etc/gshadow"; then
+		append_account gshadow "dialout:!::$members" || return 1
+	fi
+	for entry in gshadow group; do
+		awk -F: -v u="$owner" '$1 == "dialout" && index("," $4 ",", "," u ",") {found=1}
+			END {exit !found}' "$state/etc/$entry" && continue
+		tmp=$(mktemp "$state/etc/.$entry.XXXXXX") || return 1
+		cp -p "$state/etc/$entry" "$tmp" &&
+			awk -F: -v OFS=: -v u="$owner" '$1 == "dialout" {$4=$4 ($4 == "" ? "" : ",") u} {print}' \
+				"$state/etc/$entry" >"$tmp" && sync && mv -f "$tmp" "$state/etc/$entry" && sync ||
+			{ rm -f "$tmp"; return 1; }
+	done
+}
+merge_serial_group || warn "state: could not grant the owner serial access"
+
 # Seed and bind the image's writable /etc list.
 while read -r entry; do
 	case $entry in '' | '#'*) continue ;; esac

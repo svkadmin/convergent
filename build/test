@@ -801,7 +801,7 @@ done
 t timeout 10 dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects
 t timeout -k 5 60 sh /var/lib/convergent/test-release/desktop-sockets
 for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
-	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet vim git; do t command -v "$p"; done
+	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet vim git mc mcedit tio notes; do t command -v "$p"; done
 t sh -c "! command -v nano"
 t grep -qx "c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd" /etc/inittab
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
@@ -813,6 +813,31 @@ for file in /etc/cron.d/convergent /etc/anacrontab /etc/cron.d/0hourly; do
 	[ "$file" != /etc/cron.d/0hourly ] || [ -f "$file" ] || continue
 	t grep -qx 'MAILTO=""' "$file"
 done
+t getent group dialout
+t sh -c '. /etc/profile.env; [ "$MC_SKIN" = modarin256-defbg ] && [ -s /usr/share/mc/skins/$MC_SKIN.ini ]'
+for module in usbserial ftdi_sio cp210x pl2303 ch341 cdc_acm; do t modinfo "$module"; done
+t sh -c '
+	. /usr/lib/convergent/sys/80-security
+	curl() { printf "%s\n" "$response"; }
+	response='"'"'{"status":"success","data":{"alerts":[
+		{"state":"pending","labels":{"alertname":"Pending"}},
+		{"state":"firing","labels":{"severity":"warning","alertname":"Warm"},"annotations":{"description":"Too warm"},"activeAt":"2026-01-01T00:00:00Z"},
+		{"state":"firing","labels":{"severity":"critical","alertname":"Down"},"annotations":{"summary":"Link down"},"activeAt":"2026-01-02T00:00:00Z"}
+	]}}'"'"'
+	security_alert_list >/tmp/alerts.out || exit 1
+	grep -qx "critical: Down" /tmp/alerts.out &&
+		grep -qx "  Too warm" /tmp/alerts.out &&
+		grep -qx "  Active since: 2026-01-01T00:00:00Z" /tmp/alerts.out &&
+		! grep -q Pending /tmp/alerts.out || exit 1
+	response='"'"'{"status":"success","data":{"alerts":[]}}'"'"'
+	[ "$(security_alert_list)" = "No firing alerts." ] || exit 1
+	response='"'"'{"status":"error"}'"'"'
+	if security_alert_list; then exit 1; fi
+	response=broken
+	if security_alert_list; then exit 1; fi
+	curl() { return 7; }
+	if security_alert_list; then exit 1; fi
+'
 # cronie skips a group-writable cron.d file; the status job must have run on its own.
 t sh -c '[ "$(stat -c %a /etc/cron.d/convergent)" = 644 ] && ! find /etc /usr/local -xdev ! -type l ! -perm -1000 -perm /022 | grep .'
 t sh -c 'i=0; until [ -s /run/convergent/status/guestmem ] || [ $i -ge 150 ]; do sleep 5; i=$((i + 5)); done; [ -s /run/convergent/status/guestmem ]'
@@ -820,7 +845,7 @@ t grep -qxF 'output * bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(stat -c "%G %A" /usr/sbin/unix_chkpwd)" = "shadow -rwxr-sr-x" ]'
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'
 t sh -c 'XDG_RUNTIME_DIR=/tmp/smoke-run timeout 4 /usr/local/sbin/bar </dev/null >/tmp/bar.out
-	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8" >/dev/null'
+	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8 and any(.[]; .name == \"alerts\")" >/dev/null'
 t su -s /bin/sh nobody -c '/usr/local/sbin/sys help >/dev/null'
 t su -s /bin/sh nobody -c '[ "$(/usr/local/sbin/sys --pick | wc -l)" -ge 30 ]'
 t su -s /bin/sh nobody -c '

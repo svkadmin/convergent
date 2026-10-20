@@ -28,8 +28,11 @@ exec 3<&0
 (
 	while IFS= read -r event; do
 		case $event in *'{'*) ;; *) continue ;; esac
-		printf '%s\n' "${event#,}" | jq -e 'select(.name == "nolock" and .button == 1)' >/dev/null 2>&1 || continue
-		if [ -e "$hold" ]; then rm -f "$hold"; else : >"$hold"; fi
+		name=$(printf '%s\n' "${event#,}" | jq -er 'select(.button == 1) | .name') || continue
+		case $name in
+		nolock) if [ -e "$hold" ]; then rm -f "$hold"; else : >"$hold"; fi ;;
+		alerts) sys --pick 'security alerts' </dev/null >/dev/null 2>&1 & ;;
+		esac
 	done
 ) <&3 &
 reader=$!
@@ -220,8 +223,8 @@ while :; do
 		if (mic == "on") block("MIC", orange); else if (mic != "off") block("MIC?", grey)
 		# Firing alerts as Archer counts them: critical, warning, info.
 		if (split(get(work "/alerts"),count," ") == 3)
-			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "", 1)
-		else block("? ? ?", grey)
+			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
+		else block("? ? ?", grey, "alerts")
 		portal=get(st "/portal")
 		# Shown only while on; "unknown" before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)

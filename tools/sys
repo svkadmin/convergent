@@ -154,7 +154,10 @@ pick_list() {
 }
 dispatch() (
 	[ "$#" -ge 1 ] || usage
-	case $1 in debug) shift; set -- logs debug "$@" ;; esac
+	case $1 in
+	debug) shift; set -- logs debug "$@" ;;
+	alerts) shift; set -- security alerts "$@" ;;
+	esac
 	load "$1"; shift
 	if [ "$#" -gt 0 ] && lookup "$1"; then
 		action=$1; shift
