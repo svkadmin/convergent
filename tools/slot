@@ -266,6 +266,7 @@ write() {
 rescue_next() {
 	case $1 in a | b) ;; *) usage ;; esac
 	esp_mount
+	# shellcheck disable=SC2046
 	set -- $(ukis "$1")
 	[ $# = 1 ] || die "expected one UKI for the selected slot"
 	entry=${1##*/}
