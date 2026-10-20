@@ -59,7 +59,7 @@ mode=${1:-write}
 case $mode:$# in
 usb:2)
 	usb=$(cd "$2" && pwd -P) || die 'no USB release directory'
-	mode=write
+	mode='write'
 	;;
 write:0|write:1|check:1) ;;
 *) die 'usage: fetch-release [check] | usb <release-dir>' ;;
