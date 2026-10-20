@@ -1,0 +1,30 @@
+# ARCHITECTURE 3.5, 4.2
+# Apply browser-base plus one role; never the default profile.
+# Require Intel renderD128 and filtered Wayland/PipeWire socket inodes.
+# tmp/portal: init --ephemeral; stop on launcher exit or failure.
+# Create private shifted browser-{web,admin}-state volumes (4GiB/512MiB).
+# Concurrent tmp: override address, MAC and both socket sources together.
+# Label windows with Sway title_format for app_id convergent-ROLE.
+config:
+  security.privileged: "false"
+  security.nesting: "false"
+  security.guestapi: "false"
+  security.idmap.isolated: "true"
+  security.idmap.size: "65536"
+  limits.cpu: "2"
+  limits.memory: 2GiB
+  limits.memory.swap: "false"
+  limits.processes: "512"
+  boot.autostart: "false"
+description: browser common confinement
+devices:
+  render:
+    type: unix-char
+    source: /dev/dri/renderD128
+    uid: "1000"
+    mode: "0600"
+  root:
+    type: disk
+    pool: default
+    path: /
+    size: 2GiB
