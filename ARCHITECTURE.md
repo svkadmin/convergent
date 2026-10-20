@@ -597,7 +597,7 @@ How the owner uses it is in USAGE.md. The design points:
   a hash of sorted make/model/serial triples for all connected outputs, including disabled ones.
   Duplicate identities are refused. A Sway output/tick subscriber applies profiles at login and
   on hotplug, mapping identities to current connectors; layout-only events do not reapply them.
-  Unknown sets enable preferred modes with laptop scale 1.2, external scale 1. `set` previews for
+  Unknown sets enable preferred modes with laptop scale 1.3, external scale 1. `set` previews for
   15 seconds; a separate rollback worker and exit traps restore the previous layout unless the
   owner types `yes`. A session lock serializes hotplug, saves and previews. If original screens
   disappear during rollback, remaining screens are enabled as a fallback. Profiles are data,

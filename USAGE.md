@@ -101,11 +101,11 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 DNS edits, wired assignment and firewall maintenance ask inside the action, after displaying
 the proposed change or checking health. Not built in `sys`: owner guest management and printing.
 
-Screen too big: `sys display set eDP-1 scale 1.2`, confirm with `yes`, then `sys display save`.
+Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys display save`.
 Save once docked and once undocked. Profiles use the connected set of monitor make/model/serial
 identities, including disabled panels; connector names and connection order can change.
 The session applies the matching profile at login and whenever the connected set changes.
-Unrecognised sets enable connected screens at their preferred modes (laptop panel scale 1.2,
+Unrecognised sets enable connected screens at their preferred modes (laptop panel scale 1.3,
 external scale 1), unless an older `~/.config/sway/config.d/outputs` file still applies; it stays in
 charge until the first save. Identical identities cannot be saved unambiguously; `save` refuses them.
 `reset` removes only the current set's saved profile; it leaves the live layout alone.
