@@ -1,0 +1,15 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -148,10 +148,8 @@
+     };
+     context.commit(&mut conn);
+ 
+-    conn.flush(IoMode::Blocking)
+-        .map_err(CreateContextError::Io)?;
+-    conn.recv_events(IoMode::Blocking)
+-        .map_err(CreateContextError::Io)?;
++    // A roundtrip: the compositor must process commit before this connection closes, or it may drop it.
++    conn.blocking_roundtrip().map_err(CreateContextError::Io)?;
+     conn.dispatch_events(&mut state);
+ 
+     Ok(())

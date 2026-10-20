@@ -35,6 +35,10 @@ LICENSE+=" || ( Apache-2.0 MIT ) Unicode-DFS-2016"
 SLOT="0"
 KEYWORDS="amd64"
 
+# Upstream drops its connection right after commit; a compositor that sees the hangup first
+# discards the commit and the listener with it.
+PATCHES=( "${FILESDIR}/${P}-commit-roundtrip.patch" )
+
 src_install() {
 	dobin "$(cargo_target_dir)/${PN}"
 }

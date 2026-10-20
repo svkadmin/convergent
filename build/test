@@ -715,7 +715,7 @@ runtime=/run/user/$uid
 run=/run/convergent/browser/tmp-20
 display=$runtime/wayland-1 ipc=
 children=
-die() { echo "desktop-sockets: $*" >&2; exit 1; }
+die() { reason=$*; echo "desktop-sockets: $*" >&2; exit 1; }
 cleanup() {
 	result=$?
 	trap - 0
@@ -723,10 +723,12 @@ cleanup() {
 	set +e
 	for child in $children; do kill "$child" 2>/dev/null; done
 	for child in $children; do wait "$child" 2>/dev/null; done
-	[ "$result" = 0 ] || tail -n 15 "$run"/*.log
+	[ "$result" = 0 ] || { tail -n 4 "$run"/*.log; echo "desktop-sockets: ${reason:-failed}"; }
 	rm -rf "$run" "$runtime"
 	exit "$result"
 }
+# foot starts its child in the working directory, which nobody must be able to enter.
+cd /
 [ ! -e "$run" ] && [ ! -e "$runtime" ] || die 'test session paths are already in use'
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
@@ -756,17 +758,17 @@ wait_socket "$runtime/pipewire-0" "$server" "$run/pipewire.log"
 background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
-grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current"
+grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current" || die "way-secure runs as $(cat "/proc/$wayland/attr/current")"
 # A client round-trip through the restricted socket, not just a socket inode.
 owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" timeout 10 \
-	foot -e /bin/true >"$run/client.log" 2>&1
+	foot -e /bin/true >"$run/client.log" 2>&1 || die 'no client round-trip through way-secure'
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
 	/usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
-grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current"
+grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current" || die "pipewire-pulse runs as $(cat "/proc/$audio/attr/current")"
 # Pulse clients are in the browser guests; this mode checks the listener and its confinement.
-kill -0 "$wayland" "$audio"
+kill -0 "$wayland" "$audio" || die 'a socket provider exited'
 EOF
 	cat >"$var/lib/convergent/test-release/desktop" <<'EOF'
 # The session's PATH (profile.env), not cron's.
@@ -775,7 +777,7 @@ mkdir -p -m 700 /tmp/smoke-run
 r=0
 t() {
 	if "$@" >/tmp/smoke.out 2>&1; then echo "CV-DESKTOP ok: $*"
-	else echo "CV-DESKTOP FAIL: $*"; head -n 10 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
+	else echo "CV-DESKTOP FAIL: $*"; tail -n 25 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
 }
 confined() {
 	pids=$(pidof "$1") && [ -n "$pids" ] || return 1
