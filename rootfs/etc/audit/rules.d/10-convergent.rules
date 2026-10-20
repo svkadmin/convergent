@@ -19,8 +19,8 @@
 -w /var/lib/convergent/dns/ -p wa -k dns
 
 # Every command the owner runs as root, from either ABI.
--a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
--a always,exit -F arch=b32 -S execve -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
+-a always,exit -F arch=b64 -S execve,execveat -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
+-a always,exit -F arch=b32 -S execve,execveat -F euid=0 -F auid>=1000 -F auid!=unset -k rootcmd
 -w /var/log/sudo.log -p wa -k sudolog
 
 # Loading or removing a kernel module.

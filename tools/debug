@@ -68,7 +68,11 @@ case $answer in y | Y) ;; *) exit 0 ;; esac
 printf '%s\n' "$id" >>"$state/ran"
 sync "$state/ran"
 rc=0
-timeout -k 5 300 sh -c 'sh "$1" 2>&1 | head -c 8388608 >"$2"' sh "$tmp/script" "$tmp/output" </dev/null 9>&- || rc=$?
+timeout -k 5 300 sh -c '
+	{ sh "$1"; echo "$?" >"$3"; } 2>&1 |
+		{ head -c 8388608 >"$2"; cat >/dev/null; }
+	exit "$(cat "$3")"
+' sh "$tmp/script" "$tmp/output" "$tmp/status" </dev/null 9>&- || rc=$?
 mv "$tmp/output" "$state/$id.txt"
 chmod 0600 "$state/$id.txt"
 printf 'Local output: %s\n' "$state/$id.txt"

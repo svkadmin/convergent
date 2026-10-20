@@ -341,7 +341,14 @@ and expiry, and asks before running it as root. It refuses expired or already-ru
 limits the run to five minutes and output to 8 MiB, and sends the output encrypted to the
 developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; its path
 is printed so you can read what was sent with `sudo cat`. Bleeding-edge releases only: a stable
-image does not carry it.
+image does not carry it. A failed diagnostic reports its script exit status even when output
+reaches the cap; timeout reports 124 (137 if it needs a forced kill).
+
+An oops triggers a kernel panic; the host reboots 10 seconds after a panic. At boot, `facts`
+copies EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700),
+verifies and syncs them, then clears pstore. `cv_crash_records` counts archived files; the
+existing `CrashRecorded` alert stays active until acknowledged (RECOVERY, recipe 13).
+Host cron and anacron have mail disabled; their jobs and logging still run.
 
 ## The bar
 

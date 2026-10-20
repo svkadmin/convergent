@@ -720,6 +720,12 @@ t grep -qx "c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd" /etc/initt
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
 t getent passwd greetd
+t sh -c '[ "$(stat -c "%U:%G %a" /var/log/btmp)" = "root:utmp 600" ]'
+t sh -c '[ "$(sysctl -n kernel.panic)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops)" = 1 ]'
+for file in /etc/cron.d/convergent /etc/anacrontab /etc/cron.d/0hourly; do
+	[ "$file" != /etc/cron.d/0hourly ] || [ -f "$file" ] || continue
+	t grep -qx 'MAILTO=""' "$file"
+done
 # cronie skips a group-writable cron.d file; the status job must have run on its own.
 t sh -c '[ "$(stat -c %a /etc/cron.d/convergent)" = 644 ] && ! find /etc /usr/local -xdev ! -type l ! -perm -1000 -perm /022 | grep .'
 t sh -c 'i=0; until [ -s /run/convergent/status/guestmem ] || [ $i -ge 150 ]; do sleep 5; i=$((i + 5)); done; [ -s /run/convergent/status/guestmem ]'

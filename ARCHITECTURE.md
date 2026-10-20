@@ -84,7 +84,7 @@ Incus binds to its virtual NIC, so it cannot send as anyone else (wan is the exc
 | Power | Never suspends. CPU energy preference and a clock cap (`cpu_cap_khz`, 4.2 GHz by default) set at boot and per power source on AC events; runtime power management for NVIDIA GPU/audio. Optional battery charge end/start thresholds (off by default: 100/95), and firmware `platform_profile` selection (quiet/balanced/performance only if offered). Firmware retains fan control. A known-noisy ACPI event masked, never the embedded controller's *(planned)* |
 | Host firewall | nftables: input accepted only on the `host` interface and only from the listed sources (section 4.2); forwarding off |
 | Logs | syslog-ng, forwarded to svc over TLS; a bounded local buffer for when svc is down |
-| Crashes | Kernel crash records from pstore archived at boot by `facts`, run from cron, and reported to svc |
+| Crashes | Oops panics; panic reboots after 10 s. Built-in EFI pstore records are verified, synced and cleared at boot by `facts` into root-only `/var/lib/convergent/crash/<timestamp>/`; `cv_crash_records` drives svc's `CrashRecorded` alert |
 | Time | chrony with NTS from three sources, needing two to agree; starts without waiting for the network; serves NTP to the firewalls |
 | Listening on the host | chrony (UDP 123, from the firewalls only), node_exporter (TCP 9100, from svc only) and Incus' metrics endpoint (TCP 8444, TLS with a client certificate, from svc only). Nothing else |
 

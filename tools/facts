@@ -104,35 +104,40 @@ fact_luks() {
 
 fact_pstore() {
 	ps=/sys/fs/pstore
-	arch=$sdir/pstore
-	if [ -d "$ps" ] && ! grep -q " $ps " /proc/mounts; then mount -t pstore pstore "$ps" 2>/dev/null || :; fi
-	umask 077
-	mkdir -p "$arch" || { bad "could not create $arch"; umask 022; return; }
-	if [ -n "$(ls -A "$ps" 2>/dev/null)" ]; then
-		dst=$arch/$(date -u +%Y%m%dT%H%M%SZ)
-		mkdir -p "$dst" || bad "could not create $dst"
-		for f in "$ps"/*; do
-			[ -f "$f" ] || continue
-			if cp -p "$f" "$dst/" && cmp -s "$f" "$dst/${f##*/}"; then
-				sync
-				rm -f "$f" || bad "could not clear ${f##*/} from pstore"
-			else
-				bad "could not archive ${f##*/}"
-			fi
-		done
-		rmdir "$dst" 2>/dev/null || log "crash records archived in $dst"
+	arch=$sdir/crash
+	if ! grep -q " $ps " /proc/mounts; then
+		mount -t pstore pstore "$ps" 2>/dev/null || bad "could not mount pstore"
 	fi
+	umask 077
+	if [ -d "$sdir/pstore" ] && [ ! -e "$arch" ]; then
+		mv "$sdir/pstore" "$arch" || bad "could not move the old crash archive"
+	fi
+	install -d -m 0700 -o 0 -g 0 "$arch" || { bad "could not create $arch"; umask 022; return; }
+	dst=
+	for f in "$ps"/*; do
+		[ -f "$f" ] || continue
+		if [ -z "$dst" ]; then
+			dst=$arch/$(date -u +%Y%m%dT%H%M%SZ)
+			mkdir -m 0700 "$dst" && chown 0:0 "$dst" || { bad "could not create $dst"; break; }
+		fi
+		if cp "$f" "$dst/" && cmp -s "$f" "$dst/${f##*/}" && sync; then
+			rm -f "$f" || bad "could not clear ${f##*/} from pstore"
+		else
+			bad "could not archive ${f##*/}"
+		fi
+	done
+	[ -z "$dst" ] || rmdir "$dst" 2>/dev/null || log "crash records archived in $dst"
 	umask 022
 	m "cv_crash_records $(find "$arch" -type f | wc -l)"
 }
 
 boot() {
 	new_buf
+	fact_pstore
 	fact_release
 	fact_secure_boot
 	fact_lockdown
 	fact_luks
-	fact_pstore
 	publish boot boot
 }
 

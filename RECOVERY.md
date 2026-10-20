@@ -260,3 +260,22 @@ First `sys update check`: it names the newest release and how old its signature 
 
 Works when: `sys update` shows the new release with `+3`; then reboot (recipe 2 if it
 does not become good).
+
+## 13. A kernel panic or CrashRecorded alert
+
+An oops now panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
+archives EFI pstore records in `/var/lib/convergent/crash/<UTC-timestamp>/`, accessible only to
+root. It verifies and syncs each copy before removing the firmware record. Older archives in
+`/var/lib/convergent/pstore` move to `crash` on the first run.
+
+```sh
+sudo find /var/lib/convergent/crash -type f
+sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
+```
+
+Keep a copy before acknowledging a crash: remove only its reviewed timestamp directory with
+`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`, then run `sudo facts boot` to refresh
+`cv_crash_records`. The `CrashRecorded` alert clears when no archived files remain.
+Firmware must support EFI variable writes during a panic; an empty archive alone does not
+prove the previous shutdown was clean. If the release keeps crashing, boot the other slot
+(recipe 3).
