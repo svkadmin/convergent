@@ -1,0 +1,70 @@
+#!/bin/sh
+# Runs in build/test's disposable host; fixtures are from 1631544^.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+release=/var/lib/convergent/test-release
+state=/var/lib/convergent/guests
+ic() { incus --force-local --project default "$@"; }
+step=setup
+trap 'r=$?; [ "$r" = 0 ] || echo "CV-BROWSER migration FAIL: $step"; exit "$r"' 0
+
+for mode in normal interrupted; do
+	step="$mode old layout"
+	for role in base tmp web admin portal; do
+		case $role in base|tmp) ;; *) ic profile create "browser-$role" ;; esac
+		ic profile edit "browser-$role" <"$release/browser-legacy/$role.yaml"
+	done
+	for role in def int; do ic profile delete "browser-$role"; done
+	# New volumes came from guests init (or the preceding migration).
+	for role in def int; do ic storage volume delete default "browser-$role-state"; done
+	for role in web admin; do
+		case $role in web) size=4GiB ;; admin) size=512MiB ;; esac
+		ic storage volume create default "browser-$role-state" size="$size" security.shifted=true
+		ic init candidate-browser "$role" -p browser-base -p "browser-$role"
+		# Seed through a temporary mount; current browser-setup rejects the old roles.
+		ic storage volume attach default "browser-$role-state" svc migration /mnt/migration
+		ic exec svc -- sh -c 'printf "%s\n" "$1" >/mnt/migration/rename-marker' sh "$mode-$role"
+		ic storage volume detach default "browser-$role-state" svc migration
+	done
+	step="$mode update"
+	if [ "$mode" = interrupted ]; then
+		# One fault in a writable copy; the resume uses the installed command.
+		sed '/^ *mv "\$work\/browser.rename" "\$state\/browser.rename"$/a\
+    kill -KILL "$$"
+' /usr/local/sbin/guests >"$release/guests-interrupt"
+		grep -q '^    kill -KILL "\$\$"$' "$release/guests-interrupt"
+		r=0
+		sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
+		[ "$r" = 137 ]
+		for role in base def tmp int; do
+			cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
+		done
+		[ -f "$state/profiles.before/browser-web.yaml" ]
+		ic list --format json | jq -e 'any(.[]; .name == "web") and any(.[]; .name == "admin")'
+		echo 'CV-BROWSER migration killed after rename journal'
+	fi
+	/usr/local/sbin/guests update browser "$release/guests/browser"
+	step="$mode assertions"
+	for entry in web:def admin:int; do
+		old=${entry%:*}; new=${entry#*:}
+		incus --force-local query "/1.0/instances/$new?project=default" |
+			jq -e --arg r "$new" '.type == "container" and .status == "Stopped" and .profiles == ["browser-base", "browser-" + $r]'
+		[ "$(ic profile device get "browser-$new" state source)" = "browser-$new-state" ]
+		[ "$(ic profile get "browser-$new" environment.BROWSER_ROLE)" = "$new" ]
+		ic storage volume attach default "browser-$new-state" svc migration /mnt/migration
+		[ "$(ic exec svc -- cat /mnt/migration/rename-marker)" = "$mode-$old" ]
+		ic storage volume detach default "browser-$new-state" svc migration
+	done
+	ic list --format json | jq -e 'all(.[]; .name != "web" and .name != "admin" and .name != "portal")'
+	ic storage volume list default --format json |
+		jq -e 'all(.[]; .name != "browser-web-state" and .name != "browser-admin-state")'
+	ic profile list --format json |
+		jq -e 'all(.[]; .name != "browser-web" and .name != "browser-admin" and .name != "browser-portal")'
+	for journal in browser.rename browser.ready profiles.before pending; do [ ! -e "$state/$journal" ]; done
+	echo "CV-BROWSER migration $mode ok"
+	for role in def int; do
+		ic config set "$role" security.protection.delete=false
+		ic delete "$role"
+	done
+done

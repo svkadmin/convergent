@@ -1,0 +1,36 @@
+# Apply after browser-base; preserve private state across updates.
+config:
+  environment.BROWSER_ROLE: "web"
+  # Static address is selected by browser-setup.
+  security.protection.delete: "true"
+  limits.memory: 2GiB
+description: web browser
+devices:
+  eth0:
+    type: nic
+    nictype: bridged
+    parent: web
+    name: eth0
+    hwaddr: "00:16:3e:80:03:10"
+    ipv4.address: 100.80.3.10
+    security.ipv4_filtering: "true"
+    security.mac_filtering: "true"
+    security.port_isolation: "true"
+  wayland:
+    type: disk
+    source: /run/convergent/browser/web/sockets/wayland-0
+    path: /mnt/browser/wayland-0
+    readonly: "true"
+    # browser sets the real socket and required=true on the instance; at creation it does not exist yet.
+    required: "false"
+  pipewire:
+    type: disk
+    source: /run/convergent/browser/web/sockets/pulse-0
+    path: /mnt/browser/pipewire-0
+    readonly: "true"
+    required: "false"
+  state:
+    type: disk
+    pool: default
+    source: browser-web-state
+    path: /home/browser

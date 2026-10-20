@@ -1,0 +1,148 @@
+#!/bin/sh
+# Runs inside build/test's guest host, after uplink and browser smoke tests.
+# TCP matrix follows guests/fw/site/etc/pf.conf; DNS is the segment-local exception.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+result=0
+created=
+ic() { incus --force-local --project default "$@"; }
+cleanup() {
+	r=$?
+	trap - 0
+	trap '' HUP INT TERM
+	set +e
+	portal off || r=1
+	ic exec svc -- sh -c '
+		[ ! -f /run/cv-pf-8428.pid ] || {
+			kill "$(cat /run/cv-pf-8428.pid)" && rm /run/cv-pf-8428.pid
+		}
+	' || r=1
+	for name in $created; do ic delete "$name" --force || r=1; done
+	echo "CV-PF-RESULT $r"
+	exit "$r"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+# The shell reports nc's verdict; a failed Incus exec must never count as a denial.
+tcp() {
+	if [ "$1" = host ]; then
+		connections=$(curl -qs --noproxy '*' --connect-timeout 3 --max-time 4 \
+			-o /dev/null -w '%{num_connects}' "http://$2:$3" </dev/null) || :
+		case $connections in 1) echo allow ;; 0) echo deny ;; *) return 1 ;; esac
+	else
+		timeout -k 1 8 incus --force-local --project default exec "$1" -- sh -c '
+			r=0; nc -z -w 3 "$1" "$2" </dev/null >/dev/null 2>&1 || r=$?
+			case $r in 0) echo allow ;; 1) echo deny ;; *) exit 2 ;; esac
+		' sh "$2" "$3"
+	fi
+}
+probe() { # expectation source destination port [dns]
+	got=error
+	if [ "${5:-}" = dns ]; then
+		got=$(timeout -k 1 8 incus --force-local --project default exec "$2" -- sh -c '
+			r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
+			case $r in 0) echo allow ;; 1|124) echo deny ;; *) exit 2 ;; esac
+		' sh "$3") || got=error
+	else
+		got=$(tcp "$2" "$3" "$4") || got=error
+	fi
+	if [ "$got" = "$1" ]; then verdict=ok; else verdict=FAIL; result=1; fi
+	echo "CV-PF $verdict src=$2 dst=$3 port=$4${5:+/udp} want=$1 got=$got"
+}
+listen() {
+	ic exec "$1" -- sh -c '
+		nc -lk -s "$1" -p "$2" -e /bin/true </dev/null >/dev/null 2>&1 &
+		echo $! >"/run/cv-pf-$2.pid"
+		for i in 1 2 3 4 5; do nc -z -w 1 "$1" "$2" && exit 0; sleep 1; done
+		exit 1
+	' sh "$2" "$3"
+}
+start() {
+	name=$1; role=$2
+	ic init candidate-browser "$name" -p browser-base -p "browser-$role" \
+		-c security.protection.delete=false -c limits.memory=512MiB
+	created="$name $created"
+	ic config device add "$name" render none
+	if [ "$name" = pf-portal ]; then
+		ic config set "$name" environment.BROWSER_PORTAL=1 environment.BROWSER_IPV4=100.80.3.11
+		ic config device override "$name" eth0 ipv4.address=100.80.3.11 hwaddr=00:16:3e:80:03:11
+	fi
+	ic start "$name"
+	timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- sh -c \
+		"test -f /run/browser-ready && ip -4 route show default | grep -q \"^default via \""; do sleep 1; done' sh "$name"
+	ic exec "$name" -- sh -c 'command -v nc; command -v nslookup'
+}
+portal off
+for role in def tmp int; do start "pf-$role" "$role"; done
+start pf-portal tmp
+
+# A LAN server on the emulated uplink, outside the host's internal networks.
+ic init candidate-browser pf-lan -p browser-base -c security.protection.delete=false -c limits.memory=256MiB
+created="pf-lan $created"
+ic config device add pf-lan render none
+ic config device add pf-lan eth0 nic nictype=bridged parent=cvuplink name=eth0
+ic start pf-lan
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-lan -- true; do sleep 1; done'
+ic exec pf-lan -- sh -eu -c '
+	ip addr add 10.0.2.100/24 dev eth0
+	ip link set eth0 up
+'
+for port in 53 80 443 9100; do listen pf-lan 10.0.2.100 "$port"; done
+# 8428 is normally loopback-only: a live external listener makes denial meaningful.
+listen svc 100.80.2.10 8428
+for port in 3000 8428 8880 9428 6514; do probe allow svc 100.80.2.10 "$port"; done
+for address in 100.80.1.2 100.80.1.3; do probe allow host "$address" 22; done
+for port in 9100 8444; do probe allow host 100.80.1.10 "$port"; done
+for port in 53 80 443 9100; do probe allow pf-lan 10.0.2.100 "$port"; done
+[ "$result" = 0 ] || exit 1
+
+# Each denied endpoint above has a positive control; public egress uses the test uplink.
+for source in pf-def pf-tmp pf-int; do
+	case $source in pf-int) internet=deny; dashboard=allow; gateway=100.80.4.1 ;;
+	*) internet=allow; dashboard=deny; gateway=100.80.3.1 ;; esac
+	probe allow "$source" "$gateway" 53 dns
+	for port in 80 443; do probe "$internet" "$source" 1.1.1.1 "$port"; done
+	probe "$dashboard" "$source" 100.80.2.10 3000
+	for port in 8428 8880 9428 6514; do probe deny "$source" 100.80.2.10 "$port"; done
+	for port in 9100 8444; do probe deny "$source" 100.80.1.10 "$port"; done
+	for address in 100.80.1.2 100.80.1.3; do probe deny "$source" "$address" 22; done
+done
+
+# svc: exactly the five TCP scrape endpoints, plus its gateway's resolver.
+probe allow svc 100.80.2.1 53 dns
+for address in 100.80.1.10 100.80.0.10 100.80.2.2 100.80.2.3; do probe allow svc "$address" 9100; done
+probe allow svc 100.80.1.10 8444
+for address in 100.80.1.2 100.80.1.3; do probe deny svc "$address" 22; done
+for port in 80 443; do probe deny svc 1.1.1.1 "$port"; done
+for entry in pf-def:100.80.3.10 pf-int:100.80.4.10; do
+	source=${entry%:*}; address=${entry#*:}
+	listen "$source" "$address" 80
+	probe allow "$source" "$address" 80
+	probe deny svc "$address" 80
+done
+probe deny pf-int 100.80.3.10 80
+for source in pf-def pf-tmp; do probe deny "$source" 100.80.4.10 80; done
+for port in 6514 8880 9428; do probe allow host 100.80.2.10 "$port"; done
+for port in 3000 8428; do probe deny host 100.80.2.10 "$port"; done
+
+# Real portal commands populate/flush both PF tables and wan's DNS map.
+mkdir -p /run/convergent/browser
+exec 8>/run/convergent/browser/tmp-portal.lock
+flock -n 8
+for mode in off on off; do
+	if [ "$mode" = on ]; then portal begin; want=allow; else portal off; want=deny; fi
+	echo "CV-PF portal=$mode"
+	for port in 80 443; do probe "$want" pf-portal 10.0.2.100 "$port"; done
+	for port in 53 9100; do probe deny pf-portal 10.0.2.100 "$port"; done
+	probe "$want" pf-portal 100.80.0.10 53 dns
+	# A public address and internal services are outside the portal tables.
+	for port in 80 443; do probe deny pf-portal 1.1.1.1 "$port"; done
+	for port in 3000 8428 8880 9428 6514; do probe deny pf-portal 100.80.2.10 "$port"; done
+	for port in 9100 8444; do probe deny pf-portal 100.80.1.10 "$port"; done
+	for address in 100.80.1.2 100.80.1.3; do probe deny pf-portal "$address" 22; done
+	for source in pf-def pf-tmp pf-int svc; do probe deny "$source" 10.0.2.100 80; done
+done
+exec 8>&-
+exit "$result"

@@ -283,7 +283,11 @@ that the update is rolled back.
 user networking, as a second NIC), then fw1 must reach 9.9.9.9:853 and the host must resolve a
 name; otherwise the test fails. Both modes also smoke-test the def browser container without
 Wayland, check normal tmp versus portal policies and devices, and exercise portal expiry and closure.
-They interrupt and resume the browser role migration and verify persistent bookmarks survive.
+They probe PF's web/admin/svc/host policy (`CV-PF ok/FAIL`, source, destination and port),
+including portal reachability before, during and after portal mode. Temporary listeners give
+denied ports positive controls. Both modes build the pre-1631544 browser layout from frozen
+YAML fixtures and run `guests update browser` normally and after SIGKILL at the rename journal;
+both state-volume markers, new profiles and removal of old names/journals must pass.
 They check signed online updates when configured after a successful uplink and run the
 booted selftest checks as root; only release, verity, nested and audit failures gate the test.
 

@@ -431,6 +431,9 @@ inject_guests() {
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
+	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
+	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
+	cp -r "$here/fixtures/browser-legacy" "$var/lib/convergent/test-release/"
 	if [ "$mode" = guests-update ]; then
 		cp "$here/../guests/svc/dashboards/check-data" "$var/lib/convergent/test-release/dashboard-check"
 		cp -r "$here/../guests/svc/rootfs/usr/share/grafana/dashboards" "$var/lib/convergent/test-release/"
@@ -556,66 +559,6 @@ echo "$(($(date +%s) - 1801))" >/run/convergent/portal
 /usr/local/sbin/portal status | grep -qx 'portal: off'
 exec 8>&-
 EOF
-	cat >"$var/lib/convergent/test-release/browser-migration-test" <<'EOF'
-#!/bin/sh
-set -eu
-defs=$(mktemp)
-sed '/^# Capture the command status/,$d' /usr/local/sbin/guests >"$defs"
-. "$defs"
-rm "$defs"
-work=$(mktemp -d "$state/work.XXXXXX")
-image_dir=/var/lib/convergent/test-release/guests/browser
-trap 'rm -rf "$work"' 0
-exec 9>/run/convergent/guests.lock
-flock -n 9
-exec 6>/run/convergent/browser-update.lock
-flock -n 6
-# Seed the old names, with a bookmark in the same persistent home.
-for old in web admin; do
-	case $old in web) new=def ;; admin) new=int ;; esac
-	ic profile copy "browser-$new" "browser-$old"
-	ic storage volume rename default "browser-$new-state" "browser-$old-state"
-	ic init candidate-browser "$old" -p browser-base -p "browser-$old"
-	ic profile delete "browser-$new"
-done
-ic start web
-ic exec web -- sh -c 'mkdir -p /home/browser/profile; echo keep-me >/home/browser/profile/Bookmarks'
-# Interrupt after the first successful rename, before its volume moves.
-rc=0
-(
-	ic() {
-		case $1 in
-		query) incus --force-local "$@" ;;
-		*) incus --force-local --project default "$@" ;;
-		esac || exit $?
-		[ "$*" != 'rename web def' ] || exit 99
-	}
-	browser_migrate
-) || rc=$?
-[ "$rc" = 99 ]
-[ -f "$state/profiles.before/browser-web.yaml" ]
-[ -f "$state/browser.rename/def.yaml" ]
-profiles_restore
-[ -d "$state/browser.rename" ]
-browser_migrate
-browser_migrate
-for node in def int; do
-	ic query "/1.0/instances/$node" | jq -e --arg r "$node" '.profiles == ["browser-base", "browser-" + $r]'
-	ic storage volume show default "browser-$node-state"
-done
-ic start def
-[ "$(ic exec def -- cat /home/browser/profile/Bookmarks)" = keep-me ]
-ic stop def --force
-ic query /1.0/images/aliases/candidate-browser | jq -er .target >"$state/browser.ready"
-browser_commit
-[ ! -d "$state/browser.rename" ] && [ ! -d "$state/profiles.before" ]
-ic profile list --format json | jq -e 'all(.[]; .name != "browser-web" and .name != "browser-admin" and .name != "browser-portal")'
-for node in def int; do
-	ic config set "$node" security.protection.delete=false
-	ic delete "$node"
-done
-echo 'CV-BROWSER migration ok'
-EOF
 	cat >"$var/lib/convergent/test-release/selftest-test" <<'EOF'
 #!/bin/sh
 set -u
@@ -671,7 +614,8 @@ case $r in
 *) result=1 ;;
 esac
 if [ "$r" = 0 ]; then
-	timeout -k 30 180 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
+	timeout -k 30 900 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	timeout -k 30 900 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
 fi
 if [ ! -f /etc/convergent/update.conf ]; then
 	echo 'CV-FETCH skipped (no update.conf)'
