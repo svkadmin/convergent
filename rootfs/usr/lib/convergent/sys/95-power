@@ -35,12 +35,16 @@ power_status() {
 	done
 	[ "$battery" = 1 ] || echo 'No battery'
 	# Every sensor but the per-core ones (the package covers them); the bar's second number is the hottest.
+	# Dell's SMM driver repeats the labelled dell_ddv sensors without names.
+	ddv=; grep -qx dell_ddv /sys/class/hwmon/hwmon*/name 2>/dev/null && ddv=1
 	for f in /sys/class/hwmon/hwmon*/temp*_input; do
 		t=$(cat "$f" 2>/dev/null) || continue
 		case $t in ''|*[!0-9]*) continue ;; esac
+		name=$(cat "${f%/*}/name" 2>/dev/null)
+		[ "$name:$ddv" != dell_smm:1 ] || continue
 		label=$(cat "${f%_input}_label" 2>/dev/null) || label=${f##*/}
 		case $label in Core\ *) continue ;; esac
-		printf '%s %s: %s C\n' "$(cat "${f%/*}/name" 2>/dev/null)" "${label%_input}" "$((t / 1000))"
+		printf '%s %s: %s C\n' "$name" "${label%_input}" "$((t / 1000))"
 	done
 }
 power_ac() { noargs "$@"; run sudo /usr/local/sbin/power ac; }

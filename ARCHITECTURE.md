@@ -787,7 +787,7 @@ Convergent writes as little as it can:
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
 | `portal`, `devices`, `backup` | from the menu | Captive-portal mode; USB and Thunderbolt approval; the backup (section 7.4) |
 | `account` | by hand; from the menu (`sys security password`) | Changes a login password on the state volume and rebinds `/etc/shadow` |
-| `power` | at boot; acpid, on AC events; sys actions | Sets CPU preference/cap, publishes profile, restores optional battery/thermal settings and camera choice |
+| `power` | at boot; acpid and udev, on AC and USB-C supply changes; sys actions | Sets CPU preference/cap, publishes profile, restores optional battery/thermal settings and camera choice |
 | `fw-facts` | cron on each firewall | Writes CARP, pf and unbound state for node_exporter |
 
 ---
