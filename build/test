@@ -1,6 +1,7 @@
 #!/bin/sh
 # test: boot releases on a throwaway disk. Runs as root after build/image.
 #   build/test <release>
+#   build/test --install-options        config, sizing and disk selection; no root needed
 #   build/test --recovery <release>     recovery profile, unlock, continue and bless
 #   build/test --rescue <release>       standalone rescue, empty slots, unlock and power off
 #   build/test --corrupt <release>
@@ -18,6 +19,58 @@ umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	exec sh "$here/advisories" --selftest
+fi
+if [ "${1:-}" = --install-options ]; then
+	[ $# = 1 ] || exit 1
+	die() { echo "test: $*" >&2; exit 1; }
+	sh "$here/../tools/config-get" --selftest
+	. "$here/../install/options.sh"
+	# 100 GiB minus the release partitions and GPT/alignment.
+	disk_bytes=107374182400
+	state_size=auto swap=none
+	install_size "$disk_bytes" 32768
+	[ "$state_mib:$state_end" = 84988:0 ] || die "auto state"
+	state_size=50%
+	install_size "$disk_bytes" 32768
+	[ "$state_mib:$state_end" = 42494:+42494M ] || die "percentage state"
+	state_size=64GiB swap=state:16GiB
+	install_size "$disk_bytes" 32768
+	[ "$state_mib:$swap_mib:$state_end" = 65536:16384:+65536M ] || die "fixed state and swap"
+	for state_size in 1% 100GiB; do
+		if (install_size "$disk_bytes" 32768) 2>/dev/null; then die "accepted state $state_size"; fi
+	done
+	state_size=32GiB swap=state:1GiB
+	if (install_size "$disk_bytes" 32768) 2>/dev/null; then die "swap consumed state minimum"; fi
+	state_size=auto swap=zram:4GiB
+	install_size 32212254720 12288
+	[ "$state_mib:$swap_mib" = 13308:0 ] || die "default stick"
+	if (install_size 32212254720 32768) 2>/dev/null; then die "accepted undersized physical disk"; fi
+	swap=state:1GiB
+	if (install_size 32212254720 12288) 2>/dev/null; then die "accepted undersized stick with swap"; fi
+	# lsblk fixtures: the boot disk, HDDs, removable and external devices cannot be auto targets.
+	lsblk() { printf '%s\n' "$fixture"; }
+	bootdisks=/dev/sdb
+	fixture='/dev/sdb disk usb 0 1 1
+/dev/sda disk sata 1 0 0
+/dev/nvme0n1 disk nvme 0 0 0'
+	[ "$(install_target)" = /dev/nvme0n1 ] || die "single NVMe"
+	fixture="$fixture
+/dev/sdc disk sata 0 0 0"
+	if (install_target) >/dev/null 2>&1; then die "accepted ambiguous disks"; fi
+	fixture='/dev/sda disk sata 0 0 0'
+	[ "$(install_target)" = /dev/sda ] || die "single SSD"
+	bootdisks=/dev/sda
+	if (install_target) >/dev/null 2>&1; then die "accepted boot disk"; fi
+	fixture='/dev/sdb disk usb 0 0 0
+/dev/sdc disk sata 0 1 0
+/dev/sdd disk sata 0 0 1
+/dev/nvme0n1 disk nvme 1 0 0
+/dev/vda disk 0 0 0'
+	if (install_target) >/dev/null 2>&1; then die "accepted unsupported auto target"; fi
+	lsblk() { return 1; }
+	if (install_target) >/dev/null 2>&1; then die "accepted failed disk enumeration"; fi
+	echo 'test: install options passed'
+	exit 0
 fi
 . "$here/build.conf"
 . "$here/chroot.sh"

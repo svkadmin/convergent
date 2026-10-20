@@ -24,7 +24,6 @@ nts=$(cfg nts_servers)
 blocklist=$(cfg blocklist_url)
 cap=$(cfg cpu_cap_khz)
 idle=$(cfg idle_lock_minutes)
-state_max=$(cfg state_max_gib)
 [ "$(id -u)" = 0 ] || die "run as root"
 
 release=${1:-$(date -u +%Y%m%d%H%M)}
@@ -56,7 +55,7 @@ printf '127.0.0.1\tlocalhost %s\n::1\tlocalhost\n' "$aliases" >"$root/etc/hosts"
 find "$root/usr/share/keymaps" -name "$keymap.map*" | grep -q . || die "console_keymap $keymap is not an installed keymap"
 printf 'keymap="%s"\n' "$keymap" >"$root/etc/conf.d/keymaps"
 printf '%s\n' "$cap" >"$root/usr/lib/convergent/cpu-cap-khz"
-printf '%s\n' "$state_max" >"$root/usr/lib/convergent/state-max-gib"
+rm -f "$root/usr/lib/convergent/state-max-gib"
 {
 	printf '%s\n' "$nts" | awk -F, '{for (i=1;i<=NF;i++) if (!seen[$i]++) print "server " $i " iburst nts"}'
 	sed '/^server /d' "$repo/rootfs/etc/chrony/chrony.conf"
@@ -96,6 +95,7 @@ install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
 # The signed debug channel is for bleeding-edge testing only; stable never carries it.
 [ "$CHANNEL" = bleeding-edge ] || rm -f "$root/usr/local/sbin/debug"
 install -m 0755 "$repo/install/install" "$root/usr/local/sbin/convergent-install"   # not "install": coreutils
+install -m 0644 "$repo/install/options.sh" "$root/usr/lib/convergent/install-options.sh"
 chmod 0755 "$root"/etc/init.d/convergent-* "$root"/usr/lib/convergent/health.d/*
 # The installed kernel is the one with sources; module trees left by an older one go.
 kver=$(ls -d "$root"/usr/src/linux-* | sed 's|.*/linux-||')
@@ -104,7 +104,7 @@ for m in "$root"/lib/modules/*; do [ "${m##*/}" = "$kver" ] || rm -rf "$m"; done
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
 # The kernel as it was really built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
-for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y \
+for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y CONFIG_SWAP=y CONFIG_ZRAM=y \
 	CONFIG_BLK_DEV_NVME=y CONFIG_NVME_CORE=y CONFIG_VMD=y CONFIG_USB=y CONFIG_USB_PCI=y \
 	CONFIG_USB_XHCI_HCD=y CONFIG_USB_XHCI_PCI=y CONFIG_USB_STORAGE=y CONFIG_USB_UAS=y \
 	CONFIG_SCSI=y CONFIG_BLK_DEV_SD=y \
@@ -242,7 +242,7 @@ rl="$root/etc/runlevels"
 rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
 for s in boot/keymaps boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
 	default/cronie default/acpid default/dbus default/bluetooth default/seatd default/node_exporter default/lxcfs default/incus \
-	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net; do
+	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net default/convergent-swap; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
 done
@@ -299,6 +299,9 @@ for policy in usr.sbin.chronyd usr.bin.node_exporter usr.libexec.bluetooth.bluet
 		die "AppArmor profile does not parse: $policy"
 	[ ! -e "$root/etc/apparmor.d/disable/$policy" ] &&
 		[ ! -e "$root/etc/apparmor.d/force-complain/$policy" ] || die "AppArmor profile is disabled or in complain mode: $policy"
+done
+for cmd in zramctl mkswap swapon swapoff; do
+	chroot "$root" sh -c 'command -v "$1"' sh "$cmd" >/dev/null || die "no $cmd in the image"
 done
 # Online updates: the channel's key and download URL. Without the key the image takes only
 # releases written with CONVERGENT_UNSIGNED=1.

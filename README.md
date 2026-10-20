@@ -82,7 +82,8 @@ zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct 
 ```
 
 The image holds both slots (B empty), the encrypted state with the owner's account, and the guest
-images. At each unlock the state grows to the end of its disk unless `state_max_gib` caps it.
+images. Auto-sized state grows to the end of its disk at unlock; fixed and percentage install
+sizes stay bounded. See [install options](USAGE.md#install).
 
 ### The laptop's own disk
 
@@ -201,11 +202,12 @@ network access; the guest builds also need `qemu-img`, OVMF, `signify`, `python3
 Settings live in `/etc/convergent/config.yaml` on the build host (or the file named by
 `CONVERGENT_CONFIG`); keys and defaults are in `config.example.yaml`, validation rules in
 `tools/config-get`. The image keys (host name, time zone, keyboard layouts, display scale,
-Wi-Fi country, time servers, blocklist, CPU cap, idle lock, `state_max_gib` to stop the state
-growing past a size) are built into the release; the install keys (owner login, an optional
-password hash, partition and image sizes) are read by `build/stick` and
-`convergent-install --config`. A typo or unknown key stops the build. The LUKS passphrase is never
-in it, and the passphrase prompt stays US whatever `console_keymap` says.
+Wi-Fi country, time servers, blocklist, CPU cap and idle lock) are built into the release.
+Owner login, image size and `install` disk/state/swap options are read by `build/stick` and
+`convergent-install --config`; ESP/slots and encryption stay fixed by the release.
+A typo or unknown key stops the build. No secrets or password hashes are allowed.
+The installer keeps `/var/lib/convergent/config.yaml` only as a reference; runtime uses generated
+settings. The passphrase prompt stays US whatever `console_keymap` says.
 
 ```sh
 build/buildenv          # builder chroot from the pinned, signed stage3 and Portage snapshot
@@ -228,8 +230,8 @@ build/stick <release> $g <out.img> [size]          # disk image; size: 30G by de
 zstd -T0 <out.img>                                 # compress it for the copy
 ```
 
-`build/stick` asks for the LUKS passphrase (12 characters or more) and, unless `owner_password_hash`
-is set, the owner password. The owner login comes from `CONVERGENT_INSTALL_OWNER`, else
+`build/stick` asks for the owner password, then the LUKS passphrase (12 characters or more each).
+The owner login comes from `CONVERGENT_INSTALL_OWNER`, else
 `owner_login` in the config, else it is asked. It runs the real installer on a loop device and
 prints the image's SHA-256. A disk image holds the owner's account: never publish one.
 

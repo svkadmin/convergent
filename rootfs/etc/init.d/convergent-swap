@@ -1,0 +1,37 @@
+#!/sbin/openrc-run
+description="Install-selected swap on zram or encrypted state"
+
+depend() {
+	need localmount
+	before incus
+}
+
+start() {
+	mode=none
+	[ ! -f /var/lib/convergent/swap-mode ] || mode=$(cat /var/lib/convergent/swap-mode) || return 1
+	case $mode in
+		none) return 0 ;;
+		state:*) device=/var/lib/convergent/swap/swapfile ;;
+		zram:*)
+			size=${mode#zram:}; size=${size%GiB}
+			case $size in ''|*[!0-9]*|0*) eerror "Invalid swap size"; return 1 ;; esac
+			[ "${#size}" -le 4 ] && [ "$size" -le 1024 ] || return 1
+			device=$(zramctl --find --size "$((size * 1073741824))") || return 1
+			mkswap "$device" >/dev/null || { zramctl --reset "$device"; return 1; }
+			;;
+		*) eerror "Invalid swap mode"; return 1 ;;
+	esac
+	if ! swapon "$device"; then
+		case $device in /dev/zram*) zramctl --reset "$device" ;; esac
+		return 1
+	fi
+	printf '%s\n' "$device" >/run/convergent-swap
+}
+
+stop() {
+	[ -f /run/convergent-swap ] || return 0
+	device=$(cat /run/convergent-swap) || return 1
+	swapoff "$device" || return 1
+	case $device in /dev/zram*) zramctl --reset "$device" || return 1 ;; esac
+	rm -f /run/convergent-swap
+}

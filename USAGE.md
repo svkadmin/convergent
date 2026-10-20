@@ -11,6 +11,45 @@ Contents: [Coming from Arch](#coming-from-arch) · [Keys](#keys) · [The sys too
 [Releases and guests](#releases-and-guests) · [Power and locking](#power-and-locking).
 When something breaks: [RECOVERY.md](RECOVERY.md).
 
+## Install
+
+Use `config.example.yaml` as the build/install input, selected with `CONVERGENT_CONFIG` on
+the builder or `convergent-install --config /path/config.yaml /path/release` on the UEFI-booted
+stick. It contains no secrets, including in comments. The installer saves the validated copy
+at `/var/lib/convergent/config.yaml` for reference; nothing reads that YAML at runtime.
+Password hashes are no longer accepted: enter the owner password and LUKS passphrase at the
+prompts (or on stdin, in that order, for `build/stick`).
+
+```yaml
+install:
+  disk: auto
+  state_size: auto
+  swap: none
+```
+
+`disk: auto` requires exactly one internal NVMe or SATA/ATA SSD, excluding the boot disk,
+removable and hotplug devices. Zero or multiple candidates is an error; select a whole disk
+with `/dev/disk/by-id/<id>` instead. The installer shows the selected disk and still requires
+the path or serial erase confirmation. Mounted disks, active swap, holders, the boot disk and
+read-only targets are refused. `build/stick` uses its own loop image regardless of this key.
+
+`state_size` accepts `auto`, an integer `1%` through `100%` of available space after the release
+ESP, slots and alignment, or whole GiB such as `64GiB` (32..999999 GiB). Auto consumes the
+remainder and grows when copied to a larger disk; percentage and GiB selections stay at their
+installed size. The release fixes the ESP at 1 GiB and each A/B slot at 8 GiB. GPT, LUKS2 and
+Btrfs stay mandatory; `esp_mib`, `slot_mib` and `state_max_gib` are no longer accepted.
+
+`swap` accepts `none`, `zram:4GiB` or `state:8GiB`, with whole sizes 1..1024 GiB. Zram's size
+is its uncompressed capacity. State swap is a file in a separate Btrfs subvolume inside LUKS2,
+outside release snapshots. There is no hibernation. OpenRC activates the generated swap setting;
+editing the reference YAML has no effect.
+
+Both stick build and install validate every key and check capacity before partitioning.
+State must leave at least 32 GiB for data, plus disk swap; build media needs at least 12 GiB
+plus disk swap. With `build/stick`, sizing applies to the image itself: increase `image_size`
+or its positional size argument for larger state/swap requests. The default 30 GiB image fits
+auto state with no swap or zram; even 1 GiB of state swap needs a larger image.
+
 ## Coming from Arch
 
 | On Arch | Here |
