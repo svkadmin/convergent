@@ -176,9 +176,9 @@
           }
         },
         {
-          "refId": "web",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"web\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "web",
+          "refId": "def",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"def\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "def",
           "instant": true,
           "range": false,
           "datasource": {
@@ -187,9 +187,9 @@
           }
         },
         {
-          "refId": "admin",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"admin\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "admin",
+          "refId": "int",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"int\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "int",
           "instant": true,
           "range": false,
           "datasource": {
@@ -209,9 +209,9 @@
           }
         },
         {
-          "refId": "portal",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"portal\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "portal",
+          "refId": "tmp-portal",
+          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"tmp-portal\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
+          "legendFormat": "tmp-portal",
           "instant": true,
           "range": false,
           "datasource": {
@@ -650,7 +650,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "web"
+              "options": "def"
             },
             "properties": [
               {
@@ -681,7 +681,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "admin"
+              "options": "int"
             },
             "properties": [
               {
@@ -743,7 +743,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "portal"
+              "options": "tmp-portal"
             },
             "properties": [
               {
@@ -2711,7 +2711,7 @@
               "config": {
                 "text": {
                   "mode": "fixed",
-                  "fixed": "web / tmp / portal · web segment; admin · admin"
+                  "fixed": "def / tmp · web segment; int · admin"
                 },
                 "size": 13,
                 "align": "left",
@@ -2748,7 +2748,7 @@
               "config": {
                 "text": {
                   "mode": "fixed",
-                  "fixed": "web"
+                  "fixed": "def"
                 },
                 "size": 13,
                 "align": "left",
@@ -2782,14 +2782,14 @@
               "config": {
                 "text": {
                   "mode": "field",
-                  "field": "web",
+                  "field": "def",
                   "fixed": ""
                 },
                 "size": 14,
                 "align": "right",
                 "valign": "middle",
                 "color": {
-                  "field": "web",
+                  "field": "def",
                   "fixed": "#8A93A3"
                 }
               },
@@ -2821,7 +2821,7 @@
               "config": {
                 "text": {
                   "mode": "fixed",
-                  "fixed": "admin"
+                  "fixed": "int"
                 },
                 "size": 13,
                 "align": "left",
@@ -2855,14 +2855,14 @@
               "config": {
                 "text": {
                   "mode": "field",
-                  "field": "admin",
+                  "field": "int",
                   "fixed": ""
                 },
                 "size": 14,
                 "align": "right",
                 "valign": "middle",
                 "color": {
-                  "field": "admin",
+                  "field": "int",
                   "fixed": "#8A93A3"
                 }
               },
@@ -2967,7 +2967,7 @@
               "config": {
                 "text": {
                   "mode": "fixed",
-                  "fixed": "portal"
+                  "fixed": "tmp-portal"
                 },
                 "size": 13,
                 "align": "left",
@@ -3001,14 +3001,14 @@
               "config": {
                 "text": {
                   "mode": "field",
-                  "field": "portal",
+                  "field": "tmp-portal",
                   "fixed": ""
                 },
                 "size": 14,
                 "align": "right",
                 "valign": "middle",
                 "color": {
-                  "field": "portal",
+                  "field": "tmp-portal",
                   "fixed": "#8A93A3"
                 }
               },

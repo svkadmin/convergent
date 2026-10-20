@@ -23,7 +23,7 @@ guests=$(cd "$2" && pwd -P) || die "no guests directory"
 for file in fw/fw1.qcow2 fw/fw2.qcow2 wan/wan.qcow2 wan/wan-metadata.tar.xz \
 	fw/fw1.pf.sha256 fw/fw2.pf.sha256 fw/fw1.rules.sha256 fw/fw2.rules.sha256 \
 	svc/metadata.tar.gz svc/rootfs.tar.gz svc/incus.yaml browser/metadata.tar.gz browser/rootfs.tar.gz \
-	browser/incus/base.yaml browser/incus/web.yaml browser/incus/tmp.yaml browser/incus/portal.yaml browser/incus/admin.yaml \
+	browser/incus/base.yaml browser/incus/def.yaml browser/incus/tmp.yaml browser/incus/int.yaml \
 	fw/SHA256SUMS wan/SHA256SUMS svc/SHA256SUMS browser/SHA256SUMS; do
 	[ -s "$guests/$file" ] || die "missing guest artifact: $file"
 	case $file in */SHA256SUMS | */incus.yaml | */incus/*) continue ;; esac

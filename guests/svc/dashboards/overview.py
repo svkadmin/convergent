@@ -48,12 +48,12 @@ def path(page):
     Canvas.link(host, svc)
     c.text(3, 94, 696, "Downstream segments route through CARP", size=13, align="center")
     browser_rows = []
-    for n in ("web", "admin", "tmp", "portal"):
+    for n in ("def", "int", "tmp", "tmp-portal"):
         selector = 'name=~"tmp-[2-9][0-9]"' if n == "tmp" else 'name="%s"' % n
         field(n, '((count(incus_cpu_seconds_total{project="default",%s}) > bool 0) or on() vector(0)) and on() (max(up{job="incus"}) == 1)' % selector,
               mappings=vmap([(0, "closed", NEUTRAL), (1, "RUNNING", CYAN)]))
         browser_rows.append((n, n))
-    browsers = card("browsers", "Browsers", "web / tmp / portal · web segment; admin · admin", 734, 153, browser_rows)
+    browsers = card("browsers", "Browsers", "def / tmp · web segment; int · admin", 734, 153, browser_rows)
     Canvas.link(host, browsers, sx=0.9, tx=0.9)
     p = page.add("canvas", "The network path", grid(0, 0, 7, SCREEN_ROWS),
                  "Source: node up, Incus CPU series, fw-facts CARP/pf and wan-check upstream lease. "

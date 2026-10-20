@@ -39,8 +39,8 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 |---|---|
 | Super+m | `sys`: the menu of areas and actions, in a terminal |
 | Super+a | pick one `sys` action by name and run it in its own terminal |
-| Super+d | an app by name: Web browser, Temporary browser, Admin dashboards, Settings, Screenshot, Foot |
-| Super+b | web browser (`browser web`) |
+| Super+d | an app by name: Default browser, Temporary browser, Internal dashboards, Settings, Screenshot, Foot |
+| Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
 | Super+Enter | terminal (foot) |
@@ -89,7 +89,7 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save; options below) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to clipboard) |
-| `browser` (`br`) | `status`, `web`, `tmp`, `admin`, `portal` |
+| `browser` (`br`) | `status`, `def`, `tmp`, `int` |
 | `security` (`sec`) | `status`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
@@ -139,33 +139,38 @@ Config reloads do not reset mute. Browser containers still have playback-only au
 ## Browsers
 
 ```sh
-browser web|tmp|portal|admin [url]
+browser def|tmp|int [url]
+browser tmp --portal [url]
 ```
 
-Run it as the owner in the Sway session; it needs no password. `sys browser web|tmp|admin|portal`
+Run it as the owner in the Sway session; it needs no password. `sys browser def|tmp|int`
 (or the menu) opens one without a URL. `sys browser` lists running browsers.
 Only HTTP and HTTPS URLs are accepted. Each browser is
 Chromium in its own container with a restricted Wayland socket and playback-only audio; the
 window title starts with `[role]`.
 Browsers prefer dark pages; sites without a dark style stay light.
 
-Works when: a window titled `[web] …` opens and the bar shows `BR:1`. A failed start from
+Works when: a window titled `[def] …` opens and the bar shows `BR:1`. A failed start from
 Super+b or Super+Shift+t shows a line at the top with the reason; the full output is in
 `$XDG_RUNTIME_DIR/browser.log`.
 
 | Role | For | State |
 |---|---|---|
-| web | everyday browsing | profile and downloads kept in a 4 GiB volume |
+| def | everyday browsing | profile and downloads kept in a 4 GiB volume |
 | tmp | anything untrusted; several at once | container deleted on close; history, cookies and cache cleared |
-| portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; starts only while portal mode is on |
-| admin | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
+| tmp --portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; owns portal mode |
+| int | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
 
-A second start of web or admin brings the open window forward; portal refuses one; tmp can run many
+A second start of def or int brings the open window forward; portal mode refuses one; normal tmp can run many
 at once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no sync, no password
-manager, no telemetry; admin and portal allow no extensions. The admin browser starts Grafana in
+manager, no telemetry; int and tmp in portal mode allow no extensions. The int browser starts Grafana in
 svc and stops it on close. Log in as `owner` with the password in
 `/var/lib/convergent/guests/tls/admin-password` (`sudo cat`). A handler that sends links from
 other programs to `tmp` is not built.
+
+The def and tmp browsers use the `web` network segment; int uses `admin`.
+Portal mode uses a single tmp container at 100.80.3.11 without a GPU, with HTTP allowed and
+capture, extensions and search disabled. Normal tmp browsers use 100.80.3.20–99 and their usual policies.
 
 ## Wi-Fi
 
@@ -184,10 +189,10 @@ uplinks and rechecks the lease; the overlap latch clears only after a safe lease
 
 ## Captive portals
 
-`sys portal on` starts the portal browser, which owns portal mode for its lifetime. It opens two pf rules
+`sys portal on` starts tmp in portal mode, which owns the mode for its lifetime. It opens two pf rules
 on both firewalls and wan's DNS pass-through, for the portal browser only; the bar shows `PORTAL`.
 It works over Wi-Fi or wired; it ends when the browser closes, with `sys portal off`, or after 30 minutes.
-`sys browser portal` and `browser portal` use the same lifecycle. A new launch closes stale rules
+`browser tmp --portal [url]` uses the same lifecycle. A new launch closes stale rules
 on all three guests before opening any; it refuses to open if closure fails. Cron also detects an
 abandoned browser session and retries incomplete closure every minute. `sys portal status` shows
 the reason (active, timeout, browser closed, interrupted, or closure pending) and each guest's state.
@@ -301,7 +306,7 @@ unplugging. What it leaves out and how to restore: [RECOVERY 11](RECOVERY.md#11-
 
 ## Health and alerts
 
-Open **Admin dashboards** (`sys browser admin`) for Overview, Network, Guests and Security.
+Open **Internal dashboards** (`sys browser int`) for Overview, Network, Guests and Security.
 Overview puts the path, alerts, collector freshness, host and guests on the first screen; the
 other pages share the same navigation. Guests has project/instance selectors. Current-state
 tables show one row per item; graphs show history. CARP role-change annotations are off until
@@ -358,7 +363,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 | `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted, `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
-| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser admin` |
+| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | details in Grafana: `sys browser int` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `PWR` | last successfully applied CPU profile: `ac` or `battery`; `?` if unavailable or failed | `sys power status` |
@@ -381,16 +386,19 @@ turns grey. The idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid l
 sys update                           # release slots; `sys update check` asks whether a newer one is published
 sys guests status                     # one line per instance: name and state (guests status)
 sys guests update                     # apply pending downloaded guests now
-sudo guests update fw|wan|svc|browser|web|admin <image-dir>
+sudo guests update fw|wan|svc|browser|def|int <image-dir>
 ```
 
 Online releases carry guests; only changed guests download with `sys update install`. After reboot
 and marking the host good, they apply in order: svc, wan, fw, browser. The bar shows GUESTS while
 applying and GUESTS failed on failure. Close browsers and run `sys guests update` to retry a pending
-browser update. Updating `browser` also moves the image used for future tmp and portal instances;
-`web` or `admin` replaces that instance only. One guest operation runs at a time. Writing a release
+browser update. Updating `browser` also moves the image used for future tmp instances, including portal mode;
+`def` or `int` normally replaces that instance only; a role migration updates both. One guest operation runs at a time. Writing a release
 and manual guest updates: [README, Update](README.md#update).
 An interrupted browser update blocks launches until the guest update is retried.
+The first full browser update renames existing web/admin instances and state volumes to def/int,
+keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on
+the next browser update; the old role names are not command aliases.
 
 ## Power and locking
 

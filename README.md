@@ -60,8 +60,8 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | | |
 |---|---|
 | Proven in QEMU | boot, unlock, health check and fallback; a corrupted image refused; an interrupted update harmless; firewalls, wan and svc provisioned; guest updates with failover and rollback; booting the disk image over USB |
-| Proven on the laptop | boot, unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch), the web and admin browsers |
-| Built, laptop test to finish | the tmp and portal browsers, audio, Bluetooth, power, online guest delivery |
+| Proven on the laptop | boot, unlock, autogrow, automatic setup, graphics, sway and the bar, Wi-Fi, an online update (download, signature, slot switch), the def and int browsers |
+| Built, laptop test to finish | tmp browsers and portal mode, audio, Bluetooth, power, online guest delivery |
 | Implemented, QEMU and laptop tests pending | standalone rescue entry independent of both slots; `build/test --rescue <release>` |
 | Not built | Secure Boot signing, including rescue (Secure Boot stays off) |
 
@@ -135,7 +135,7 @@ default.
 The bar's `alerts` shows `?` until svc runs, then counts (`1c 2w`). Expected with Secure Boot
 off: SecureBootNotVerified, CheckerFailed; without an accepted baseline also CollectorBroken.
 FirewallRulesetDrift requires an expected hash and reports only a mismatch.
-Details: `sys browser admin` (Grafana, user `owner`; password:
+Details: `sys browser int` (Grafana, user `owner`; password:
 `sudo cat /var/lib/convergent/guests/tls/admin-password`). Inspect the named alerts rather than
 inferring faults from the counts. NTS refreshes every minute and alerts after five minutes with
 an uplink; collector warnings allow five minutes for startup.
@@ -281,8 +281,10 @@ that the update is rolled back.
 
 `--guests` and `--guests-update` also try the Internet path: wan gets an emulated uplink (QEMU
 user networking, as a second NIC), then fw1 must reach 9.9.9.9:853 and the host must resolve a
-name; otherwise the test fails. Both modes also smoke-test the web browser container without
-Wayland and check signed online updates when configured after a successful uplink. They run the
+name; otherwise the test fails. Both modes also smoke-test the def browser container without
+Wayland, check normal tmp versus portal policies and devices, and exercise portal expiry and closure.
+They interrupt and resume the browser role migration and verify persistent bookmarks survive.
+They check signed online updates when configured after a successful uplink and run the
 booted selftest checks as root; only release, verity, nested and audit failures gate the test.
 
 ## Checks

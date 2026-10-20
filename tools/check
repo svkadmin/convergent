@@ -31,7 +31,7 @@ if [ "${1:-}:$#" = status:1 ]; then
                 [any(.[]; .name == "wan"), any(.[]; .name == "fw1"),
                  any(.[]; .name == "fw2"), any(.[]; .name == "svc"),
                  ([.[] | select(.type == "container") | select(.name |
-                    test("^(browser-.*|web|admin|portal|tmp-[0-9]+)$"))] | length)] | @tsv' \
+                    test("^(def|int|tmp-(portal|[0-9]+))$"))] | length)] | @tsv' \
                 >"$status/.running" || rm -f "$status/.running"
         else rm -f "$status/.running"; fi
     ) &
@@ -202,7 +202,7 @@ incus_limits() {
     jq -S 'map(if .name == "svc" and (.config["limits.memory"] == "350MiB" or .config["limits.memory"] == "768MiB")
         then .config["limits.memory"] = "350MiB" else . end) | sort_by(.name)' "$1"
 }
-jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|web|admin)$")) |
+jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|def|int)$")) |
     {name, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
     devices: .expanded_devices})' "$work/instances" >"$work/incus.raw" || bad 'Incus settings unreadable'
 incus_limits "$work/incus.raw" >"$work/incus" || bad 'Incus settings unreadable'

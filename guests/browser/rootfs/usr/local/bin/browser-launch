@@ -10,20 +10,20 @@ die() { echo "browser-launch: $*" >&2; exit 1; }
 [ "$(id -u)" = 1000 ] || die "run as browser (UID 1000)"
 [ -f /run/browser-ready ] || die "role setup incomplete"
 role=$(cat /run/browser-role)
-case $role in web|tmp|portal|admin) ;; *) die "invalid role" ;; esac
+case $role in def|tmp|int) ;; *) die "invalid role" ;; esac
 case $role in
-    admin)
-        [ "$#" = 0 ] || die "admin accepts no URL arguments"
+    int)
+        [ "$#" = 0 ] || die "int accepts no URL arguments"
         set -- http://100.80.2.10:3000/ ;;
-    portal)
-        [ "$#" = 1 ] || die "portal requires the captive page URL"
-        case $1 in http://*|https://*) ;; *) die "portal requires HTTP(S)" ;; esac
-        set -- --disable-gpu "$1" ;;
     *)
         for url do
             case $url in http://*|https://*) ;; *) die "expected HTTP(S) URL" ;; esac
         done ;;
 esac
+if [ -f /run/browser-portal ]; then
+    [ "$role" = tmp ] && [ "$#" = 1 ] || die "portal requires a tmp browser and URL"
+    set -- --disable-gpu "$@"
+fi
 [ -S /mnt/browser/wayland-0 ] || die "missing restricted Wayland socket"
 [ -S /mnt/browser/pipewire-0 ] || die "missing restricted Pulse socket"
 cd /home/browser

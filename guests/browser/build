@@ -26,12 +26,15 @@ root=$mini/target
 alpine_prepare
 
 alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
-    ifupdown-ng ca-certificates chromium=155.0.8059.39-r0 mesa-egl mesa-dri-gallium
+    ifupdown-ng ca-certificates jq chromium=155.0.8059.39-r0 mesa-egl mesa-dri-gallium
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
 cp -R "$here/rootfs/." "$root/"
-for role in web tmp portal admin; do
+for role in def tmp int; do
     mkdir -p "$root/usr/share/convergent-browser/$role"
-    jq -s '.[0] * .[1]' "$here/policies.json" "$here/roles/$role/policies.json" \
+    jq -s --arg role "$role" '
+        .[0] as $base | .[1] |
+        if $role == "tmp" then map_values($base * .) else $base * . end' \
+        "$here/policies.json" "$here/roles/$role/policies.json" \
         >"$root/usr/share/convergent-browser/$role/policies.json"
     jq -e 'type == "object"' \
         "$root/usr/share/convergent-browser/$role/policies.json" >/dev/null

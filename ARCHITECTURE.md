@@ -47,10 +47,10 @@ compares Convergent with its predecessor, Archer.
             |  one CARP gateway address per segment     |  The gateway is the resolver.
   +---------+--------+-----------+------------+----------+-----------+
   | host             | svc       | web        | admin    | guests    |
- HOST              svc (ct)    browsers     admin       user containers
+ HOST              svc (ct)    browsers      int        user containers
  Gentoo, OpenRC,   Alpine:     (Incus ct)   browser     and VMs (Incus)
- Sway, Incus;      metrics,    web, tmp,    (Incus ct)
- its only address  logs,       portal       for
+ Sway, Incus;      metrics,    def, tmp     (Incus ct)
+ its only address  logs,      (+ portal)     for
  is on "host"      alerts                   Grafana
 ```
 
@@ -175,15 +175,19 @@ stale, and the host buffers its logs. DNS does not depend on svc.
 
 Chromium runs in unprivileged Incus containers built from one browser image:
 
-- **web:** the everyday browser, with a persistent profile volume.
-- **tmp:** an ephemeral container from the same image, gone when closed.
-- **portal:** an ephemeral container used only for captive portals.
-- **admin:** a persistent container on the `admin` segment, the only browser that reaches Grafana.
+- **def:** the default browser on the `web` segment, with a persistent profile volume.
+- **tmp:** an ephemeral container on `web`, gone when closed; `--portal` selects captive portal mode.
+- **int:** a persistent container on the `admin` segment, the only browser that reaches Grafana.
 
-Each container gets: the GPU render node, a Wayland socket created through Sway's security
+Each container gets: the GPU render node (except tmp in portal mode), a Wayland socket created through Sway's security
 context (no screen capture, no input injection, no other Wayland socket, no Sway IPC, no X11),
 a dedicated Pulse socket from its own `pipewire-pulse` instance: playback only, recording blocked
 for every role. Its own download directory. No D-Bus, so no portals and no screen sharing.
+
+Portal mode uses the tmp profile with instance overrides: fixed address 100.80.3.11 (`a_portal`),
+no render device, 512 MiB, wan's resolver and the captive-page policies. Normal tmp instances
+use .20–.99 and never receive those policies or that address. Portal mode defaults to NeverSSL,
+allows HTTP, and disables capture, extensions and search.
 
 Chromium policies are part of the image: DNS-over-HTTPS off (the gateway resolves), telemetry,
 studies and captive-portal probes off, and each mode labelled in its window title so the owner
@@ -221,8 +225,8 @@ is repeated in host, wan, firewall and tool configuration, so changing it needs 
 | sync | 100.80.0.16/30 | none | .17 | .18 | none |
 | host | 100.80.1.0/28 | .1 | .2 | .3 | host .10 |
 | svc | 100.80.2.0/28 | .1 | .2 | .3 | svc .10 |
-| web | 100.80.3.0/24 | .1 | .2 | .3 | web .10, portal .11, tmp .20 to .99 |
-| admin | 100.80.4.0/28 | .1 | .2 | .3 | admin browser .10 |
+| web | 100.80.3.0/24 | .1 | .2 | .3 | def .10, tmp in portal mode .11, normal tmp .20 to .99 |
+| admin | 100.80.4.0/28 | .1 | .2 | .3 | int browser .10 |
 | guests | 100.80.8.0/22 | .1 | .2 | .3 | guests from .10, assigned by the menu |
 
 Every address is static. Incus binds each guest's address and MAC to its NIC (IP and MAC
@@ -248,11 +252,11 @@ segment except transit and sync; it is not repeated below.
 | svc | host, fw1, fw2, wan | 9100 | Metrics scrape |
 | svc | host | Incus metrics 8444 | Instance state |
 | fw1, fw2, wan | svc | syslog 6514 | Logs |
-| web (web, tmp) | internet | 80, 443 (TCP and UDP) | Browsing |
+| web (def, tmp) | internet | 80, 443 (TCP and UDP) | Browsing |
 | web | upstream LAN | IPP 631, only when printing is switched on *(planned)* | Printing |
-| web (portal) | wan | DNS 53, only in portal mode | Captive portal resolution |
-| web (portal) | upstream LAN | 80, 443, only in portal mode | The portal page |
-| admin | svc | Grafana 3000 | Dashboards |
+| web (tmp in portal mode) | wan | DNS 53, only in portal mode | Captive portal resolution |
+| web (tmp in portal mode) | upstream LAN | 80, 443, only in portal mode | The portal page |
+| admin (int) | svc | Grafana 3000 | Dashboards |
 | guests | internet | per guest; default 80, 443 | Guest work |
 | wan | anything internal | nothing it starts, except syslog to svc | Untrusted |
 
@@ -504,9 +508,20 @@ copies nothing from the old one; after `guests update fw`, the host pushes its s
 records (`dns-push local`, when a blocklist is stored). A new wan gets the saved Wi-Fi networks of
 the old one: they are read in userspace from a copy of the old disk's partition (debugfs as an
 unprivileged user, keeping only the iwd network files `.psk`, `.open` and `.8021x`); the old disk is
-never mounted. Browser updates retain both web/admin backups until both replacements pass, then
-advance the image used for new tmp/portal instances. A failed replacement restores both browsers
-and their shared profiles.
+never mounted. Browser updates retain both def/int backups until both replacements pass, then
+advance the image used for new tmp instances, including portal mode. A failed replacement restores both browsers
+and their shared profiles, except during the one-time role migration below.
+
+The browser update (also through `guests apply`, or init recovery) renames `web` to `def` and
+`admin` to `int`, along with their state volumes. Under `browser-update.lock`, it stops old
+containers, preserves the profile snapshots in `profiles.before`, and durably records the new
+profiles in `browser.rename` before renaming anything. Each retry checks which old objects
+remain; conflicting old/new names are refused. Instances receive the new profiles and keep
+the same state volumes, including bookmarks and logins. The rename journal rolls forward:
+`profiles_restore` leaves it intact, and browser launches stay blocked until both image
+replacements pass. The existing `pending` journal still restores failed replacements.
+`browser.ready` commits the image alias, removes unused old profiles and clears both profile
+and rename journals. The `web` and `admin` networks and firewall addresses do not change.
 
 Firmware updates use signed capsules only, applied from the menu *(planned)*.
 
@@ -571,7 +586,7 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 `guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
 
 - **Dashboards:** Overview (path and attention), Network (six CARP segments, pf and DNS), Guests
-  (Incus state and resources) and Security (boot facts, trust and denials), opened in the admin
+  (Incus state and resources) and Security (boot facts, trust and denials), opened in the int
   browser. Stdlib Python generators in `guests/svc/dashboards` share Archer's palette, type scale,
   Canvas path and first-screen sizing; current state uses instant queries. CARP role-change
   annotations start off; actionable syslog panels link to all records in Explore. Footers name
@@ -639,7 +654,7 @@ How the owner uses it is in USAGE.md. The design points:
   a MAC scans for ten seconds; device actions offer known and discovered devices through fzf in
   a terminal or bemenu in Sway. Picker output must match a listed row and pass MAC validation;
   explicit MAC arguments and the confirmation before forgetting are retained.
-- **Captive portals:** portal mode starts the portal browser and opens its two pf rules; it ends
+- **Captive portals:** portal mode starts tmp with `--portal` and opens its two pf rules; it ends
   when the browser closes, when turned off, or after 30 minutes. The only time DNS goes anywhere
   but the firewalls.
   The browser launcher owns activation under its session lock and closes stale rules on all
@@ -648,7 +663,7 @@ How the owner uses it is in USAGE.md. The design points:
   a reason for `sys portal status`. Expiry is checked by cron and by browser status polling;
   an orphaned session without a browser lock is closed after a one-minute startup allowance.
 - *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on
-  the upstream network for the web browsers), clipboard clearing.*)*
+  the upstream network for the def/tmp browsers), clipboard clearing.*)*
 
 ---
 
@@ -695,8 +710,8 @@ log *(planned)*, not by enrolling Microsoft's third-party certificate.
 
 On the laptop 384 MiB firewalls ran out of memory at boot (the kernel relink beside the
 blocklist), killing sshd and unbound while CARP kept the master role. Keep both firewalls at
-1 GiB. The other limits stay at wan 512 MiB, svc 350 MiB (768 MiB with Grafana), web/tmp 2 GiB,
-admin 1 GiB and portal 512 MiB. Container limits are ceilings, not idle reservations; lowering
+1 GiB. The other limits stay at wan 512 MiB, svc 350 MiB (768 MiB with Grafana), def/tmp 2 GiB,
+int 1 GiB and tmp in portal mode 512 MiB. Container limits are ceilings, not idle reservations; lowering
 them without measured peaks risks OOM without proving an idle saving.
 
 ### 11.1 Work removed without changing sampling intervals
@@ -800,7 +815,7 @@ The directories are in the README's Repository table. The guest images, as `gues
 - `RELEASE/guests/fw/`: `fw{1,2}.qcow2`, `fw{1,2}.{pf,rules}.sha256`.
 - `RELEASE/guests/wan/`: `wan.qcow2`, `wan-metadata.tar.xz`.
 - `RELEASE/guests/svc/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus.yaml`.
-- `RELEASE/guests/browser/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus/{base,web,tmp,portal,admin}.yaml`.
+- `RELEASE/guests/browser/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus/{base,def,tmp,int}.yaml`.
 
 ---
 

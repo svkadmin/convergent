@@ -4,18 +4,34 @@ umask 022
 die() { echo "browser-setup: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "root required"
 role=$BROWSER_ROLE
+case ${BROWSER_PORTAL:-0}:$role in
+    0:*) ;;
+    1:tmp) ;;
+    *) die "portal mode requires tmp" ;;
+esac
 case $role in
-    web) address=100.80.3.10; prefix=24; gateway=100.80.3.1; resolver=$gateway ;;
+    def) address=100.80.3.10; prefix=24; gateway=100.80.3.1; resolver=$gateway ;;
     tmp)
         address=$BROWSER_IPV4
-        case $address in 100.80.3.[2-9][0-9]) ;; *) die "tmp requires 100.80.3.20..99" ;; esac
-        prefix=24; gateway=100.80.3.1; resolver=$gateway ;;
-    portal) address=100.80.3.11; prefix=24; gateway=100.80.3.1; resolver=100.80.0.10 ;;
-    admin) address=100.80.4.10; prefix=28; gateway=100.80.4.1; resolver=$gateway ;;
-    *) die "BROWSER_ROLE must be web, tmp, portal or admin" ;;
+        prefix=24; gateway=100.80.3.1; resolver=$gateway
+        if [ "${BROWSER_PORTAL:-0}" = 1 ]; then
+            [ "$address" = 100.80.3.11 ] || die "portal requires 100.80.3.11"
+            resolver=100.80.0.10
+        else
+            case $address in 100.80.3.[2-9][0-9]) ;; *) die "tmp requires 100.80.3.20..99" ;; esac
+        fi ;;
+    int) address=100.80.4.10; prefix=28; gateway=100.80.4.1; resolver=$gateway ;;
+    *) die "BROWSER_ROLE must be def, tmp or int" ;;
 esac
-rm -f /run/browser-ready
-cp "/usr/share/convergent-browser/$role/policies.json" /etc/chromium/policies/managed/browser.json
+rm -f /run/browser-ready /run/browser-portal
+mode=normal
+if [ "${BROWSER_PORTAL:-0}" = 1 ]; then
+    mode=portal
+    touch /run/browser-portal
+fi
+jq -e --arg role "$role" --arg mode "$mode" \
+    'if $role == "tmp" then .[$mode] else . end | select(type == "object")' \
+    "/usr/share/convergent-browser/$role/policies.json" >/etc/chromium/policies/managed/browser.json
 printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n    address %s/%s\n    gateway %s\n' \
     "$address" "$prefix" "$gateway" >/etc/network/interfaces
 printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$resolver" >/etc/resolv.conf

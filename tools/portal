@@ -32,7 +32,7 @@ rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&
 note() { printf '%s\n' "$*" >"$reason.new" && mv "$reason.new" "$reason"; }
 browser_active() {
 	mkdir -p "$run/browser"
-	(exec 8>"$run/browser/portal.lock"; ! flock -n 8)
+	(exec 8>"$run/browser/tmp-portal.lock"; ! flock -n 8)
 }
 
 # Normalize an external IPv4 /16..30 network.

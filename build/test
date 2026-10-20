@@ -213,7 +213,7 @@ test_guest_delivery() {
 		(cd "$delivery/release/guests/$kind" && sha256sum -c SHA256SUMS) || die "$kind round trip failed"
 	done
 	cmp "$guests/svc/incus.yaml" "$delivery/release/guests/svc/incus.yaml" || die 'svc profile differs'
-	for role in base web tmp portal admin; do
+	for role in base def tmp int; do
 		cmp "$guests/browser/incus/$role.yaml" "$delivery/release/guests/browser/incus/$role.yaml" || die "browser $role profile differs"
 	done
 	if sh "$delivery/build/guests" "$delivery/release" "$guests"; then die 'duplicate guest manifest accepted'; fi
@@ -460,20 +460,25 @@ EOF
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ic() { incus --force-local --project default "$@"; }
-run=/run/convergent/browser/web
+run=/run/convergent/browser/def
 step=sockets
 cleanup() {
 	r=$?
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
-	# web is persistent and protected; only this test instance is disposable.
+	for name in tmp-20 tmp-portal; do
+		ic stop "$name" --force 2>/dev/null
+		ic delete "$name" 2>/dev/null
+	done
+	if [ -n "${portal_test:-}" ]; then /usr/local/sbin/portal off || r=1; fi
+	# def is persistent and protected; only this test instance is disposable.
 	ic() { timeout -k 1 5 incus --force-local --project default "$@"; }
 	snapshot=$(ic list --format json) || { step=cleanup; r=1; }
-	state=$(printf '%s\n' "$snapshot" | jq -r '.[] | select(.name == "web") | .status') || { step=cleanup; r=1; }
+	state=$(printf '%s\n' "$snapshot" | jq -r '.[] | select(.name == "def") | .status') || { step=cleanup; r=1; }
 	if [ -n "$state" ]; then
-		case $state in Stopped) ;; *) ic stop web --force || { step=stop; r=1; } ;; esac
-		ic config set web security.protection.delete=false && ic delete web || { step=delete; r=1; }
+		case $state in Stopped) ;; *) ic stop def --force || { step=stop; r=1; } ;; esac
+		ic config set def security.protection.delete=false && ic delete def || { step=delete; r=1; }
 	fi
 	rm -rf "$run" || { step=cleanup; r=1; }
 	if [ "$r" = 0 ]; then echo 'CV-BROWSER ok'; else echo "CV-BROWSER failed: $step"; fi
@@ -483,11 +488,11 @@ trap cleanup 0
 trap 'exit 1' HUP INT TERM
 device() {
 	dev=$1; shift
-	settings=$(incus --force-local query '/1.0/instances/web?project=default')
+	settings=$(incus --force-local query '/1.0/instances/def?project=default')
 	if printf '%s\n' "$settings" | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
-		ic config device set web "$dev" "$@"
+		ic config device set def "$dev" "$@"
 	else
-		ic config device override web "$dev" "$@"
+		ic config device override def "$dev" "$@"
 	fi
 }
 mkdir -p "$run/sockets"
@@ -496,15 +501,120 @@ touch "$run/sockets/wayland-0" "$run/sockets/pulse-0"
 step=render
 [ -c /dev/dri/renderD128 ] || { modprobe vgem && udevadm settle && [ -c /dev/dri/renderD128 ]; }
 step=init
-ic init candidate-browser web -p browser-base -p browser-web
+ic init candidate-browser def -p browser-base -p browser-def
 step=wayland
 device wayland "source=$run/sockets/wayland-0" required=true
 step=pipewire
 device pipewire "source=$run/sockets/pulse-0" required=true
 step=start
-ic start web
+ic start def
 step=ready
-timeout -k 1 60 sh -c 'until incus --force-local --project default exec web -- test -f /run/browser-ready; do sleep 1; done'
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec def -- test -f /run/browser-ready; do sleep 1; done'
+step=tmp
+for mode in normal portal; do
+	name=tmp-20
+	[ "$mode" != portal ] || name=tmp-portal
+	ic init candidate-browser "$name" --ephemeral -p browser-base -p browser-tmp
+	if [ "$mode" = portal ]; then
+		ic config set "$name" environment.BROWSER_PORTAL=1 environment.BROWSER_IPV4=100.80.3.11 limits.memory=512MiB
+		ic config device override "$name" eth0 ipv4.address=100.80.3.11 hwaddr=00:16:3e:80:03:11
+		ic config device add "$name" render none
+	fi
+	ic start "$name"
+	timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/browser-ready; do sleep 1; done' sh "$name"
+	ic exec "$name" -- cat /etc/chromium/policies/managed/browser.json >"$run/policy"
+	if [ "$mode" = portal ]; then
+		ic exec "$name" -- test ! -e /dev/dri/renderD128
+		ic exec "$name" -- grep -q '100.80.3.11/24' /etc/network/interfaces
+		ic exec "$name" -- grep -qx 'nameserver 100.80.0.10' /etc/resolv.conf
+		jq -e '.RestoreOnStartupURLs == ["http://neverssl.com/"] and .HttpsOnlyMode == "disallowed" and
+		    .AudioCaptureAllowed == false and .VideoCaptureAllowed == false and
+		    .DefaultSearchProviderEnabled == false and .ExtensionSettings["*"].installation_mode == "blocked"' "$run/policy"
+	else
+		ic exec "$name" -- test -c /dev/dri/renderD128
+		ic exec "$name" -- test ! -e /run/browser-portal
+		ic exec "$name" -- grep -q '100.80.3.20/24' /etc/network/interfaces
+		jq -e '.IncognitoModeAvailability == 2 and .RestoreOnStartupURLs == ["about:blank"] and
+		    (has("HttpsOnlyMode") | not)' "$run/policy"
+		# The captive address is rejected without portal mode.
+		if ic exec "$name" -- env BROWSER_ROLE=tmp BROWSER_IPV4=100.80.3.11 /usr/local/sbin/browser-setup; then exit 1; fi
+	fi
+	ic stop "$name" --force
+done
+step=portal
+portal_test=1
+exec 8>/run/convergent/browser/tmp-portal.lock
+flock -n 8
+/usr/local/sbin/portal begin
+if /usr/local/sbin/portal on; then exit 1; fi
+/usr/local/sbin/portal status | grep -qx 'portal: on'
+echo "$(($(date +%s) - 1801))" >/run/convergent/portal
+/usr/local/sbin/portal expire
+/usr/local/sbin/portal status | grep -qx 'portal: off'
+/usr/local/sbin/portal begin
+/usr/local/sbin/portal off
+/usr/local/sbin/portal status | grep -qx 'portal: off'
+exec 8>&-
+EOF
+	cat >"$var/lib/convergent/test-release/browser-migration-test" <<'EOF'
+#!/bin/sh
+set -eu
+defs=$(mktemp)
+sed '/^# Capture the command status/,$d' /usr/local/sbin/guests >"$defs"
+. "$defs"
+rm "$defs"
+work=$(mktemp -d "$state/work.XXXXXX")
+image_dir=/var/lib/convergent/test-release/guests/browser
+trap 'rm -rf "$work"' 0
+exec 9>/run/convergent/guests.lock
+flock -n 9
+exec 6>/run/convergent/browser-update.lock
+flock -n 6
+# Seed the old names, with a bookmark in the same persistent home.
+for old in web admin; do
+	case $old in web) new=def ;; admin) new=int ;; esac
+	ic profile copy "browser-$new" "browser-$old"
+	ic storage volume rename default "browser-$new-state" "browser-$old-state"
+	ic init candidate-browser "$old" -p browser-base -p "browser-$old"
+	ic profile delete "browser-$new"
+done
+ic start web
+ic exec web -- sh -c 'mkdir -p /home/browser/profile; echo keep-me >/home/browser/profile/Bookmarks'
+# Interrupt after the first successful rename, before its volume moves.
+rc=0
+(
+	ic() {
+		case $1 in
+		query) incus --force-local "$@" ;;
+		*) incus --force-local --project default "$@" ;;
+		esac || exit $?
+		[ "$*" != 'rename web def' ] || exit 99
+	}
+	browser_migrate
+) || rc=$?
+[ "$rc" = 99 ]
+[ -f "$state/profiles.before/browser-web.yaml" ]
+[ -f "$state/browser.rename/def.yaml" ]
+profiles_restore
+[ -d "$state/browser.rename" ]
+browser_migrate
+browser_migrate
+for node in def int; do
+	ic query "/1.0/instances/$node" | jq -e --arg r "$node" '.profiles == ["browser-base", "browser-" + $r]'
+	ic storage volume show default "browser-$node-state"
+done
+ic start def
+[ "$(ic exec def -- cat /home/browser/profile/Bookmarks)" = keep-me ]
+ic stop def --force
+ic query /1.0/images/aliases/candidate-browser | jq -er .target >"$state/browser.ready"
+browser_commit
+[ ! -d "$state/browser.rename" ] && [ ! -d "$state/profiles.before" ]
+ic profile list --format json | jq -e 'all(.[]; .name != "browser-web" and .name != "browser-admin" and .name != "browser-portal")'
+for node in def int; do
+	ic config set "$node" security.protection.delete=false
+	ic delete "$node"
+done
+echo 'CV-BROWSER migration ok'
 EOF
 	cat >"$var/lib/convergent/test-release/selftest-test" <<'EOF'
 #!/bin/sh
@@ -554,12 +664,15 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 release=/var/lib/convergent/test-release
 result=0
-r=0; timeout -k 30 90 sh "$release/browser-test" || r=$?
+r=0; timeout -k 30 300 sh "$release/browser-test" || r=$?
 case $r in
 0) ;;
 124 | 137) echo 'CV-BROWSER failed: deadline'; result=1 ;;
 *) result=1 ;;
 esac
+if [ "$r" = 0 ]; then
+	timeout -k 30 180 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
+fi
 if [ ! -f /etc/convergent/update.conf ]; then
 	echo 'CV-FETCH skipped (no update.conf)'
 elif [ "$1" = 0 ]; then

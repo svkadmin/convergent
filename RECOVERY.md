@@ -167,7 +167,7 @@ The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Wo
 
 The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not. The host
 itself cannot browse, by design: pf lets it resolve names through the firewalls and reach a short
-list of update servers. Browsers have Internet, so try one (`browser web`) to tell the two apart.
+list of update servers. Browsers have Internet, so try one (`browser def`) to tell the two apart.
 
 ```sh
 sys wifi status        # connected, with an address
@@ -207,7 +207,7 @@ first boot step 4).
 | Guests | `/var/log/incus/<guest>/console.log` and `qemu.log`; `/var/log/incus/incusd.log` |
 | Security audit | `/var/log/audit/audit.log` |
 | Health check report | `sys security report`; `/var/lib/convergent/check/last` |
-| Searchable in Grafana (admin browser, needs svc) | the host's, the firewalls' and wan's syslog, including host audit records; not file-only logs such as `/var/log/guests-setup.log` or `/var/log/incus/` |
+| Searchable in Grafana (int browser, needs svc) | the host's, the firewalls' and wan's syslog, including host audit records; not file-only logs such as `/var/log/guests-setup.log` or `/var/log/incus/` |
 
 All of them need `sudo` to read, except the self-test report in the owner's home.
 

@@ -8,10 +8,10 @@ umask 077
 die() { echo "browser: $*" >&2; exit 1; }
 
 if [ "$(id -u)" != 0 ]; then
-    case $# in 1|2) ;; *) die 'usage: browser web|tmp|portal|admin [url]' ;; esac
+    case $# in 1|2|3) ;; *) die 'usage: browser def|tmp|int [url] | tmp --portal [url]' ;; esac
     [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${SWAYSOCK:-}" ] || die 'run in the owner Sway session'
     # Pressed again: focus the open window instead of refusing.
-    if [ $# = 1 ] && { [ "$1" = web ] || [ "$1" = admin ]; } &&
+    if [ $# = 1 ] && { [ "$1" = def ] || [ "$1" = int ]; } &&
         swaymsg -q "[app_id=\"^convergent-$1\$\"] focus" 2>/dev/null; then exit 0; fi
     exec sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$@"
 fi
@@ -22,14 +22,17 @@ if [ "${1:-}" = --session ]; then
 fi
 [ "${1:-}" = --privileged ] || die 'run as the owner in Sway'
 shift
-case $# in 3|4) ;; *) die 'invalid session arguments' ;; esac
+case $# in 3|4|5) ;; *) die 'invalid session arguments' ;; esac
 display=$1 ipc=$2 role=$3
 shift 3
-case $role in web|tmp|portal|admin) ;; *) die 'role must be web, tmp, portal or admin' ;; esac
+case $role in def|tmp|int) ;; *) die 'role must be def, tmp or int' ;; esac
+portal_mode=
+if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=1; shift; fi
+[ $# -le 1 ] || die 'expected at most one URL'
+[ -z "$portal_mode" ] || [ $# = 1 ] || set -- http://neverssl.com/
 for url do case $url in http://?*|https://?*) ;; *) die 'URL must be HTTP(S)' ;; esac; done
 case $role in
-    admin) [ $# = 0 ] || [ "$1" = http://100.80.2.10:3000/ ] || die 'admin only opens Grafana'; set -- ;;
-    portal) [ $# = 1 ] || set -- http://neverssl.com/ ;;
+    int) [ $# = 0 ] || [ "$1" = http://100.80.2.10:3000/ ] || die 'int only opens Grafana'; set -- ;;
 esac
 uid=$SUDO_UID
 gid=$(id -g "$uid")
@@ -62,7 +65,7 @@ stop_container() {
     state=$(printf '%s\n' "$snapshot" | jq -r --arg n "$name" '.[] | select(.name == $n) | .status') || return
     case $state in '') return ;; Stopped) ;; *) ic stop "$name" --force || return ;; esac
     case $role in
-        tmp|portal)
+        tmp)
             snapshot=$(instances_json) || return
             if printf '%s\n' "$snapshot" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
                 ic delete "$name" || return
@@ -89,12 +92,17 @@ flock -s -n 9 || die 'guest update in progress'
 exec 6>/run/convergent/browser-update.lock
 flock -s -n 6 || die 'browser update in progress'
 journal=/var/lib/convergent/guests
-if [ -f "$journal/browser.ready" ] || [ -f "$journal/profiles.before/browser-base.yaml" ] ||
-    grep -qE '^(web|admin) ' "$journal/pending" 2>/dev/null; then
+if [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
+    [ -f "$journal/profiles.before/browser-base.yaml" ] ||
+    grep -qE '^(def|int|web|admin) ' "$journal/pending" 2>/dev/null; then
     die 'interrupted browser update; rerun the guests update first'
 fi
 name=$role
-if [ "$role" = tmp ]; then
+if [ -n "$portal_mode" ]; then
+    name=tmp-portal
+    exec 8>"/run/convergent/browser/$name.lock"
+    flock -n 8 || die 'portal is already open'
+elif [ "$role" = tmp ]; then
     octet=20
     while :; do
         [ "$octet" -le 99 ] || die 'all temporary browser slots are busy'
@@ -152,7 +160,7 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
 fi
-if [ "$role" = portal ]; then
+if [ -n "$portal_mode" ]; then
     portal=1
     /usr/local/sbin/portal begin || die 'cannot open portal mode'
 fi
@@ -160,10 +168,10 @@ active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
     # The socket paths are this launcher's, not the profile's: profiles stay as installed until
     # a browser image update, and older ones name other paths.
-    # Fixed words ($name is web, admin, portal or tmp-NN), split on purpose; "$@" is the URLs.
+    # Fixed words ($name is def, int, tmp-portal or tmp-NN), split on purpose; "$@" is the URLs.
     sockets="-d wayland,source=$run/sockets/wayland-0 -d wayland,required=false -d pipewire,source=$run/sockets/pulse-0 -d pipewire,required=false"
     case $role in
-        tmp|portal) ic init candidate-browser "$name" --ephemeral -p browser-base -p "browser-$role" $sockets ;;
+        tmp) ic init candidate-browser "$name" --ephemeral -p browser-base -p browser-tmp $sockets ;;
         *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" $sockets ;;
     esac
 fi
@@ -195,7 +203,11 @@ chmod 0710 "$run/sockets"
 for socket in wayland-0 pulse-0; do
     [ ! -L "$run/sockets/$socket" ] && [ -S "$run/sockets/$socket" ] || die 'invalid socket inode'
 done
-if [ "$role" = tmp ]; then
+if [ -n "$portal_mode" ]; then
+    ic config set "$name" environment.BROWSER_PORTAL=1 environment.BROWSER_IPV4=100.80.3.11 limits.memory=512MiB
+    device eth0 ipv4.address=100.80.3.11 hwaddr=00:16:3e:80:03:11
+    ic config device add "$name" render none
+elif [ "$role" = tmp ]; then
     ic config set "$name" environment.BROWSER_IPV4="100.80.3.$octet"
     device eth0 "ipv4.address=100.80.3.$octet" "hwaddr=00:16:3e:80:03:$octet"
 fi
@@ -212,11 +224,11 @@ until ic exec "$name" -- test -f /run/browser-ready; do
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
 done
-if [ "$role" = admin ]; then
+if [ "$role" = int ]; then
     ic config set svc limits.memory=768MiB
     grafana=1; ic exec svc -- rc-service grafana start
 fi
-[ "$role" != portal ] || portal_on || die 'portal mode ended during startup'
+[ -z "$portal_mode" ] || portal_on || die 'portal mode ended during startup'
 # A dead proxy would show only as a confusing Chromium error ("Connection refused").
 for child in $children; do
     kill -0 "$child" 2>/dev/null || die "the Wayland or audio proxy exited before the browser started (logs: $run/*.log)"
@@ -229,7 +241,7 @@ exec 9>&-
 tick=0
 while kill -0 "$browser" 2>/dev/null; do
     for child in $children; do kill -0 "$child" 2>/dev/null || die 'socket or audio provider exited'; done
-    if [ "$role" = portal ] && [ "$tick" = 0 ]; then portal_on || die 'portal mode ended'; fi
+    if [ -n "$portal_mode" ] && [ "$tick" = 0 ]; then portal_on || die 'portal mode ended'; fi
     tick=$(( (tick + 1) % 5 ))
     sleep 2
 done

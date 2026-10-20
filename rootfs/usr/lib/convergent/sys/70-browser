@@ -1,17 +1,16 @@
 title=Browser
 alias=br
 actions='status	Show running browsers	root
-web	Open the persistent web browser	
-tmp	Open a temporary browser	
-admin	Open the admin browser	
-portal	Open the portal browser	'
+def	Open the default browser
+tmp	Open a temporary browser
+int	Open the internal browser	'
 
-browser_state() { echo 'web / tmp / admin / portal'; }
+browser_state() { echo 'def / tmp / int'; }
 browser_start() (
 	[ -n "${XDG_RUNTIME_DIR:-}" ] || die 'XDG_RUNTIME_DIR is not set'
 	log=$(mktemp "$XDG_RUNTIME_DIR/sys-browser-$1.XXXXXX") || exit 1
-	trace setsid -f -w /usr/local/sbin/browser "$1"
-	setsid -f -w /usr/local/sbin/browser "$1" </dev/null >"$log" 2>&1 &
+	trace setsid -f -w /usr/local/sbin/browser "$@"
+	setsid -f -w /usr/local/sbin/browser "$@" </dev/null >"$log" 2>&1 &
 	pid=$!
 	for attempt in 1 2 3; do
 		sleep 1
@@ -26,13 +25,12 @@ browser_start() (
 	fi
 	echo 'Browser is starting.'
 )
-browser_web() { noargs "$@"; browser_start web; }
+browser_def() { noargs "$@"; browser_start def; }
 browser_tmp() { noargs "$@"; browser_start tmp; }
-browser_admin() { noargs "$@"; browser_start admin; }
-browser_portal() { noargs "$@"; browser_start portal; }
+browser_int() { noargs "$@"; browser_start int; }
 
 browser_status() {
 	noargs "$@"
 	instances=$(run sudo /usr/local/sbin/guests status) || return
-	printf '%s\n' "$instances" | page awk '$1 ~ /^(web|admin|portal|tmp-[0-9]+)$/ && $2 == "running" {print; n++} END {if (!n) print "No running browsers"}'
+	printf '%s\n' "$instances" | page awk '$1 ~ /^(def|int|tmp-(portal|[0-9]+))$/ && $2 == "running" {print; n++} END {if (!n) print "No running browsers"}'
 }

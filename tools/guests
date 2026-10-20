@@ -39,7 +39,7 @@ running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running 
 volumes() {
     case $1 in
     svc) echo 'svc-metrics svc-logs svc-grafana' ;;
-    web|admin) echo "browser-$1-state" ;;
+    def|int|web|admin) echo "browser-$1-state" ;; # old pending journals
     esac
 }
 unmount_root() {
@@ -68,7 +68,7 @@ rollback() {
             ic storage volume snapshot restore default "$volume" "$snap" || return
         done
         cp "$state/known_hosts.before" "$keys/known_hosts" || return
-        case $guest in web|admin) ;; *) ic start "$guest" || return; retry healthy "$guest" || return ;; esac
+        case $guest in def|int|web|admin) ;; *) ic start "$guest" || return; retry healthy "$guest" || return ;; esac
         tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
     done
     rm "$state/pending" || return
@@ -386,19 +386,84 @@ profile() {
 # Profiles as they were before this update; a failed update puts them back.
 profiles_save() {
     mkdir -p "$state/profiles.before"
+    ic profile list --format json >"$work/profiles" || return
     for p do
         [ ! -f "$state/profiles.before/$p.yaml" ] || continue
+        jq -e --arg n "$p" 'any(.[]; .name == $n)' "$work/profiles" >/dev/null || continue
         ic profile show "$p" >"$state/profiles.before/$p.new" &&
             mv "$state/profiles.before/$p.new" "$state/profiles.before/$p.yaml" || return
     done
     sync
 }
 profiles_restore() {
+    # Renames roll forward; their old profiles refer to volumes under the old names.
+    [ ! -d "$state/browser.rename" ] || return 0
     for f in "$state/profiles.before"/*.yaml; do
         [ -f "$f" ] || continue
         ic profile edit "$(basename "$f" .yaml)" <"$f" || return
     done
     rm -rf "$state/profiles.before"
+}
+browser_migrate() {
+    step=browser-migrate
+    if [ ! -d "$state/browser.rename" ]; then
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+        ic storage volume list default --format json >"$work/volumes"
+        ic profile list --format json >"$work/profiles"
+        if ! jq -e 'any(.[]; .name == "web" or .name == "admin" or .name == "portal")' "$work/browsers" >/dev/null &&
+            ! jq -e 'any(.[]; .name == "browser-web-state" or .name == "browser-admin-state")' "$work/volumes" >/dev/null &&
+            ! jq -e 'any(.[]; .name == "browser-web" or .name == "browser-admin" or .name == "browser-portal")' "$work/profiles" >/dev/null; then
+            return
+        fi
+        # Save the new profiles too: recovery must not depend on a staging directory.
+        mkdir -p "$work/browser.rename"
+        for role in base def tmp int; do cp "$image_dir/incus/$role.yaml" "$work/browser.rename/$role.yaml"; done
+        profiles_save browser-base browser-web browser-admin browser-portal browser-def browser-int browser-tmp
+        sync
+        mv "$work/browser.rename" "$state/browser.rename"
+        sync
+    fi
+    for old in web admin; do
+        case $old in web) new=def ;; admin) new=int ;; esac
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+        jq -e --arg n "$new" --arg o "$old" 'all(.[] | select(.name == $n);
+            .type == "container" and (.profiles == ["browser-base", "browser-" + $n] or
+            .profiles == ["browser-base", "browser-" + $o]))' "$work/browsers" >/dev/null ||
+            die "$new is not this browser"
+        if jq -e --arg n "$old" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null; then
+            ! jq -e --arg n "$new" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null ||
+                die "both $old and $new exist; refusing to merge browsers"
+            jq -e --arg n "$old" '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $n]' "$work/browsers" >/dev/null ||
+                die "$old is not the old browser"
+            if running "$old"; then stop_guest "$old"; fi
+            ic rename "$old" "$new"
+        fi
+        ic storage volume list default --format json >"$work/volumes"
+        if jq -e --arg n "browser-$old-state" 'any(.[]; .name == $n)' "$work/volumes" >/dev/null; then
+            ! jq -e --arg n "browser-$new-state" 'any(.[]; .name == $n)' "$work/volumes" >/dev/null ||
+                die "both browser-$old-state and browser-$new-state exist"
+            ic storage volume rename default "browser-$old-state" "browser-$new-state"
+        fi
+    done
+    for role in base def tmp int; do profile "browser-$role" "$state/browser.rename/$role.yaml"; done
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+    for node in def int; do
+        jq -e --arg n "$node" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null || continue
+        if running "$node"; then stop_guest "$node"; fi
+        ic profile assign "$node" "browser-base,browser-$node"
+    done
+    # Reap the retired ephemeral role before removing its unused profile.
+    if jq -e 'any(.[]; .name == "portal" and .ephemeral and .profiles == ["browser-base", "browser-portal"])' "$work/browsers" >/dev/null; then
+        if running portal; then ic stop portal --force; else ic delete portal; fi
+    fi
+}
+browser_profiles_prune() {
+    ic profile list --format json >"$work/profiles" || return
+    for p in browser-web browser-admin browser-portal; do
+        if jq -e --arg n "$p" 'any(.[]; .name == $n and (.used_by | length) == 0)' "$work/profiles" >/dev/null; then
+            ic profile delete "$p" || return
+        fi
+    done
 }
 init_guest() {
     node=$1
@@ -533,13 +598,13 @@ replace() {
         cp -a "$work/iwd/." "$work/root/var/lib/iwd/"
         unmount_root
         ;;
-    web|admin)
+    def|int)
         ic file pull "$guest/usr/local/bin/browser-launch" "$work/browser-launch"
         sh -n "$work/browser-launch" 9>&- 8>&- 7>&- 6>&-
         ;;
     esac
     case $guest in
-    web|admin) ;;
+    def|int) ;;
     *)
         seed_start "$guest"
         # Nothing comes over from the old firewall; the host pushes its DNS data afterwards.
@@ -563,7 +628,9 @@ browser_commit() {
     browser_image=$(cat "$state/browser.ready")
     image_alias browser "$browser_image"
     [ ! -f "$state/pending" ] || commit_update
+    browser_profiles_prune
     rm -rf "$state/profiles.before"
+    rm -rf "$state/browser.rename"
     sync
     rm "$state/browser.ready"
     sync
@@ -602,6 +669,9 @@ init() {
     init_id=$(cat "$state/init/id")
     initializing=1
     credentials
+    [ ! -f "$state/browser.ready" ] || browser_commit
+    [ ! -d "$state/profiles.before" ] || profiles_restore
+    [ ! -f "$state/pending" ] || { pending=1; rollback; }
     btrfs subvolume show /var/lib/incus-pool >/dev/null || die 'installer must create /var/lib/incus-pool on Btrfs'
     ic admin init --preseed <"$lib/preseed.yaml"
     init_done preseed
@@ -625,17 +695,32 @@ init() {
     ic config set core.metrics_address=100.80.1.10:8444
     ic config set core.metrics_authentication=true
     profile svc "$release/guests/svc/incus.yaml"
-    for role in base web tmp portal admin; do profile "browser-$role" "$release/guests/browser/incus/$role.yaml"; done
+    image_dir=$release/guests/browser
+    browser_migrate
+    for role in base def tmp int; do profile "browser-$role" "$release/guests/browser/incus/$role.yaml"; done
     volume_create svc-metrics 2GiB
     volume_create svc-logs 6GiB
     volume_create svc-grafana 512MiB
-    volume_create browser-web-state 4GiB
-    volume_create browser-admin-state 512MiB
+    volume_create browser-def-state 4GiB
+    volume_create browser-int-state 512MiB
     image_dir=$release/guests/browser
     import_image browser
     fingerprint=$(ic query /1.0/images/aliases/candidate-browser | jq -er .target)
     ic image alias list --format json | jq -e '.[] | select(.name == "browser")' >/dev/null && ic image alias delete browser
     ic image alias create browser "$fingerprint"
+    if [ -d "$state/browser.rename" ]; then
+        browser_image=$fingerprint
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+        for node in def int; do
+            jq -e --arg n "$node" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null || continue
+            replace "$node"
+        done
+        printf '%s\n' "$browser_image" >"$work/browser.ready"
+        sync
+        mv "$work/browser.ready" "$state/browser.ready"
+        sync
+        browser_commit
+    fi
     image_dir=$release/guests/fw
     for node in fw1 fw2; do
         init_guest "$node" --vm --profile fw
@@ -668,9 +753,18 @@ update() {
     step="update $1"
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
+    case $1 in fw|wan|svc|browser|def|int) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;; esac
+    # Recovery also changes browser objects; take the session lock before touching journals.
+    exec 6>/run/convergent/browser-update.lock
+    if ! flock -n 6; then
+        echo 'guests: a browser is open; close it, then sys guests update'
+        browser_pending=1
+        return
+    fi
     [ ! -f "$state/browser.ready" ] || browser_commit
     [ ! -d "$state/profiles.before" ] || profiles_restore
     [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+    [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
     case $1 in
@@ -723,39 +817,35 @@ update() {
         commit_update
         rm -rf "$state/profiles.before"
         ;;
-    web|admin)
+    def|int)
+        browser_migrate
+        if [ -d "$state/browser.rename" ]; then update browser "$image_dir"; return; fi
         running "$1" && die 'close this browser with tools/browser before updating it'
         # The role profiles travel with the browser image.
-        profiles_save browser-base browser-web browser-tmp browser-portal browser-admin
-        for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
+        profiles_save browser-base browser-def browser-tmp browser-int
+        for role in base def tmp int; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         replace "$1"
         commit_update
         rm -rf "$state/profiles.before"
         ;;
     browser)
         browser_pending=
-        # Browser sessions hold this lock through shutdown; new launches also need the guests lock.
-        exec 6>/run/convergent/browser-update.lock
-        if ! flock -n 6; then
-            echo 'guests: browser is running; browser update waits for a later guests apply'
-            browser_pending=1
-            exec 6>&-
-            return
-        fi
         ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
-        if jq -e '.[] | select(.status == "Running" and (.profiles | index("browser-base")))' "$work/browsers" >/dev/null; then
+        if jq -e '.[] | select(.status == "Running" and .name != "web" and .name != "admin" and .name != "portal" and (.profiles | index("browser-base")))' "$work/browsers" >/dev/null; then
             echo 'guests: browser is running; browser update waits for a later guests apply'
             browser_pending=1
             exec 6>&-
             return
         fi
-        profiles_save browser-base browser-web browser-tmp browser-portal browser-admin
-        for role in base web tmp portal admin; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
+        browser_migrate
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+        profiles_save browser-base browser-def browser-tmp browser-int
+        for role in base def tmp int; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         import_only=1
         import_image browser
         import_only=
         browser_image=$fingerprint
-        for node in web admin; do
+        for node in def int; do
             jq -e --arg n "$node" '.[] | select(.name == $n)' "$work/browsers" >/dev/null || continue
             if running "$node"; then
                 die "$node started during the browser update"
@@ -769,7 +859,7 @@ update() {
         browser_commit
         exec 6>&-
         ;;
-    *) die 'update accepts fw (the pair), wan, svc, browser, web or admin' ;;
+    *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
     esac
 }
 apply() {
@@ -798,14 +888,16 @@ apply() {
     installed=/var/lib/convergent/release-guests
     [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
     mkdir -p "$installed/guests"
-    # Nothing changes under an open browser (an admin one uses svc's Grafana); all of it waits.
+    # Nothing changes under an open browser (an int one uses svc's Grafana); all of it waits.
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
         browser_pending=1
         return 0
     fi
-    for kind in svc wan fw browser; do
+    kinds='svc wan fw browser'
+    [ ! -d "$state/browser.rename" ] || kinds='browser svc wan fw'
+    for kind in $kinds; do
         [ -d "$staged/$kind" ] || continue
         echo "guests: applying $kind from release $booted"
         update "$kind" "$staged/$kind"
@@ -841,7 +933,7 @@ exec 9>/run/convergent/guests.lock
 flock -w 600 9 || die 'another guests operation is running'
 if [ "$1" != apply ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
-    flock -w 600 6 || die 'close browsers before updating guests'
+    flock -n 6 || die 'close browsers before updating guests'
 fi
 exec 8>/run/convergent/dns-push.lock
 flock -w 120 8 || die 'a DNS push is still running'

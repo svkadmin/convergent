@@ -85,7 +85,7 @@ for project in default "$owner"; do
         ic storage volume list "$pool" --format json >"$work/volumes.json"
         jq -r '.[] | select(.type == "custom") | .name' "$work/volumes.json" >"$work/volumes"
         if [ "$project:$pool" = default:default ]; then
-            for volume in svc-metrics svc-logs svc-grafana browser-web-state browser-admin-state; do
+            for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state; do
                 grep -qx "$volume" "$work/volumes" || die "missing required custom volume $volume"
             done
         fi
