@@ -85,8 +85,12 @@ for project in default "$owner"; do
         ic storage volume list "$pool" --format json >"$work/volumes.json"
         jq -r '.[] | select(.type == "custom") | .name' "$work/volumes.json" >"$work/volumes"
         if [ "$project:$pool" = default:default ]; then
-            for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state; do
+            for volume in svc-metrics svc-logs svc-grafana; do
                 grep -qx "$volume" "$work/volumes" || die "missing required custom volume $volume"
+            done
+            for names in 'def web' 'int admin'; do
+                set -- $names
+                grep -qxE "browser-($1|$2)-state" "$work/volumes" || die "missing browser-$1-state or browser-$2-state"
             done
         fi
         while IFS= read -r volume; do

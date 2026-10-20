@@ -566,6 +566,9 @@ guests=${2:-$BUILDER/stick/guests}
 [ "$mode" != gate ] || guests=$release/guests
 [ -f "$release/manifest" ] || die "no release manifest"
 [ -s "$release/packages" ] || die "no package inventory in $release; rebuild the host image"
+openssl pkeyutl -verify -pubin -inkey "/etc/convergent/keys/$CHANNEL.pub" -rawin \
+	-in "$release/packages" -sigfile "$release/packages.sig" >/dev/null 2>&1 ||
+	die 'package inventory signature does not verify with the channel key'
 cache=/var/cache/convergent/advisories
 mkdir -p "$cache"
 work=$(mktemp -d "$cache/.run.XXXXXX")

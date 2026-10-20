@@ -125,6 +125,7 @@ if ! grep -q '^owner_login *:' "$input"; then owner=; fi
 owner=${CONVERGENT_INSTALL_OWNER:-$owner}
 target=$(cfg install.disk)
 state_size=$(cfg install.state_size)
+[ -z "$image_install" ] || state_size=auto
 swap=$(cfg install.swap)
 cp "$dir/manifest" "$work/manifest" || die "cannot read manifest"
 # The booted Convergent system's release key; the build host's disk images pass CONVERGENT_UNSIGNED=1.

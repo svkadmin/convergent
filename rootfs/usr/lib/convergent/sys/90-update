@@ -59,7 +59,7 @@ update_media() (
 	[ -f "$release/manifest" ] && [ ! -L "$release/manifest" ] || die 'invalid manifest'
 	# An image with a release key takes only signed releases from here.
 	if [ -f "$release/manifest.sig" ] || [ -f /etc/convergent/release.pub ]; then
-		run sudo /usr/local/sbin/slot write "$release"
+		run sudo /usr/local/sbin/fetch-release usb "$release"
 	else
 		confirm "Release $release is not signed. Write it anyway" || exit 1
 		run sudo env CONVERGENT_UNSIGNED=1 /usr/local/sbin/slot write "$release"

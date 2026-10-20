@@ -15,9 +15,8 @@ start() {
 	if [ -e /var/lib/convergent/guests/initialized ]; then
 		release=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 		case $release in ''|*[!0-9]*) return 0 ;; esac
-		[ -d "/var/lib/convergent/guest-updates/$release" ] || return 0
 		[ ! -e /run/convergent/guests-update-started ] || return 0
-		ebegin "Updating downloaded guests in the background; the bar shows GUESTS until done"
+		ebegin "Applying guest updates and browser migration in the background; the bar shows GUESTS until done"
 		mkdir -p "$st"
 		(umask 077; touch /run/convergent/guests-update-started)
 		echo running >"$st/guests-update"

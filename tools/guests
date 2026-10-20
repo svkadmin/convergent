@@ -406,17 +406,18 @@ profiles_restore() {
     done
     rm -rf "$state/profiles.before"
 }
+browser_legacy() {
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers" || die 'cannot list browsers'
+    ic storage volume list default --format json >"$work/volumes" || die 'cannot list browser volumes'
+    ic profile list --format json >"$work/profiles" || die 'cannot list browser profiles'
+    jq -e 'any(.[]; .name == "web" or .name == "admin" or .name == "portal")' "$work/browsers" >/dev/null ||
+        jq -e 'any(.[]; .name == "browser-web-state" or .name == "browser-admin-state")' "$work/volumes" >/dev/null ||
+        jq -e 'any(.[]; .name == "browser-web" or .name == "browser-admin" or .name == "browser-portal")' "$work/profiles" >/dev/null
+}
 browser_migrate() {
     step=browser-migrate
     if [ ! -d "$state/browser.rename" ]; then
-        ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
-        ic storage volume list default --format json >"$work/volumes"
-        ic profile list --format json >"$work/profiles"
-        if ! jq -e 'any(.[]; .name == "web" or .name == "admin" or .name == "portal")' "$work/browsers" >/dev/null &&
-            ! jq -e 'any(.[]; .name == "browser-web-state" or .name == "browser-admin-state")' "$work/volumes" >/dev/null &&
-            ! jq -e 'any(.[]; .name == "browser-web" or .name == "browser-admin" or .name == "browser-portal")' "$work/profiles" >/dev/null; then
-            return
-        fi
+        browser_legacy || return 0
         # Save the new profiles too: recovery must not depend on a staging directory.
         mkdir -p "$work/browser.rename"
         for role in base def tmp int; do cp "$image_dir/incus/$role.yaml" "$work/browser.rename/$role.yaml"; done
@@ -875,8 +876,28 @@ apply() {
     [ -f "$state/initialized" ] || die 'init has not completed'
     booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+    # Nothing changes under an open browser (an int one uses svc's Grafana).
+    exec 6>/run/convergent/browser-update.lock
+    if ! flock -n 6; then
+        echo 'guests: a browser is open; close it, then sys guests update'
+        browser_pending=1
+        return 0
+    fi
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
+    if [ ! -d "$staged/$booted/browser" ]; then
+        # Host-only USB updates have no staged image; use this host's profiles.
+        [ ! -f "$state/browser.ready" ] || browser_commit
+        [ ! -d "$state/profiles.before" ] || profiles_restore
+        [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+        image_dir=$lib/browser
+        browser_migrate
+        if [ -d "$state/browser.rename" ]; then
+            browser_profiles_prune
+            rm -rf "$state/profiles.before" "$state/browser.rename"
+            sync
+        fi
+    fi
     [ -d "$staged" ] || return 0
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
@@ -894,15 +915,8 @@ apply() {
     installed=/var/lib/convergent/release-guests
     [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
     mkdir -p "$installed/guests"
-    # Nothing changes under an open browser (an int one uses svc's Grafana); all of it waits.
-    exec 6>/run/convergent/browser-update.lock
-    if ! flock -n 6; then
-        echo 'guests: a browser is open; close it, then sys guests update'
-        browser_pending=1
-        return 0
-    fi
     kinds='svc wan fw browser'
-    [ ! -d "$state/browser.rename" ] || kinds='browser svc wan fw'
+    if [ -d "$state/browser.rename" ] || browser_legacy; then kinds='browser svc wan fw'; fi
     for kind in $kinds; do
         [ -d "$staged/$kind" ] || continue
         echo "guests: applying $kind from release $booted"

@@ -113,6 +113,7 @@ fetch)
 	s3 -o "$tmp/output.cms" "$ep/debug-out/$id" || die "cannot fetch output for $id"
 	openssl cms -decrypt -binary -inform DER -in "$tmp/output.cms" -recip "$keys/debug.crt" \
 		-inkey "$keys/debug.key" -out "$tmp/output" || die "output decryption failed"
+	printf 'debug: returned output is not authenticated; anyone holding the public request can upload a forgery; compare with the laptop local copy /var/lib/convergent/debug/%s.txt\n' "$id" >&2
 	cat "$tmp/output"
 	s3 -o /dev/null -X DELETE "$ep/debug-out/$id" || die "cannot delete output for $id"
 	;;

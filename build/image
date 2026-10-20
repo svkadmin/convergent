@@ -56,6 +56,9 @@ find "$root/usr/share/keymaps" -name "$keymap.map*" | grep -q . || die "console_
 printf 'keymap="%s"\n' "$keymap" >"$root/etc/conf.d/keymaps"
 printf '%s\n' "$cap" >"$root/usr/lib/convergent/cpu-cap-khz"
 rm -f "$root/usr/lib/convergent/state-max-gib"
+# Host-only updates still carry the browser rename profiles.
+mkdir -p "$root/usr/lib/convergent/incus/browser"
+cp -R "$repo/guests/browser/incus" "$root/usr/lib/convergent/incus/browser/"
 {
 	printf '%s\n' "$nts" | awk -F, '{for (i=1;i<=NF;i++) if (!seen[$i]++) print "server " $i " iburst nts"}'
 	sed '/^server /d' "$repo/rootfs/etc/chrony/chrony.conf"
@@ -486,7 +489,7 @@ done
 	# Exact sizes: a download stops at them.
 	for f in "$out/slot.img" "$out"/convergent-*.efi; do echo "size ${f##*/} $(stat -c %s "$f")"; done
 } >"$out/manifest"
-# The advisory gate's inventory: build host only, never published (laptops cap the manifest at 64 KiB).
+# Signed separately: build host only, never published or hashed in the host manifest.
 printf '%s\n' "$packages" >"$out/packages"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$out"
 echo "image: release $release in $out"

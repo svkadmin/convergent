@@ -15,7 +15,7 @@ default_size=$(cfg image_size)
 . "$here/chroot.sh"
 die() { echo "stick: $*" >&2; exit 1; }
 . "$here/../install/options.sh"
-state_size=$(cfg install.state_size)
+state_size=auto
 swap=$(cfg install.swap)
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; auto state grows on first boot]"

@@ -1,7 +1,7 @@
 #!/bin/sh
 # sign: sign a release's manifest with the channel key (ARCHITECTURE section 6, step 7).
 #   build/sign <release-dir> [key]      key defaults to /etc/convergent/keys/<CHANNEL>.key
-# Writes manifest.sig, guests.manifest.sig when there are guests, latest and latest.sig. An
+# Writes manifest.sig, packages.sig, guests.manifest.sig when present, latest and latest.sig. An
 # encrypted key (the offline stable key) asks for its passphrase.
 set -eu
 
@@ -27,7 +27,7 @@ guests=none
 [ ! -f "$dir/guests.manifest" ] || guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
 printf 'release %s\nsigned %s\nguests %s\n' "$release" "$(date -u +%s)" "$guests" >"$dir/latest"
 # An encrypted key asks once per file; it is never written out decrypted.
-for f in manifest guests.manifest latest; do
+for f in manifest packages guests.manifest latest; do
 	[ -f "$dir/$f" ] || continue
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$dir/$f" -out "$dir/$f.sig.new" || die "signing $f failed"
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/$f" -sigfile "$dir/$f.sig.new" >/dev/null ||

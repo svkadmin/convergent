@@ -272,8 +272,9 @@ publication. Signing remains offline; a previous successful check never authoriz
 Only the build host fetches advisories; Portage version matching runs inside the builder chroot.
 The gate needs `python3`, `git`, `curl` and the builder's Portage.
 
-Host package versions and slots are recorded in the signed host manifest before trimming.
-Use the updated installer for these manifests; slot updates remain compatible.
+Host package versions and slots are recorded before trimming in the build-host-only `packages`
+sidecar. `build/sign` signs it with the channel key as `packages.sig`; the advisory scanner
+verifies it before use. Neither file is published or included in the host manifest.
 Svc/browser inventories come from their rootfs archives; WAN's `wan.manifest` and the firewalls'
 `openbsd.version` and per-node patch lists travel in their checksummed, signed guest payloads.
 Older releases without these inventories must be rebuilt. Only guests shipped in the release
@@ -328,7 +329,7 @@ repository path in the docs exists.
 Once a week, as root, run `build/advisories <release-dir> $g` (pass both: the default guest
 directory is not `$g`). It reads the upstream fixes and names what to rebuild (`host`, `kernel`,
 `fw`, `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the
-release; the Gentoo packages from its recorded manifest inventory. Exit 1:
+release; the Gentoo packages from its signed build-host inventory. Exit 1:
 something to rebuild (UNKNOWN lines may appear too); 2: only UNKNOWN, a source was not read.
 
 ## Repository

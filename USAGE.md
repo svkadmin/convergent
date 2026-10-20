@@ -192,7 +192,7 @@ Run it as the owner in the Sway session; it needs no password. `sys browser def|
 Only HTTP and HTTPS URLs are accepted. Each browser is
 Chromium in its own container with a restricted Wayland socket and playback-only audio; the
 window title starts with `[role]`.
-Browsers prefer dark pages; sites without a dark style stay light.
+Browsers use Chromium's own default appearance.
 
 Works when: a window titled `[def] …` opens and the bar shows `BR:1`. A failed start from
 Super+b or Super+Shift+t shows a line at the top with the reason; the full output is in
@@ -407,6 +407,8 @@ developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.t
 is printed so you can read what was sent with `sudo cat`. Bleeding-edge releases only: a stable
 image does not carry it. A failed diagnostic reports its script exit status even when output
 reaches the cap; timeout reports 124 (137 if it needs a forced kill).
+Returned output is not authenticated: anyone holding the public request can upload a forgery.
+Compare it with the laptop's local copy at `/var/lib/convergent/debug/<id>.txt`.
 
 An oops triggers a kernel panic; the host reboots 10 seconds after a panic. At boot, `facts`
 copies EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700),

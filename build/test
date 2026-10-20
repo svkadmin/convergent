@@ -819,7 +819,8 @@ t sh -c '. /etc/profile.env; [ "$MC_SKIN" = modarin256-defbg ] && [ -s /usr/shar
 for module in usbserial ftdi_sio cp210x pl2303 ch341 cdc_acm; do t modinfo "$module"; done
 t sh -c '
 	. /usr/lib/convergent/sys/80-security
-	curl() { printf "%s\n" "$response"; }
+	curl() { printf "%s\n" "$response" "$rules"; }
+	rules='"'"'{"status":"success","data":{"groups":[{"rules":[{"health":"ok"}]}]}}'"'"'
 	response='"'"'{"status":"success","data":{"alerts":[
 		{"state":"pending","labels":{"alertname":"Pending"}},
 		{"state":"firing","labels":{"severity":"warning","alertname":"Warm"},"annotations":{"description":"Too warm"},"activeAt":"2026-01-01T00:00:00Z"},
@@ -832,6 +833,11 @@ t sh -c '
 		! grep -q Pending /tmp/alerts.out || exit 1
 	response='"'"'{"status":"success","data":{"alerts":[]}}'"'"'
 	[ "$(security_alert_list)" = "No firing alerts." ] || exit 1
+	rules='"'"'{"status":"success","data":{"groups":[{"rules":[{"health":"err"}]}]}}'"'"'
+	if security_alert_list >/tmp/alerts.out 2>&1; then exit 1; fi
+	grep -q "Alert evaluation failure" /tmp/alerts.out || exit 1
+	rules=
+	if security_alert_list; then exit 1; fi
 	response='"'"'{"status":"error"}'"'"'
 	if security_alert_list; then exit 1; fi
 	response=broken
