@@ -348,15 +348,17 @@ seed_remove() {
     fi
     rm -f "$state/seeds/$1.img"
 }
+# A guest that ignores the power button shows its console tail, then goes off.
+stop_guest() {
+    ic stop "$1" --timeout 60 && return
+    echo "guests: graceful stop failed; forcing $1 off" >&2
+    ic console "$1" --show-log 2>/dev/null | tail -n 20 >&2
+    ic stop "$1" --force
+}
 seed_start() {
     step="seed_start $1"
     if [ -z "$initializing" ] || [ -f "$state/seeds/$1.img" ] || [ ! -f "$state/init/seed-$1" ]; then
-        if running "$1"; then
-            ic stop "$1" --timeout 60 || {
-                echo "guests: graceful stop failed; forcing $1 off" >&2
-                ic stop "$1" --force
-            }
-        fi
+        if running "$1"; then stop_guest "$1"; fi
         seed_attach "$1"
     fi
     running "$1" || ic start "$1"
@@ -499,13 +501,7 @@ replace() {
     case $guest in fw1|fw2) fw_touched=1 ;; esac
     step="backup $guest"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
-    if running "$guest"; then
-        starting=$guest
-        ic stop "$guest" --timeout 60 || {
-            echo "guests: graceful stop failed; forcing $guest off" >&2
-            ic stop "$guest" --force
-        }
-    fi
+    if running "$guest"; then starting=$guest; stop_guest "$guest"; fi
     # Drop a local memory pin (by hand or update fw); the fw profile carries it now.
     case $guest in
     fw1|fw2)
