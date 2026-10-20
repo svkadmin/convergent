@@ -43,6 +43,9 @@ done
 openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/latest" -sigfile "$dir/latest.sig" >/dev/null &&
 	grep -qx "release $release" "$dir/latest" || die "latest is not signed for release $release"
 
+# Fresh advisory data, before any bucket mutation (including pruning).
+"$here/advisories" --gate "$dir" || die "advisory gate failed"
+
 [ -f "$env" ] || die "no $env"
 . "$env"
 ep=${R2_ENDPOINT:-https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com}/$R2_BUCKET

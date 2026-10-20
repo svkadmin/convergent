@@ -260,6 +260,30 @@ mirror cannot forge the pointer, but can hold back newer releases by replaying a
 `fetch-release` shows how old the signature is. Two releases per channel stay; it refuses to grow
 the bucket past about 9 GiB (R2's free tier is 10 GB).
 
+Before any upload or pruning, `build/publish` runs `build/advisories --gate <release-dir>`.
+It fetches current Gentoo GLSAs, [Alpine secdb](https://secdb.alpinelinux.org/) for each
+shipped Alpine branch, and the firewall release's [OpenBSD errata](https://www.openbsd.org/errata.html).
+Known affected versions, missing patches, missing inventories and fetch/parse failures block
+publication. Signing remains offline; a previous successful check never authorizes a later publish.
+Only the build host fetches advisories; Portage version matching runs inside the builder chroot.
+The gate needs `python3`, `git`, `curl` and the builder's Portage.
+
+Host package versions and slots are recorded in the signed host manifest before trimming.
+Use the updated installer for these manifests; slot updates remain compatible.
+Svc/browser inventories come from their rootfs archives; WAN's `wan.manifest` and the firewalls'
+`openbsd.version` and per-node patch lists travel in their checksummed, signed guest payloads.
+Older releases without these inventories must be rebuilt. Only guests shipped in the release
+are gated; kernel/pin freshness remains part of the separate weekly report.
+
+For a reviewed advisory that does not apply, add a line to `build/advisories.exceptions`:
+`target package advisory reason`, with a concrete reason occupying the rest of the line.
+Targets are `host`, `wan`, `svc`, `browser`, `fw1`, `fw2`; package is Gentoo `category/name`,
+Alpine source package (origin), or `base` for OpenBSD. IDs are `GLSA-YYYYMM-NN`, the secdb ID
+(usually a CVE), or `OPENBSD-7.9-001_xserver`, for example.
+Use a separate entry per target/advisory, including absent OpenBSD sets such as X; no wildcards
+or exception for unreadable data. Accepted exceptions and reasons appear in the gate output.
+Run `build/test --advisories` for the offline regression fixtures.
+
 ## Test in QEMU
 
 Each test boots the release on a throwaway disk in `builder/test/<release>-<mode>` and passes or
@@ -296,7 +320,7 @@ repository path in the docs exists.
 Once a week, as root, run `build/advisories <release-dir> $g` (pass both: the default guest
 directory is not `$g`). It reads the upstream fixes and names what to rebuild (`host`, `kernel`,
 `fw`, `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the
-release; the Gentoo packages from the builder's current `/staging`, which must match it. Exit 1:
+release; the Gentoo packages from its recorded manifest inventory. Exit 1:
 something to rebuild (UNKNOWN lines may appear too); 2: only UNKNOWN, a source was not read.
 
 ## Repository

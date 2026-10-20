@@ -11,10 +11,14 @@
 #   build/test --guests <release> <guests-dir>
 #   build/test --guests-update <release> <guests-dir> <broken-svc-dir>
 #   build/test --online <release> <guests-dir>   once <release> is published: its guests from R2
+#   build/test --advisories                  offline gate fixtures; no root needed
 set -eu
 umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
+if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
+	exec sh "$here/advisories" --selftest
+fi
 . "$here/build.conf"
 . "$here/chroot.sh"
 

@@ -128,6 +128,9 @@ takes the upstream address by DHCP and performs the only NAT in the system.
 OpenBSD. Each has one interface per segment and a dedicated sync link to the other. The image build
 applies signify-verified syspatches on a temporary DHCP boot, verifies the patched kernel on the
 offline smoke boot, and records each node's installed patches in `<node>.syspatch`.
+These lists and the OpenBSD version are included in the signed guest payload. Before publishing,
+the advisory gate checks every published erratum, including gaps in the installed patch list;
+non-applicable errata need an explicit reason in `build/advisories.exceptions`.
 
 - **CARP:** one virtual host ID per segment, the same on both; fw1 with skew 0, fw2 with skew
   100; `net.inet.carp.preempt=1`, so all addresses move together; advertisements unicast to the

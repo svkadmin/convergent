@@ -262,5 +262,6 @@ for pid in $nodepids; do
 	wait "$pid" || die "worker failed"
 done
 nodepids=
-(cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 >SHA256SUMS)
+printf '%s\n' "$OPENBSD_VERSION" >"$out/openbsd.version"
+(cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 fw[12].syspatch openbsd.version >SHA256SUMS)
 echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2"

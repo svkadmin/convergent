@@ -1,5 +1,5 @@
 #!/bin/sh
-# Published fixes for the release inputs (ARCHITECTURE 6).
+# Published fixes for release inputs; --gate is required by publish.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -10,8 +10,10 @@ die() { echo "advisories: $*" >&2; exit 2; }
 
 python_run() {
 	"$@" <<'PY'
+import contextlib
 import datetime as dt
 import functools
+import io
 import json
 import re
 import sys
@@ -96,19 +98,18 @@ def wan_packages(text):
     return packages
 
 
-def glsa_scan(root, directory):
+def glsa_scan(manifest, directory):
     from portage.dep import Atom, match_from_list
     from portage.versions import _pkg_str, vercmp
 
     packages = {}
-    for path in sorted((root / 'var/db/pkg').glob('*/*')):
-        if path.is_dir() and not path.name.startswith('.'):
-            cpv = f'{path.parent.name}/{path.name}'
-            slot = (path / 'SLOT').read_text().strip()
+    for line in manifest.read_text().splitlines():
+        if line.startswith('package '):
+            _, cpv, slot = line.split()
             Atom(f'={cpv}:{slot}')
             package = _pkg_str(cpv, metadata={'SLOT': slot})
             packages.setdefault(package.cp, []).append(package)
-    require(packages, f'no installed packages in {root}/var/db/pkg')
+    require(packages, f'no package inventory in {manifest}; rebuild the host image')
     files = sorted(directory.glob('glsa-*.xml'))
     require(files, f'no GLSA XML in {directory}')
     items, errors = [], []
@@ -158,34 +159,32 @@ def glsa_scan(root, directory):
                                           + (' (same upstream version)' if rule.attrib['range'].startswith('r') else '')
                                           + (f":{rule.get('slot')}" if rule.get('slot') else '')
                                           for rule in safe) or 'not published'
-                        items.append(f'{name}:{package.slot} installed {package.version}; '
-                                     f'fixed {fixed}; GLSA-{advisory.attrib["id"]}')
+                        items.append((name, f'GLSA-{advisory.attrib["id"]}',
+                                      f'{name}:{package.slot} installed {package.version}; fixed {fixed}'))
         except Exception as error:
             errors.append(f'{file.name}: {error}')
     return items, errors
 
 
 def glsa_selftest():
-    # Explicit paths must select this inventory, never the builder's installed database.
+    # The release inventory, never the builder's installed database.
     with tempfile.TemporaryDirectory(prefix='advisories-test-') as temporary:
         base = Path(temporary)
-        root, directory = base / 'other-root', base / 'other-glsa'
+        manifest, directory = base / 'manifest', base / 'other-glsa'
         directory.mkdir()
-        for version, slot in [('1.0-r1', '0/1'), ('1.0-r2', '1'), ('2.0', '2')]:
-            package = root / 'var/db/pkg/app-test/example-{}'.format(version)
-            package.mkdir(parents=True)
-            (package / 'SLOT').write_text(slot)
+        manifest.write_text('package app-test/example-1.0-r1 0/1\n'
+                            'package app-test/example-1.0-r2 1\npackage app-test/example-2.0 2\n')
         xml = ('<glsa id="209901-01"><affected><package name="app-test/example" arch="amd64">'
                '<vulnerable range="rlt">1.0-r3</vulnerable>'
                '<unaffected range="rge" slot="1">1.0-r2</unaffected>'
                '</package></affected></glsa>')
         file = directory / 'glsa-209901-01.xml'
         file.write_text(xml)
-        items, errors = glsa_scan(root, directory)
-        require(not errors and len(items) == 1 and 'installed 1.0-r1;' in items[0],
-                'Portage alternate ROOT/GLSA directory selftest failed')
+        items, errors = glsa_scan(manifest, directory)
+        require(not errors and len(items) == 1 and 'installed 1.0-r1;' in items[0][2],
+                'Portage release inventory/GLSA directory selftest failed')
         file.write_text(xml.replace('arch="amd64"', 'arch="arm64"'))
-        require(glsa_scan(root, directory) == ([], []), 'GLSA architecture selftest failed')
+        require(glsa_scan(manifest, directory) == ([], []), 'GLSA architecture selftest failed')
 
 
 def selftest():
@@ -211,11 +210,186 @@ def selftest():
         raise ValueError('WAN inventory without origins was accepted')
     require(installed_apk('P:libssl3\nV:3.5.1-r0\no:openssl\n') ==
             [('libssl3', '3.5.1-r0', 'openssl')], 'apk origin')
-    print('advisories: selftest ok (apk versions and inventories)')
+    gate_selftest()
+    print('advisories: selftest ok (versions, inventories, gate and exceptions)')
 
 
-def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
+def exceptions(path):
+    result = {}
+    for line in path.read_text().splitlines():
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        fields = line.split(None, 3)
+        require(len(fields) == 4 and fields[0] in ('host', 'wan', 'svc', 'browser', 'fw1', 'fw2'),
+                f'invalid exception (target package advisory reason): {line}')
+        key = tuple(fields[:3])
+        require(key not in result and not any('*' in part for part in key), f'invalid/duplicate exception: {line}')
+        result[key] = fields[3]
+    return result
+
+
+def archive_text(archive, name):
+    members = [member for member in archive if member.name.removeprefix('./') == name]
+    require(len(members) == 1 and members[0].isfile(), f'missing/ambiguous {name}')
+    return archive.extractfile(members[0]).read().decode()
+
+
+def alpine_inventory(guests, guest):
+    if guest == 'wan':
+        text = (guests / 'wan/wan.manifest').read_text()
+        versions = re.findall(r'^alpine=(3\.[0-9]+)$', text, re.M)
+        packages = wan_packages(text)
+    else:
+        with tarfile.open(guests / guest / 'rootfs.tar.gz', 'r:gz') as archive:
+            version = archive_text(archive, 'etc/alpine-release').strip()
+            require(re.fullmatch(r'3\.[0-9]+\.[0-9]+', version), 'invalid Alpine release')
+            versions = [version.rsplit('.', 1)[0]]
+            packages = installed_apk(archive_text(archive, 'lib/apk/db/installed'))
+    require(len(versions) == 1, f'{guest}: missing/ambiguous Alpine branch')
+    return 'v' + versions[0], packages
+
+
+def firewall_version(guests):
+    version = (guests / 'fw/openbsd.version').read_text().strip()
+    require(re.fullmatch(r'[0-9]+\.[0-9]+', version), 'invalid OpenBSD release')
+    return version
+
+
+def targets(release, gate):
+    if not gate:
+        return ['fw', 'wan', 'svc', 'browser']
+    manifest = Path(release) / 'guests.manifest'
+    if not manifest.exists():
+        require(not (Path(release) / 'guests').exists(), 'guests without guests.manifest')
+        return []
+    text = manifest.read_text()
+    selected = re.findall(r'^guest (\S+) [0-9a-f]{64}$', text, re.M)
+    require(len(selected) == len(set(selected)) and
+            all(g in ('fw', 'wan', 'svc', 'browser') for g in selected), 'invalid guest list')
+    # An inventory must be among the payloads verified by publish, not a local sidecar.
+    payloads = set(re.findall(r'^[0-9a-f]{64}  (guests/\S+)$', text, re.M))
+    require(set(p.split('/')[1] for p in payloads) == set(selected), 'guest payload/list mismatch')
+    for guest in selected:
+        needed = {'fw': ['fw1.syspatch', 'fw2.syspatch', 'openbsd.version',
+                         'fw1.qcow2.zst', 'fw2.qcow2.zst'],
+                  'wan': ['wan.manifest', 'wan.qcow2.zst'],
+                  'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz']}[guest]
+        require(all(f'guests/{guest}/{name}' in payloads for name in needed),
+                f'{guest}: release lacks signed inventory/image; rebuild guest and run build/guests')
+    return selected
+
+
+def sources(guests, selected):
+    feeds = {}
+    for guest in selected:
+        if guest == 'fw':
+            version = firewall_version(guests)
+            feeds[f'errata-{version}.html'] = f'https://www.openbsd.org/errata{version.replace(".", "")}.html'
+        else:
+            branch, _ = alpine_inventory(guests, guest)
+            for repository in ('main', 'community'):
+                feeds[f'{repository}-{branch}.json'] = f'https://secdb.alpinelinux.org/{branch}/{repository}.json'
+    return feeds
+
+
+def gate_selftest():
+    with tempfile.TemporaryDirectory(prefix='advisories-test-') as temporary:
+        work = Path(temporary)
+        guests = work / 'guests'
+        exempt = work / 'exceptions'
+        exempt.write_text('')
+        (work / 'host.json').write_text('[[], []]')
+        payloads = {'fw': ['fw1.syspatch', 'fw2.syspatch', 'openbsd.version',
+                           'fw1.qcow2.zst', 'fw2.qcow2.zst'],
+                    'wan': ['wan.manifest', 'wan.qcow2.zst'],
+                    'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz']}
+        manifest = ''
+        for guest, files in payloads.items():
+            (guests / guest).mkdir(parents=True)
+            manifest += f'guest {guest} {"a" * 64}\n'
+            manifest += ''.join(f'{"b" * 64}  guests/{guest}/{name}\n' for name in files)
+        (work / 'guests.manifest').write_text(manifest)
+        (guests / 'fw/openbsd.version').write_text('7.9\n')
+        for machine in ('fw1', 'fw2'):
+            (guests / f'fw/{machine}.syspatch').write_text('002_later\n')
+        errata = 'OpenBSD 7.9 Errata <a href="/002_later.patch.sig">'
+        (work / 'errata-7.9.html').write_text(errata)
+        (guests / 'wan/wan.manifest').write_text('alpine=3.24\npackage=libssl3-3.5.1-r2 origin=openssl\n')
+        for guest in ('svc', 'browser'):
+            with tarfile.open(guests / guest / 'rootfs.tar.gz', 'w:gz') as archive:
+                for name, text in [('etc/alpine-release', '3.24.2\n'),
+                                   ('lib/apk/db/installed', 'P:libssl3\nV:3.5.1-r2\no:openssl\n')]:
+                    data = text.encode()
+                    member = tarfile.TarInfo('./' + name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+
+        def secdb(fixed):
+            database = {'distroversion': 'v3.24', 'packages': [
+                {'pkg': {'name': 'openssl', 'secfixes': {fixed: ['CVE-2099-0001', 'CVE-2099-0002']}}}]}
+            for repository in ('main', 'community'):
+                (work / f'{repository}-v3.24.json').write_text(json.dumps(database))
+
+        def check(expected):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                status = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True)
+            require(status == expected, f'gate status {status}, expected {expected}: {output.getvalue()}')
+            return output.getvalue()
+
+        secdb('3.5.1-r2')
+        check(0)
+        require('main-v3.24.json' in sources(guests, targets(work, True)), 'release branch selection')
+        secdb('3.5.1-r10')
+        output = check(1)
+        require(all(f'{g}: libssl3 installed' in output for g in ('wan', 'svc', 'browser')), 'origin match')
+        exempt.write_text(''.join(f'{g} openssl CVE-2099-0001 Unused affected feature.\n'
+                                 for g in ('wan', 'svc', 'browser')))
+        check(1)  # The second advisory still blocks.
+        exempt.write_text(exempt.read_text() + ''.join(
+            f'{g} openssl CVE-2099-0002 Unused affected feature.\n' for g in ('wan', 'svc', 'browser')))
+        require('EXCEPTED:' in check(0), 'exception audit output')
+        secdb('invalid')
+        check(2)  # Exceptions cannot waive a broken feed.
+        secdb('3.5.1-r2')
+        (work / 'main-v3.24.json.failed').touch()
+        check(2)  # Never use cached data on a fetch failure.
+        (work / 'main-v3.24.json.failed').unlink()
+        (work / 'errata-7.9.html').write_text(errata + '<a href="/001_older.patch.sig">')
+        require('001_older' in check(1), 'older missing syspatch')
+        exempt.write_text('fw1 base OPENBSD-7.9-001_older No affected set.\n')
+        check(1)  # fw2 must be checked independently.
+        exempt.write_text(exempt.read_text() + 'fw2 base OPENBSD-7.9-001_older No affected set.\n')
+        check(0)
+        (work / 'host.json').write_text(json.dumps([[['app-test/example', 'GLSA-209901-01', 'affected']], []]))
+        check(1)
+        exempt.write_text(exempt.read_text() + 'host app-test/example GLSA-209901-01 Removed affected binary.\n')
+        check(0)
+        (work / 'host.json').write_text('[[], ["bad GLSA"]]')
+        check(2)
+        for broken in ('wan openssl CVE-2099-0001\n', 'wan * CVE-2099-0001 Reason\n'):
+            exempt.write_text(broken)
+            try:
+                exceptions(exempt)
+            except ValueError:
+                pass
+            else:
+                raise ValueError('invalid exception accepted')
+        (work / 'guests.manifest').write_text(manifest.replace('  guests/wan/wan.manifest', '  guests/wan/other'))
+        try:
+            targets(work, True)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('unsigned inventory accepted')
+        (work / 'guests.manifest').write_text('')
+        require(targets(work, True) == [], 'host-only release')
+
+
+def report(work, release, guests, snapshot, branch, minirootfs, exception_file, gate=False):
     actions, unknown = [], []
+    allowed = exceptions(Path(exception_file))
+    selected = targets(release, gate)
 
     def section(name, checks):
         print(f'{name}:')
@@ -223,6 +397,13 @@ def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
         for target, check in checks:
             try:
                 for detail in check():
+                    if isinstance(detail, (list, tuple)):
+                        package, advisory, detail = detail
+                        reason = allowed.get((target, package, advisory))
+                        if reason:
+                            print(f'  EXCEPTED: {target} {package} {advisory}: {reason}')
+                            continue
+                        detail += '; ' + advisory
                     items.append(f'{target}: {detail}')
                     if target not in actions:
                         actions.append(target)
@@ -264,7 +445,8 @@ def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
             yield f'installed {versions[0]}; fixed 6.18.{max(latest)}; {behind} releases behind'
 
     def firewall(machine):
-        text = source('errata.html')
+        openbsd = firewall_version(guests)
+        text = source(f'errata-{openbsd}.html')
         require(re.search(r'OpenBSD\s+' + re.escape(openbsd) + r'\s+Errata', text, re.I),
                 'wrong/unrecognized OpenBSD errata page')
         ids = set(re.findall(r'/([0-9]{3}_[a-zA-Z0-9_]+)\.patch(?:\.sig)?', text))
@@ -272,38 +454,31 @@ def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
         applied = set((guests / 'fw' / f'{machine}.syspatch').read_text().split())
         require(all(re.fullmatch(r'[0-9]{3}_[a-zA-Z0-9_]+', item) for item in applied),
                 f'{machine}: invalid syspatch list')
-        # syspatch applied every erratum for the installed sets (no X), so only newer ones can be missing.
-        newest = max((int(item[:3]) for item in applied), default=0)
-        # The firewalls install no X sets (install.conf: -x*), so X errata never apply.
-        missing = sorted(i for i in ids - applied if int(i[:3]) > newest
-                         and not re.search(r'_(xserver|xorg|xenocara|libx|mesa)', i, re.I))
-        if missing:
-            yield f'{machine} OpenBSD {openbsd}; missing fixes ' + ', '.join(missing)
+        for missing in sorted(ids - applied):
+            yield ('base', f'OPENBSD-{openbsd}-{missing}', f'OpenBSD {openbsd}; missing fix {missing}')
 
     def alpine(guest):
-        if guest == 'wan':
-            packages = wan_packages((guests / 'wan/wan.manifest').read_text())
-        else:
-            with tarfile.open(guests / guest / 'rootfs.tar.gz', 'r:gz') as archive:
-                members = [member for member in archive
-                           if member.name.removeprefix('./') == 'lib/apk/db/installed']
-                require(len(members) == 1 and members[0].isfile(), 'missing/ambiguous apk database')
-                packages = installed_apk(archive.extractfile(members[0]).read().decode())
+        guest_branch, packages = alpine_inventory(guests, guest)
         errors = []
         for repository in ('main', 'community'):
             try:
-                database = json.loads(source(repository + '.json'))
-                require(database['distroversion'] == branch, f'{repository}: wrong secdb branch')
-                require(isinstance(database['packages'], list), f'{repository}: invalid secdb packages')
+                database = json.loads(source(f'{repository}-{guest_branch}.json'))
+                require(database['distroversion'] == guest_branch, f'{repository}: wrong secdb branch')
+                require(isinstance(database['packages'], list) and database['packages'],
+                        f'{repository}: empty/invalid secdb packages')
                 for entry in database['packages']:
                     package = entry['pkg']
+                    relevant = [(name, version, origin) for name, version, origin in packages
+                                if package['name'] in (name, origin)]
+                    if not relevant:
+                        continue
                     for fixed, ids in package['secfixes'].items():
-                        # secdb carries a few malformed entries; one must not void the whole check.
-                        if not isinstance(ids, list) or not ids or not re.fullmatch(apk_pattern, fixed):
-                            continue
-                        for name, version, origin in packages:
-                            if package['name'] in (name, origin) and apk_cmp(version, fixed) < 0:
-                                yield f'{name} installed {version}; fixed {fixed}; ' + ', '.join(ids)
+                        require(isinstance(ids, list) and ids and all(isinstance(i, str) and i.strip() for i in ids)
+                                and re.fullmatch(apk_pattern, fixed), f'{package["name"]}: malformed secfix')
+                        for name, version, origin in relevant:
+                            if apk_cmp(version, fixed) < 0:
+                                for advisory in ids:
+                                    yield (origin, advisory, f'{name} installed {version}; fixed {fixed}')
             except Exception as error:
                 errors.append(f'{repository}: {error}')
         require(not errors, '; '.join(errors))
@@ -329,10 +504,12 @@ def report(work, release, guests, snapshot, branch, minirootfs, openbsd):
             yield f'Alpine minirootfs installed {match[1]}; fixed {latest}; refresh pin'
 
     section('host', [('host', host)])
-    section('kernel', [('kernel', kernel)])
-    section('firewalls', [('fw', lambda: firewall('fw1')), ('fw', lambda: firewall('fw2'))])
-    section('Alpine guests', [(guest, lambda guest=guest: alpine(guest)) for guest in ('svc', 'browser', 'wan')])
-    section('pins', [('host', snapshot_age), ('guests', alpine_pin)])
+    if 'fw' in selected:
+        section('firewalls', [(machine, lambda machine=machine: firewall(machine)) for machine in ('fw1', 'fw2')])
+    section('Alpine guests', [(guest, lambda guest=guest: alpine(guest)) for guest in selected if guest != 'fw'])
+    if not gate:
+        section('kernel', [('kernel', kernel)])
+        section('pins', [('host', snapshot_age), ('guests', alpine_pin)])
     summary = 'rebuild ' + ', '.join(actions) if actions else 'unknown' if unknown else 'nothing to rebuild'
     if unknown:
         summary += '; UNKNOWN: ' + ', '.join(unknown)
@@ -350,8 +527,15 @@ elif mode == 'host':
     except Exception as error:
         result = ([], [str(error)])
     print(json.dumps(result))
+elif mode == 'sources':
+    for name, url in sources(Path(args[1]), targets(args[0], args[2] == 'gate')).items():
+        print(name, url)
 else:
-    sys.exit(report(Path(args[0]), args[1], Path(args[2]), *args[3:]))
+    try:
+        sys.exit(report(Path(args[0]), args[1], Path(args[2]), *args[3:-1], gate=args[-1] == 'gate'))
+    except Exception as error:
+        print(f'advisories: UNKNOWN: {error}', file=sys.stderr)
+        sys.exit(2)
 PY
 }
 
@@ -360,11 +544,16 @@ if [ "${1:-}" = --selftest ]; then
 	python_run python3 - --selftest
 	exit
 fi
+mode=report
+if [ "${1:-}" = --gate ]; then
+	mode=gate
+	shift
+	[ "$#" = 1 ] || die "usage: build/advisories --gate <release-dir>"
+fi
 [ "$#" -le 2 ] || die "usage: build/advisories [release-dir] [guests-dir]"
 [ "$(id -u)" = 0 ] || die "run as root"
 command -v python3 >/dev/null || die "python3 is required"
 . "$repo/guests/alpine.conf"
-. "$repo/guests/fw/pins"
 
 release=${1:-}
 if [ -z "$release" ]; then
@@ -374,6 +563,9 @@ if [ -z "$release" ]; then
 	done
 fi
 guests=${2:-$BUILDER/stick/guests}
+[ "$mode" != gate ] || guests=$release/guests
+[ -f "$release/manifest" ] || die "no release manifest"
+[ -s "$release/packages" ] || die "no package inventory in $release; rebuild the host image"
 cache=/var/cache/convergent/advisories
 mkdir -p "$cache"
 work=$(mktemp -d "$cache/.run.XXXXXX")
@@ -388,7 +580,7 @@ trap cleanup 0
 trap 'exit 2' HUP INT TERM
 
 fetch() {
-	if curl -fsSL --max-time 60 "$2" -o "$work/$1.part"; then
+	if curl -q -fsSL --proto =https --proto-redir =https --max-time 60 "$2" -o "$work/$1.part"; then
 		mv "$work/$1.part" "$cache/$1"
 		cp "$cache/$1" "$work/$1"
 	else
@@ -396,6 +588,9 @@ fetch() {
 		: > "$work/$1.failed"
 	fi
 }
+
+python_run python3 - sources "$release" "$guests" "$mode" >"$work/sources" || die "invalid release inventories"
+while read -r name url; do fetch "$name" "$url"; done <"$work/sources"
 
 # Publish a complete GLSA generation; a failed sync must not replace the last fetch.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")
@@ -408,7 +603,8 @@ if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$gl
 	# Pure Portage matching needs no proc/dev mounts and never queries the builder's VDB.
 	if inside=$(mktemp -d "$BUILDER/tmp/advisories.XXXXXX") &&
 		cp -R "$cache/glsa/." "$inside/" &&
-		python_run chroot "$BUILDER" /usr/bin/python3 - host /staging "${inside#"$BUILDER"}" > "$work/host.json"; then
+		cp "$release/packages" "$inside/manifest" &&
+		python_run chroot "$BUILDER" /usr/bin/python3 - host "${inside#"$BUILDER"}/manifest" "${inside#"$BUILDER"}" > "$work/host.json"; then
 		:
 	else
 		printf '%s\n' '[[], ["builder chroot/Portage check failed"]]' > "$work/host.json"
@@ -416,10 +612,9 @@ if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$gl
 else
 	printf '%s\n' '[[], ["GLSA HTTPS fetch failed"]]' > "$work/host.json"
 fi
-fetch kernel.json https://www.kernel.org/releases.json
-fetch errata.html "https://www.openbsd.org/errata$(echo "$OPENBSD_VERSION" | tr -d .).html"
 branch=v${ALPINE_BRANCH#v}
-fetch main.json "https://secdb.alpinelinux.org/$branch/main.json"
-fetch community.json "https://secdb.alpinelinux.org/$branch/community.json"
-fetch latest-releases.yaml "https://dl-cdn.alpinelinux.org/alpine/$branch/releases/x86_64/latest-releases.yaml"
-python_run python3 - report "$work" "$release" "$guests" "$SNAPSHOT_DATE" "$branch" "$MINIROOTFS" "$OPENBSD_VERSION"
+if [ "$mode" != gate ]; then
+	fetch kernel.json https://www.kernel.org/releases.json
+	fetch latest-releases.yaml "https://dl-cdn.alpinelinux.org/alpine/$branch/releases/x86_64/latest-releases.yaml"
+fi
+python_run python3 - report "$work" "$release" "$guests" "$SNAPSHOT_DATE" "$branch" "$MINIROOTFS" "$here/advisories.exceptions" "$mode"
