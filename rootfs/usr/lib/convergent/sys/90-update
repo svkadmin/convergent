@@ -8,7 +8,8 @@ usb	Write a release from USB [MOUNTPOINT|DEVICE]	root confirm'
 update_state() {
 	value=$(timeout -k 0.2 1 cat /proc/cmdline 2>/dev/null) || value=
 	release=$(printf '%s\n' "$value" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^convergent.release=/) {sub(/^[^=]*=/,"",$i); print $i; exit}}')
-	printf 'Release: %s\n' "${release:-unknown}"
+	version=$(cat /usr/lib/convergent/version 2>/dev/null) || version=
+	printf 'Release: %s (%s)\n' "${version:-${release:-unknown}}" "${release:-unknown}"
 }
 update_status() { noargs "$@"; page run sudo /usr/local/sbin/slot status; }
 # Opens the firewalls' update path while it runs: never part of status.

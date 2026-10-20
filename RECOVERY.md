@@ -121,9 +121,9 @@ when it is fixed.
 ## 3. Go back to the previous release by hand
 
 At power-on the boot menu shows for three seconds; press an arrow key to stop it. Each slot is
-an entry named `Gentoo Linux <release> (slot a)` or `(slot b)` (releases before 2026-10-18 show
-only `Gentoo Linux`: the top one is the default). Pick the other one. Works when: `sudo slot
-status` shows the other slot booted.
+an entry named `Gentoo Linux 0.1.0 (<release>, slot a)` or `slot b` (older releases omit the
+semantic version; releases before 2026-10-18 show only `Gentoo Linux`: the top one is the
+default). Pick the other one. Works when: `sudo slot status` shows the other slot booted.
 
 That slot uses its own `/var` from before the update, so changes made since are not in it. The
 guests are not rolled back: they stay as they are, and nothing stops this after a guest update
@@ -247,7 +247,9 @@ with `incus import`.
 
 ## 12. An online update fails
 
-First `sys update check`: it names the newest release and how old its signature is.
+First `sys update check`: it names the newest version (or release ID for older manifests)
+and how old its signature is. New installs use `beta/`; the temporary `bleeding-edge/` bridge
+delivers 0.1.0 to older laptops, which use `beta/` after reboot.
 `sys update install` stops with the reason. Running it again resumes the download.
 
 | Message | Do |

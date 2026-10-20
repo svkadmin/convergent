@@ -178,6 +178,8 @@ status() {
 	booted
 	esp_mount
 	state_mount ro
+	version=$(cat /usr/lib/convergent/version 2>/dev/null) || version=
+	echo "version ${version:-$release}"
 	echo "booted  $release  slot $slot"
 	for s in a b; do
 		u=$(ukis "$s")

@@ -441,9 +441,20 @@ The image keeps and checks FTDI, CP210x, PL2303, CH341 and CDC ACM drivers; Gent
 uses `dialout` for their device nodes. Files runs MC (internal editor, terminal-background
 skin via env.d); Notes runs Vim in `~/Documents/notes`. Both use foot.
 
+Branches and channels follow `dev` → `beta` → `stable`. Dev is unpublished work; beta is
+built, tested and published. Release candidates are git tags on beta (`v0.1.0-rc1`), not a
+channel. Stable is rebuilt from a candidate's exact commit with CHANNEL=stable and the offline key,
+then tested again: the update URL and trusted key belong to the verified root, so a channel
+is never switched by re-signing. Only beta builds carry the debug tool.
+
+`VERSION` in `build/build.conf` is bumped per release using semver: `0.1.0` here, with optional
+`-rcN`. `/usr/lib/convergent/version`, the per-slot `CONVERGENT_VERSION`, boot titles and the
+signed manifest carry it. The timestamp release ID remains in `IMAGE_VERSION`, artifact names
+and all A/B ordering and rollback checks.
+
 Releases are signed per channel with Ed25519 (OpenSSL): the image carries its channel's public
 key, and `slot write` takes only a manifest signed with it, unless `CONVERGENT_UNSIGNED=1` overrides
-the check. The `bleeding-edge` key lives on the
+the check. The `beta` key lives on the
 build host, so releases sign and publish unattended; it protects against a changed download or a
 stolen bucket token, not against a compromised build host. The `stable` key is an encrypted file on
 offline media, attached only to sign a release after the owner checked its manifest. Signatures
@@ -458,7 +469,7 @@ A release is built in these steps (the commands are in the README):
 3. Copy `rootfs/` from this repository over it.
 4. Use the staged kernel to build the initramfs, the EROFS image, the dm-verity tree and the
    UKIs.
-5. Write the manifest: release, kernel version, root hash, file hashes.
+5. Write the manifest: release ID, semantic version, kernel version, root hash, file hashes.
 6. Build the guest images, each with its own build: wan (Alpine), fw (OpenBSD), svc (Alpine),
    browser (Alpine).
 7. Sign the manifest with the channel key (`manifest.sig`); signing the UKIs for Secure Boot is

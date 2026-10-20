@@ -5,5 +5,5 @@ services	Show OpenRC services	'
 
 logs_state() { echo 'Host logs / OpenRC services'; }
 logs_host() { noargs "$@"; root_page /var/log/messages; }
-logs_debug() { noargs "$@"; [ -x /usr/local/sbin/debug ] || die 'sys debug is only in bleeding-edge releases'; run sudo /usr/local/sbin/debug; }
+logs_debug() { noargs "$@"; [ -x /usr/local/sbin/debug ] || die 'sys debug is only in beta builds'; run sudo /usr/local/sbin/debug; }
 logs_services() { noargs "$@"; page run rc-status -a; }

@@ -404,9 +404,9 @@ has a time limit, so the run cannot hang.
 and expiry, and asks before running it as root. It refuses expired or already-run requests,
 limits the run to five minutes and output to 8 MiB, and sends the output encrypted to the
 developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; its path
-is printed so you can read what was sent with `sudo cat`. Bleeding-edge releases only: a stable
-image does not carry it. A failed diagnostic reports its script exit status even when output
-reaches the cap; timeout reports 124 (137 if it needs a forced kill).
+is printed so you can read what was sent with `sudo cat`. Only `CHANNEL=beta` builds carry it;
+stable builds never do. A failed diagnostic reports its script exit status
+even when output reaches the cap; timeout reports 124 (137 if it needs a forced kill).
 Returned output is not authenticated: anyone holding the public request can upload a forgery.
 Compare it with the laptop's local copy at `/var/lib/convergent/debug/<id>.txt`.
 
@@ -428,7 +428,7 @@ separators:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
-WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 202610170000 good | NL | 0 1 0 | PORTAL
+WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 0.1.0 good | NL | 0 1 0 | PORTAL
 US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 ```
 
@@ -438,7 +438,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 | `RAM`, `SWP` | used/total GiB; RAM includes cache (`MemTotal - MemFree`) and subtracts what the guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
 | Topology | the uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
-| `rel` | booted release; grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
+| `rel` | booted semantic version (release ID on older images); grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted, `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
@@ -459,6 +459,11 @@ browser containers (grey at zero). Cron refreshes it every minute; older than th
 turns grey. The idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid lock still works.
 
 ## Releases and guests
+
+New installs use the `beta` update channel. `dev` is unpublished; `stable` is rebuilt from a
+candidate's exact commit with the offline key and tested again. Candidate tags such as `v0.1.0-rc1` are not channels.
+`sys update status` and `slot status` show the booted version and timestamp release ID;
+the checker and selftest reports include both. The timestamp still controls slot ordering.
 
 ```sh
 sys update                           # release slots; `sys update check` asks whether a newer one is published

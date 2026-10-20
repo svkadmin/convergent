@@ -140,6 +140,7 @@ case $release in '' | *[!0-9]*) die "the manifest names no release" ;; esac
 [ "${#release}" -le 16 ] || die "release number is too large"
 awk -v r="$release" '
 	$1 == "release" && NF == 2 && $2 == r { release++; next }
+	$1 == "version" && NF == 2 && $2 ~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[0-9]+)?$/ && ++version == 1 { next }
 	$1 == "kernel" && NF == 2 { kernel++; next }
 	$1 == "roothash" && NF == 2 && length($2) == 64 && $2 !~ /[^0-9a-f]/ { root++; next }
 	$1 == "size" && NF == 3 && $3 ~ /^[1-9][0-9]*$/ && ($2 == "slot.img" || $2 == "convergent-" r "-a.efi" || $2 == "convergent-" r "-b.efi") && ++sized[$2] == 1 { next }

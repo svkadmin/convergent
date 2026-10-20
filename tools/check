@@ -165,6 +165,8 @@ manifest=$baseline/manifest
 [ "${1:-}" != accept ] || manifest=$2/manifest
 slot status >"$work/slot" 2>>"$work/report" || bad 'slot status failed'
 release=$(cat /usr/lib/convergent/release)
+version=$(cat /usr/lib/convergent/version 2>/dev/null) || version=
+printf 'Release: %s (%s)\n' "${version:-$release}" "$release" >>"$work/report"
 awk -v r="$release" '$1 == "booted" {b=($2 == r && $4 ~ /^[ab]$/); s=$4}
     $1 == "slot" {v[$2]=$3} END {exit !(b && v[s] == r)}' "$work/slot" || bad 'booted slot/release mismatch'
 [ "$(awk '$1 == "release" {print $2}' "$manifest" 2>/dev/null)" = "$release" ] || bad 'manifest release mismatch or missing manifest'

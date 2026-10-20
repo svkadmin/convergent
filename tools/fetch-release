@@ -121,7 +121,6 @@ if ! expr "$latest" '>' "$floor" >/dev/null; then
 	[ "$latest" = "$booted" ] || { echo "$uptodate"; exit 0; }
 	sync=1
 fi
-[ -n "$sync" ] || [ "$mode" = check ] || echo "release $latest ($signed_ago)"
 # Fail now, not after the download: a guest update holds this for up to half an hour.
 exec 8>/run/convergent/guests.lock
 flock -s -n 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
@@ -142,6 +141,9 @@ else
 fi
 verify "$dir/manifest" || { rm -rf "$dir"; die "the manifest signature does not verify"; }
 [ "$(field release "" "$dir/manifest")" = "$latest" ] || { rm -rf "$dir"; die "the manifest is not release $latest"; }
+version=$(field version "" "$dir/manifest") || version=
+available=${version:-$latest}
+[ -n "$sync" ] || [ "$mode" = check ] || echo "release $available ($latest; $signed_ago)"
 # Guests travel in a second signed file, which older releases' tools never read; none means none.
 gm=$dir/guests.manifest
 if [ ! -e /var/lib/convergent/guests/initialized ]; then
@@ -212,7 +214,7 @@ if [ "$mode" = check ]; then
 	if [ -n "$sync" ]; then
 		echo "release $booted is up to date, but its guests are not:$changed (sys update install fetches them)"
 	else
-		echo "release $latest is available (booted: $booted; $signed_ago)"
+		echo "release $available is available ($latest; booted: $booted; $signed_ago)"
 		[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
 	fi
 	exit 0

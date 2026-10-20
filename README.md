@@ -65,8 +65,10 @@ The full design is in [ARCHITECTURE.md](ARCHITECTURE.md).
 | Implemented, QEMU and laptop tests pending | standalone rescue entry independent of both slots; `build/test --rescue <release>` |
 | Not built | Secure Boot signing, including rescue (Secure Boot stays off) |
 
-Branches: `bleeding-edge` gets every change once the QEMU tests pass; `stable` follows only
-after a release has also run on the laptop. Releases are tags on `stable`.
+Branches and channels follow `dev` → `beta` → `stable`: `dev` is unpublished work;
+`beta` is built, tested and published; `stable` is rebuilt from a release candidate's exact commit
+with the stable channel and the offline key, and tested again. Release candidates are git tags on beta, such as `v0.1.0-rc1`, not a channel.
+The final release tag is `v0.1.0`.
 
 ## Install
 
@@ -219,6 +221,11 @@ build/packages          # compile or fetch the image's packages (--pretend to pr
 build/image             # the release, named by UTC time: YYYYMMDDHHMM
 ```
 
+Bump `VERSION` in `build/build.conf` per release using semantic versions (`0.1.0` for this
+release; `major.minor.patch`, optionally `-rcN`). The version appears in the image, boot menu,
+signed manifest and owner status. The timestamp release ID still names artifacts, orders the
+boot menu (`IMAGE_VERSION`) and drives A/B updates.
+
 The release lands in `/var/lib/convergent/builder/releases/<release>`. The guest images go into
 one directory, here `$g`:
 
@@ -241,16 +248,17 @@ prints the image's SHA-256. A disk image holds the owner's account: never publis
 
 ### Sign and publish
 
-Each channel (`CHANNEL` in `build/build.conf`: `bleeding-edge`, later `stable`) has an Ed25519
+Each published channel (`CHANNEL` in `build/build.conf`, default `beta`) has an Ed25519
 key pair in `/etc/convergent/keys/` on the build host. `build/image` builds `<channel>.pub` and the
 download URL into the image, and signs the manifest (`manifest.sig`) when `<channel>.key` is
-there. The stable key stays on offline media: `build/sign <release-dir> /media/offline/stable.key`
-asks for its passphrase. Make the keys once:
+there. `CHANNEL=stable` selects stable for signing and publishing. The stable key stays on
+offline media: `CHANNEL=stable build/sign <release-dir> /media/offline/stable.key` asks for
+its passphrase. Make the keys once:
 
 ```sh
 install -d -m 700 /etc/convergent/keys && cd /etc/convergent/keys
-openssl genpkey -algorithm ed25519 -out bleeding-edge.key
-openssl pkey -in bleeding-edge.key -pubout -out bleeding-edge.pub
+openssl genpkey -algorithm ed25519 -out beta.key
+openssl pkey -in beta.key -pubout -out beta.pub
 openssl genpkey -algorithm ed25519 -aes-256-cbc -out /media/offline/stable.key   # passphrase
 openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
 ```
@@ -267,6 +275,27 @@ at it (`build/sign` writes it). A
 mirror cannot forge the pointer, but can hold back newer releases by replaying an older signed one;
 `fetch-release` shows how old the signature is. Two releases per channel stay; it refuses to grow
 the bucket past about 9 GiB (R2's free tier is 10 GB).
+
+For the temporary 0.1.0 bridge, keep the existing bleeding-edge signing key as the beta key
+on the build host: `/etc/convergent/keys/beta.{key,pub}` must match
+`/etc/convergent/keys/bleeding-edge.{key,pub}`. Keep both
+`/etc/convergent/r2-beta.env` and `/etc/convergent/r2-bleeding-edge.env` pointing at the bucket.
+Publish the same signed directory and latest pointer twice, without re-signing:
+
+```sh
+build/publish <release-dir>
+CHANNEL=bleeding-edge build/publish <release-dir>
+```
+
+Existing laptops find it under `bleeding-edge/`; after booting this release, they use the
+embedded `beta/` URL. New installs also use `beta/`. Retire the bridge after those laptops
+have updated. Key/env migration is a separate build-host operation.
+
+To promote a candidate to stable, check out its tag and build it for the stable channel:
+`CHANNEL=stable` with the offline stable key, then the full test suite, then publish. The
+update URL and trusted key are part of the verified root, so an image cannot simply be
+re-signed for another channel; the stable build differs from the candidate only in its
+channel, its key and the absent debug tool.
 
 Before any upload or pruning, `build/publish` runs `build/advisories --gate <release-dir>`.
 It fetches current Gentoo GLSAs, [Alpine secdb](https://secdb.alpinelinux.org/) for each

@@ -3,7 +3,7 @@
 # <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
 # free tier is 10 GB). Only the five host files go up, and guests.manifest with its signature and
 # the guest files it lists; the bucket is public.
-#   build/publish <release-dir>
+#   CHANNEL=beta build/publish <release-dir>      override the build.conf default
 set -eu
 export LC_ALL=C
 umask 077
@@ -12,9 +12,10 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 cap=$((9 * 1024 * 1024 * 1024))
 keep=2
+die() { echo "publish: $*" >&2; exit 1; }
+case $CHANNEL in '' | *[!a-z0-9-]*) die "invalid channel: $CHANNEL" ;; dev) die "dev is unpublished" ;; esac
 pub=/etc/convergent/keys/$CHANNEL.pub
 env=/etc/convergent/r2-$CHANNEL.env
-die() { echo "publish: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 [ $# = 1 ] || die "usage: build/publish <release-dir>"
 dir=$1

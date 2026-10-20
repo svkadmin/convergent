@@ -12,6 +12,9 @@ repo=${here%/build}
 . "$here/chroot.sh"
 
 die() { echo "image: $*" >&2; exit 1; }
+printf '%s\n' "$VERSION" | awk '
+	NR != 1 || $0 !~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[0-9]+)?$/ { exit 1 }
+' || die "VERSION must be semver (major.minor.patch, optionally -rcN): $VERSION"
 input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
 cfg() { sh "$repo/tools/config-get" "$input" "$1"; }
 hostname=$(cfg hostname)
@@ -95,8 +98,8 @@ for file in etc/cron.d/convergent etc/anacrontab etc/cron.d/0hourly; do
 done
 # The tools of ARCHITECTURE section 12.
 install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
-# The signed debug channel is for bleeding-edge testing only; stable never carries it.
-[ "$CHANNEL" = bleeding-edge ] || rm -f "$root/usr/local/sbin/debug"
+# Only beta builds carry the signed debug tool.
+[ "$CHANNEL" = beta ] || rm -f "$root/usr/local/sbin/debug"
 install -m 0755 "$repo/install/install" "$root/usr/local/sbin/convergent-install"   # not "install": coreutils
 install -m 0644 "$repo/install/options.sh" "$root/usr/lib/convergent/install-options.sh"
 chmod 0755 "$root"/etc/init.d/convergent-* "$root"/usr/lib/convergent/health.d/*
@@ -222,6 +225,7 @@ find "$gccdir" -maxdepth 1 \( -name 'libgfortran*' -o -name 'libquadmath*' -o -n
 	edk2-i386-secure-code.fd skiboot.lid openbios-* slof.bin hppa-* u-boot* opensbi-* palcode-* s390-* pnv-* \
 	vof* npcm* ast27x0* QEMU,* qemu_vga.ndrv dtb)
 printf '%s\n' "$release" >"$root/usr/lib/convergent/release"
+printf '%s\n' "$VERSION" >"$root/usr/lib/convergent/version"
 # Mount points the initramfs needs: the image is read-only once made.
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/home" "$root/tmp" "$root/var" "$root/srv"
 # The audit watches need their directories before the first guests init, check or dns-push.
@@ -456,13 +460,13 @@ for slot in a b; do
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
-	# The stock name plus release and slot: the boot menu tells the two slots apart.
+	# The stock name plus version, release and slot.
 	name=$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
 	# IMAGE_VERSION orders the boot menu by release, whatever Gentoo's VERSION_ID does.
 	{
-		sed "/^IMAGE_\(ID\|VERSION\)=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $release (slot $slot)\"/" \
+		sed "/^IMAGE_\(ID\|VERSION\)=/d; /^CONVERGENT_VERSION=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $VERSION ($release, slot $slot)\"/" \
 			"$root/usr/lib/os-release"
-		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\n' "$release"
+		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\nCONVERGENT_VERSION=%s\n' "$release" "$VERSION"
 	} >"$out/os-release-$slot"
 	profiles=$(bld mktemp -d /tmp/convergent-profile.XXXXXX)
 	sed 's/ init=/ convergent.recovery=1 init=/' "$out/cmdline-$slot" >"$BUILDER$profiles/cmdline"
@@ -483,6 +487,7 @@ done
 # 6. The manifest: what the release is made of.
 {
 	echo "release $release"
+	echo "version $VERSION"
 	echo "kernel $kver"
 	echo "roothash $roothash"
 	sha256sum "$out/slot.img" "$out"/convergent-*.efi | sed "s|$out/||"

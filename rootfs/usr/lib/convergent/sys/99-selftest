@@ -27,8 +27,8 @@ selftest_run() (
 		selftest_log "$verdict $1: $detail"
 	}
 	check release 20 <<'CHECK'
-s=$(sudo -n /usr/local/sbin/slot status); printf '%s\n' "$s" | awk '$1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "slot" {release[$2]=$3; status[$2]=$4}
-END {ok=r ~ /^[0-9]+$/ && r == g && release[s] == r && status[s] == "good"; print "booted " r " slot " s ": " (ok ? "good" : "not marked good"); exit !ok}'
+s=$(sudo -n /usr/local/sbin/slot status); printf '%s\n' "$s" | awk '$1 == "version" {v=$2} $1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "slot" {release[$2]=$3; status[$2]=$4}
+END {ok=r ~ /^[0-9]+$/ && r == g && release[s] == r && status[s] == "good"; print "booted " (v == "" ? r : v) " (" r ") slot " s ": " (ok ? "good" : "not marked good"); exit !ok}'
 CHECK
 	check verity 10 <<'CHECK'
 s=$(sudo -n dmsetup status vroot); l=$(cat /sys/kernel/security/lockdown); printf '%s; lockdown %s\n' "$s" "$l"

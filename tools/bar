@@ -50,6 +50,9 @@ for word in $cmdline; do
 	case $word in convergent.release=*) release=${word#*=} ;; esac
 done
 
+version=$(cat /usr/lib/convergent/version 2>/dev/null) || version=
+release=${version:-$release}
+
 # Failed requests or unhealthy rules leave the count unknown.
 poll_alerts() {
     alerts=$(curl -sf --connect-timeout 2 -m 4 "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules?type=alert" |
