@@ -698,12 +698,75 @@ EOF
 	close_state
 }
 
-# The session's pieces without a display: what sway, the bar and sys need, checked as root by cron.
+# The session's pieces with a headless display, checked as root by cron.
 inject_desktop() {
 	open_state rw
 	var="$state/var-$release"
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release" "$var/spool/cron/crontabs"
+	cat >"$var/lib/convergent/test-release/desktop-sockets" <<'EOF'
+#!/bin/sh
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+uid=$(id -u nobody)
+gid=$(id -g nobody)
+runtime=/run/user/$uid
+run=/run/convergent/browser/tmp-20
+display=$runtime/wayland-1 ipc=
+children=
+die() { echo "desktop-sockets: $*" >&2; exit 1; }
+cleanup() {
+	result=$?
+	trap - 0
+	trap '' HUP INT TERM
+	set +e
+	for child in $children; do kill "$child" 2>/dev/null; done
+	for child in $children; do wait "$child" 2>/dev/null; done
+	[ "$result" = 0 ] || tail -n 15 "$run"/*.log
+	rm -rf "$run" "$runtime"
+	exit "$result"
+}
+[ ! -e "$run" ] && [ ! -e "$runtime" ] || die 'test session paths are already in use'
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+install -d -m 0711 /run/convergent/browser
+install -d -o "$uid" -g "$gid" -m 0700 "$runtime"
+install -d -o root -g "$gid" -m 0750 "$run"
+install -d -o root -g "$gid" -m 0730 "$run/sockets"
+install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
+# Exercise the launcher's owner environment, socket wait and generated Pulse config.
+awk '
+	/^owner\(\) \{|^wait_socket\(\) \{/ {copy=1; end="}"; n++}
+	/^cat >"\$run\/pulse.conf" <<EOF$/ {copy=1; end="EOF"; n++}
+	copy {print}
+	$0 == end {copy=0}
+	END {exit (copy || n != 3)}
+' /usr/local/sbin/browser >"$run/helpers"
+. "$run/helpers"
+echo 'output HEADLESS-1 mode 640x480' >"$run/sway.conf"
+chmod 0644 "$run/sway.conf" "$run/pulse.conf"
+background=yes owner env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
+	sway -c "$run/sway.conf" >"$run/sway.log" 2>&1 &
+compositor=$!; children="$children $compositor"
+wait_socket "$display" "$compositor" "$run/sway.log"
+background=yes owner pipewire >"$run/pipewire.log" 2>&1 &
+server=$!; children="$children $server"
+wait_socket "$runtime/pipewire-0" "$server" "$run/pipewire.log"
+background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
+wayland=$!; children="$children $wayland"
+wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
+grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current"
+# A client round-trip through the restricted socket, not just a socket inode.
+owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" timeout 10 \
+	foot -e /bin/true >"$run/client.log" 2>&1
+background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
+	pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+audio=$!; children="$children $audio"
+wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
+grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current"
+# Pulse clients are in the browser guests; this mode checks the listener and its confinement.
+kill -0 "$wayland" "$audio"
+EOF
 	cat >"$var/lib/convergent/test-release/desktop" <<'EOF'
 # The session's PATH (profile.env), not cron's.
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -713,6 +776,30 @@ t() {
 	if "$@" >/tmp/smoke.out 2>&1; then echo "CV-DESKTOP ok: $*"
 	else echo "CV-DESKTOP FAIL: $*"; head -n 10 /tmp/smoke.out | sed 's/^/  /'; r=1; fi
 }
+confined() {
+	pids=$(pidof "$1") && [ -n "$pids" ] || return 1
+	for pid in $pids; do grep -qx "$1 ($2)" "/proc/$pid/attr/current" || return 1; done
+}
+t sh -c 'aa-status --json >/tmp/smoke-aa.json'
+# Desktop-facing profiles complain until the laptop runs clean; the rest enforce.
+for p in chronyd:enforce node_exporter:enforce bluetoothd:complain way-secure:complain pipewire-pulse:complain; do
+	t jq -e --arg p "${p%%:*}" --arg m "${p#*:}" '.profiles[$p] == $m' /tmp/smoke-aa.json
+done
+for d in chronyd:enforce node_exporter:enforce bluetoothd:complain; do t confined "${d%%:*}" "${d#*:}"; done
+t timeout 10 chronyc -n sources
+t timeout 10 chronyc tracking
+t sh -c 'mkdir -p /var/lib/node_exporter; echo "convergent_apparmor_smoke 1" >/var/lib/node_exporter/apparmor-smoke.prom; chmod 0644 /var/lib/node_exporter/apparmor-smoke.prom'
+t sh -c 'curl -qfsS --noproxy "*" --max-time 15 http://127.0.0.1:9100/metrics >/tmp/smoke-metrics'
+t rm -f /var/lib/node_exporter/apparmor-smoke.prom
+t grep -q '^node_cpu_seconds_total{' /tmp/smoke-metrics
+t grep -qx 'convergent_apparmor_smoke 1' /tmp/smoke-metrics
+t grep -qx 'node_textfile_scrape_error 0' /tmp/smoke-metrics
+for collector in cpu meminfo filesystem netdev stat time timex textfile sysctl; do
+	t grep -qx "node_scrape_collector_success{collector=\"$collector\"} 1" /tmp/smoke-metrics
+done
+# Works without a Bluetooth adapter in QEMU; pairing still needs hardware.
+t timeout 10 dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects
+t timeout -k 5 60 sh /var/lib/convergent/test-release/desktop-sockets
 for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
 	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet vim git; do t command -v "$p"; done
 t sh -c "! command -v nano"

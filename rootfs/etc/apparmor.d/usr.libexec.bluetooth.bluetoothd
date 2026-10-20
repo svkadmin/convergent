@@ -1,0 +1,33 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# complain until the laptop runs clean (denials show in sys security events); then enforce.
+profile bluetoothd /usr/{bin,sbin,libexec/bluetooth,lib/bluetooth,lib64/bluetooth}/bluetoothd flags=(complain) {
+  include <abstractions/base>
+  include <abstractions/dbus-strict>
+
+  capability net_admin,
+  capability net_raw,
+  # HCI management, L2CAP, RFCOMM and SCO for input and audio.
+  network bluetooth raw,
+  network bluetooth seqpacket,
+  network bluetooth stream,
+  network netlink raw,
+
+  dbus bind bus=system name=org.bluez,
+  dbus (send, receive) bus=system interface=org.bluez.*,
+  dbus (send, receive) bus=system interface=org.freedesktop.DBus.{ObjectManager,Properties,Introspectable,Peer},
+  dbus send bus=system peer=(name=org.freedesktop.hostname1),
+
+  /usr/{bin,sbin,libexec/bluetooth,lib/bluetooth,lib64/bluetooth}/bluetoothd mr,
+  /etc/bluetooth/{,*.conf} r,
+  /etc/machine-info r,
+  /var/lib/bluetooth/ rw,
+  /var/lib/bluetooth/** rw,
+  /run/sdp rw,
+  /dev/rfkill rw,
+  /dev/uhid rw,
+  /sys/class/bluetooth/{,**} r,
+  /sys/devices/**/bluetooth/{,**} r,
+  /run/udev/data/{+bluetooth:*,c[0-9]*:[0-9]*} r,
+}

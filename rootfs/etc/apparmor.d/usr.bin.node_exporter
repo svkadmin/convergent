@@ -1,0 +1,24 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+profile node_exporter /usr/{bin,sbin}/node_exporter {
+  include <abstractions/base>
+
+  network inet stream,
+  network inet6 stream,
+  network netlink raw,
+
+  /usr/{bin,sbin}/node_exporter mr,
+  /etc/{os-release,hostname} r,
+  /var/lib/node_exporter/ r,
+  /var/lib/node_exporter/*.prom r,
+  @{PROC}/ r,
+  @{PROC}/{buddyinfo,cgroups,cmdline,cpuinfo,crypto,diskstats,filesystems,interrupts,loadavg,mdstat,meminfo,schedstat,softirqs,stat,swaps,uptime,vmstat} r,
+  @{PROC}/{net,fs,pressure}/** r,
+  @{PROC}/sys/{fs,kernel,net,vm}/** r,
+  @{PROC}/1/mountinfo r,
+  owner @{PROC}/@{pid}/{stat,statm,status,limits,mountinfo} r,
+  @{PROC}/@{pid}/net/** r,
+  /sys/{,**} r,
+  /run/udev/data/{b,c}[0-9]*:[0-9]* r,
+}

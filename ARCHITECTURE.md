@@ -403,6 +403,18 @@ entries are an explicit list: `machine-id`, `passwd`, `shadow`, `group`, `gshado
 `/etc` entries and the guests' volumes are where an attacker could persist; the checker watches
 selected files there, not guest-volume contents.
 
+The image's `rootfs/etc/apparmor.d/` profiles confine chronyd, node_exporter, bluetoothd,
+way-secure and pipewire-pulse. chronyd and node_exporter enforce; bluetoothd, way-secure and
+pipewire-pulse complain (log, do not block) until real-hardware use shows no denials. Chronyd can adjust time and use the RTC and its
+NTS state; the exporter reads kernel metrics and its textfiles; BlueZ uses system D-Bus, Bluetooth
+sockets and pairing state. Browser helpers can use the owner's Wayland/PipeWire sockets and
+their named session sockets; Pulse also supports the owner's ordinary session server.
+`build/image` checks profile syntax. The boot AppArmor service loads them before default-runlevel
+daemons, caching under `/var/cache/apparmor` (never the read-only `/etc`); a new release drops
+the previous cache. `build/test --desktop` checks enforce labels, clock queries, a metrics scrape,
+BlueZ D-Bus and browser sockets under headless Sway. Bluetooth pairing and audio devices still
+need laptop testing.
+
 ---
 
 ## 6. Build and keys
