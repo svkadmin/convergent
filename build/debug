@@ -1,0 +1,119 @@
+#!/bin/sh
+# build/debug send <script-file> <purpose>   publish a signed diagnostic for 24 hours
+# build/debug fetch [id]                    decrypt output (last sent by default), then delete it
+set -eu
+export LC_ALL=C
+umask 077
+here=$(cd "$(dirname "$0")" && pwd)
+. "$here/build.conf"
+die() { echo "debug: $*" >&2; exit 1; }
+usage() { die "usage: build/debug send <script-file> <purpose> | fetch [id]"; }
+[ "$(id -u)" = 0 ] || die "run as root"
+case ${1:-} in
+send) [ $# = 3 ] || usage ;;
+fetch) [ $# -le 2 ] || usage ;;
+*) usage ;;
+esac
+env=/etc/convergent/r2-$CHANNEL.env
+[ -f "$env" ] || die "no $env"
+. "$env"
+ep=${R2_ENDPOINT:-https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com}/$R2_BUCKET
+keys=/etc/convergent/keys
+last=$BUILDER/debug-last
+s3() {
+	curl -q -sS --fail --proto =https --retry 3 --connect-timeout 15 --max-time 3600 --aws-sigv4 "aws:amz:auto:s3" -K - "$@" <<-EOF
+	user = "$R2_ACCESS_KEY_ID:$R2_SECRET_ACCESS_KEY"
+	EOF
+}
+# Serializes publication, recipient creation and the last-sent pointer.
+exec 9>/run/convergent-publish.lock
+flock -n 9 || die "another publish or debug operation is running"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' 0
+trap 'exit 1' HUP INT TERM
+
+case $1 in
+send)
+	[ -f "$2" ] || die "no script $2"
+	sh -n "$2" || die "script does not parse"
+	purpose=$3
+	[ "${#purpose}" -le 200 ] && [ -n "$purpose" ] &&
+		[ "$(printf '%s' "$purpose" | tr -cd ' -~')" = "$purpose" ] || die "purpose must be 1-200 printable characters"
+	id=$(openssl rand -hex 16)
+	now=$(date -u +%s)
+	expires=$((now + 86400))
+	mkdir -p "$keys"
+	if [ ! -e "$keys/debug.key" ] && [ ! -e "$keys/debug.crt" ]; then
+		openssl req -x509 -newkey rsa:3072 -nodes -days 36500 -subj /CN=convergent-debug \
+			-keyout "$tmp/debug.key" -out "$tmp/debug.crt" >/dev/null 2>&1 || die "recipient creation failed"
+		install -m 0600 "$tmp/debug.key" "$keys/debug.key"
+		install -m 0644 "$tmp/debug.crt" "$keys/debug.crt"
+	fi
+	[ -f "$keys/debug.key" ] && [ -f "$keys/debug.crt" ] || die "incomplete debug recipient in $keys"
+	chmod 0600 "$keys/debug.key"
+	# Check the reusable pair before publishing anything encrypted to it.
+	openssl pkey -in "$keys/debug.key" -pubout >"$tmp/key.pub"
+	openssl x509 -in "$keys/debug.crt" -pubkey -noout >"$tmp/cert.pub"
+	cmp -s "$tmp/key.pub" "$tmp/cert.pub" || die "debug recipient key and certificate differ"
+	export R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+	python3 - "$id" "$now" >"$tmp/url" <<'PY'
+import datetime
+import hashlib
+import hmac
+import os
+import re
+import sys
+from urllib.parse import quote, urlencode
+
+account, bucket, access, secret = (os.environ["R2_" + k] for k in
+                                   ("ACCOUNT_ID", "BUCKET", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"))
+if not re.fullmatch(r"[a-z0-9]{1,63}", account) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", bucket):
+    sys.exit("debug: invalid R2 account or bucket")
+host = account + ".r2.cloudflarestorage.com"
+path = "/" + bucket + "/debug-out/" + sys.argv[1]
+stamp = datetime.datetime.fromtimestamp(int(sys.argv[2]), datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+day = stamp[:8]
+scope = day + "/auto/s3/aws4_request"
+query = urlencode(sorted({
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Credential": access + "/" + scope,
+    "X-Amz-Date": stamp,
+    "X-Amz-Expires": "86400",
+    "X-Amz-SignedHeaders": "host",
+}.items()), quote_via=quote, safe="~")
+request = "\n".join(("PUT", path, query, "host:" + host + "\n", "host", "UNSIGNED-PAYLOAD"))
+message = "\n".join(("AWS4-HMAC-SHA256", stamp, scope, hashlib.sha256(request.encode()).hexdigest()))
+key = ("AWS4" + secret).encode()
+for part in (day, "auto", "s3", "aws4_request"):
+    key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+signature = hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
+print("https://" + host + path + "?" + query + "&X-Amz-Signature=" + signature)
+PY
+	{
+		printf '# convergent-debug %s %s\n# purpose: %s\n# upload: %s\n# cert-begin\n' "$id" "$expires" "$purpose" "$(cat "$tmp/url")"
+		sed 's/^/# /' "$keys/debug.crt"
+		printf '# cert-end\n'
+		cat "$2"
+	} >"$tmp/script"
+	[ "$(stat -c %s "$tmp/script")" -le 1048576 ] || die "diagnostic exceeds 1 MiB"
+	openssl pkeyutl -sign -inkey "$keys/$CHANNEL.key" -rawin -in "$tmp/script" -out "$tmp/script.sig"
+	openssl pkeyutl -verify -pubin -inkey "$keys/$CHANNEL.pub" -rawin -in "$tmp/script" -sigfile "$tmp/script.sig" >/dev/null ||
+		die "signature does not verify with the channel key"
+	for f in script.sig script; do
+		s3 -o /dev/null -H 'Cache-Control: no-store' -T "$tmp/$f" "$ep/$CHANNEL/debug/$f" || die "upload of $f failed"
+	done
+	mkdir -p "$BUILDER"
+	printf '%s\n' "$id" >"$last.new"
+	mv "$last.new" "$last"
+	printf 'debug: sent %s (expires %s)\n' "$id" "$expires"
+	;;
+fetch)
+	id=${2:-$(cat "$last")}
+	printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{32}$' || die "invalid diagnostic id"
+	s3 -o "$tmp/output.cms" "$ep/debug-out/$id" || die "cannot fetch output for $id"
+	openssl cms -decrypt -binary -inform DER -in "$tmp/output.cms" -recip "$keys/debug.crt" \
+		-inkey "$keys/debug.key" -out "$tmp/output" || die "output decryption failed"
+	cat "$tmp/output"
+	s3 -o /dev/null -X DELETE "$ep/debug-out/$id" || die "cannot delete output for $id"
+	;;
+esac

@@ -1,0 +1,83 @@
+#!/bin/sh
+# debug: run one signed diagnostic after consent, then send its encrypted output.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+. /usr/lib/convergent/update.sh
+state=/var/lib/convergent/debug
+tmp=
+die() { echo "debug: $*" >&2; exit 1; }
+cleanup() {
+	_rc=$?
+	trap - 0
+	trap '' HUP INT TERM
+	[ -z "$src_open" ] || close_src || { echo "debug: a firewall kept the update source open; it expires within 4 hours" >&2; _rc=1; }
+	[ -z "$tmp" ] || rm -rf "$tmp"
+	exit "$_rc"
+}
+
+[ "$(id -u)" = 0 ] || die "run as root"
+[ $# = 0 ] || die "usage: debug"
+[ -f /etc/convergent/update.conf ] && [ -f "$key" ] || die "this release has no online updates"
+. /etc/convergent/update.conf
+update_url
+lock_src
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+private "$state"
+tmp=$(mktemp -d "$state/.run.XXXXXX")
+open_src "$host"
+get --max-time 60 --max-filesize 1048576 -o "$tmp/script" "$url/debug/script" &&
+	get --max-time 60 --max-filesize 1024 -o "$tmp/script.sig" "$url/debug/script.sig" || die "diagnostic download failed"
+close_src || die "could not close the update source"
+verify "$tmp/script" || die "diagnostic is not signed with this image's key"
+
+# Fixed headers, never shell input. Nothing is read before signature verification.
+sed -n '1p' "$tmp/script" | grep -aEq '^# convergent-debug [0-9a-f]{32} [1-9][0-9]{0,11}$' || die "invalid diagnostic header"
+header=$(sed -n '1p' "$tmp/script")
+id=$(printf '%s\n' "$header" | cut -d' ' -f3)
+expires=${header##* }
+sed -n '2p' "$tmp/script" | grep -aEq '^# purpose: [ -~]{1,200}$' || die "invalid purpose"
+purpose=$(sed -n '2p' "$tmp/script")
+sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
+upload=$(sed -n '3p' "$tmp/script")
+upload=${upload#'# upload: '}
+awk '
+	NR < 4 {next}
+	NR == 4 {if ($0 != "# cert-begin") exit 1; next}
+	NR == 5 {if ($0 != "# -----BEGIN CERTIFICATE-----") exit 1; print substr($0, 3); next}
+	$0 == "# -----END CERTIFICATE-----" && n && !ended {ended=1; print substr($0, 3); next}
+	$0 == "# cert-end" && ended {done=1; exit}
+	{if (ended || $0 !~ /^# [A-Za-z0-9+\/=]+$/ || length($0) > 66) exit 1; n++; print substr($0, 3)}
+	END {if (!done) exit 1}
+' "$tmp/script" >"$tmp/cert" || die "invalid recipient certificate"
+openssl x509 -in "$tmp/cert" -noout >/dev/null 2>&1 || die "invalid recipient certificate"
+[ "$(date +%s)" -lt "$expires" ] || die "diagnostic has expired"
+[ ! -L "$state/ran" ] || die "ran is a symlink"
+if [ -e "$state/ran" ]; then
+	[ "$(stat -c '%u %a %F' "$state/ran")" = "0 600 regular file" ] || die "ran is not root's private file"
+	! grep -qxF "$id" "$state/ran" || die "diagnostic was already run"
+fi
+printf 'Purpose: %s\nExpires: %s\n' "${purpose#'# purpose: '}" "$(date -u -d "@$expires" '+%Y-%m-%d %H:%M:%S UTC')"
+printf 'Run as root? [y/N] ' >/dev/tty
+IFS= read -r answer </dev/tty || die "input cancelled"
+case $answer in y | Y) ;; *) exit 0 ;; esac
+[ "$(date +%s)" -lt "$expires" ] || die "diagnostic has expired"
+# Record before execution, including failed and interrupted runs.
+printf '%s\n' "$id" >>"$state/ran"
+sync "$state/ran"
+rc=0
+timeout -k 5 300 sh -c 'sh "$1" 2>&1 | head -c 8388608 >"$2"' sh "$tmp/script" "$tmp/output" </dev/null 9>&- || rc=$?
+mv "$tmp/output" "$state/$id.txt"
+chmod 0600 "$state/$id.txt"
+printf 'Local output: %s\n' "$state/$id.txt"
+[ "$rc" = 0 ] || printf 'Diagnostic stopped (exit %s).\n' "$rc"
+openssl cms -encrypt -binary -aes256 -outform DER -in "$state/$id.txt" -out "$tmp/output.cms" "$tmp/cert" ||
+	die "output encryption failed"
+host=${upload#https://}
+host=${host%%/*}
+open_src "$host"
+get --max-time 300 -o /dev/null -T "$tmp/output.cms" "$upload" || die "output upload failed; local output kept"
+close_src || die "could not close the upload source"
+echo "Encrypted output sent."

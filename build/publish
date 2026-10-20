@@ -85,6 +85,8 @@ overwritten=$(printf '%s\n' "$objects" | awk -v p="$CHANNEL/$release/" -v files=
 total=$((total - overwritten))
 olds=$(printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '
 	{ k = substr($0, index($0, " ") + 1) }
+	# Diagnostics are not releases, even under bucket pressure.
+	index(k, c "debug/") == 1 || index(k, "debug-out/") == 1 {next}
 	index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r) print p[1] }' | sort -u -n)
 n=$(printf '%s\n' $olds | grep -c . || :)
 # Oldest first, never the one latest points at.
