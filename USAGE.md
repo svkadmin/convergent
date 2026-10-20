@@ -335,7 +335,8 @@ has a time limit, so the run cannot hang.
 and expiry, and asks before running it as root. It refuses expired or already-run requests,
 limits the run to five minutes and output to 8 MiB, and sends the output encrypted to the
 developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; its path
-is printed so you can read what was sent with `sudo cat`.
+is printed so you can read what was sent with `sudo cat`. Bleeding-edge releases only: a stable
+image does not carry it.
 
 ## The bar
 
