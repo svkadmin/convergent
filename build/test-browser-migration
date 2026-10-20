@@ -9,7 +9,7 @@ ic() { incus --force-local --project default "$@"; }
 step=setup
 trap 'r=$?; [ "$r" = 0 ] || echo "CV-BROWSER migration FAIL: $step"; exit "$r"' 0
 
-for mode in normal interrupted; do
+for mode in normal interrupted detached renamed; do
 	step="$mode old layout"
 	for role in base tmp web admin portal; do
 		case $role in base|tmp) ;; *) ic profile create "browser-$role" ;; esac
@@ -28,11 +28,16 @@ for mode in normal interrupted; do
 		ic storage volume detach default "browser-$role-state" svc migration
 	done
 	step="$mode update"
-	if [ "$mode" = interrupted ]; then
+	if [ "$mode" != normal ]; then
 		# One fault in a writable copy; the resume uses the installed command.
-		sed '/^ *mv "\$work\/browser.rename" "\$state\/browser.rename"$/a\
-    kill -KILL "$$"
-' /usr/local/sbin/guests >"$release/guests-interrupt"
+		awk -v mode="$mode" '
+			{print}
+			(mode == "interrupted" && $0 == "        mv \"$work/browser.rename\" \"$state/browser.rename\"") ||
+			(mode == "detached" && $0 ~ /ic profile device remove "browser-\$role" state$/) ||
+			(mode == "renamed" && $0 ~ /ic storage volume rename default "browser-\$old-state" "browser-\$new-state"$/) {
+				print "    kill -KILL \"$$\""
+			}
+		' /usr/local/sbin/guests >"$release/guests-interrupt"
 		grep -q '^    kill -KILL "\$\$"$' "$release/guests-interrupt"
 		r=0
 		sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
@@ -41,8 +46,9 @@ for mode in normal interrupted; do
 			cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
 		done
 		[ -f "$state/profiles.before/browser-web.yaml" ]
-		ic list --format json | jq -e 'any(.[]; .name == "web") and any(.[]; .name == "admin")'
-		echo 'CV-BROWSER migration killed after rename journal'
+		case $mode in interrupted) first=web ;; *) first=def ;; esac
+		ic list --format json | jq -e --arg first "$first" 'any(.[]; .name == $first) and any(.[]; .name == "admin")'
+		echo "CV-BROWSER migration killed: $mode"
 	fi
 	/usr/local/sbin/guests update browser "$release/guests/browser"
 	step="$mode assertions"

@@ -445,6 +445,19 @@ browser_migrate() {
         if jq -e --arg n "browser-$old-state" 'any(.[]; .name == $n)' "$work/volumes" >/dev/null; then
             ! jq -e --arg n "browser-$new-state" 'any(.[]; .name == $n)' "$work/volumes" >/dev/null ||
                 die "both browser-$old-state and browser-$new-state exist"
+            # Incus rewrites profile sources before renaming the volume. Detach
+            # first so instance validation cannot look up the not-yet-existing name.
+            # Check both profiles for resumes after an instance/profile rename.
+            ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
+            if jq -e --arg n "$new" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null; then
+                if running "$new"; then stop_guest "$new"; fi
+            fi
+            ic profile list --format json >"$work/profiles"
+            for role in "$old" "$new"; do
+                if jq -e --arg p "browser-$role" 'any(.[]; .name == $p and .devices.state != null)' "$work/profiles" >/dev/null; then
+                    ic profile device remove "browser-$role" state
+                fi
+            done
             ic storage volume rename default "browser-$old-state" "browser-$new-state"
         fi
     done
