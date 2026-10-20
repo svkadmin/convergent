@@ -203,9 +203,11 @@ find "$root/usr/lib" "$root/usr/lib64" -name '*.a' -delete
 find "$gccdir" -maxdepth 1 \( -name '*.o' -o -name '*.la' \) -delete
 # Unused multilib and SPIR-V tools; the library check below backs this.
 (cd "$root" && rm -rf $IMAGE_DROP)
-# Adwaita for its cursors only: the stock-looking arrow and a real link hand; its icons go.
-find "$root/usr/share/icons/Adwaita" -mindepth 1 -maxdepth 1 ! -name cursors ! -name index.theme -exec rm -rf {} +
-[ -f "$root/usr/share/icons/Adwaita/cursors/left_ptr" ] || die "no Adwaita cursors in the image"
+# DMZ cursors (a stock-looking arrow and a real link hand) as plain data from the builder: their
+# package would bring X libraries into the image.
+mkdir -p "$root/usr/share/icons"
+for t in DMZ-Black DMZ-White; do cp -a "$BUILDER/usr/share/icons/$t" "$root/usr/share/icons/" || die "no $t cursors in the builder"; done
+[ -f "$root/usr/share/icons/DMZ-Black/cursors/left_ptr" ] || die "no DMZ-Black cursors in the image"
 # The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
 find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name 'cc' -o -name 'cpp' \
 	-o -name 'x86_64-pc-linux-gnu-*' \) -delete

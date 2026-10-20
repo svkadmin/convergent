@@ -50,4 +50,6 @@ else
 	# Remove packages no longer needed by the sets.
 	chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config \
 		emerge --root=/staging --depclean --quiet
+	# Cursor themes are data: built in the builder, copied into the image by build/image.
+	chroot "$BUILDER" env LC_ALL=C.UTF-8 emerge --noreplace --quiet-build=y x11-themes/vanilla-dmz-xcursors
 fi
