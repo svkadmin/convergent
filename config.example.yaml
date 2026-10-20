@@ -43,7 +43,7 @@ install:
   # 1%..100%: whole percentage of space after ESP, slots and GPT/alignment.
   # 32GiB..999999GiB: whole GiB. Percent/GiB sizes stay fixed after installation.
   # Must fit, leaving >=32 GiB state (>=12 GiB on build media) plus any state swap.
-  # On build/stick, sizes apply to the image; enlarge image_size for bounded state/swap.
+  # build/stick forces auto state; enlarge image_size to fit state swap.
   state_size: auto
   # none, zram:1GiB..zram:1024GiB, or state:1GiB..state:1024GiB.
   # zram is logical uncompressed capacity; state is a swapfile inside encrypted state.

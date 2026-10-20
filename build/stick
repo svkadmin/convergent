@@ -21,6 +21,21 @@ swap=$(cfg install.swap)
 [ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; auto state grows on first boot]"
 release=$1
 case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
+size=${4:-$default_size}
+case ${size%[KMGT]} in '' | *[!0-9]*) die "size must be bytes or an integer with K, M, G or T suffix" ;; esac
+size_bytes=$(awk -v size="$size" 'BEGIN {
+	unit = substr(size, length(size))
+	scale = index("KMGT", unit)
+	printf "%.0f\n", (size + 0) * 1024 ^ scale
+}')
+(
+	die() {
+		needed_mib=$((esp_mib + slot_mib * 2 + 4 + 12288 + swap_mib))
+		echo "stick: image size $size is too small for swap $swap; need at least ${needed_mib}M (or $(((needed_mib + 1023) / 1024))G)" >&2
+		exit 1
+	}
+	install_size "$size_bytes" 12288
+)
 [ -s "$BUILDER/releases/$release/slot.img" ] || die "no release $release; run build/image first"
 guests=$(cd "$2" && pwd -P) || die "no guests directory"
 for file in fw/fw1.qcow2 fw/fw2.qcow2 wan/wan.qcow2 wan/wan-metadata.tar.xz \
@@ -40,8 +55,6 @@ done
 outdir=$(cd "$(dirname "$3")" && pwd -P) || die "no output directory"
 out=$outdir/$(basename "$3")
 [ ! -e "$out" ] && [ ! -L "$out" ] || die "output already exists: $out"
-size=${4:-$default_size}
-case ${size%[KMGT]} in '' | *[!0-9]*) die "size must be bytes or an integer with K, M, G or T suffix" ;; esac
 owner=$(cfg owner_login)
 if ! grep -q '^owner_login *:' "$input" 2>/dev/null; then owner=; fi
 owner=${CONVERGENT_INSTALL_OWNER:-$owner}
