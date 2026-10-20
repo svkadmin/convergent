@@ -63,6 +63,8 @@ exec gentoo-pipewire-launcher
 exec sh -c 'while [ -S "$SWAYSOCK" ]; do timeout -k 1 2 wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 1 && break; sleep 1; done'
 # Stock look; an owner config in ~/.config/mako applies on its own.
 exec mako
+# Adwaita cursors: without a theme Sway falls back to bare built-in shapes (a blob for the link hand).
+seat * xcursor_theme Adwaita 24
 
 # The owner's settings: sys display save, keyboard set and touchpad set.
 input type:keyboard xkb_layout "us"
