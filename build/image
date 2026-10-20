@@ -277,6 +277,13 @@ rm -rf "$root"/usr/share/locale/*/ "$root"/usr/share/i18n
 chroot "$root" syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"
 chroot "$root" visudo -cq || die "sudoers does not parse"
 chroot "$root" openssl version >/dev/null || die "no openssl CLI in the image"
+# Compile without loading policy or caching the build host's kernel features.
+for policy in usr.sbin.chronyd usr.bin.node_exporter usr.libexec.bluetooth.bluetoothd usr.bin.way-secure usr.bin.pipewire-pulse; do
+	chroot "$root" apparmor_parser --skip-kernel-load --skip-cache "/etc/apparmor.d/$policy" ||
+		die "AppArmor profile does not parse: $policy"
+	[ ! -e "$root/etc/apparmor.d/disable/$policy" ] &&
+		[ ! -e "$root/etc/apparmor.d/force-complain/$policy" ] || die "AppArmor profile is disabled or in complain mode: $policy"
+done
 # Online updates: the channel's key and download URL. Without the key the image takes only
 # releases written with CONVERGENT_UNSIGNED=1.
 keys=/etc/convergent/keys

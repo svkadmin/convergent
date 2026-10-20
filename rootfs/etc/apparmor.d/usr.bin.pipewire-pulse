@@ -1,0 +1,36 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+@{browser} = /run/convergent/browser/{def,int,tmp-portal,tmp-[2-9][0-9]}
+
+# complain until the laptop runs clean (denials show in sys security events); then enforce.
+profile pipewire-pulse /usr/bin/pipewire-pulse flags=(attach_disconnected, complain) {
+  include <abstractions/base>
+  include <abstractions/dbus-strict>
+  include <abstractions/dbus-session-strict>
+
+  dbus bind bus=session name=org.pulseaudio.Server,
+  dbus send bus=system path=/org/freedesktop/RealtimeKit1
+    interface=org.freedesktop.{RealtimeKit1,DBus.Properties}
+    peer=(name=org.freedesktop.RealtimeKit1),
+
+  /usr/bin/pipewire-pulse mr,
+  /etc/{passwd,group,nsswitch.conf,machine-id} r,
+  /etc/pipewire/{,**} r,
+  /usr/share/pipewire/{,**} r,
+  owner @{HOME}/.config/pipewire/{,**} r,
+  @{browser}/pulse.conf r,
+  @{browser}/pulse.conf.d/{,*.conf} r,
+  @{browser}/pulse.log w,
+  owner /run/user/[0-9]*/pipewire-0 rw,
+  owner @{browser}/sockets/pulse-0 rw,
+  # gentoo-pipewire-launcher also starts the owner's ordinary Pulse server.
+  owner /run/user/[0-9]*/pulse/ rw,
+  owner /run/user/[0-9]*/pulse/{native,pid} rwk,
+  owner /run/user/[0-9]*/pipewire-0-manager{,.lock} rwk,
+  owner /dev/shm/pulse-shm-* rw,
+  owner /memfd:pipewire-memfd rw,
+  # Browser clients have an Incus-mapped uid.
+  /memfd:pulseaudio rw,
+  owner @{PROC}/@{pid}/fd/ r,
+}
