@@ -351,7 +351,7 @@ The reset finds uid 1000 in the state's passwd, hashes two matching password ent
 The watchdog is armed after leaving recovery. No network or daemon is started; `rd.shell=0`,
 `rd.emergency=poweroff`, lockdown, verity and the disabled boot editor stay in force.
 
-The normal title is unchanged, e.g. `Gentoo Linux <release> (slot a)`; recovery appends
+The normal title names version, kernel, release and slot, e.g. `Gentoo Linux 0.1.0, kernel 6.18.57 (<release>, slot a)`; recovery appends
 `(Recovery)`. Entry IDs are `convergent-<release>-a.efi` and
 `convergent-<release>-a.efi@recovery`, with boot counters stripped from both IDs.
 In systemd-boot 260.1, entries sort by descending IMAGE_VERSION and filename, then profiles

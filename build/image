@@ -464,7 +464,7 @@ for slot in a b; do
 	name=$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
 	# IMAGE_VERSION orders the boot menu by release, whatever Gentoo's VERSION_ID does.
 	{
-		sed "/^IMAGE_\(ID\|VERSION\)=/d; /^CONVERGENT_VERSION=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $VERSION ($release, slot $slot)\"/" \
+		sed "/^IMAGE_\(ID\|VERSION\)=/d; /^CONVERGENT_VERSION=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $VERSION, kernel ${kver%%-*} ($release, slot $slot)\"/" \
 			"$root/usr/lib/os-release"
 		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\nCONVERGENT_VERSION=%s\n' "$release" "$VERSION"
 	} >"$out/os-release-$slot"
