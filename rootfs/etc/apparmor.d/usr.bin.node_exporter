@@ -10,6 +10,7 @@ profile node_exporter /usr/{bin,sbin}/node_exporter {
 
   /usr/{bin,sbin}/node_exporter mr,
   /etc/{os-release,hostname} r,
+  /usr/lib/os-release r,
   /var/lib/node_exporter/ r,
   /var/lib/node_exporter/*.prom r,
   @{PROC}/ r,
@@ -17,7 +18,9 @@ profile node_exporter /usr/{bin,sbin}/node_exporter {
   @{PROC}/{net,fs,pressure}/** r,
   @{PROC}/sys/{fs,kernel,net,vm}/** r,
   @{PROC}/1/mountinfo r,
-  owner @{PROC}/@{pid}/{stat,statm,status,limits,mountinfo} r,
+  owner @{PROC}/@{pid}/{stat,statm,status,limits,mountinfo,cgroup} r,
+  # start-stop-daemon hands it this log as stdout and stderr.
+  /var/log/node_exporter/node_exporter.log w,
   @{PROC}/@{pid}/net/** r,
   /sys/{,**} r,
   /run/udev/data/{b,c}[0-9]*:[0-9]* r,

@@ -198,7 +198,7 @@ pulse.rules = [ { matches = [ { } ] actions = { quirks = [ block-record-stream b
 EOF
 chmod 644 "$run/pulse.conf"
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
-    pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+    /usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
 chmod 0710 "$run/sockets"

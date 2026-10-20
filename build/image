@@ -98,6 +98,10 @@ for file in etc/cron.d/convergent etc/anacrontab etc/cron.d/0hourly; do
 done
 # The tools of ARCHITECTURE section 12.
 install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
+# The browser's pulse proxy as a real file: AppArmor attaches by resolved path, and
+# /usr/bin/pipewire-pulse is only a symlink to the session's pipewire.
+install -D -m 0755 "$(readlink -f "$root/usr/bin/pipewire")" "$root/usr/libexec/convergent/pipewire-pulse"
+[ ! -L "$root/usr/libexec/convergent/pipewire-pulse" ] || die "pipewire-pulse proxy is a link"
 # Only beta builds carry the signed debug tool.
 [ "$CHANNEL" = beta ] || rm -f "$root/usr/local/sbin/debug"
 install -m 0755 "$repo/install/install" "$root/usr/local/sbin/convergent-install"   # not "install": coreutils

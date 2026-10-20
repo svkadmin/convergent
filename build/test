@@ -761,7 +761,7 @@ grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current"
 owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" timeout 10 \
 	foot -e /bin/true >"$run/client.log" 2>&1
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
-	pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+	/usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
 grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current"

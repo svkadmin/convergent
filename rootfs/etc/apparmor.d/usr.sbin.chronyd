@@ -34,6 +34,8 @@ profile chronyd /usr/{bin,sbin}/chronyd {
   /dev/ptp[0-9]* rw,
   /run/chrony/{,**} rw,
   /run/chronyd.pid rw,
+  # start-stop-daemon leaves the console on its fds; chronyd closes them.
+  deny /dev/console rw,
   /var/lib/chrony/{,**} rw,
   /var/log/chrony/{,**} rw,
   @{PROC}/@{pid}/{status,stat} r,
