@@ -356,8 +356,9 @@ after=$(ic config get svc volatile.base_image) || result=1
 restored=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || result=1
 [ "$after" = "$before" ] && [ "$restored" = "$service" ] || result=1
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || result=1
-# The host's facts now (their cron runs later), then two scrapes before the dashboard queries.
+# The host's facts and checker now (cron skipped the checker during guest work), then two scrapes.
 /usr/local/sbin/facts boot >/dev/null 2>&1 || result=1
+/usr/local/sbin/check auto >/dev/null 2>&1 || :
 sleep 65
 sh "$release/dashboard-check" "$release/dashboards" || {
     result=1
