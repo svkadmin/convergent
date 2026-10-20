@@ -288,7 +288,7 @@ for pair in DRM_I915:i915 BLK_DEV_DM:dm_mod DM_CRYPT:dm_crypt DM_VERITY:dm_verit
 	BLK_DEV_NVME:nvme VMD:vmd USB_XHCI_HCD:xhci_hcd USB_XHCI_PCI:xhci_pci USB_STORAGE:usb_storage USB_UAS:uas \
 	BLK_DEV_SD:sd_mod SERIO_I8042:i8042 KEYBOARD_ATKBD:atkbd HID_GENERIC:hid_generic USB_HID:usbhid \
 	VIRTIO_PCI:virtio_pci VIRTIO_BLK:virtio_blk SCSI_VIRTIO:virtio_scsi DRM_VIRTIO_GPU:virtio_gpu \
-	VIRTIO_CONSOLE:virtio_console VIRTIO_NET:virtio_net THUNDERBOLT:thunderbolt; do
+	VIRTIO_CONSOLE:virtio_console VIRTIO_NET:virtio_net USB4:thunderbolt; do
 	symbol=${pair%:*}
 	module=${pair#*:}
 	case $(sed -n "s/^CONFIG_$symbol=//p" "$config") in
