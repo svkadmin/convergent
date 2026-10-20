@@ -8,6 +8,20 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 # A just-restarted svc or a failover in progress drops a request now and then: three tries.
 curl() { for try in 1 2 3; do command curl "$@" && return 0; [ "$try" = 3 ] || sleep 5; done; return 1; }
+quote() {
+    printf '%s' "$1" | sed ':a
+$!{
+    N
+    ba
+}
+s/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
+}
+metric() { printf '%s' "$1" | base64 -d | sed 's/\$__rate_interval/2m/g; s/\$__interval/1m/g; s/${project:regex}/default/g; s/${name:regex}/svc/g'; }
+transfer() {
+    printf 'get\nnoproxy = "*"\nmax-time = 10\n'
+    printf 'data-urlencode = "query=%s"\nurl = "%s"\noutput = "%s"\n' \
+        "$(quote "$1")" "$(quote "$2")" "$(quote "$3")"
+}
 jq -r '.title as $d | .panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
     [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
@@ -15,14 +29,27 @@ jq -r '.title as $d | .panels[] | (.title | if . == "" then "(untitled)" else . 
 fail=0; count=0; empty=0
 while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
     count=$((count + 1))
-    expr=$(printf '%s' "$expr" | base64 -d | sed 's/\$__rate_interval/2m/g; s/\$__interval/1m/g; s/${project:regex}/default/g; s/${name:regex}/svc/g')
-    if ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
-        "$base/api/v1/query" >"$work/result" ||
-        ! jq -e '.status == "success" and (.data.result | type == "array")' "$work/result" >/dev/null; then
-        echo "dashboards: query error: $dashboard / $panel / $ref: $expr"
-        cat "$work/result"
-        fail=1
-    elif ! jq -e '.data.result | length > 0' "$work/result" >/dev/null; then
+    [ "$count" = 1 ] || printf 'next\n'
+    transfer "$(metric "$expr")" "$base/api/v1/query" "$work/r$count"
+done <"$work/targets" >"$work/metrics.cfg"
+command curl -qsS -K "$work/metrics.cfg" || :
+count=0
+while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
+    count=$((count + 1))
+    expr=$(metric "$expr")
+    result=$work/r$count
+    if [ ! -f "$result" ] ||
+        ! jq -e '.status == "success" and (.data.result | type == "array")' "$result" >/dev/null; then
+        if ! curl -qsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
+            "$base/api/v1/query" >"$result" ||
+            ! jq -e '.status == "success" and (.data.result | type == "array")' "$result" >/dev/null; then
+            echo "dashboards: query error: $dashboard / $panel / $ref: $expr"
+            cat "$result"
+            fail=1
+            continue
+        fi
+    fi
+    if ! jq -e '.data.result | length > 0' "$result" >/dev/null; then
         empty=$((empty + 1))
         echo "dashboards: empty ($optional): $dashboard / $panel / $ref: $expr"
         [ "$optional" != required ] || fail=1
@@ -36,12 +63,30 @@ while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
     logs=$((logs + 1))
     expr=$(printf '%s' "$expr" | base64 -d)
     endpoint=query; [ "$kind" != stats ] || endpoint=stats_query
-    if ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
+    [ "$logs" = 1 ] || printf 'next\n'
+    transfer "$expr" "$base/select/logsql/$endpoint" "$work/l$logs"
+    printf 'fail\ndata-urlencode = "start=1h"\ndata-urlencode = "end=now"\ndata-urlencode = "limit=1"\n'
+    # curl's final exit status only covers the last transfer.
+    printf 'write-out = "%%{exitcode}\\n"\n'
+done <"$work/logs" >"$work/logs.cfg"
+if [ "$logs" != 0 ]; then
+    command curl -qsS -K "$work/logs.cfg" >"$work/status" || :
+else
+    : >"$work/status"
+fi
+logs=0
+while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
+    logs=$((logs + 1))
+    expr=$(printf '%s' "$expr" | base64 -d)
+    endpoint=query; [ "$kind" != stats ] || endpoint=stats_query
+    read -r status <&3 || status=1
+    if { [ "$status" != 0 ] || [ ! -f "$work/l$logs" ]; } &&
+        ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
         --data-urlencode start=1h --data-urlencode end=now --data-urlencode limit=1 \
         "$base/select/logsql/$endpoint" >"$work/result"; then
         echo "dashboards: LogsQL error: $dashboard / $panel: $expr"
         fail=1
     fi
-done <"$work/logs"
+done <"$work/logs" 3<"$work/status"
 echo "dashboards: $count instant metric queries, $empty empty, $logs log queries, result=$fail"
 exit "$fail"
