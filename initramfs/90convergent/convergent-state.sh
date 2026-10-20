@@ -178,11 +178,13 @@ case $g in "" | *[!0-9]*) warn "state: no shadow group; the lock screen cannot c
 esac
 
 # pam_lastlog needs btmp even on an older release's /var.
+# A log nicety: it never stops the boot.
 g=$(awk -F: '$1 == "utmp" { print $3 }' "$NEWROOT/etc/group")
-case $g in "" | *[!0-9]*) die "state: no utmp group" ;; esac
-mkdir -p "$NEWROOT/var/log" &&
-	(umask 077; : >>"$NEWROOT/var/log/btmp") &&
-	chown "0:$g" "$NEWROOT/var/log/btmp" && chmod 0600 "$NEWROOT/var/log/btmp" ||
-	die "state: could not prepare /var/log/btmp"
+case $g in "" | *[!0-9]*) warn "state: no utmp group; /var/log/btmp skipped" ;; *)
+	mkdir -p "$NEWROOT/var/log" &&
+		(umask 077; : >>"$NEWROOT/var/log/btmp") &&
+		chown "0:$g" "$NEWROOT/var/log/btmp" && chmod 0600 "$NEWROOT/var/log/btmp" ||
+		warn "state: could not prepare /var/log/btmp" ;;
+esac
 
 umount "$state"
