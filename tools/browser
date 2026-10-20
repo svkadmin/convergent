@@ -230,4 +230,4 @@ while kill -0 "$browser" 2>/dev/null; do
     tick=$(( (tick + 1) % 5 ))
     sleep 2
 done
-wait "$browser"
+wait "$browser" || die "the $role browser exited with status $?"
