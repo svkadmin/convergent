@@ -1,15 +1,23 @@
 abi <abi/3.0>,
 include <tunables/global>
 
+# Close to Debian's chronyd profile: root starts it, it drops to the chrony user, and writes
+# into chrony-owned /run and /var directories (hence dac_override and fowner).
 profile chronyd /usr/{bin,sbin}/chronyd {
   include <abstractions/base>
   include <abstractions/nameservice>
   include <abstractions/ssl_certs>
 
   capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability fsetid,
   capability setuid,
   capability setgid,
   capability net_bind_service,
+  capability sys_nice,
+  capability sys_resource,
   capability sys_time,
 
   network inet dgram,
@@ -17,13 +25,17 @@ profile chronyd /usr/{bin,sbin}/chronyd {
   # NTS key exchange.
   network inet stream,
   network inet6 stream,
+  network unix dgram,
 
   /usr/{bin,sbin}/chronyd mr,
-  /etc/chrony/chrony.{conf,keys} r,
+  /etc/chrony/{,**} r,
+  /usr/share/zoneinfo/{,**} r,
   /dev/rtc{,[0-9]*} rw,
-  /run/chrony/ rw,
-  /run/chrony/chronyd.{pid,sock} rw,
+  /dev/ptp[0-9]* rw,
+  /run/chrony/{,**} rw,
   /run/chronyd.pid rw,
-  /var/lib/chrony/ rw,
-  /var/lib/chrony/{drift,*.nts,*.tmp,ntskeys} rw,
+  /var/lib/chrony/{,**} rw,
+  /var/log/chrony/{,**} rw,
+  @{PROC}/@{pid}/{status,stat} r,
+  /sys/devices/system/clocksource/clocksource[0-9]*/current_clocksource r,
 }
