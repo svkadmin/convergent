@@ -136,8 +136,8 @@ pkill -x dhcpleased
 mv /etc/resolv.conf.syspatch /etc/resolv.conf
 rm -f /var/db/dhcpleased/em0 /etc/rc.firsttime /etc/rc.firsttime.run
 rm -f /etc/ssh/ssh_host_* /etc/isakmpd/private/local.key /etc/iked/private/local.key /etc/soii.key
-# Patch inventory stays; rollback archives do not travel with the image.
-rm -f /var/syspatch/*/rollback.tgz
+# Rollback archives do not travel with the image; syspatch -l counts patches by these files, so they stay empty.
+for f in /var/syspatch/*/rollback.tgz; do [ ! -f "$f" ] || : >"$f"; done
 # Every mounted install filesystem, including the auto layout's separate /usr trees.
 filesystems=$(mount -t ffs)
 [ -n "$filesystems" ]
