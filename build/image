@@ -396,8 +396,10 @@ bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sy
 printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
 	" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off quiet" \
 	" vfio-pci.ids=$VFIO_IDS" >"$BUILDER$profiles/cmdline"
-printf 'ID=convergent\nIMAGE_ID=zz-convergent-rescue\nIMAGE_VERSION=%s\nPRETTY_NAME="Convergent rescue (%s)"\n' \
-	"$release" "$release" >"$BUILDER$profiles/os-release"
+# Boot menu titles such as "SLOT A | Gentoo 0.1.0 - 6.18.57"; IMAGE_VERSION (the release id) orders them.
+osname=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
+printf 'ID=convergent\nIMAGE_ID=zz-convergent-rescue\nIMAGE_VERSION=%s\nPRETTY_NAME="RESCUE | %s %s - %s"\n' \
+	"$release" "${osname:-Linux}" "$VERSION" "${kver%%-*}" >"$BUILDER$profiles/os-release"
 bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$profiles/initramfs.img" \
 	--cmdline "@$profiles/cmdline" --os-release "@$profiles/os-release" --uname "$kver" \
 	--output /image-root/usr/lib/convergent/rescue.efi >/dev/null
@@ -460,11 +462,9 @@ for slot in a b; do
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
-	# The stock name plus version, release and slot.
-	name=$(sed -n "s/^PRETTY_NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
 	# IMAGE_VERSION orders the boot menu by release, whatever Gentoo's VERSION_ID does.
 	{
-		sed "/^IMAGE_\(ID\|VERSION\)=/d; /^CONVERGENT_VERSION=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"${name:-Linux} $VERSION, kernel ${kver%%-*} ($release, slot $slot)\"/" \
+		sed "/^IMAGE_\(ID\|VERSION\)=/d; /^CONVERGENT_VERSION=/d; s/^PRETTY_NAME=.*/PRETTY_NAME=\"SLOT $(echo "$slot" | tr a-z A-Z) | ${osname:-Linux} $VERSION - ${kver%%-*}\"/" \
 			"$root/usr/lib/os-release"
 		printf 'IMAGE_ID=convergent\nIMAGE_VERSION=%s\nCONVERGENT_VERSION=%s\n' "$release" "$VERSION"
 	} >"$out/os-release-$slot"
