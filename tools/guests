@@ -754,6 +754,8 @@ init() {
 }
 update() {
     step="update $1"
+    [ "$1" != fw ] || [ ! -e /var/lib/convergent/firewall-maintenance ] ||
+        die 'firewall maintenance is active; end it with sys firewall undo first'
     logger -t guests "update $1 started: $2" 2>/dev/null || :
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'

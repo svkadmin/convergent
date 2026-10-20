@@ -93,7 +93,8 @@ secret() {
 		IFS= read -r pass <&3 || [ -n "$pass" ] || die "missing $1 on stdin"
 		if [ -n "$tty_mode" ]; then run stty "$tty_mode" <&3; printf '\n' >&2; fi
 		case $pass in *"$cr"*) die "the $1 has a carriage return (a Windows line ending)" ;; esac
-		[ "${#pass}" -ge 12 ] || die "use at least 12 characters"
+		[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
+		[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
 		return
 	fi
 	run stty -echo <&3
@@ -107,7 +108,8 @@ Repeat $1: "
 	printf '\n' >&3
 	[ "$pass" = "$again" ] || die "the two entries differ"
 	case $pass in *"$cr"*) die "the $1 has a carriage return" ;; esac
-	[ "${#pass}" -ge 12 ] || die "use at least 12 characters"
+	[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
+	[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
 	again=
 }
 cr=$(printf '\r')

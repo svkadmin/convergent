@@ -105,7 +105,7 @@ else
 		get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot reach $host"; }
 	verify "$pointer/latest" || { rm -rf "$pointer"; die "latest is not signed with this image's key"; }
 	latest=$(field release "" "$pointer/latest") && signed=$(field signed "" "$pointer/latest") || latest=
-	# Which guests.manifest the release has, or none; latests before update 8 do not say.
+	# Which guests.manifest the release has, or none; older releases' latest files do not say.
 	gsum=$(field guests "" "$pointer/latest") || gsum=
 	rm -rf "$pointer"
 	num "$latest" && num "$signed" || die "the update server's latest is malformed"

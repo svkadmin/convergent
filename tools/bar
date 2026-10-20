@@ -224,7 +224,7 @@ while :; do
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
 		mic=get(work "/mic")
 		if (mic == "on") block("MIC", orange); else if (mic != "off") block("MIC?", grey)
-		# Firing alerts as Archer counts them: critical, warning, info.
+		# Firing alerts: critical, warning, info.
 		if (split(get(work "/alerts"),count," ") == 3)
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
 		else block("? ? ?", grey, "alerts")

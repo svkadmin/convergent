@@ -1,4 +1,4 @@
-"""Archer's palette, type scale, panel builders and Canvas, adapted to Convergent."""
+"""Palette, type scale, panel builders and Canvas for Convergent."""
 import json
 from urllib.parse import quote
 

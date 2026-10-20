@@ -44,7 +44,7 @@ open_src() {
 	for _a in $(getent ahostsv4 "$host" | awk '$2 == "STREAM" { print $1 }' | sort -u | head -n 8); do
 		if public_v4 "$_a"; then ips="$ips $_a"; fi
 	done
-	[ -n "$ips" ] || die "$host resolves to no public address (no Wi-Fi, or the blocklist: add $host to /var/lib/convergent/dns/allow, then sudo dns-push local)"
+	[ -n "$ips" ] || die "$host resolves to no public address (no Wi-Fi, or the blocklist: run sys dns allow $host)"
 	src_open=1
 	for _f in $fws; do
 		rsh "$_f" "pfctl -q -t update_src -T replace$ips" >/dev/null || die "could not open the update source on $_f"

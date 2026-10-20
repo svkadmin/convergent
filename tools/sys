@@ -200,7 +200,7 @@ status_preview() (
 )
 # The status under its bold title, without the title it repeats ("Wi-Fi: x" under Wi-Fi).
 status_text() { awk -v t="$title" 'index($0, t ": ") == 1 {$0 = substr($0, length(t) + 3)} $0 != t' "$states/status-$area"; }
-# menu TITLE KEYS: Archer's look, terminal colours with a blue highlight; the list left, its status right.
+# menu TITLE KEYS: terminal colours with a blue highlight; the list left, its status right.
 menu() {
 	FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= SHELL=/bin/sh fzf \
 		--layout reverse-list --no-sort --info hidden --no-separator --no-scrollbar \
