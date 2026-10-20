@@ -732,6 +732,7 @@ qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
 sent = ready = quitting = powered_off = rebooted = False
 continued = False
+prompted = None
 ended = "stopped"
 result = None
 
@@ -784,12 +785,15 @@ try:
                         if match:
                             result = int(match[1])
                     # Releases before 2026-10-18 print "Convergent passphrase".
-                    if not sent and b"assphrase [" in seen:
-                        qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
+                    if prompted is None and b"assphrase [" in seen:
+                        prompted = time.monotonic()
                     if goal == "recovery" and sent and not continued and b"Recovery choice: " in seen:
                         qemu.stdin.write(b"3\n"); qemu.stdin.flush(); continued = True
                     if goal == "rescue" and sent and not continued and b"Rescue choice: " in seen:
                         qemu.stdin.write(b"7\n"); qemu.stdin.flush(); continued = True
+            # A second after the prompt: under load a passphrase typed at once was lost.
+            if not sent and prompted is not None and time.monotonic() - prompted >= 1:
+                qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
             if goal == "recovery":
                 done = done and continued
