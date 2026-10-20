@@ -15,8 +15,8 @@ images are promoted here unchanged and the release is tagged `v0.1.0`.
 
 Until then:
 
-- Source, install and update instructions: the [`beta`](../../src/branch/beta) branch.
-- Release candidates: the [tags](../../tags) named `vX.Y.Z-rcN`.
+- Source, install and update instructions: the [`beta`](https://codeberg.org/svkadmin/convergent/src/branch/beta) branch.
+- Release candidates: the [tags](https://codeberg.org/svkadmin/convergent/tags) named `vX.Y.Z-rcN`.
 
 Release candidates are testing builds. They can change in incompatible ways between
 candidates and are not meant for anyone else's daily use.
