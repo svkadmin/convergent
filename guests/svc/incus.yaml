@@ -8,6 +8,8 @@ config:
   security.privileged: "false"
   security.nesting: "false"
   security.guestapi: "false"
+  # The host default arp_ignore=8 reaches container interfaces; the firewalls need ARP replies.
+  linux.sysctl.net.ipv4.conf.eth0.arp_ignore: "0"
   security.protection.delete: "true"
   limits.cpu: "1"
   limits.memory: 350MiB
