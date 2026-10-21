@@ -43,7 +43,8 @@ probe() { # expectation source destination port [dns]
 	if [ "${5:-}" = dns ]; then
 		got=$(timeout -k 1 8 incus --force-local --project default exec "$2" -- sh -c '
 			r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
-			case $r in 0) echo allow ;; 1|124) echo deny ;; *) exit 2 ;; esac
+			# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
+			case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
 		' sh "$3") || got=error
 	else
 		got=$(tcp "$2" "$3" "$4") || got=error
@@ -86,6 +87,9 @@ ic config device add pf-lan eth0 nic nictype=bridged parent=cvuplink name=eth0
 ic start pf-lan
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-lan -- true; do sleep 1; done'
 ic exec pf-lan -- sh -eu -c '
+	# The host default arp_ignore=8 is inherited by container interfaces.
+	# This server must answer WAN ARP; self-connect checks never exercise it.
+	sysctl -qw net.ipv4.conf.eth0.arp_ignore=0
 	ip addr add 10.0.2.100/24 dev eth0
 	ip link set eth0 up
 '
