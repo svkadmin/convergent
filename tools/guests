@@ -570,7 +570,13 @@ prune() {
     printf '%s\n' "$state/backups/$1-"*.tar.gz | sort -r | sed '1,3d' >"$work/prune"
     while read -r backup; do
         old=${backup##*/}; old=${old#"$1-"}; old=${old%.tar.gz}
-        for volume in $(volumes "$1"); do ic storage volume snapshot delete default "$volume" "$old"; done
+        for volume in $(volumes "$1"); do
+            # A previous prune (or volume recreation) may already have removed it.
+            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots"
+            if grep -Fxq "$old" "$work/volume-snapshots"; then
+                ic storage volume snapshot delete default "$volume" "$old"
+            fi
+        done
         rm "$backup"
     done <"$work/prune"
 }

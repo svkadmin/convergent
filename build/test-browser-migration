@@ -17,6 +17,7 @@ for mode in normal interrupted detached renamed; do
 	done
 	for role in def int; do ic profile delete "browser-$role"; done
 	# New volumes came from guests init (or the preceding migration).
+	# Keep backups: the fourth mode also exercises pruning snapshots lost with these volumes.
 	for role in def int; do ic storage volume delete default "browser-$role-state"; done
 	for role in web admin; do
 		case $role in web) size=4GiB ;; admin) size=512MiB ;; esac
@@ -50,7 +51,10 @@ for mode in normal interrupted detached renamed; do
 		ic list --format json | jq -e --arg first "$first" 'any(.[]; .name == $first) and any(.[]; .name == "admin")'
 		echo "CV-BROWSER migration killed: $mode"
 	fi
-	/usr/local/sbin/guests update browser "$release/guests/browser"
+	sh -x /usr/local/sbin/guests update browser "$release/guests/browser" 2>"/var/log/guests-update-browser-$mode.log" || {
+		tail -n 80 "/var/log/guests-update-browser-$mode.log" >&2
+		exit 1
+	}
 	step="$mode assertions"
 	for entry in web:def admin:int; do
 		old=${entry%:*}; new=${entry#*:}
