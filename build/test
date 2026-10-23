@@ -561,8 +561,15 @@ ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LI
 /usr/local/sbin/facts boot >/dev/null 2>&1 || bad $LINENO
 /usr/local/sbin/check auto >/dev/null 2>&1 || :
 sleep 65
-sh "$release/dashboard-check" "$release/dashboards" || {
+# A just-replaced guest's facts can take another collector cycle; three tries, a minute apart.
+dash=1
+for try in 1 2 3; do
+    sh "$release/dashboard-check" "$release/dashboards" && { dash=0; break; }
+    [ "$try" = 3 ] || sleep 60
+done
+[ "$dash" = 0 ] || {
     bad $LINENO
+    for f in fw1 fw2; do timeout 20 ssh -F /etc/convergent/ssh_config "$f" 'ls -l /var/node_exporter/textfile; head -n 3 /var/node_exporter/textfile/convergent_fw.prom' 2>&1 | sed "s/^/CV-$f facts /"; done
     # Why: each scrape target's last error, and the routed paths svc -> host and wan.
     ic exec svc -- wget -q -T 10 -O - 'http://127.0.0.1:8428/api/v1/targets?state=active' |
         jq -r '.data.activeTargets[] | "CV-TARGET \(.labels.job) \(.labels.node) \(.health) \(.lastError)"'
