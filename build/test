@@ -980,7 +980,8 @@ gid=$(id -g nobody)
 runtime=/run/user/$uid
 run=/run/convergent/browser/tmp-20
 role=tmp name=tmp-20
-display=$runtime/wayland-1 ipc=
+# owner() passes SWAYSOCK; an empty one makes sway bind no socket file at all.
+display=$runtime/wayland-1 ipc=$runtime/sway-ipc.test.sock
 children=
 die() { reason=$*; echo "desktop-sockets: $*" >&2; exit 1; }
 cleanup() {
@@ -1023,9 +1024,7 @@ compositor=$!; children="$children $compositor"
 wait_socket "$display" "$compositor" "$run/sway.log"
 # Sway creates its IPC socket shortly after the Wayland one.
 attempts=0
-while :; do
-	for ipc in "$runtime"/sway-ipc.*.sock; do [ -S "$ipc" ] && break; done
-	[ ! -S "$ipc" ] || break
+until [ -S "$ipc" ]; do
 	attempts=$((attempts + 1))
 	[ "$attempts" -lt 50 ] || die 'missing test Sway IPC socket'
 	sleep .1
