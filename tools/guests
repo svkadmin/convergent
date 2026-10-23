@@ -12,7 +12,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touched=
-applying=
+applying= recovering=
 step=setup
 
 fail() { logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
@@ -26,6 +26,18 @@ ic() {
 }
 # Fresh connections only: a shared one could still reach a guest this tool just replaced.
 rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- 6>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
+# Keep the locks until mutators finish, even if the updater is killed.
+locked() (
+    trap '' HUP INT TERM
+    set +e
+    ( "$@" 9>&- 8>&- 7>&- 6>&- )
+    code=$?
+    exit "$code"
+)
+fw_mutate() {
+    locked timeout -k 5 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" ||
+        { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
+}
 retry() {
     # VMs boot slowly; the svc container is up in seconds.
     case "$*" in *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;; *) wait=$boot_timeout ;; esac
@@ -65,6 +77,12 @@ rollback() {
         fi
         ic import "$backup" "$guest" || return
         for volume in $(volumes "$guest"); do
+            if [ "$volume" = svc-logs ]; then
+                warning="rollback svc/$snap: logs accepted by the candidate after the snapshot may be lost"
+                printf '%s WARNING %s\n' "$(date -u +%FT%TZ)" "$warning" >>"$state/updates" && sync || return
+                echo "guests: WARNING: $warning" >&2
+                logger -p user.err -t guests "$warning" 2>/dev/null || :
+            fi
             ic storage volume snapshot restore default "$volume" "$snap" || return
         done
         cp "$state/known_hosts.before" "$keys/known_hosts" || return
@@ -84,13 +102,21 @@ cleanup() {
     step=cleanup
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
-    # Profiles first: the restored instance starts with what it ran with.
-    if [ ! -f "$state/browser.ready" ]; then
-        if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; pending=; }; fi
-        if [ -n "$pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; demoted=; }; fi
+    if [ -n "${recovering:-}" ]; then
+        if [ -f "$state/committed" ]; then commit_update || { fail 'cannot finish committed update'; result=1; }; fi
+        # Profiles first: the restored instance starts with what it ran with.
+        if [ ! -f "$state/browser.ready" ] && [ ! -f "$state/committed" ]; then
+            if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then
+                profiles_restore || { fail 'cannot restore the previous Incus profiles'; result=1; recovering=; }
+            fi
+            if [ -n "$recovering" ]; then
+                prepare_cleanup || { fail 'cannot clean up backup preparation'; result=1; }
+                if [ -f "$state/pending" ]; then rollback || { fail "cannot restore $guest/$snap; pending journal retained"; result=1; }; fi
+                if [ ! -f "$state/pending" ]; then fw_release || { fail 'cannot release firewall handoff'; result=1; }; fi
+            fi
+        fi
     fi
     if [ -n "$starting" ] && ! running "$starting"; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
-    if [ -n "$demoted" ]; then rsh "$demoted" 'if [ -f /etc/convergent/seeded/demote ]; then rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128; else ifconfig -g carp -carpdemote 128; fi' || { fail "cannot release $demoted demotion"; result=1; }; fi
     # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
     if [ -n "$fw_touched" ] && [ -f /var/lib/convergent/dns/list.rpz ]; then
         exec 8>&- 6>&-
@@ -266,11 +292,26 @@ soak() {
 }
 backup_soak() {
     for address in 100.80.0.10 100.80.2.10; do
-        ip route add "$address/32" via 100.80.1.3 dev host
         probes="$probes $address"
+        ip route replace "$address/32" via 100.80.1.3 dev host
     done
     soak fw1 fw2
     clear_probes
+}
+fw_release() {
+    [ -f "$state/fw.handoff" ] || return 0
+    # Removing our groups is safe after an uncertain SSH result.
+    fw_mutate fw1 'set -e
+rm -f /etc/convergent/seeded/demote
+sync
+for i in carp0 carp1 carp2 carp3 carp4 carp5; do
+    info=$(ifconfig "$i")
+    groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
+    for group in handoff upgrade; do
+        case " $groups " in *" $group "*) ifconfig "$i" -group "$group" ;; esac
+    done
+done' || return
+    rm "$state/fw.handoff" && sync
 }
 
 # The persistent seed survives errors until verified or the replacement is rolled back.
@@ -398,6 +439,7 @@ profiles_save() {
     sync
 }
 profiles_restore() {
+    [ -n "${recovering:-}" ] || return 1
     # Renames roll forward; their old profiles refer to volumes under the old names.
     [ ! -d "$state/browser.rename" ] || return 0
     for f in "$state/profiles.before"/*.yaml; do
@@ -567,18 +609,48 @@ wan_mount() {
     mounted=1
 }
 prune() {
-    printf '%s\n' "$state/backups/$1-"*.tar.gz | sort -r | sed '1,3d' >"$work/prune"
+    printf '%s\n' "$state/backups/$1-"*.tar.gz | sort -r | sed '1,3d' >"$work/prune" || return
     while read -r backup; do
         old=${backup##*/}; old=${old#"$1-"}; old=${old%.tar.gz}
         for volume in $(volumes "$1"); do
             # A previous prune (or volume recreation) may already have removed it.
-            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots"
+            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
             if grep -Fxq "$old" "$work/volume-snapshots"; then
-                ic storage volume snapshot delete default "$volume" "$old"
+                ic storage volume snapshot delete default "$volume" "$old" || return
             fi
         done
-        rm "$backup"
+        rm "$backup" || return
     done <"$work/prune"
+}
+prepare_cleanup() {
+    [ -f "$state/preparing" ] || return 0
+    read -r prep_guest prep_snap prep_start <"$state/preparing" || return
+    if ! grep -qxF "$prep_guest $prep_snap" "$state/pending" 2>/dev/null; then
+        prep_deadline=$(($(date +%s) + boot_timeout))
+        for volume in $(volumes "$prep_guest"); do
+            # A disconnected client can leave an Incus operation running.
+            while :; do
+                ic operation list --format json >"$work/operations" || return
+                jq -r --arg v "/1.0/storage-pools/default/volumes/custom/$volume" '
+                    .[] | select(.status_code < 200) |
+                    select(any(.resources[]?[]?; split("?")[0] | . == $v or startswith($v + "/snapshots/"))) |
+                    .id' "$work/operations" >"$work/volume-operations" || return
+                [ -s "$work/volume-operations" ] || break
+                [ "$(date +%s)" -lt "$prep_deadline" ] || { fail "snapshot operations for $volume timed out after ${boot_timeout}s"; return 1; }
+                sleep 1
+            done
+            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
+            if grep -qxF "$prep_snap" "$work/volume-snapshots"; then
+                locked ic storage volume snapshot delete default "$volume" "$prep_snap" || return
+            fi
+        done
+        rm -f "$state/backups/$prep_guest-$prep_snap.tar.gz" || return
+        if [ "$prep_start" = yes ]; then
+            running "$prep_guest" || ic start "$prep_guest" || return
+            retry healthy "$prep_guest" || return
+        fi
+    fi
+    rm "$state/preparing" && sync
 }
 replace() {
     step="replace $1"
@@ -588,7 +660,13 @@ replace() {
     case $guest in fw1|fw2) fw_touched=1 ;; esac
     step="backup $guest"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
-    if running "$guest"; then starting=$guest; stop_guest "$guest"; fi
+    prep_start=no
+    if running "$guest"; then prep_start=yes; fi
+    printf '%s %s %s\n' "$guest" "$snap" "$prep_start" >"$work/preparing"
+    sync
+    mv "$work/preparing" "$state/preparing"
+    sync
+    if [ "$prep_start" = yes ]; then starting=$guest; stop_guest "$guest"; fi
     # Drop a local memory pin (by hand or update fw); the fw profile carries it now.
     case $guest in
     fw1|fw2)
@@ -596,14 +674,16 @@ replace() {
         [ -z "$mem" ] || ic config unset "$guest" limits.memory ;;
     esac
     mkdir -p "$state/backups"
-    for volume in $(volumes "$guest"); do ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
-    ic export "$guest" "$state/backups/$guest-$snap.tar.gz" --instance-only || { rm -f "$state/backups/$guest-$snap.tar.gz"; die 'cannot export guest backup'; }
+    for volume in $(volumes "$guest"); do locked ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
+    locked ic export "$guest" "$state/backups/$guest-$snap.tar.gz" --instance-only || { rm -f "$state/backups/$guest-$snap.tar.gz"; die 'cannot export guest backup'; }
     if [ -n "$pending" ]; then cp "$state/pending" "$work/pending"; else : >"$work/pending"; fi
     printf '%s %s\n' "$guest" "$snap" >>"$work/pending"
     sync
     mv "$work/pending" "$state/pending"
     pending=1
     starting=
+    sync
+    rm "$state/preparing"
     sync
     if [ "$guest" = wan ]; then
         wan_read
@@ -636,14 +716,19 @@ replace() {
 }
 commit_update() {
     step=commit
-    cp "$state/pending" "$work/committed"
+    # Recovery must finish both root and profiles once this marker exists.
+    if [ ! -f "$state/committed" ]; then
+        cp "$state/pending" "$work/committed" && sync &&
+            mv "$work/committed" "$state/committed" && sync || return
+    fi
+    cp "$state/committed" "$work/committed" || return
     while read -r guest snap; do
-        printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates"
+        printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates" || return
     done <"$work/committed"
-    sync
-    rm "$state/pending"
+    rm -f "$state/pending" && rm -rf "$state/profiles.before" && sync || return
     pending=
-    while read -r guest snap; do prune "$guest"; done <"$work/committed"
+    rm "$state/committed" && sync || return
+    while read -r guest snap; do prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
     # The durable marker means both replacements passed; recovery finishes the commit.
@@ -690,9 +775,12 @@ init() {
     fi
     init_id=$(cat "$state/init/id")
     initializing=1
+    recovering=1
+    [ ! -f "$state/committed" ] || commit_update
     credentials
     [ ! -f "$state/browser.ready" ] || browser_commit
     [ ! -d "$state/profiles.before" ] || profiles_restore
+    prepare_cleanup
     [ ! -f "$state/pending" ] || { pending=1; rollback; }
     btrfs subvolume show /var/lib/incus-pool >/dev/null || die 'installer must create /var/lib/incus-pool on Btrfs'
     ic admin init --preseed <"$lib/preseed.yaml"
@@ -780,6 +868,7 @@ update() {
     [ -f "$state/initialized" ] || die 'init has not completed'
     case $1 in fw|wan|svc|browser|def|int) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;; esac
     # Recovery also changes browser objects; take the session lock before touching journals.
+    recovering=
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
@@ -787,9 +876,13 @@ update() {
         browser_pending=1
         return
     fi
+    recovering=1
+    [ ! -f "$state/committed" ] || commit_update
     [ ! -f "$state/browser.ready" ] || browser_commit
     [ ! -d "$state/profiles.before" ] || profiles_restore
-    [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+    prepare_cleanup
+    [ ! -f "$state/pending" ] || { pending=1; rollback; }
+    fw_release
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
@@ -819,16 +912,18 @@ update() {
         retry pair fw1 fw2
         fw_check fw2
         backup_soak
-        demoted=fw1
-        rsh fw1 'ifconfig -g carp carpdemote 128'
+        touch "$state/fw.handoff"
+        sync
+        fw_mutate fw1 'set -e
+for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done
+ifconfig -g handoff carpdemote 128'
         retry pair fw2 fw1
         soak fw2 fw1
         commit_update
         replace fw1
         fw_check fw1
         retry pair fw2 fw1
-        rsh fw1 'rm /etc/convergent/seeded/demote && ifconfig -g upgrade -carpdemote 128'
-        demoted=
+        fw_release
         retry pair fw1 fw2
         soak fw1 fw2
         commit_update
@@ -861,6 +956,7 @@ update() {
             echo 'guests: browser is running; browser update waits for a later guests apply'
             logger -t guests 'update browser deferred: browser is running' 2>/dev/null || :
             browser_pending=1
+            recovering=
             exec 6>&-
             return
         fi
@@ -884,6 +980,7 @@ update() {
         mv "$work/browser.ready" "$state/browser.ready"
         sync
         browser_commit
+        recovering=
         exec 6>&-
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
@@ -907,10 +1004,14 @@ apply() {
         browser_pending=1
         return 0
     fi
+    recovering=1
+    [ ! -f "$state/committed" ] || commit_update
     if [ ! -d "$staged/$booted/browser" ]; then
         [ ! -f "$state/browser.ready" ] || browser_commit
         [ ! -d "$state/profiles.before" ] || profiles_restore
-        [ ! -f "$state/pending" ] || { pending=1; rollback; die 'interrupted update restored; rerun update'; }
+        prepare_cleanup
+        [ ! -f "$state/pending" ] || { pending=1; rollback; }
+        fw_release
         # Old images do not understand def/int or tmp portal mode.
         if [ -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ]; then
             image_dir=$lib/browser
