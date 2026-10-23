@@ -12,7 +12,7 @@ if [ "$(id -u)" != 0 ]; then
     [ -n "${WAYLAND_DISPLAY:-}" ] && [ -n "${SWAYSOCK:-}" ] || die 'run in the owner Sway session'
     # Pressed again: focus the open window instead of refusing.
     if [ $# = 1 ] && { [ "$1" = def ] || [ "$1" = int ]; } &&
-        swaymsg -q "[app_id=\"^convergent-$1\$\"] focus" 2>/dev/null; then exit 0; fi
+        swaymsg -q "[sandbox_engine=\"^convergent\$\" sandbox_app_id=\"^$1\$\" sandbox_instance_id=\"^$1\$\"] focus" 2>/dev/null; then exit 0; fi
     exec sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$@"
 fi
 case ${SUDO_UID:-} in ''|0|*[!0-9]*) die 'run as the owner, not root' ;; esac
@@ -84,6 +84,7 @@ wait_socket() {
     done
 }
 
+install -d -m 0755 /run/convergent
 mkdir -p /run/convergent/browser
 chmod 711 /run/convergent/browser
 # The guests lock covers launch; the browser lock covers the whole session.
@@ -177,7 +178,7 @@ if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; 
         *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" $sockets ;;
     esac
 fi
-background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
+background=yes owner way-secure -e convergent -a "$role" -i "$name" --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
 # Only the Pulse socket crosses into the guest; all recording and module loading are denied.
@@ -191,15 +192,20 @@ context.modules = [
   { name = libpipewire-module-protocol-pulse }
 ]
 pulse.properties = {
-  server.address = [ "unix:$run/sockets/pulse-0" ]
+  server.address = [ { address = "unix:$run/sockets/pulse-0" client.access = "restricted" } ]
   pulse.allow-module-loading = false
 }
 # An empty match object never matches in PipeWire; set and unset together match every client.
-pulse.rules = [ { matches = [ { application.name = "!null" } { application.name = null } ] actions = { quirks = [ block-record-stream block-source-volume block-sink-volume ] } } ]
+pulse.rules = [ { matches = [ { application.name = "!null" } { application.name = null } ] actions = {
+  # Client properties must not override the socket's access level.
+  update-props = { pipewire.client.access = "restricted" }
+  quirks = [ block-record-stream block-source-volume block-sink-volume ]
+} } ]
 EOF
 chmod 644 "$run/pulse.conf"
+# A hostile client can provoke a log entry for every rejected request.
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
-    /usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+    prlimit --fsize=1048576:1048576 /usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
 chmod 0710 "$run/sockets"

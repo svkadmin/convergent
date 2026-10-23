@@ -570,6 +570,29 @@ step=start
 ic start def
 step=ready
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec def -- test -f /run/browser-ready; do sleep 1; done'
+step=state-paths
+ic exec def -- sh -eu <<'STATE'
+before=$(stat -c '%u:%g:%a' /etc/init.d)
+for path in /home/browser/profile /home/browser/Downloads/def /home/browser/Downloads; do
+	mv "$path" "$path.saved"
+	for kind in link dangling file; do
+		case $kind in
+			link) ln -s /etc/init.d "$path" ;;
+			dangling) ln -s /nonexistent-browser-state "$path" ;;
+			file) touch "$path" ;;
+		esac
+		if /usr/local/sbin/browser-setup; then exit 1; fi
+		[ ! -e /run/browser-ready ]
+		[ "$(stat -c '%u:%g:%a' /etc/init.d)" = "$before" ]
+		rm "$path"
+	done
+	mv "$path.saved" "$path"
+done
+rmdir /home/browser/Downloads/def
+/usr/local/sbin/browser-setup
+[ "$(stat -c '%u:%g:%a' /home/browser/Downloads/def)" = 1000:1000:700 ]
+[ -f /run/browser-ready ]
+STATE
 step=tmp
 for mode in normal portal; do
 	name=tmp-20
@@ -716,6 +739,7 @@ uid=$(id -u nobody)
 gid=$(id -g nobody)
 runtime=/run/user/$uid
 run=/run/convergent/browser/tmp-20
+role=tmp name=tmp-20
 display=$runtime/wayland-1 ipc=
 children=
 die() { reason=$*; echo "desktop-sockets: $*" >&2; exit 1; }
@@ -735,6 +759,7 @@ cd /
 [ ! -e "$run" ] && [ ! -e "$runtime" ] || die 'test session paths are already in use'
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
+install -d -m 0755 /run/convergent
 install -d -m 0711 /run/convergent/browser
 install -d -o "$uid" -g "$gid" -m 0700 "$runtime"
 install -d -o root -g "$gid" -m 0750 "$run"
@@ -750,26 +775,46 @@ awk '
 ' /usr/local/sbin/browser >"$run/helpers"
 . "$run/helpers"
 echo 'output HEADLESS-1 mode 640x480' >"$run/sway.conf"
+grep '^for_window \[sandbox_engine=' /etc/sway/config.d/convergent >>"$run/sway.conf"
 chmod 0644 "$run/sway.conf" "$run/pulse.conf"
 background=yes owner env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
 	sway -c "$run/sway.conf" >"$run/sway.log" 2>&1 &
 compositor=$!; children="$children $compositor"
 wait_socket "$display" "$compositor" "$run/sway.log"
+for ipc in "$runtime"/sway-ipc.*.sock; do [ -S "$ipc" ] && break; done
+[ -S "$ipc" ] || die 'missing test Sway IPC socket'
 background=yes owner pipewire >"$run/pipewire.log" 2>&1 &
 server=$!; children="$children $server"
 wait_socket "$runtime/pipewire-0" "$server" "$run/pipewire.log"
-background=yes owner way-secure --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
+background=yes owner way-secure -e convergent -a "$role" -i "$name" --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
 grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current" || die "way-secure runs as $(cat "/proc/$wayland/attr/current")"
 # A client round-trip through the restricted socket, not just a socket inode.
 owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" timeout 10 \
 	foot -e /bin/true >"$run/client.log" 2>&1 || die 'no client round-trip through way-secure'
+background=yes owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" \
+	foot -a convergent-int -T Grafana -e sleep 30 >"$run/client.log" 2>&1 &
+client=$!; children="$children $client"
+attempts=0
+until owner swaymsg -t get_tree | jq -e '.. | objects | select(.app_id? == "convergent-int") |
+	.sandbox_engine == "convergent" and .sandbox_app_id == "tmp" and .sandbox_instance_id == "tmp-20"' >/dev/null; do
+	attempts=$((attempts + 1))
+	[ "$attempts" -lt 50 ] || die 'missing trusted browser identity'
+	sleep .1
+done
+if owner swaymsg -q '[sandbox_engine="^convergent$" sandbox_app_id="^int$" sandbox_instance_id="^int$"] focus'; then
+	die 'spoofed app_id matched the int browser'
+fi
+owner swaymsg -q '[sandbox_engine="^convergent$" sandbox_app_id="^tmp$" sandbox_instance_id="^tmp-20$"] focus'
+kill "$client"
+wait "$client" 2>/dev/null || :
 background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_DIR="$run" \
-	/usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
+	prlimit --fsize=1048576:1048576 /usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
 grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current" || die "pipewire-pulse runs as $(cat "/proc/$audio/attr/current")"
+grep -Eq '^Max file size +1048576 +1048576 +bytes' "/proc/$audio/limits" || die 'unbounded Pulse log'
 # Pulse clients are in the browser guests; this mode checks the listener and its confinement.
 kill -0 "$wayland" "$audio" || die 'a socket provider exited'
 EOF

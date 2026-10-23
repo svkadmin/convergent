@@ -36,8 +36,17 @@ printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n  
     "$address" "$prefix" "$gateway" >/etc/network/interfaces
 printf 'nameserver %s\noptions timeout:2 attempts:2\n' "$resolver" >/etc/resolv.conf
 downloads=/home/browser/Downloads/$role
-mkdir -p /run/user/1000 /home/browser/profile "$downloads"
-chown 1000:1000 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads "$downloads"
-chmod 700 /run/user/1000 /home/browser /home/browser/profile /home/browser/Downloads "$downloads"
+for path in /home/browser /home/browser/profile /home/browser/Downloads "$downloads"; do
+    [ ! -L "$path" ] && { [ ! -e "$path" ] || [ -d "$path" ]; } || die "invalid state directory: $path"
+done
+mkdir -p /run/user/1000 /home/browser
+chown 1000:1000 /run/user/1000 /home/browser
+chmod 700 /run/user/1000 /home/browser
+for path in /home/browser/profile /home/browser/Downloads "$downloads"; do
+    if [ ! -d "$path" ]; then
+        mkdir -m 700 "$path"
+        chown 1000:1000 "$path"
+    fi
+done
 printf '%s\n' "$role" >/run/browser-role
 touch /run/browser-ready
