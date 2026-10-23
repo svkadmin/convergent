@@ -6,6 +6,32 @@ case ${interface:-} in
 esac
 case ${1:-} in
 set)
+	. /etc/wan/wan.conf
+	. /usr/local/lib/wan-lib.sh
+	[ "$interface" != "$TRANSIT_IF" ] || exit 1
+	overlap=
+	set -- ${staticroutes:-}
+	while [ "$#" -ge 2 ]; do
+		case $1 in
+		0.0.0.0/0) ;;
+		*) overlaps_internal "${1%/*}" "${1#*/}" && overlap=$1 ;;
+		esac
+		overlaps_internal "$2" 32 && overlap=$2/32
+		shift 2
+	done
+	for gw in ${router:-}; do
+		overlaps_internal "$gw" 32 && overlap=$gw/32
+	done
+	mkdir -p /run/wan
+	if [ -n "$overlap" ]; then
+		printf '%s\n' "$overlap" >"/run/wan/dhcp-overlap.$interface"
+		# Remove DHCP routes before the asynchronous overlap check.
+		ip -4 route flush dev "$interface" || exit 1
+		ip -4 addr flush dev "$interface" || exit 1
+		/usr/sbin/resolvconf -d "$interface.dns"
+		exit $?
+	fi
+	rm -f "/run/wan/dhcp-overlap.$interface"
 	for s in ${dns:-}; do
 		echo "nameserver $s"
 	done | /usr/sbin/resolvconf -a "$interface.dns"

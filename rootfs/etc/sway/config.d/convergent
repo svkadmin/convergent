@@ -41,6 +41,10 @@ bindsym Mod4+Escape exec swaylock -f
 # A minute after locking the screen goes dark; any input wakes it (NL keeps it on too).
 exec swayidle -w timeout 600 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaylock -f' timeout 660 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaymsg "output * power off"' resume 'swaymsg "output * power on"'
 bindswitch --locked lid:on exec swaylock -f
+mode "resize" {
+    bindsym Mod4+Escape exec swaylock -f
+    bindswitch --locked lid:on exec swaylock -f
+}
 
 # Screenshots saved and copied: an area, or the focused output.
 # Escape in slurp leaves the clipboard alone.

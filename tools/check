@@ -184,8 +184,10 @@ dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $
 autostart() {
     find /home -mindepth 1 -maxdepth 1 -type l -print >"$work/home.links" || return 1
     [ ! -s "$work/home.links" ] || return 1
-    find /home -xdev \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
+    find /home \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
         -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
+        -o -path '*/.sway/*' -o -path '*/.i3/*' -o -path '*/.config/i3/*' -o -path '*/.config/mako/*' \
+        -o -path '*/.config/pipewire/*' -o -path '*/.config/wireplumber/*' \
         -o -path '*/.config/environment.d/*' -o -name .profile -o -name .shrc -o -name .bashrc \
         -o -name .bash_profile -o -name .bash_login -o -name .zshrc -o -name .zshenv -o -name .zprofile \
         -o -name .zlogin -o -path '*/.config/fish/*' -o -path '*/.config/autostart-scripts/*' \
@@ -195,12 +197,42 @@ autostart() {
         -o -path '*/.config/autostart' -o -path '*/.config/systemd' -o -path '*/.config/systemd/user' \
         -o -path '*/.local/share' -o -path '*/.local/share/systemd' -o -path '*/.local/share/systemd/user' \
         -o -path '*/.config/sway' -o -path '*/.local/bin' -o -path '*/.config/environment.d' \
+        -o -name .sway -o -name .i3 -o -path '*/.config/i3' -o -path '*/.config/mako' \
+        -o -path '*/.config/pipewire' -o -path '*/.config/wireplumber' \
         -o -path '*/.config/fish' -o -path '*/.config/autostart-scripts' \
         -o -path '*/.config/plasma-workspace' -o -path '*/.config/plasma-workspace/env' \
         -o -path '*/.local/share/autostart' \) -exec sh -c '
             for file do
                 [ ! -L "$file" ] || { echo "autostart symlink: $file" >&2; exit 1; }
                 relative=${file#/home/}; relative=${relative#*/}
+                case $relative in
+                .sway/*|.i3/*|.config/sway/*|.config/i3/*)
+                    # Includes must stay in scanned trees or the verified system config.
+                    awk '\''
+                        # Sway splits on every whitespace byte, not just blanks.
+                        BEGIN { FS = "[[:space:]]+" }
+                        { line = line $0 }
+                        line !~ /^#/ && sub(/\\$/, "", line) { next }
+                        {
+                            $0 = line; line = ""
+                            sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "")
+                            if ($0 ~ /^#/ || $0 == "") next
+                            if (included && $0 == "{") exit 1
+                            included = 0
+                            if ($0 ~ /^\$/) exit 1
+                            if (tolower($1) != "include") next
+                            if (NF != 2) exit 1
+                            path = $2
+                            if (path ~ /^".*"$/ || path ~ /^\047.*\047$/)
+                                path = substr(path, 2, length(path) - 2)
+                            sub(/^(~\/(\.sway|\.i3|\.config\/(sway|i3))|\/etc\/sway)\//, "", path)
+                            if (path !~ /^([A-Za-z0-9_*?][A-Za-z0-9_.*?-]*\/)*[A-Za-z0-9_*?][A-Za-z0-9_.*?-]*$/)
+                                exit 1
+                            included = 1
+                        }
+                        END { if (line != "") exit 1 }
+                    '\'' "$file" || { echo "autostart unsafe include: $file" >&2; exit 1; } ;;
+                esac
                 pattern=
                 case $relative in
                 .config/sway/config.d/input)

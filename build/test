@@ -691,6 +691,19 @@ else
 	echo 'CV-FETCH skipped (uplink failed)'
 fi
 sh "$release/selftest-test" || result=1
+if ! incus --force-local --project default exec svc -- sh -eu <<'CHECK'
+base=http://127.0.0.1:8427
+wget -q -T 5 -O /dev/null "$base/api/v1/query?query=1"
+wget -q -T 5 -O /dev/null "$base/select/logsql/query?query=*&limit=1&start=-5m&end=now"
+for path in '/api/v1/admin/tsdb/delete_series?match[]=convergent_query_router_probe' /snapshot/create /insert/jsonline; do
+	if wget -S -T 5 -O /dev/null "$base$path" 2>/tmp/query-denied; then exit 1; fi
+	grep -q 'HTTP/1.1 400' /tmp/query-denied
+	if wget -S -T 5 --post-data='{"_msg":"query router probe"}' -O /dev/null "$base$path" 2>/tmp/query-denied; then exit 1; fi
+	grep -q 'HTTP/1.1 400' /tmp/query-denied
+done
+rm -f /tmp/query-denied
+CHECK
+then echo 'CV-GRAFANA failed: query-only router'; result=1; fi
 exit "$result"
 EOF
 	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
@@ -812,6 +825,95 @@ t sh -c "! command -v nano"
 t grep -qx "c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd" /etc/inittab
 t grep -q "^command = \"tuigreet " /etc/greetd/config.toml
 t env HOME=/tmp/smoke-home XDG_RUNTIME_DIR=/tmp/smoke-run sway -C -c /etc/sway/config
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+home=$(mktemp -d /home/.autostart.XXXXXX)
+cleanup() {
+	[ ! -d "$home/.config/sway/config.d" ] || btrfs subvolume delete "$home/.config/sway/config.d"
+	rm -rf "$home" "$work"
+}
+trap cleanup 0
+sed -n '/^autostart() {/,/^suid() {/ { /^suid() {/d; p; }' /usr/local/sbin/check >"$work/helpers"
+. "$work/helpers"
+for path in .sway .i3 .config/i3 .config/mako .config/pipewire .config/wireplumber; do
+	mkdir -p "$home/$path"
+	printf 'exec true\n' >"$home/$path/config"
+	autostart
+	grep -qF "$home/$path/config" "$work/autostart"
+	rm -r "$home/$path"
+	ln -s "$work" "$home/$path"
+	if autostart; then exit 1; fi
+	rm "$home/$path"
+done
+mv "$home/.config" "$work/config"
+ln -s "$work/config" "$home/.config"
+if autostart; then exit 1; fi
+rm "$home/.config"
+mv "$work/config" "$home/.config"
+for path in .config/pipewire/pipewire.conf.d .config/wireplumber/wireplumber.conf.d; do
+	mkdir -p "$home/$path"
+	printf 'context.exec = [ { path = "/bin/true" } ]\n' >"$home/$path/payload.conf"
+	autostart
+	grep -qF "$home/$path/payload.conf" "$work/autostart"
+	cp "$work/autostart" "$work/before"
+	printf '# changed\n' >>"$home/$path/payload.conf"
+	autostart
+	if cmp -s "$work/before" "$work/autostart"; then exit 1; fi
+	rm "$home/$path/payload.conf"
+	ln -s "$work/helpers" "$home/$path/payload.conf"
+	if autostart; then exit 1; fi
+	rm "$home/$path/payload.conf"
+	rmdir "$home/$path"
+	ln -s "$work" "$home/$path"
+	if autostart; then exit 1; fi
+	rm "$home/$path"
+done
+mkdir -p "$home/.config/sway"
+btrfs subvolume create "$home/.config/sway/config.d"
+printf 'exec true\n' >"$home/.config/sway/config.d/payload"
+autostart
+grep -qF "$home/.config/sway/config.d/payload" "$work/autostart"
+printf 'include /etc/sway/config\ninclude ~/.config/sway/config.d/*\n' >"$home/.config/sway/config"
+printf 'include "nested/leaf"\n' >"$home/.config/sway/config.d/payload"
+mkdir "$home/.config/sway/config.d/nested"
+leaf=$home/.config/sway/config.d/nested/leaf
+printf 'exec true\n' >"$leaf"
+autostart
+cp "$work/autostart" "$work/before"
+printf 'exec false\n' >"$leaf"
+autostart
+if cmp -s "$work/before" "$work/autostart"; then exit 1; fi
+for line in 'include /tmp/payload' 'include ../../payload' \
+	'include ~/.config/sway/../../payload' 'include ~/.config/sway/.*/payload' \
+	'include $external' 'include "$(echo /tmp/payload)"' \
+	'InClUdE /tmp/payload' 'include {' '$command /tmp/payload' \
+	'include nested/leaf
+{
+/tmp/payload
+}' '# comment\
+include /tmp/payload' \
+	'incl\
+ude /tmp/payload'; do
+	printf '%s\n' "$line" >"$leaf"
+	if autostart; then exit 1; fi
+done
+# Form feed, vertical tab and carriage return also separate words for sway.
+for sep in '\f' '\v' '\r'; do
+	printf "include$sep/tmp/payload\n" >"$leaf"
+	if autostart; then exit 1; fi
+done
+printf 'exec true\n' >"$leaf"
+printf 'input type:keyboard xkb_layout "us"\n' >"$home/.config/sway/config.d/input"
+printf 'input type:touchpad tap enabled\n' >"$home/.config/sway/config.d/touchpad"
+printf 'output eDP-1 disable\n' >"$home/.config/sway/config.d/outputs"
+autostart
+for path in input touchpad outputs; do
+	if grep -qF "$home/.config/sway/config.d/$path" "$work/autostart"; then exit 1; fi
+	printf 'exec true\n' >>"$home/.config/sway/config.d/$path"
+	autostart
+	grep -qF "$home/.config/sway/config.d/$path" "$work/autostart"
+done
+CHECK
 t getent passwd greetd
 t sh -c '[ "$(stat -c "%U:%G %a" /var/log/btmp)" = "root:utmp 600" ]'
 t sh -c '[ "$(sysctl -n kernel.panic)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops)" = 1 ]'

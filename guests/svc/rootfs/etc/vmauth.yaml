@@ -1,7 +1,11 @@
-# Route vmalert queries by datasource protocol.
+# Only query APIs are reachable through Grafana.
 unauthorized_user:
   url_map:
     - src_paths: ['/api/v1/query', '/api/v1/query_range']
       url_prefix: http://127.0.0.1:8428
+    - src_paths: ['/api/v1/labels', '/api/v1/label/[^/]+/values', '/api/v1/series', '/api/v1/metadata', '/api/v1/status/buildinfo']
+      url_prefix: http://127.0.0.1:8428
     - src_paths: ['/select/logsql/query', '/select/logsql/stats_query', '/select/logsql/stats_query_range']
+      url_prefix: http://127.0.0.1:9428
+    - src_paths: ['/select/logsql/hits', '/select/logsql/field_names', '/select/logsql/field_values', '/select/logsql/stream_field_names', '/select/logsql/stream_field_values']
       url_prefix: http://127.0.0.1:9428
