@@ -25,6 +25,7 @@ for mode in normal interrupted detached renamed committed pruning; do
 		ic init candidate-browser "$role" -p browser-base -p "browser-$role"
 		# Seed through a temporary mount; current browser-setup rejects the old roles.
 		ic storage volume attach default "browser-$role-state" svc migration /mnt/migration
+		# shellcheck disable=SC2016 # $1 is the inner shell's
 		ic exec svc -- sh -c 'printf "%s\n" "$1" >/mnt/migration/rename-marker' sh "$mode-$role"
 		ic storage volume detach default "browser-$role-state" svc migration
 	done
@@ -54,7 +55,7 @@ for mode in normal interrupted detached renamed committed pruning; do
 			[ -f "$state/profiles.before/browser-web.yaml" ]
 		fi
 		case $mode in interrupted) first=web ;; *) first=def ;; esac
-		case $mode in committed|pruning) second=int ;; *) second=admin ;; esac
+		case $mode in committed|pruning) second='int' ;; *) second='admin' ;; esac
 		ic list --format json | jq -e --arg first "$first" --arg second "$second" 'any(.[]; .name == $first) and any(.[]; .name == $second)'
 		case $mode in committed|pruning)
 			[ -f "$state/browser.ready" ]
