@@ -8,8 +8,9 @@ state=/var/lib/convergent/guests
 ic() { incus --force-local --project default "$@"; }
 step=setup
 trap 'r=$?; [ "$r" = 0 ] || echo "CV-BROWSER migration FAIL: $step"; exit "$r"' 0
+trap 'exit 1' HUP INT TERM
 
-for mode in normal interrupted detached renamed committed pruning; do
+for mode in normal interrupted detached renamed committed; do
 	step="$mode old layout"
 	for role in base tmp web admin portal; do
 		case $role in base|tmp) ;; *) ic profile create "browser-$role" ;; esac
@@ -31,40 +32,48 @@ for mode in normal interrupted detached renamed committed pruning; do
 	done
 	step="$mode update"
 	if [ "$mode" != normal ]; then
-		# One fault in a writable copy; the resume uses the installed command.
-		awk -v mode="$mode" '
-			{print}
-			mode == "pruning" && $0 == "prune() {" {print "    return 1"}
-			(mode == "interrupted" && $0 == "        mv \"$work/browser.rename\" \"$state/browser.rename\"") ||
-			(mode == "detached" && $0 ~ /ic profile device remove "browser-\$role" state$/) ||
-			(mode == "renamed" && $0 ~ /ic storage volume rename default "browser-\$old-state" "browser-\$new-state"$/) ||
-			(mode == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return") {
-				print "    kill -KILL \"$$\""
-			}
-		' /usr/local/sbin/guests >"$release/guests-interrupt"
-		grep -Eq '^    (kill -KILL "\$\$"|return 1)$' "$release/guests-interrupt"
-		r=0
-		sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
-		case $mode in pruning) [ "$r" = 1 ] ;; *) [ "$r" = 137 ] ;; esac
-		for role in base def tmp int; do
-			cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
-		done
-		if [ "$mode" = pruning ]; then
-			[ ! -e "$state/profiles.before" ] && [ ! -e "$state/pending" ]
-		else
-			[ -f "$state/profiles.before/browser-web.yaml" ]
-		fi
-		case $mode in interrupted) first=web ;; *) first=def ;; esac
-		case $mode in committed|pruning) second='int' ;; *) second='admin' ;; esac
-		ic list --format json | jq -e --arg first "$first" --arg second "$second" 'any(.[]; .name == $first) and any(.[]; .name == $second)'
-		case $mode in committed|pruning)
-			[ -f "$state/browser.ready" ]
-			for role in def int; do
-				[ "$(ic profile device get "browser-$role" state source)" = "browser-$role-state" ]
+		faults=$mode
+		# Reuse the committed transaction to stay within the VM test deadline.
+		[ "$mode" != committed ] || faults='committed pruning'
+		for fault in $faults; do
+			step="$fault fault injection"
+			# Each copy injects one fault; final recovery uses the installed command.
+			awk -v mode="$fault" '
+				{print}
+				mode == "pruning" && $0 == "prune() {" {print "    return 1"}
+				(mode == "interrupted" && $0 == "        mv \"$work/browser.rename\" \"$state/browser.rename\"") ||
+				(mode == "detached" && $0 ~ /ic profile device remove "browser-\$role" state$/) ||
+				(mode == "renamed" && $0 ~ /ic storage volume rename default "browser-\$old-state" "browser-\$new-state"$/) ||
+				(mode == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return") {
+					print "    kill -KILL \"$$\""
+				}
+			' /usr/local/sbin/guests >"$release/guests-interrupt"
+			grep -Eq '^    (kill -KILL "\$\$"|return 1)$' "$release/guests-interrupt"
+			r=0
+			sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
+			step="$fault fault assertions"
+			case $fault in pruning) [ "$r" = 1 ] ;; *) [ "$r" = 137 ] ;; esac
+			for role in base def tmp int; do
+				cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
 			done
-		;; esac
-		echo "CV-BROWSER migration fault: $mode"
+			if [ "$fault" = pruning ]; then
+				[ ! -e "$state/profiles.before" ] && [ ! -e "$state/pending" ] && [ ! -e "$state/committed" ]
+			else
+				[ -f "$state/profiles.before/browser-web.yaml" ]
+			fi
+			case $fault in interrupted) first=web ;; *) first=def ;; esac
+			case $fault in committed|pruning) second='int' ;; *) second='admin' ;; esac
+			ic list --format json | jq -e --arg first "$first" --arg second "$second" 'any(.[]; .name == $first) and any(.[]; .name == $second)'
+			case $fault in committed|pruning)
+				[ -f "$state/browser.ready" ]
+				for role in def int; do
+					[ "$(ic profile device get "browser-$role" state source)" = "browser-$role-state" ]
+				done
+			;; esac
+			echo "CV-BROWSER migration fault: $fault"
+		done
 	fi
+	step="$mode resume"
 	sh -x /usr/local/sbin/guests update browser "$release/guests/browser" 2>"/var/log/guests-update-browser-$mode.log" || {
 		tail -n 80 "/var/log/guests-update-browser-$mode.log" >&2
 		exit 1
