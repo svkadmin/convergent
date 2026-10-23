@@ -4,9 +4,20 @@ set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
-work= snapshot=
+work= snapshot= state_root=
 die() { echo "backup: $*" >&2; exit 1; }
 ic() { incus --force-local --project "$project" "$@"; }
+remove_snapshot() {
+    [ ! -L "$1" ] && [ ! -L "$1/home" ] || return 1
+    if [ -d "$1/home" ]; then
+        if btrfs subvolume show "$1/home" >/dev/null 2>&1; then
+            btrfs subvolume delete "$1/home" || return
+        else
+            rmdir "$1/home" || return
+        fi
+    fi
+    rmdir "$1"
+}
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ $# = 0 ]; then
     [ -t 0 ] || die 'run in a terminal or supply mountpoint and owner project'
@@ -41,30 +52,45 @@ base=$dest/convergent-backups
 [ ! -L "$base" ] || die 'backup directory is a symlink'
 mkdir -p "$base"
 [ "$(stat -c '%u:%a' "$base")" = 0:700 ] || die 'backup directory must be root-owned mode 700'
-work=$(mktemp -d "$base/.partial.XXXXXX")
 cleanup() {
     result=$?
     trap - 0
     trap '' HUP INT TERM
-    if [ -n "$snapshot" ]; then
-        [ ! -d "$snapshot/home" ] || btrfs subvolume delete "$snapshot/home" || result=1
-        rmdir "$snapshot" || result=1
+    if [ -n "$snapshot" ]; then remove_snapshot "$snapshot" || result=1; fi
+    if [ -n "$state_root" ]; then
+        if mountpoint -q "$state_root"; then umount "$state_root" || result=1; fi
+        rmdir "$state_root" || result=1
     fi
-    rm -rf "$work"
+    [ -z "$work" ] || rm -rf "$work" || result=1
     exit "$result"
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
+rm -rf "$base"/.partial.??????
+work=$(mktemp -d "$base/.partial.XXXXXX")
 
 # Snapshot home on the same Btrfs filesystem; archive writable /etc separately.
 [ "$(findmnt -nro FSTYPE -T /home)" = btrfs ] &&
     [ "$(findmnt -nro UUID -T /home)" = "$(findmnt -nro UUID -T /var)" ] || die '/home and /var must share Btrfs'
 btrfs subvolume list -o /home >"$work/subvolumes" || die 'cannot inspect /home subvolumes'
 [ ! -s "$work/subvolumes" ] || die 'nested Btrfs subvolumes under /home are not backed up; refusing'
-snapshot=$(mktemp -d /var/.backup.XXXXXX)
+# Keep snapshots outside release generations, including after a power loss.
+state_root=/run/convergent/backup-state
+mkdir -p "$state_root"
+mountpoint -q "$state_root" && umount "$state_root"
+mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state "$state_root"
+exec 7>/run/convergent-slot.lock
+flock -n 7 || die 'a slot operation is running'
+for old in "$state_root"/.backup.?????? "$state_root"/var-*/.backup.??????; do
+    [ -e "$old" ] || [ -L "$old" ] || continue
+    remove_snapshot "$old" || die "cannot remove abandoned snapshot $old"
+done
+exec 7>&-
+snapshot=$(mktemp -d "$state_root/.backup.XXXXXX")
 btrfs subvolume snapshot -r /home "$snapshot/home"
 payload=$work/data
 mkdir -p "$payload/projects"
+echo 'VM instances and custom block volumes are excluded; back them up separately while offline.' >"$payload/EXCLUDED"
 tar --one-file-system --acls --xattrs --numeric-owner -C "$snapshot" -cpf "$payload/home.tar" home
 grep -v '^#' /usr/lib/convergent/etc-state | sed '/^$/d;s|^|etc/|' >"$work/etc.list"
 tar --one-file-system --acls --xattrs --numeric-owner -C / -cpf "$payload/etc.tar" -T "$work/etc.list"
@@ -72,11 +98,13 @@ rm "$work/etc.list"
 for project in default "$owner"; do
     mkdir "$payload/projects/$project"
     if [ "$project" = "$owner" ]; then
-        ic list --format csv -c n >"$work/instances"
+        ic list --format json >"$work/instances.json"
+        jq -r '.[] | select(.type == "virtual-machine") | "instance " + .name' "$work/instances.json" >>"$payload/EXCLUDED"
+        jq -r '.[] | select(.type == "container") | .name' "$work/instances.json" >"$work/instances"
         while IFS= read -r name; do
             ic export "$name" "$payload/projects/$project/instance-$name.tar.gz" --compression gzip
         done <"$work/instances"
-        rm "$work/instances"
+        rm "$work/instances" "$work/instances.json"
     fi
     ic storage list --format csv -c n >"$work/pools"
     [ "$project" != default ] || grep -qx default "$work/pools" || die 'missing default storage pool'
@@ -95,8 +123,16 @@ for project in default "$owner"; do
         fi
         while IFS= read -r volume; do
             case $volume in */*) continue ;; esac
-            suffix=tar.gz
-            if jq -e --arg n "$volume" '.[] | select(.name == $n and .content_type == "iso")' "$work/volumes.json" >/dev/null; then suffix=iso; fi
+            content=$(jq -er --arg n "$volume" '.[] | select(.type == "custom" and .name == $n) | .content_type' "$work/volumes.json")
+            case $content in
+            filesystem) suffix=tar.gz ;;
+            iso) suffix=iso ;;
+            block)
+                # A live raw export has no stable point-in-time image.
+                echo "volume $project/$pool/$volume" >>"$payload/EXCLUDED"
+                continue ;;
+            *) die "unknown content type for $project/$pool/$volume: $content" ;;
+            esac
             ic storage volume export "$pool" "$volume" "$payload/projects/$project/$pool/$volume.$suffix" --compression gzip
         done <"$work/volumes"
     done <"$work/pools"
@@ -119,5 +155,6 @@ find "$base" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' ! -name "${generat
 while IFS= read -r old; do rm -rf "$old"; done <"$work/prune"
 rm "$work/prune"
 sync
-logger -t backup "verified export: $generation"
-echo "backup: verified $generation (keep 3); unmount and close the external LUKS disk before unplugging"
+logger -t backup "readback verified: $generation; VM instances and custom block volumes excluded"
+cat "$generation/EXCLUDED"
+echo "backup: readback verified $generation (keep 3); unmount and close the external LUKS disk before unplugging"

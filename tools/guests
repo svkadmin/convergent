@@ -19,11 +19,18 @@ fail() { logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests
 die() { fail "$*" || :; exit 1; }
 # Keep lock descriptors out of clients and any helpers they leave running.
 ic() {
+    case $1:${2:-} in start:svc) svc_storage_check || return ;; esac
     case $1 in
     query) incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
     *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
     esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
 }
+svc_storage_check() (
+    for path in "$pool/containers/svc" "$pool/custom/svc-metrics" "$pool/custom/svc-logs" "$pool/custom/svc-grafana"; do
+        nested=$(timeout -k 1 30 btrfs subvolume list -o "$path") || { fail "cannot check subvolumes in $path"; return 1; }
+        [ -z "$nested" ] || { fail "nested subvolumes in $path; remove them before starting svc"; return 1; }
+    done
+)
 # Fresh connections only: a shared one could still reach a guest this tool just replaced.
 rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- 6>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 retry() {
