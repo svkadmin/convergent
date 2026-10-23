@@ -181,7 +181,8 @@ fi
 background=yes owner way-secure -e convergent -a "$role" -i "$name" --socket-path "$run/sockets/wayland-0" >"$run/wayland.log" 2>&1 &
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
-# Only the Pulse socket crosses into the guest; all recording and module loading are denied.
+# Only the Pulse socket crosses into the guest: no recording, module loading, device or default
+# changes. Kill requests on other clients' streams still pass PipeWire's checks (0.1.2).
 cat >"$run/pulse.conf" <<EOF
 context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }
 context.modules = [
