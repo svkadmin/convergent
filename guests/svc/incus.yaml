@@ -7,6 +7,12 @@
 config:
   security.privileged: "false"
   security.nesting: "false"
+  # Nested subvolumes escape the container's qgroup. Masked: the kernel reads only the low 32 bits.
+  security.syscalls.deny: |
+    ioctl errno 1 [1,0x50009401,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x5000940e,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009417,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009418,SCMP_CMP_MASKED_EQ,0xffffffff]
   security.guestapi: "false"
   # The host default arp_ignore=8 reaches container interfaces; the firewalls need ARP replies.
   linux.sysctl.net.ipv4.conf.eth0.arp_ignore: "0"

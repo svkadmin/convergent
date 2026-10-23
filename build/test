@@ -520,6 +520,14 @@ EOF
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 ic() { incus --force-local --project default "$@"; }
+quota() {
+	id=$(btrfs inspect-internal rootid "$1") || return
+	limits=$(btrfs qgroup show --raw -r "$1") || return
+	printf '%s\n' "$limits" | awk -v id="0/$id" -v size="$2" \
+	    '$1 == id && $4 == size {found=1} END {exit !found}' || return
+	children=$(btrfs subvolume list -o "$1") || return
+	[ -z "$children" ]
+}
 run=/run/convergent/browser/def
 step=sockets
 cleanup() {
@@ -527,6 +535,8 @@ cleanup() {
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
+	if [ -n "${backup_snapshot:-}" ]; then remove_snapshot "$backup_snapshot" || r=1; fi
+	if [ -n "${nested_test:-}" ]; then btrfs subvolume delete "$nested_test" || r=1; fi
 	for name in tmp-20 tmp-portal; do
 		ic stop "$name" --force 2>/dev/null
 		ic delete "$name" 2>/dev/null
@@ -562,12 +572,50 @@ step=render
 [ -c /dev/dri/renderD128 ] || { modprobe vgem && udevadm settle && [ -c /dev/dri/renderD128 ]; }
 step=init
 ic init candidate-browser def -p browser-base -p browser-def
+step=storage
+pool=/var/lib/incus/storage-pools/default
+for guest in svc def; do quota "$pool/containers/$guest" 2147483648; done
+for spec in 'svc-metrics 2GiB 2147483648' 'svc-logs 6GiB 6442450944' \
+    'svc-grafana 512MiB 536870912' 'browser-def-state 4GiB 4294967296' \
+    'browser-int-state 512MiB 536870912'; do
+	set -- $spec
+	[ "$(ic storage volume get default "$1" size)" = "$2" ]
+	quota "$pool/custom/$1" "$3"
+done
+step=backup
+awk '
+    /^remove_snapshot\(\) \{/ {copy=1; n++}
+    copy {print}
+    /^}$/ {copy=0}
+    END {exit (copy || n != 1)}' /usr/local/sbin/backup >"$run/backup-cleanup"
+. "$run/backup-cleanup"
+backup_snapshot=$(mktemp -d /var/.backup.XXXXXX)
+btrfs subvolume snapshot -r /home "$backup_snapshot/home"
+remove_snapshot "$backup_snapshot"
+# A snapshot of an old /var can retain an empty subvolume placeholder.
+mkdir "$backup_snapshot" "$backup_snapshot/home"
+remove_snapshot "$backup_snapshot"
+backup_snapshot=
 step=wayland
 device wayland "source=$run/sockets/wayland-0" required=true
 step=pipewire
 device pipewire "source=$run/sockets/pulse-0" required=true
+step=nested-state
+# Exercise the launcher's guard and start together.
+awk '
+    /^if \[ "\$role" != tmp \]; then$/ {copy=1; n++}
+    copy {print}
+    copy && /^ic start "\$name"$/ {copy=0}
+    END {exit (copy || n != 1)}' /usr/local/sbin/browser >"$run/state-start"
+nested_test=$pool/custom/browser-def-state/.quota-test
+btrfs subvolume create "$nested_test"
+if (die() { echo "browser: $*" >&2; exit 1; }; role=def name=def; . "$run/state-start") >"$run/state-refusal" 2>&1; then exit 1; fi
+grep -q 'nested subvolumes in browser-def-state' "$run/state-refusal"
+[ "$(ic list def --format json | jq -r '.[] | select(.name == "def") | .status')" = Stopped ]
+btrfs subvolume delete "$nested_test"
+nested_test=
 step=start
-ic start def
+(die() { echo "browser: $*" >&2; exit 1; }; role=def name=def; . "$run/state-start")
 step=ready
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec def -- test -f /run/browser-ready; do sleep 1; done'
 step=state-paths
@@ -593,11 +641,27 @@ rmdir /home/browser/Downloads/def
 [ "$(stat -c '%u:%g:%a' /home/browser/Downloads/def)" = 1000:1000:700 ]
 [ -f /run/browser-ready ]
 STATE
+step=subvolume-denial
+for guest in def svc; do
+	# Neither shipped guest includes btrfs-progs, Python or another ioctl tool.
+	if ! ic exec "$guest" -- sh -c 'command -v btrfs' >/dev/null; then
+		echo "CV-BROWSER SKIP $guest subvolume EPERM: no guest ioctl tool"
+		continue
+	fi
+	case $guest in def) uid=1000; path=/home/browser ;; svc) uid=0; path=/var/lib/victoria-metrics ;; esac
+	if ic exec "$guest" --user "$uid" -- env LC_ALL=C btrfs subvolume create "$path/.quota-test" >"$run/subvolume-denial" 2>&1; then
+		case $guest in def) volume=browser-def-state ;; svc) volume=svc-metrics ;; esac
+		nested_test=$pool/custom/$volume/.quota-test
+		exit 1
+	fi
+	grep -q 'Operation not permitted' "$run/subvolume-denial"
+done
 step=tmp
 for mode in normal portal; do
 	name=tmp-20
 	[ "$mode" != portal ] || name=tmp-portal
 	ic init candidate-browser "$name" --ephemeral -p browser-base -p browser-tmp
+	quota "$pool/containers/$name" 2147483648
 	if [ "$mode" = portal ]; then
 		ic config set "$name" environment.BROWSER_PORTAL=1 environment.BROWSER_IPV4=100.80.3.11 limits.memory=512MiB
 		ic config device override "$name" eth0 ipv4.address=100.80.3.11 hwaddr=00:16:3e:80:03:11
