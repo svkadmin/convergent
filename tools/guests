@@ -26,7 +26,7 @@ ic() {
     esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
 }
 svc_storage_check() (
-    for path in "$pool/containers/svc" "$pool/custom/svc-metrics" "$pool/custom/svc-logs" "$pool/custom/svc-grafana"; do
+    for path in "$pool/containers/svc" "$pool/custom/default_svc-metrics" "$pool/custom/default_svc-logs" "$pool/custom/default_svc-grafana"; do
         nested=$(timeout -k 1 30 btrfs subvolume list -o "$path") || { fail "cannot check subvolumes in $path"; return 1; }
         [ -z "$nested" ] || { fail "nested subvolumes in $path; remove them before starting svc"; return 1; }
     done

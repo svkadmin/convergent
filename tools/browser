@@ -225,7 +225,7 @@ device wayland "source=$run/sockets/wayland-0" required=true
 # Retain the image socket mount path; its wire protocol is now Pulse.
 device pipewire "source=$run/sockets/pulse-0" required=true
 if [ "$role" != tmp ]; then
-    nested=$(timeout -k 1 30 btrfs subvolume list -o "/var/lib/incus/storage-pools/default/custom/browser-$role-state") || die 'cannot check browser state subvolumes'
+    nested=$(timeout -k 1 30 btrfs subvolume list -o "/var/lib/incus/storage-pools/default/custom/default_browser-$role-state") || die 'cannot check browser state subvolumes'
     [ -z "$nested" ] || die "nested subvolumes in browser-$role-state; remove them before starting"
 fi
 ic start "$name"

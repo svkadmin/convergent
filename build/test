@@ -743,7 +743,7 @@ for spec in 'svc-metrics 2GiB 2147483648' 'svc-logs 6GiB 6442450944' \
     'browser-int-state 512MiB 536870912'; do
 	set -- $spec
 	[ "$(ic storage volume get default "$1" size)" = "$2" ]
-	quota "$pool/custom/$1" "$3"
+	quota "$pool/custom/default_$1" "$3"
 done
 step=backup
 awk '
@@ -770,7 +770,7 @@ awk '
     copy {print}
     copy && /^ic start "\$name"$/ {copy=0}
     END {exit (copy || n != 1)}' /usr/local/sbin/browser >"$run/state-start"
-nested_test=$pool/custom/browser-def-state/.quota-test
+nested_test=$pool/custom/default_browser-def-state/.quota-test
 btrfs subvolume create "$nested_test"
 if (die() { echo "browser: $*" >&2; exit 1; }; role=def name=def; . "$run/state-start") >"$run/state-refusal" 2>&1; then exit 1; fi
 grep -q 'nested subvolumes in browser-def-state' "$run/state-refusal"
@@ -814,7 +814,7 @@ for guest in def svc; do
 	case $guest in def) uid=1000; path=/home/browser ;; svc) uid=0; path=/var/lib/victoria-metrics ;; esac
 	if ic exec "$guest" --user "$uid" -- env LC_ALL=C btrfs subvolume create "$path/.quota-test" >"$run/subvolume-denial" 2>&1; then
 		case $guest in def) volume=browser-def-state ;; svc) volume=svc-metrics ;; esac
-		nested_test=$pool/custom/$volume/.quota-test
+		nested_test=$pool/custom/default_$volume/.quota-test
 		exit 1
 	fi
 	grep -q 'Operation not permitted' "$run/subvolume-denial"
@@ -1021,8 +1021,15 @@ background=yes owner env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_
 	sway -c "$run/sway.conf" >"$run/sway.log" 2>&1 &
 compositor=$!; children="$children $compositor"
 wait_socket "$display" "$compositor" "$run/sway.log"
-for ipc in "$runtime"/sway-ipc.*.sock; do [ -S "$ipc" ] && break; done
-[ -S "$ipc" ] || die 'missing test Sway IPC socket'
+# Sway creates its IPC socket shortly after the Wayland one.
+attempts=0
+while :; do
+	for ipc in "$runtime"/sway-ipc.*.sock; do [ -S "$ipc" ] && break; done
+	[ ! -S "$ipc" ] || break
+	attempts=$((attempts + 1))
+	[ "$attempts" -lt 50 ] || die 'missing test Sway IPC socket'
+	sleep .1
+done
 background=yes owner pipewire >"$run/pipewire.log" 2>&1 &
 server=$!; children="$children $server"
 wait_socket "$runtime/pipewire-0" "$server" "$run/pipewire.log"
