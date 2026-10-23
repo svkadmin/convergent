@@ -364,6 +364,66 @@ ic() { incus --force-local --project default "$@"; }
 before=$(ic config get svc volatile.base_image) || bad $LINENO
 service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
 [ -n "$before" ] && [ -n "$service" ] || bad $LINENO
+# Kill while SSH is waiting, both before and after adding the handoff groups.
+for phase in delayed partial; do
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-handoff' || bad $LINENO
+    {
+        echo 'set -e'
+        if [ "$phase" = partial ]; then
+            echo 'for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done'
+        fi
+        cat <<'REMOTE'
+echo CV-HANDOFF-WAIT
+n=0
+until [ -f /tmp/convergent-test-handoff ]; do
+    [ "$n" -lt 60 ] || exit 1
+    sleep 1
+    n=$((n + 1))
+done
+rm /tmp/convergent-test-handoff
+REMOTE
+        if [ "$phase" = delayed ]; then
+            echo 'for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done'
+        fi
+        echo 'ifconfig -g handoff carpdemote 128'
+        echo 'echo CV-HANDOFF-DONE'
+    } >"$release/handoff-command"
+    awk '
+        {print}
+        $0 == "update() {" {
+            print "    touch \"$state/fw.handoff\"; sync"
+            print "    fw_mutate fw1 \"$(cat /var/lib/convergent/test-release/handoff-command)\""
+            print "    exit 0"
+        }
+    ' /usr/local/sbin/guests >"$release/guests-handoff"
+    log=/var/log/guests-update-handoff-$phase.log
+    sh "$release/guests-handoff" update fw "$release/guests/fw" >"$log" 2>&1 &
+    updater=$!
+    n=0
+    until grep -qx CV-HANDOFF-WAIT "$log" || [ "$n" -ge 60 ]; do sleep 1; n=$((n + 1)); done
+    grep -qx CV-HANDOFF-WAIT "$log" || bad $LINENO
+    kill -KILL "$updater" || bad $LINENO
+    code=0; wait "$updater" || code=$?
+    [ "$code" = 137 ] || bad $LINENO
+    flock -n /run/convergent/guests.lock true && bad $LINENO
+    /usr/local/sbin/guests update fw "$release/no-such-image" >"$log.resume" 2>&1 &
+    resume=$!
+    sleep 1
+    [ -f "$state/fw.handoff" ] && kill -0 "$resume" || bad $LINENO
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'touch /tmp/convergent-test-handoff' || bad $LINENO
+    code=0; wait "$resume" || code=$?
+    [ "$code" = 1 ] && grep -qx CV-HANDOFF-DONE "$log" && [ ! -e "$state/fw.handoff" ] || bad $LINENO
+    carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig) || bad $LINENO
+    printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* (handoff|upgrade)( |$)' && bad $LINENO
+done
+# Recreate a killed handoff and its leftover probe routes before the normal update.
+touch "$state/fw.handoff" && sync || bad $LINENO
+timeout 30 ssh -F /etc/convergent/ssh_config fw1 'set -e
+for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done
+ifconfig -g handoff carpdemote 128' || bad $LINENO
+for address in 100.80.0.10 100.80.2.10; do
+    ip route replace "$address/32" via 100.80.1.3 dev host || bad $LINENO
+done
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
@@ -378,6 +438,10 @@ fw=$?
 kill "$probe" 2>/dev/null
 echo CV-UPDATE fw "$fw"
 [ "$fw" = 0 ] || bad $LINENO
+[ ! -e "$state/fw.handoff" ] || bad $LINENO
+for address in 100.80.0.10 100.80.2.10; do
+    [ -z "$(ip route show "$address/32")" ] || bad $LINENO
+done
 # Same-image replacements must still traverse both firewalls and the failover soak.
 awk '/^\+ replace fw2$/ && n == 0 {n++}
     /^\+ soak fw2 fw1$/ && n == 1 {n++}
@@ -385,11 +449,11 @@ awk '/^\+ replace fw2$/ && n == 0 {n++}
     /^\+ soak fw1 fw2$/ && n == 3 {n++}
     END {exit !(n == 4)}' /var/log/guests-update-fw.log || bad $LINENO
 for f in fw1 fw2; do
-	case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+	# A replaced fw2 is seeded into the upgrade group at demotion 0; only fw1 must leave it.
+	case $f in fw1) want=MASTER groups='handoff|upgrade' ;; fw2) want=BACKUP groups=handoff ;; esac
 	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || bad $LINENO
 	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || bad $LINENO
-	demote=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'ifconfig -g carp') || bad $LINENO
-	[ "$demote" = 'carp: carp demote count 0' ] || bad $LINENO
+	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
 done
 # wan must answer Incus's power button: a same-image replacement, no forced stop.
 sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-update-wan.log
@@ -400,11 +464,89 @@ echo CV-UPDATE wan "$wan"
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
 done
+# Interrupted backup preparation must leave neither snapshots nor a stopped original svc.
+for fault in fail kill snapshot export; do
+    for volume in svc-metrics svc-logs svc-grafana; do
+        ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.before"
+    done
+    if [ "$fault" = snapshot ] || [ "$fault" = export ]; then
+        rm -f "$release/$fault-wait" "$release/$fault-go"
+        printf 'backup_fault=%s\n' "$fault" >"$release/guests-export"
+        cat >>"$release/guests-export" <<'FAULT'
+incus() {
+    case "$backup_fault:$*" in snapshot:*' storage volume snapshot create default svc-metrics '*|export:*' export svc '*)
+        touch "/var/lib/convergent/test-release/$backup_fault-wait"
+        kill -KILL "$$"
+        n=0
+        until [ -f "/var/lib/convergent/test-release/$backup_fault-go" ]; do
+            [ "$n" -lt 60 ] || return 1
+            sleep 1
+            n=$((n + 1))
+        done
+        command incus "$@" || return
+        echo "CV-$backup_fault-DONE"
+        return
+        ;;
+    esac
+    command incus "$@"
+}
+FAULT
+        cat /usr/local/sbin/guests >>"$release/guests-export"
+    else
+        awk -v fault="$fault" '
+        /ic export "\$guest"/ {
+            if (fault == "kill") print "    kill -KILL \"$$\""
+            else print "    die \"injected export failure\""
+        }
+        {print}
+        ' /usr/local/sbin/guests >"$release/guests-export"
+    fi
+    sh "$release/guests-export" update svc "$release/guests/svc" >"/var/log/guests-update-export-$fault.log" 2>&1
+    code=$?
+    case $fault in fail) [ "$code" = 1 ] ;; kill|snapshot|export) [ "$code" = 137 ] ;; esac || bad $LINENO
+    if [ "$fault" = snapshot ] || [ "$fault" = export ]; then
+        [ -f "$release/$fault-wait" ] || bad $LINENO
+        flock -n /run/convergent/guests.lock true && bad $LINENO
+        /usr/local/sbin/guests update svc "$release/no-such-image" >"/var/log/guests-update-$fault-resume.log" 2>&1 &
+        resume=$!
+        sleep 1
+        [ -f "$state/preparing" ] && kill -0 "$resume" || bad $LINENO
+        touch "$release/$fault-go"
+        code=0; wait "$resume" || code=$?
+        [ "$code" = 1 ] && grep -qx "CV-$fault-DONE" "/var/log/guests-update-export-$fault.log" || bad $LINENO
+    fi
+    if [ "$fault" = kill ]; then
+        [ -f "$state/preparing" ] && [ -f "$state/profiles.before/svc.yaml" ] || bad $LINENO
+        # A usage failure must not consume another lock holder's recovery copy.
+        (
+            exec 9>/run/convergent/guests.lock
+            flock -x 9 || exit 1
+            saved=$(sha256sum "$state/profiles.before/svc.yaml") || exit 1
+            ic profile set svc user.convergent.lock-test held || exit 1
+            recovering=1 /usr/local/sbin/guests >/dev/null 2>&1 && exit 1
+            [ "$(sha256sum "$state/profiles.before/svc.yaml")" = "$saved" ] &&
+                [ "$(ic profile get svc user.convergent.lock-test)" = held ]
+        ) || bad $LINENO
+        # Recovery runs before image validation; no second replacement is needed.
+        /usr/local/sbin/guests update svc "$release/no-such-image" >/var/log/guests-update-export-resume.log 2>&1 && bad $LINENO
+    fi
+    for volume in svc-metrics svc-logs svc-grafana; do
+        ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.after"
+        cmp "$release/$volume.before" "$release/$volume.after" || bad $LINENO
+    done
+    [ ! -e "$state/preparing" ] && [ ! -e "$state/profiles.before" ] && [ ! -e "$state/pending" ] || bad $LINENO
+    [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
+    [ "$(ic profile get svc user.convergent.lock-test)" = '' ] || bad $LINENO
+    incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
+    ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+done
 # This svc never comes up: 150 s before its rollback (also the restored svc's budget), not five minutes.
 GUEST_SVC_TIMEOUT=150 sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
 svc=$?
 echo CV-UPDATE svc "$svc"
 [ "$svc" != 0 ] || bad $LINENO
+grep -q 'WARNING: rollback svc/.*logs accepted by the candidate.*may be lost' /var/log/guests-update-svc.log || bad $LINENO
+grep -q 'WARNING rollback svc/.*logs accepted by the candidate.*may be lost' "$state/updates" || bad $LINENO
 # Require a rebuilt candidate to reach health checks and then restore its snapshot.
 awk '/^\+ ic rebuild candidate-svc svc$/ && n == 0 {n++}
     /^\+ healthy svc$/ && n == 1 {n++}
@@ -436,6 +578,27 @@ timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt"
 booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 staged=/var/lib/convergent/guest-updates/$booted
 installed=/var/lib/convergent/release-guests/guests/svc
+# Commit recovery must keep the candidate profile, even if pruning fails.
+for fault in committed pruning; do
+    ic profile set svc user.convergent.commit-test old || bad $LINENO
+    awk -v fault="$fault" '
+        {print}
+        fault == "pruning" && $0 == "prune() {" {print "    return 1"}
+        fault == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return" {
+            print "    kill -KILL \"$$\""
+        }
+    ' /usr/local/sbin/guests >"$release/guests-commit"
+    sh "$release/guests-commit" update svc "$release/guests/svc" >"/var/log/guests-update-$fault.log" 2>&1
+    code=$?
+    case $fault in committed) [ "$code" = 137 ] ;; pruning) [ "$code" = 1 ] ;; esac || bad $LINENO
+    if [ "$fault" = committed ]; then
+        [ -f "$state/committed" ] && [ -f "$state/profiles.before/svc.yaml" ] || bad $LINENO
+        /usr/local/sbin/guests update svc "$release/no-such-image" >/var/log/guests-update-commit-resume.log 2>&1 && bad $LINENO
+    fi
+    [ "$(ic profile get svc user.convergent.commit-test)" = '' ] || bad $LINENO
+    for journal in committed pending profiles.before; do [ ! -e "$state/$journal" ] || bad $LINENO; done
+    ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+done
 (umask 077; mkdir -p "$staged" "$installed"; cp -a "$release/guests/svc" "$staged/") || bad $LINENO
 echo old >"$installed/SHA256SUMS"
 updates=$(wc -l <"$state/updates")
