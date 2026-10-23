@@ -49,9 +49,11 @@ done
 good=0
 bad=0
 for ifc in $UP_IFS; do
-	for cidr in $(ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | awk '{print $4}'); do
+	route_overlap=$(cat "$d/dhcp-overlap.$ifc" 2>/dev/null || :)
+	for cidr in $(ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | awk '{print $4}') $route_overlap; do
 		if overlaps_internal "${cidr%/*}" "${cidr#*/}"; then
 			bad=1
+			[ -z "$route_overlap" ] || ! grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
 			echo "$ifc $cidr $(date +%s)" > "$d/refused"
 			logger -t convergent-alert -p local0.crit \
 				"UpstreamOverlap interface=$ifc lease=$cidr internal=$INTERNAL_NET action=refused"
