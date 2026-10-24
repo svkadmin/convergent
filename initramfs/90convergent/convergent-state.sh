@@ -47,16 +47,12 @@ grow_state() {
 }
 # Arm without magic close; a hang must reset the board.
 arm_watchdog() {
-	if [ -e "$NEWROOT/etc/init.d/convergent-watchdog" ]; then
-		# TCO watchdog: LPC or SMBus, depending on chipset.
-		modprobe -q lpc_ich
-		modprobe -q i2c_i801
-		if modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ]; then
-			printf '.' >/dev/watchdog
-		else
-			warn "state: no hardware watchdog; a hang needs a manual reset"
-		fi
-	fi
+	# TCO watchdog: LPC or SMBus, depending on chipset.
+	modprobe -q lpc_ich
+	modprobe -q i2c_i801
+	modprobe iTCO_wdt heartbeat=180 && udevadm settle && [ -c /dev/watchdog ] &&
+		printf '.' >/dev/watchdog ||
+		warn "state: cannot arm hardware watchdog; a hang needs a manual reset"
 }
 recovery=$(getarg convergent.recovery=) || recovery=
 [ "$recovery" = 1 ] || arm_watchdog

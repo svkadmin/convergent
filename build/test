@@ -1534,6 +1534,8 @@ CHECK
 t getent passwd greetd
 t sh -c '[ "$(stat -c "%U:%G %a" /var/log/btmp)" = "root:utmp 600" ]'
 t sh -c '[ "$(sysctl -n kernel.panic)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops)" = 1 ]'
+t grep -q ' 2 restart_on_error restart_on_corruption"' /proc/cmdline
+t sh -c 'dmsetup table /dev/dm-0 | grep -Eq " verity .* 2 (restart_on_error restart_on_corruption|restart_on_corruption restart_on_error)$"'
 for file in /etc/cron.d/convergent /etc/anacrontab /etc/cron.d/0hourly; do
 	[ "$file" != /etc/cron.d/0hourly ] || [ -f "$file" ] || continue
 	t grep -qx 'MAILTO=""' "$file"
@@ -1783,6 +1785,8 @@ qemu = subprocess.Popen([
     "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
+    # Return each corrupt boot to the fallback counter checks.
+    (["-no-reboot"] if goal == "bless" else []) +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
@@ -1896,7 +1900,7 @@ blessed() {
 }
 
 refused() {
-	[ "$ended" = poweroff ] && ! grep -q ' is good' "$log" &&
+	[ "$ended" = reboot ] && ! grep -q ' is good' "$log" &&
 		grep -Eq 'verity:.*(data|metadata) block [0-9]+ is corrupted' "$log"
 }
 
@@ -1948,7 +1952,7 @@ recovery)
 	umount "$esp"
 	detach
 	;;
-corrupt) refused || die "expected verity corruption and guest poweroff without blessing; see $log" ;;
+corrupt) refused || die "expected verity corruption and guest reboot without blessing; see $log" ;;
 update)
 	[ "$ended" = reboot ] || die "signed update did not reboot ($ended); see $log"
 	for line in 'unsigned refused' 'tampered refused' 'wrongkey refused' 'good written'; do
@@ -2003,7 +2007,7 @@ fallback | interrupt)
 		for attempt in 1 2 3 4 5 6; do
 			run_vm
 			if blessed; then break; fi
-			refused || die "B did not fail with verity and poweroff; see $log"
+			refused || die "B did not fail with verity and reboot; see $log"
 			failed=$((failed + 1))
 		done
 		blessed || die "A did not return within six attempts; see $log"
