@@ -1105,7 +1105,7 @@ record_installed() {
     case $1 in
     def|int)
         # One role cannot certify the whole browser generation.
-        rm -f "$installed/guests/browser/SHA256SUMS"
+        : >"$installed/guests/browser.stale"
         sync
         return
         ;;
@@ -1124,6 +1124,7 @@ record_installed() {
     mv "$installed_source" "$installed/guests/$1"
     sync
     rm -rf "$installed/guests/$1.old"
+    [ "$1" != browser ] || { rm -f "$installed/guests/browser.stale"; sync; }
 }
 apply() {
     applying=1
@@ -1210,7 +1211,15 @@ exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
 # A killed seed writer may still have a guest disk mounted below its scratch directory.
-rm -rf --one-file-system "$state"/work.??????
+for stale in "$state"/work.??????; do
+    [ -d "$stale" ] && [ ! -L "$stale" ] || continue
+    if mountpoint -q "$stale/root"; then umount "$stale/root" 9>&- || continue; fi
+    for disk in "$stale/seed.img" "$pool/virtual-machines/wan/root.img"; do
+        [ -f "$disk" ] || continue
+        for stale_loop in $(losetup -j "$disk" | cut -d: -f1); do losetup -d "$stale_loop" || :; done
+    done
+    rm -rf --one-file-system "$stale" || :
+done
 if [ "$1" != apply ] && [ "$1" != rebuild ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
     flock -n 6 || die 'close browsers before updating guests'

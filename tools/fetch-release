@@ -36,6 +36,19 @@ bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" 
 mf() { case $1 in guests/*) echo "$gm" ;; *) echo "$dir/manifest" ;; esac; }
 # A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (build/guests: the same).
 ident() { (cd "$1" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
+guest_valid() (
+	g=${1##*/}
+	[ "$(ident "$1")" = "$(field guest "$g" "$gm" | tr A-F a-f)" ] || return 1
+	# SHA256SUMS cannot name anything outside this guest's signed file list.
+	awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+		{ sub(/^\*/, "", $2); print $2 }' "$1/SHA256SUMS" >"$dir/artifacts" || return 1
+	while read -r artifact; do
+		f=guests/$g/$artifact
+		guest_path "$f" || return 1
+		case " $2 " in *" $f "* | *" $f.zst "*) ;; *) return 1 ;; esac
+	done <"$dir/artifacts"
+	(cd "$1" && sha256sum -c --quiet SHA256SUMS)
+)
 staged_current() (
 	[ -d "$staged/$latest" ] || return 1
 	private "$staged"
@@ -45,19 +58,7 @@ staged_current() (
 	for g in $changed; do [ -d "$staged/$latest/$g" ] || return 1; done
 	for g in fw wan svc browser; do
 		[ -d "$staged/$latest/$g" ] || continue
-		guest_id=$(field guest "$g" "$gm" | tr A-F a-f)
-		[ "$(ident "$staged/$latest/$g")" = "$guest_id" ] || return 1
-		awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
-			{ sub(/^\*/, "", $2); print $2 }' "$staged/$latest/$g/SHA256SUMS" >"$dir/artifacts" || return 1
-		while read -r artifact; do
-			f=guests/$g/$artifact
-			guest_path "$f" || return 1
-			case " $paths " in
-			*" $f "* | *" $f.zst "*) ;;
-			*) return 1 ;;
-			esac
-		done <"$dir/artifacts"
-		(cd "$staged/$latest/$g" && sha256sum -c --quiet SHA256SUMS) || return 1
+		guest_valid "$staged/$latest/$g" "$paths" || return 1
 	done
 )
 download() {
@@ -226,6 +227,7 @@ awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser)$/ || length($3) 
 while read -r g guest_id; do
 	installed=
 	[ ! -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] ||
+		[ -e "/var/lib/convergent/release-guests/guests/$g.stale" ] ||
 		installed=$(ident "/var/lib/convergent/release-guests/guests/$g")
 	[ "$installed" != "$guest_id" ] || { rm -rf "$dir/guests/$g"; continue; }
 	changed="$changed $g"
@@ -286,7 +288,6 @@ for f in $files; do download "$f"; done
 [ -z "$src_open" ] || close_src || die "a firewall kept the update source open; it expires within 4 hours"
 
 for g in $changed; do
-	[ "$(ident "$dir/guests/$g")" = "$(field guest "$g" "$gm" | tr A-F a-f)" ] || die "$g identity mismatch"
 	for f in $files; do
 		case $f in guests/"$g"/*.zst) ;; *) continue ;; esac
 		unpacked=$(field unpacked "${f%.zst}" "$gm")
@@ -295,15 +296,7 @@ for g in $changed; do
 		[ "$(cat "$dir/unpack-status")" = 0 ] && [ "$(have "${f%.zst}")" = "$unpacked" ] ||
 			{ rm -f "$dir/${f%.zst}"; die "$f unpacked size mismatch"; }
 	done
-	# SHA256SUMS cannot name anything outside this guest's signed file list.
-	awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
-		{ sub(/^\*/, "", $2); print $2 }' "$dir/guests/$g/SHA256SUMS" >"$dir/artifacts" || die "invalid $g/SHA256SUMS"
-	while read -r artifact; do
-		f=guests/$g/$artifact
-		guest_path "$f" || die "invalid checksum path: $f"
-		case " $files " in *" $f "* | *" $f.zst "*) ;; *) die "unsigned artifact: $f" ;; esac
-	done <"$dir/artifacts"
-	(cd "$dir/guests/$g" && sha256sum -c SHA256SUMS) || die "$g checksum mismatch"
+	guest_valid "$dir/guests/$g" "$files" || die "$g identity, artifact path or checksum mismatch"
 done
 # Staged before the slot write: a power loss after it still finds them at the next boot.
 exec 8>/run/convergent/guests.lock

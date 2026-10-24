@@ -34,14 +34,7 @@ source_now() {
 
 rc=0 changed=0
 policy_online() {
-	for c in "$cpu"/../cpu[0-9]*; do
-		link=$(readlink "$c/cpufreq") || continue
-		[ "${link##*/}" = "${1##*/}" ] || continue
-		cpu_online=1
-		[ ! -e "$c/online" ] || read -r cpu_online 2>/dev/null <"$c/online" || continue
-		[ "$cpu_online" != 1 ] || return 0
-	done
-	return 1
+	read -r affected 2>/dev/null <"$1/affected_cpus" && [ -n "$affected" ]
 }
 write_failed() {
 	message="$1: $3 (requested=$2 observed=${current:-unreadable})"
@@ -167,9 +160,9 @@ for p in "$cpu"/policy[0-9]*; do
 	[ -d "$p" ] || continue
 	policy_online "$p" || continue
 	if [ -e "$p/energy_performance_preference" ]; then
-		set_file "$p/scaling_governor" powersave || continue
-		set_file "$p/energy_performance_preference" "$epp" || continue
+		set_file "$p/scaling_governor" powersave && set_file "$p/energy_performance_preference" "$epp"
 	fi
+	policy_online "$p" || continue
 	max=$cap
 	[ ! -r "$p/cpuinfo_max_freq" ] || read -r max <"$p/cpuinfo_max_freq" || max=$cap
 	if [ "$cap" = 0 ] || [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi

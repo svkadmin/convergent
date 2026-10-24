@@ -431,6 +431,75 @@ ic() { incus --force-local --project default "$@"; }
     rm -rf "$work"
 )
 [ "$?" = 0 ] || bad $LINENO
+sh -eu <<'CHECK' || bad $LINENO
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+# Scratch failures must not prevent journal recovery.
+sed -n '/^for stale in /,/^done$/p' /usr/local/sbin/guests >"$work/stale"
+state=$work pool=$work/pool
+mkdir "$state/work.123456"
+: >"$state/work.123456/seed.img"
+for fault in none unmount detach remove; do
+	(
+		mountpoint() { return 0; }
+		umount() { echo unmount; [ "$fault" != unmount ]; }
+		losetup() { case $1 in -j) echo /dev/loop7: ;; -d) echo detach; [ "$fault" != detach ] ;; esac; }
+		rm() { echo remove; [ "$fault" != remove ]; }
+		. "$work/stale"
+		echo recovered
+	) >"$work/out"
+	grep -qx recovered "$work/out"
+	case $fault in
+	unmount) [ "$(cat "$work/out")" = "$(printf 'unmount\nrecovered')" ] ;;
+	*) [ "$(cat "$work/out")" = "$(printf 'unmount\ndetach\nremove\nrecovered')" ] ;;
+	esac
+done
+# Role updates leave the reusable archive intact; only a whole update clears identity.
+sed -n '/^record_installed() {/,/^}/p' /usr/local/sbin/guests |
+	sed "s|installed=/var/lib/convergent/release-guests|installed=$work/archive|" >"$work/record"
+. "$work/record"
+mkdir -p "$work/archive/guests/browser"
+echo checksum >"$work/archive/guests/browser/SHA256SUMS"
+sync() { :; }
+applying=
+for role in def int; do
+	record_installed "$role" "$work/archive/guests/browser"
+	grep -qx checksum "$installed/guests/browser/SHA256SUMS"
+	[ -f "$installed/guests/browser.stale" ]
+done
+record_installed browser "$installed/guests/browser"
+grep -qx checksum "$installed/guests/browser/SHA256SUMS"
+[ ! -e "$installed/guests/browser.stale" ]
+# Reuse and fresh downloads share identity, path and checksum validation.
+eval "$(sed -n '/^field()/p; /^ident()/p; /^guest_path() {/,/^}/p; /^guest_valid() (/,/^)/p; /^staged_current() (/,/^)/p' /usr/local/sbin/fetch-release)"
+dir=$work staged=$work/staged latest=1 changed=browser gm=$work/manifest
+private() { :; }
+mkdir -p "$staged/$latest/browser"
+for sample in valid compressed corrupt unsigned traversal malformed identity; do
+	echo image >"$staged/$latest/browser/rootfs.tar.gz"
+	(cd "$staged/$latest/browser" && sha256sum rootfs.tar.gz >SHA256SUMS)
+	paths=guests/browser/rootfs.tar.gz
+	case $sample in
+	compressed) paths=$paths.zst ;;
+	unsigned) paths=guests/browser/other ;;
+	traversal) sed 's|rootfs.tar.gz|../rootfs.tar.gz|' "$staged/$latest/browser/SHA256SUMS" >"$work/sums"; mv "$work/sums" "$staged/$latest/browser/SHA256SUMS" ;;
+	malformed) echo broken >"$staged/$latest/browser/SHA256SUMS" ;;
+	esac
+	echo "guest browser $(ident "$staged/$latest/browser")" >"$gm"
+	case $sample in corrupt) echo damaged >>"$staged/$latest/browser/rootfs.tar.gz" ;; identity) echo changed >>"$staged/$latest/browser/SHA256SUMS" ;; esac
+	if guest_valid "$staged/$latest/browser" "$paths" >/dev/null 2>&1; then
+		case $sample in valid|compressed) ;; *) exit 1 ;; esac
+	else
+		case $sample in valid|compressed) exit 1 ;; esac
+	fi
+	guest_files=$paths
+	if staged_current >/dev/null 2>&1; then
+		case $sample in valid|compressed) ;; *) exit 1 ;; esac
+	else
+		case $sample in valid|compressed) exit 1 ;; esac
+	fi
+done
+CHECK
 fw_diag() {
     for f in fw1 fw2; do
         timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
@@ -904,6 +973,7 @@ if grep -q '^downloading guests/' /var/log/online-retry.log; then result=1; fi
 for g in fw wan svc browser; do
 	[ -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] || { echo "CV-ONLINE missing $g"; result=1; }
 done
+[ ! -e /var/lib/convergent/release-guests/guests/browser.stale ] || result=1
 [ -z "$(ls -A /var/lib/convergent/guest-updates 2>/dev/null)" ] || result=1
 line=$(timeout -k 5 120 fetch-release check 2>&1)
 echo "CV-ONLINE check: $line"
@@ -1548,6 +1618,55 @@ for names in '[]' '[{"name":"def"}]' '[{"name":"int"}]' '[{"name":"def"},{"name"
 		grep -q 'open and close both def and int browsers, then retry acceptance' "$work/out"
 	fi
 done
+CHECK
+t sh -u <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+eval "$(sed -n '/^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p' /usr/local/sbin/power)"
+sed -n '/^policies=0$/,/^done$/p' /usr/local/sbin/power >"$work/policies"
+cpu=$work/cpu cap=2000 epp=power
+mkdir -p "$cpu/policy0"
+: >"$cpu/policy0/energy_performance_preference"
+logger() { :; }
+set_limit() { applied=$2; }
+set_file() {
+	[ "${1##*/}" = "$fault" ] || [ "$fault" = hotplug ] || return 0
+	[ "$fault" != hotplug ] || : >"$cpu/policy0/affected_cpus"
+	current=old
+	write_failed "$1" "$2" rejected 2>/dev/null
+}
+for fault in none scaling_governor energy_performance_preference hotplug; do
+	rc=0 applied=
+	echo 0 >"$cpu/policy0/affected_cpus"
+	. "$work/policies"
+	case $fault in
+	none) [ "$rc:$applied" = 0:2000 ] || exit 1 ;;
+	hotplug) [ "$rc:$applied" = 0: ] || exit 1 ;;
+	*) [ "$rc:$applied" = 1:2000 ] || exit 1 ;;
+	esac
+done
+rm "$cpu/policy0/affected_cpus"
+if policy_online "$cpu/policy0"; then exit 1; fi
+CHECK
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+sed -n '/printf.*json.*jq -e --arg key/,/not saved/p' /usr/lib/convergent/sys/51-touchpad >"$work/verify"
+die() { exit 1; }
+for setting in middle_emulation tap natural_scroll dwt scroll_method; do
+	case $setting in scroll_method) value=none ;; *) value=disabled ;; esac
+	json=$(jq -nc --arg key "$setting" --arg value "$value" '[{type:"touchpad",libinput:{($key):$value}},{type:"touchpad",libinput:{}}]')
+	. "$work/verify"
+	case $setting in scroll_method) value=two_finger ;; *) value=enabled ;; esac
+	if (. "$work/verify"); then exit 1; fi
+done
+setting=scroll_factor value=0
+json='[{"type":"touchpad","scroll_factor":0}]'
+. "$work/verify"
+json='[{"type":"touchpad","scroll_factor":1}]'
+if (. "$work/verify"); then exit 1; fi
+json='[{"type":"touchpad"}]'
+if (. "$work/verify"); then exit 1; fi
 CHECK
 t su -s /bin/sh nobody -c '/usr/local/sbin/sys help >/dev/null'
 t su -s /bin/sh nobody -c '[ "$(/usr/local/sbin/sys --pick | wc -l)" -ge 30 ]'
