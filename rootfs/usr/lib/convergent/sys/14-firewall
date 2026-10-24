@@ -114,9 +114,13 @@ firewall_change() (
 	fi
 	[ ! -e "$journal" ] || die 'maintenance already recorded; use sys firewall undo'
 	[ ! -e /var/lib/convergent/dns/pending ] || die 'recover the pending DNS push first'
-	if firewall_pair fw1 fw2; then master=fw1 peer=fw2
-	elif firewall_pair fw2 fw1; then master=fw2 peer=fw1
-	else die 'need one master and one backup across all six segments'; fi
+	# A role change settles within seconds; wait for it before refusing.
+	for attempt in 1 2 3 4 5 6; do
+		if firewall_pair fw1 fw2; then master=fw1 peer=fw2; break
+		elif firewall_pair fw2 fw1; then master=fw2 peer=fw1; break; fi
+		[ "$attempt" = 6 ] && die 'need one master and one backup across all six segments'
+		sleep 2
+	done
 	firewall_healthy "$peer" && firewall_healthy "$master" || die 'peer or master is unhealthy; no failover attempted'
 	confirm "Demote $master and move all six segments to $peer until sys firewall undo" || exit 1
 	printf '%s\n' "$master" >"$journal.new" && mv "$journal.new" "$journal" || exit 1

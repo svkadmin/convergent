@@ -513,11 +513,11 @@ done
             for (i=1; i<=n; i++) print "test-" i ".example.net CNAME ."
         }' >"$dns/list.rpz"
     fi
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
+    timeout 90 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
     dns-push local
     [ ! -e "$dns/pending" ]
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
+    timeout 90 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
     touch "$dns/pending"
     dns-push list
     [ ! -e "$dns/pending" ]
