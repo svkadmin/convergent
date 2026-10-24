@@ -136,8 +136,9 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   100; `net.inet.carp.preempt=1`, so all addresses move together; advertisements unicast to the
   peer (`carppeer`), so the Linux bridges' multicast handling plays no part.
 - **pfsync** on the sync link, with `defer`, so a failover keeps established connections.
-- **ifstated** demotes the whole CARP group when the wan VM stops answering (a probe of wan's
-  transit address, not the interface's carrier, which a virtual NIC never loses).
+- **wan-watch** runs under rc.d and demotes CARP by 128 if unbound dies or wan's transit address
+  stops answering. Each round sends three probes 300 ms apart, bounded to one second;
+  one reply passes, and three consecutive good rounds clear its owned demotion.
 - **pf** routes and filters between all segments (section 4.2), with state limits per source,
   MSS clamping toward wan, and a ruleset hash the checker compares with the release.
 - **unbound**, from OpenBSD's base system, answers DNS on every segment's gateway address, so a
@@ -151,6 +152,7 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   recoverable without decrementing health/upgrade counters. Undo checks both nodes and the
   normal fw1-master pair. Guest and DNS push locks serialize the operation; finish maintenance
   before performing guest updates.
+  `sys firewall rebuild fw1|fw2` replaces a broken node from installed images with a healthy MASTER peer, reusing guest journals, seeding, handback and DNS push.
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
 - **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
 - **No DHCP:** every address is static (section 4.1).
@@ -785,7 +787,8 @@ forced-command allowlist are unchanged.
 No cron interval was lengthened: the minute jobs enforce portal expiry, publish fresh network
 facts or notice boot/update changes. `check auto` already gates expensive successful scans to
 daily and failed scans to five minutes. Host facts already run hourly/daily. The firewall's
-two-second wan-watch probe is a failover control, not merely a dashboard refresh.
+continuous wan-watch loop uses one-second probe deadlines and three good rounds to recover;
+it is a failover control, not merely a dashboard refresh.
 
 ### 11.2 Proposals, not enabled
 

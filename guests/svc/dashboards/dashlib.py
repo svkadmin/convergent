@@ -50,7 +50,7 @@ SECURITY = (INFRA + ' AND (_msg:~' + json.dumps('apparmor="DENIED"|pam_faillock|
             'OR (app_name:="sudo" AND _msg:~"COMMAND=|incorrect password|not in the sudoers")) AND ' + QUIET)
 CARP_CHANGES = INFRA + ' AND hostname:~"^fw[12]$" AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)"'
 FW_CHANGES = (INFRA + ' AND hostname:~"^fw[12]$" AND '
-              '(_msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)" OR app_name:="ifstated" OR app_name:="pfctl") AND ' + QUIET)
+              '(_msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)" OR app_name:="wan-watch" OR app_name:="pfctl") AND ' + QUIET)
 SECURITY_EVENTS = (INFRA + ' AND ('
                    '(app_name:in("greetd","tuigreet","login","su","sudo","sshd") AND '
                    '_msg:~"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=") '
