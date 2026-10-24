@@ -33,15 +33,66 @@ source_now() {
 }
 
 rc=0 changed=0
+policy_online() {
+	for c in "$cpu"/../cpu[0-9]*; do
+		link=$(readlink "$c/cpufreq") || continue
+		[ "${link##*/}" = "${1##*/}" ] || continue
+		cpu_online=1
+		[ ! -e "$c/online" ] || read -r cpu_online 2>/dev/null <"$c/online" || continue
+		[ "$cpu_online" != 1 ] || return 0
+	done
+	return 1
+}
+write_failed() {
+	message="$1: $3 (requested=$2 observed=${current:-unreadable})"
+	offline=0
+	case $1 in "$cpu"/policy*/*) policy_online "${1%/*}" || offline=1 ;; esac
+	[ "$offline" = 0 ] || message="$message; policy now offline"
+	logger -t power "$message"
+	echo "power: $message" >&2
+	[ "$offline" = 1 ] || rc=1
+	return 1
+}
 set_file() {
 	[ -e "$1" ] || return 0
 	current=
-	read -r current <"$1" 2>/dev/null || :
+	read -r current 2>/dev/null <"$1" || :
 	[ "$current" = "$2" ] && return 0
-	if echo "$2" >"$1" 2>/dev/null; then
+	if echo "$2" 2>/dev/null >"$1"; then
 		changed=1
-		read -r current <"$1" && [ "$current" = "$2" ] || { echo "power: $1 did not retain $2" >&2; rc=1; return 1; }
-	else echo "power: could not set $1 to $2" >&2; rc=1; return 1; fi
+		current=
+		read -r current 2>/dev/null <"$1" && [ "$current" = "$2" ] || write_failed "$1" "$2" 'readback mismatch'
+	else
+		current=
+		read -r current 2>/dev/null <"$1" || :
+		write_failed "$1" "$2" 'write rejected'
+	fi
+}
+set_limit() {
+	[ -e "$1" ] || return 0
+	current=
+	read -r current 2>/dev/null <"$1" || :
+	[ "$current" = "$2" ] && return 0
+	if ! echo "$2" 2>/dev/null >"$1"; then
+		current=
+		read -r current 2>/dev/null <"$1" || :
+		write_failed "$1" "$2" 'write rejected'
+		return 1
+	fi
+	changed=1
+	# QoS recalculation is asynchronous; other requests may impose a lower cap.
+	n=0
+	while :; do
+		current=
+		read -r current 2>/dev/null <"$1" || :
+		case $current in ''|*[!0-9]*) ;;
+		*) [ "$current" -gt 0 ] && [ "$current" -le "$2" ] && return 0 ;;
+		esac
+		[ "$n" -lt 10 ] || break
+		n=$((n + 1))
+		sleep 0.1
+	done
+	write_failed "$1" "$2" 'write accepted; effective limit still pending or constrained'
 }
 
 save_choice() {
@@ -75,8 +126,11 @@ charge() {
 			types=$(cat "$s/charge_types") || { rc=1; continue; }
 			case $types in *"[$charge_type]"*) ;;
 			*)
-				if echo "$charge_type" >"$s/charge_types"; then changed=1
-				else echo "power: cannot select $charge_type charging" >&2; rc=1; fi ;;
+				if echo "$charge_type" 2>/dev/null >"$s/charge_types"; then changed=1
+				else
+					current=$(cat "$s/charge_types" 2>/dev/null) || current=
+					write_failed "$s/charge_types" "$charge_type" 'write rejected'
+				fi ;;
 			esac
 		fi
 	done
@@ -111,15 +165,17 @@ if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
 policies=0
 for p in "$cpu"/policy[0-9]*; do
 	[ -d "$p" ] || continue
+	policy_online "$p" || continue
 	if [ -e "$p/energy_performance_preference" ]; then
-		policies=$((policies + 1))
-		set_file "$p/scaling_governor" powersave
-		set_file "$p/energy_performance_preference" "$epp"
+		set_file "$p/scaling_governor" powersave || continue
+		set_file "$p/energy_performance_preference" "$epp" || continue
 	fi
 	max=$cap
 	[ ! -r "$p/cpuinfo_max_freq" ] || read -r max <"$p/cpuinfo_max_freq" || max=$cap
 	if [ "$cap" = 0 ] || [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
-	set_file "$p/scaling_max_freq" "$want"
+	set_limit "$p/scaling_max_freq" "$want" || continue
+	policy_online "$p" || continue
+	[ ! -e "$p/energy_performance_preference" ] || policies=$((policies + 1))
 done
 [ -d "$cpu" ] || { echo 'power: no cpufreq in sysfs' >&2; rc=1; }
 # Publish only a successfully applied CPU profile, including manual overrides.

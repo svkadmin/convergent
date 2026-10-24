@@ -47,6 +47,17 @@ touchpad_set() {
 		settings=$(awk -v key="$setting" '!($1 == "input" && $2 == "type:touchpad" && $3 == key)' "$file") || return
 	fi
 	swayrun input type:touchpad "$setting" "$value" || return
+	json=$(run swaymsg -r -t get_inputs) || return
+	printf '%s\n' "$json" | jq -e --arg key "$setting" --arg want "$value" '
+		[.[] | select(.type == "touchpad") |
+			if $key == "scroll_factor" then .scroll_factor
+			elif $key == "pointer_accel" then .libinput.accel_speed
+			else .libinput[$key] end] |
+		length > 0 and all(.[];
+			if $key == "pointer_accel" or $key == "scroll_factor" then
+				type == "number" and ((. - ($want | tonumber)) | fabs) < 0.0001
+			else . == $want end)
+	' >/dev/null || die "touchpad did not apply $setting $value on every device; not saved"
 	{
 		[ -z "$settings" ] || printf '%s\n' "$settings"
 		printf 'input type:touchpad %s %s\n' "$setting" "$value"

@@ -27,8 +27,9 @@ keyboard_set() {
 			awk -v code="$layout" '$1 == "!" {section=$2} section == "layout" && $1 == code {found=1} END {exit !found}' /usr/share/X11/xkb/rules/evdev.lst || die "unknown layout: $layout"
 		done
 	fi
+	swayrun input type:keyboard xkb_variant '""' || return
 	swayrun input type:keyboard xkb_layout "\"$layouts\"" || return
 	swayrun input type:keyboard xkb_variant "\"$variants\"" || return
-	printf 'input type:keyboard xkb_layout "%s"\ninput type:keyboard xkb_variant "%s"\n' "$layouts" "$variants" | save_config input
+	printf 'input type:keyboard xkb_variant ""\ninput type:keyboard xkb_layout "%s"\ninput type:keyboard xkb_variant "%s"\n' "$layouts" "$variants" | save_config input
 }
 keyboard_next() { noargs "$@"; sway; swayrun input type:keyboard xkb_switch_layout next; }
