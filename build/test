@@ -368,13 +368,7 @@ fw_diag() {
                 echo "group $group"
                 ifconfig -g "$group" || true
             done
-            echo /var/run/convergent-wan-demote
-            cat /var/run/convergent-wan-demote || true
-            if [ -e /var/run/convergent-wan-demote.new ]; then
-                echo "/var/run/convergent-wan-demote.new exists"
-            else
-                echo "/var/run/convergent-wan-demote.new absent"
-            fi
+            rcctl check wan_watch || true
             uptime
             pgrep -lf "[r]eorder_kernel|[u]nbound|[w]an-watch" || true
             for log in /var/log/daemon /var/log/messages; do
@@ -433,7 +427,7 @@ LOCAL
     if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
     case $failure in
     host-kill) kill -KILL "$(cat /run/convergent/maintenance-test.pid)" ;;
-    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(cat /var/run/convergent-maintenance.lock/pid)"' ;;
+    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(readlink /var/run/convergent-maintenance.lock)"' ;;
     esac
     if wait "$changer"; then exit 1; fi
     if [ "$failure" = host-kill ]; then
@@ -450,19 +444,19 @@ LOCAL
     [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
     if [ "$failure" = remote-kill ]; then
         timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance &&
-            test -d /var/run/convergent-maintenance.lock && ! kill -0 "$(cat /var/run/convergent-maintenance.lock/pid)" 2>/dev/null'
+            test -L /var/run/convergent-maintenance.lock && ! kill -0 "$(readlink /var/run/convergent-maintenance.lock)" 2>/dev/null'
     else
         if printf 'yes\n' | sys firewall undo; then exit 1; fi
         [ -f /var/lib/convergent/firewall-maintenance ]
         timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && touch /tmp/convergent-test-maintenance'
         n=0
-        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance && test ! -d /var/run/convergent-maintenance.lock'; do
+        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance && test ! -L /var/run/convergent-maintenance.lock'; do
             n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
         done
     fi
     printf 'yes\n' | sys firewall undo
     [ ! -e /var/lib/convergent/firewall-maintenance ]
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && test ! -d /var/run/convergent-maintenance.lock'
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && test ! -L /var/run/convergent-maintenance.lock'
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
     if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
 )

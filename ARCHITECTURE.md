@@ -139,6 +139,7 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
 - **wan-watch** runs under rc.d and demotes CARP by 128 if unbound dies or wan's transit address
   stops answering. Each round sends three probes 300 ms apart, bounded to one second;
   one reply passes, and three consecutive good rounds clear its owned demotion.
+  The kernel's `wanwatch` group counter tracks ownership across watcher restarts.
 - **pf** routes and filters between all segments (section 4.2), with state limits per source,
   MSS clamping toward wan, and a ruleset hash the checker compares with the release.
 - **unbound**, from OpenBSD's base system, answers DNS on every segment's gateway address, so a
@@ -152,7 +153,9 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   recoverable without decrementing health/upgrade counters. Undo checks both nodes and the
   normal fw1-master pair. Guest and DNS push locks serialize the operation; finish maintenance
   before performing guest updates.
-  `sys firewall rebuild fw1|fw2` replaces a broken node from installed images with a healthy MASTER peer, reusing guest journals, seeding, handback and DNS push.
+  `sys firewall rebuild fw1|fw2` replaces a broken node from installed images with a healthy peer,
+  stopping the target if needed for peer takeover. It reuses guest journals, seeding, handback
+  and DNS push; a durable marker records completed replacement and seeding before resume can skip them.
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
 - **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
 - **No DHCP:** every address is static (section 4.1).
