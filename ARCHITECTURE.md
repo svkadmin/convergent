@@ -137,8 +137,8 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   peer (`carppeer`), so the Linux bridges' multicast handling plays no part.
 - **pfsync** on the sync link, with `defer`, so a failover keeps established connections.
 - **wan-watch** runs under rc.d and demotes CARP by 128 if unbound dies or wan's transit address
-  stops answering. Each round sends three probes 300 ms apart, bounded to one second;
-  one reply passes, and three consecutive good rounds clear its owned demotion.
+  stops answering. Each round sends three probes 300 ms apart, bounded to one second; one reply
+  passes. Two lost rounds in a row (about 2 s) demote; three consecutive good rounds clear it.
   The kernel's `wanwatch` group counter tracks ownership across watcher restarts.
 - **pf** routes and filters between all segments (section 4.2), with state limits per source,
   MSS clamping toward wan, and a ruleset hash the checker compares with the release.
@@ -793,7 +793,7 @@ forced-command allowlist are unchanged.
 No cron interval was lengthened: the minute jobs enforce portal expiry, publish fresh network
 facts or notice boot/update changes. `check auto` already gates expensive successful scans to
 daily and failed scans to five minutes. Host facts already run hourly/daily. The firewall's
-continuous wan-watch loop uses one-second probe deadlines and three good rounds to recover;
+continuous wan-watch loop demotes after two lost one-second rounds and recovers after three good ones;
 it is a failover control, not merely a dashboard refresh.
 
 ### 11.2 Proposals, not enabled
