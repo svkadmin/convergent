@@ -54,8 +54,7 @@ trap 'exit 1' HUP INT TERM"
 # Preserve backups until both activations commit. A firewall rebuilt since has no .prev and nothing
 # to roll back: it runs its image's data until the next push.
 restore="cd $rdir && if [ -e blocklist.rpz.prev ]; then cp -p blocklist.rpz.prev blocklist.rpz &&
-cp -p local-owner.conf.prev local-owner.conf &&
-(rcctl check unbound >/dev/null || rcctl start unbound) && unbound-control reload >/dev/null; fi"
+cp -p local-owner.conf.prev local-owner.conf && unbound-control reload >/dev/null; fi"
 rollback() {
 	if [ -e "$state/committed" ]; then
 		rm -f "$state/pending" || return 1
@@ -302,7 +301,6 @@ for fw in $fws; do
 		mv blocklist.rpz.new blocklist.rpz
 		mv local-owner.conf.new local-owner.conf
 		unbound-checkconf $rdir/unbound.conf >/dev/null
-		rcctl check unbound >/dev/null || rcctl start unbound
 		unbound-control reload >/dev/null"
 	rsh "$fw" "i=0; while [ \$i -lt 30 ]; do
 		host -t A $selftest 127.0.0.1 2>&1 | grep -Fq 'has address $selftest_addr' &&
