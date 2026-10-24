@@ -27,6 +27,8 @@ fi
 [ -S /mnt/browser/wayland-0 ] || die "missing restricted Wayland socket"
 [ -S /mnt/browser/pipewire-0 ] || die "missing restricted Pulse socket"
 cd /home/browser
+# The host allows one launcher per role; a lock left by a renamed or killed container names another host.
+rm -f profile/SingletonLock profile/SingletonSocket profile/SingletonCookie
 
 exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LOGNAME=browser \
     LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
