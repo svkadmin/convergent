@@ -35,48 +35,43 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	sed -n '/^# 6\. The manifest:/,/^# Signed separately:/p' "$here/image" >"$work/image-check"
 	. "$work/image-check"
 	cp "$dir/manifest" "$work/manifest"
-	for script in sign publish; do
-		sed -n '/^# Preserve the trust configuration/,/^done$/p' "$here/$script" >"$work/$script-check"
-	done
 	sed -n '/^guests=none$/,/latest does not match the guest bundle/p' "$here/publish" >"$work/guests-check"
 	sed -n '/^keys_of()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
 	refuse() {
 		if (. "$1") >"$work/log" 2>&1; then die "accepted $2"; fi
 		grep -q "$3" "$work/log" || { cat "$work/log" >&2; die "wrong refusal for $2"; }
 	}
-	for script in sign publish; do
-		gate=$work/$script-check
-		(. "$gate")
-		CHANNEL=bleeding-edge
-		(. "$gate")
-		CHANNEL=stable
-		refuse "$gate" "$script cross-channel release" 'embedded release key or update channel'
-		CHANNEL=beta
-		sed 's/^release-key .*/release-key 0000000000000000000000000000000000000000000000000000000000000000/' "$work/manifest" >"$dir/manifest"
-		CHANNEL=bleeding-edge
-		refuse "$gate" "$script bridge key mismatch" 'embedded release key or update channel'
-		CHANNEL=beta
-		for field in release-key update-channel; do
-			for fault in missing duplicate wrong; do
-				awk -v field="$field" -v fault="$fault" '
-					$1 == field {if (fault == "missing") next; if (fault == "duplicate") print; if (fault == "wrong") $2="none"}
-					{print}' "$work/manifest" >"$dir/manifest"
-				refuse "$gate" "$script $fault $field" 'embedded release key or update channel'
-			done
+	gate=$here/release-check
+	(. "$gate")
+	CHANNEL=bleeding-edge
+	(. "$gate")
+	CHANNEL=stable
+	refuse "$gate" "cross-channel release" 'embedded release key or update channel'
+	CHANNEL=beta
+	sed 's/^release-key .*/release-key 0000000000000000000000000000000000000000000000000000000000000000/' "$work/manifest" >"$dir/manifest"
+	CHANNEL=bleeding-edge
+	refuse "$gate" "bridge key mismatch" 'embedded release key or update channel'
+	CHANNEL=beta
+	for field in release-key update-channel; do
+		for fault in missing duplicate wrong; do
+			awk -v field="$field" -v fault="$fault" '
+				$1 == field {if (fault == "missing") next; if (fault == "duplicate") print; if (fault == "wrong") $2="none"}
+				{print}' "$work/manifest" >"$dir/manifest"
+			refuse "$gate" "$fault $field" 'embedded release key or update channel'
 		done
-		sed 's/update-channel beta/update-channel bleeding-edge/' "$work/manifest" >"$dir/manifest"
-		refuse "$gate" "$script reverse bridge" 'embedded release key or update channel'
-		for f in slot.img convergent-42-a.efi convergent-42-b.efi; do
-			for fault in missing-hash duplicate-hash missing-size duplicate-size wrong-size; do
-				awk -v f="$f" -v fault="$fault" '
-					$2 == f && $1 != "size" {if (fault == "missing-hash") next; if (fault == "duplicate-hash") print}
-					$1 == "size" && $2 == f {if (fault == "missing-size") next; if (fault == "duplicate-size") print; if (fault == "wrong-size") $3++}
-					{print}' "$work/manifest" >"$dir/manifest"
-				refuse "$gate" "$script $fault $f" 'one checksum and accurate size'
-			done
-		done
-		cp "$work/manifest" "$dir/manifest"
 	done
+	sed 's/update-channel beta/update-channel bleeding-edge/' "$work/manifest" >"$dir/manifest"
+	refuse "$gate" "reverse bridge" 'embedded release key or update channel'
+	for f in slot.img convergent-42-a.efi convergent-42-b.efi; do
+		for fault in missing-hash duplicate-hash missing-size duplicate-size wrong-size; do
+			awk -v f="$f" -v fault="$fault" '
+				$2 == f && $1 != "size" {if (fault == "missing-hash") next; if (fault == "duplicate-hash") print}
+				$1 == "size" && $2 == f {if (fault == "missing-size") next; if (fault == "duplicate-size") print; if (fault == "wrong-size") $3++}
+				{print}' "$work/manifest" >"$dir/manifest"
+			refuse "$gate" "$fault $f" 'one checksum and accurate size'
+		done
+	done
+	cp "$work/manifest" "$dir/manifest"
 	printf 'release 42\nsigned 1\nguests none\n' >"$dir/latest"
 	(. "$work/guests-check")
 	printf 'release 42\n' >"$dir/guests.manifest"

@@ -17,23 +17,7 @@ pub=/etc/convergent/keys/$CHANNEL.pub
 [ -f "$pub" ] || die "no public key $pub"
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
-# Preserve the trust configuration installed by this image.
-public_key=$(openssl pkey -pubin -in "$pub" -pubout) || die "invalid public key $pub"
-fingerprint=$(printf '%s\n' "$public_key" | sha256sum | cut -d' ' -f1)
-awk -v key="$fingerprint" -v channel="$CHANNEL" '
-	$1 == "release-key" {keys++; if (NF != 2 || $2 != key) bad=1}
-	$1 == "update-channel" {channels++; if (NF != 2 || !($2 == channel || (channel == "bleeding-edge" && $2 == "beta"))) bad=1}
-	END {exit bad || keys != 1 || channels != 1}
-' "$dir/manifest" || die "embedded release key or update channel does not match $CHANNEL"
-for f in slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
-	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
-	size=$(stat -c %s "$dir/$f")
-	awk -v f="$f" -v size="$size" '
-		$2 == f && $1 != "size" {hashes++; if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $0 != $1 "  " f) bad=1}
-		$1 == "size" && $2 == f {sizes++; if (NF != 3 || $3 !~ /^[0-9]+$/ || $3 != size) bad=1}
-		END {exit bad || hashes != 1 || sizes != 1}
-	' "$dir/manifest" || die "manifest needs one checksum and accurate size for $f"
-done
+. "$here/release-check"
 # What the signature vouches for: the manifest and the files it lists.
 for f in manifest guests.manifest; do
 	[ -f "$dir/$f" ] || continue

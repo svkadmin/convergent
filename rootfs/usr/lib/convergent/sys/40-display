@@ -84,9 +84,9 @@ display_set() (
 		if [ "$setting" = mode ]; then
 			mode=$(printf '%s\n' "$json" | jq -er --arg name "$output" --arg mode "${3%Hz}" '
 				($mode | capture("^(?<w>[0-9]+)x(?<h>[0-9]+)(@(?<r>[0-9.]+))?$")) as $m |
-				first(.[] | select(.name == $name) | .modes[] |
+				[.[] | select(.name == $name) | .modes[] |
 					select(.width == ($m.w | tonumber) and .height == ($m.h | tonumber) and
-						($m.r == null or .refresh == ($m.r | tonumber * 1000 | round)))) |
+						($m.r == null or .refresh == ($m.r | tonumber * 1000 | round)))] | max_by(.refresh) // empty |
 				"\(.width)x\(.height)@\(.refresh/1000)Hz"') || die 'mode not advertised; see sys display status'
 			command="output $output mode $mode"
 		elif [ "$setting" = position ]; then
