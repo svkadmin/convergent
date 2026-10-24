@@ -118,7 +118,7 @@ function valid(k,v, a,n,i,distinct,seen) {
 		return distinct >= 2
 	}
 	if (k == "blocklist_url") return v ~ /^https:\/\/[a-z0-9][a-z0-9.-]*(\/[A-Za-z0-9._~\/%?=&+,-]*)?$/
-	if (k == "cpu_cap_khz") return v ~ /^[1-9][0-9]{5,7}$/
+	if (k == "cpu_cap_khz") return v ~ /^(0|[1-9][0-9]{5,7})$/
 	if (k == "idle_lock_minutes") return v ~ /^[1-9][0-9]?$/ && v+0 <= 60
 	if (k == "owner_login") return v ~ /^[a-z_][a-z0-9_-]{0,31}$/
 	if (k == "install.disk") return v == "auto" || (v ~ /^\/dev\/disk\/by-id\/[A-Za-z0-9_][A-Za-z0-9_.:+-]*$/ && v !~ /-part[0-9]+$/)
@@ -137,7 +137,7 @@ BEGIN {
 	d["display_scale"]=""
 	d["nts_servers"]="time.cloudflare.com,ptbtime1.ptb.de,ntppool1.time.nl"
 	d["blocklist_url"]="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/rpz/pro.mini.txt"
-	d["cpu_cap_khz"]="4200000"; d["idle_lock_minutes"]="10"
+	d["cpu_cap_khz"]="0"; d["idle_lock_minutes"]="10"
 	d["owner_login"]="owner"; d["image_size"]="30G"
 	d["install.disk"]="auto"; d["install.state_size"]="auto"; d["install.swap"]="none"
 	range["install.disk"]="auto or a whole-disk /dev/disk/by-id/<id> path"

@@ -491,7 +491,7 @@ If you added a root crontab as a stopgap for the v8/v9 cron bug, remove that sto
 - The screen locks after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes
   (swayidle, swaylock). Display-off follows `idle_lock_minutes + 1` minutes of inactivity.
   `sys power lock` locks now. NL pauses idle locking and display-off only; manual and lid locking still work.
-- `power` sets the CPU energy preference and a clock cap for AC or battery (4.2 GHz by default,
+- `power` sets the CPU energy preference and an optional clock cap for AC or battery (none by default;
   `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
   `sys power battery` (`sudo power [ac|battery]`).
   Repeated events with no setting changes are silent; changes and failures are logged.

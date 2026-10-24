@@ -5,7 +5,7 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 022
 
 ac_epp=balance_performance
-cap=4200000
+cap=0
 [ ! -f /usr/lib/convergent/cpu-cap-khz ] || read -r cap </usr/lib/convergent/cpu-cap-khz
 bat_epp=power
 
@@ -118,7 +118,7 @@ for p in "$cpu"/policy[0-9]*; do
 	fi
 	max=$cap
 	[ ! -r "$p/cpuinfo_max_freq" ] || read -r max <"$p/cpuinfo_max_freq" || max=$cap
-	if [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
+	if [ "$cap" = 0 ] || [ "$max" -lt "$cap" ]; then want=$max; else want=$cap; fi
 	set_file "$p/scaling_max_freq" "$want"
 done
 [ -d "$cpu" ] || { echo 'power: no cpufreq in sysfs' >&2; rc=1; }
