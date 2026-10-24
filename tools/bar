@@ -214,7 +214,12 @@ while :; do
 		printf "%.0f %.0f %.2f %s %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
 			tx == "" ? "-" : tx,rx == "" ? "-" : rx > (work "/previous")
 		close(work "/previous")
-		fresh=mtime>0 && now-mtime<=180
+		while ((getline line < "/proc/mounts") > 0) {
+			split(line,m," ")
+			if (m[2] == "/var" && m[3] == "btrfs" && m[4] ~ /(^|,)ro(,|$)/) state_ro=1
+		}
+		close("/proc/mounts")
+		fresh=mtime>0 && now-mtime<=180 && !state_ro
 		n=split(get(st "/topology"), fields," ")
 		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
 		browsers=topo["browsers"] ~ /^[0-9]+$/ ? topo["browsers"] : "?"
@@ -233,7 +238,8 @@ while :; do
 		mic=get(work "/mic")
 		if (mic == "on") block("MIC", orange); else if (mic != "off") block("MIC?", grey)
 		# Firing alerts: critical, warning, info.
-		if (split(get(work "/alerts"),count," ") == 3)
+		if (state_ro) block("state disk lost or read-only: reboot", red)
+		else if (split(get(work "/alerts"),count," ") == 3)
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
 		else block("? ? ?", grey, "alerts")
 		portal=get(st "/portal")

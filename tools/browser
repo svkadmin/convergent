@@ -121,7 +121,7 @@ else
     flock -n 8 || die "$role is already open; close it before reopening"
 fi
 run=/run/convergent/browser/$name
-children= active= grafana= portal= browser=
+children= active= grafana= portal= browser= capture=
 cleanup() {
     result=$?
     trap - 0
@@ -138,6 +138,10 @@ cleanup() {
         /usr/local/sbin/portal off "$why" || result=1
     fi
     if [ -n "$browser" ]; then kill "$browser" 2>/dev/null; wait "$browser" 2>/dev/null; fi
+    if [ -n "$capture" ]; then
+        [ -n "$browser" ] || kill "$capture" 2>/dev/null
+        wait "$capture" 2>/dev/null
+    fi
     for child in $children; do kill "$child" 2>/dev/null; done
     for child in $children; do wait "$child" 2>/dev/null; done
     if [ "$result" != 0 ]; then
@@ -247,8 +251,12 @@ fi
 for child in $children; do
     kill -0 "$child" 2>/dev/null || die "the Wayland or audio proxy exited before the browser started (logs: $run/*.log)"
 done
+# Drain guest output while retaining only a bounded tail for failure diagnostics.
+mkfifo -m 600 "$run/output"
+tail -c 65536 9>&- 8>&- 7>&- 6>&- <"$run/output" >"$run/browser.log" &
+capture=$!
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
-    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" 9>&- 8>&- 7>&- 6>&- &
+    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
 browser=$!
 flock -u 9
 exec 9>&-

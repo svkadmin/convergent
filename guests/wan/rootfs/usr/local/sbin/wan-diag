@@ -10,3 +10,13 @@ echo "== upstream dns"; cat /run/wan/resolv.* 2>/dev/null || echo none
 echo "== links"; ip -o link | cut -c 1-110
 echo "== dhcp"; ps -o pid,args | grep -E '[u]dhcpc|[d]hcpcd' || echo 'no DHCP client'
 echo "== ifstate"; cat /run/ifstate* 2>/dev/null || echo none
+echo "== overlap refusal"
+if [ -s /run/wan/refused ]; then
+	awk '{print "refused interface=" $1 " subnet=" $2}' /run/wan/refused
+fi
+for record in /run/wan/dhcp-overlap.*; do
+	[ -s "$record" ] || continue
+	awk -v ifc="${record##*.}" '{print "refused interface=" ifc " subnet=" $0}' "$record"
+done
+echo "Choose a non-overlapping Wi-Fi network, or move the wired adapter and retry from the host:"
+echo "sudo ssh -F /etc/convergent/ssh_config wan 'check retry'"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 3.2
-# Read SSID then optional passphrase from stdin; credentials stay in wan.
+# Read SSID, passphrase for add, then optional security from stdin.
 # iwctl briefly receives the passphrase in argv; /proc uses hidepid=2.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 . /etc/wan/wan.conf
@@ -41,14 +41,31 @@ read_pass() {
 	fi
 }
 
-join() {
-	if [ -n "$pass" ]; then
-		run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$1" "$ssid"
-	else
-		run 45 iwctl station "$WIFI_IF" "$1" "$ssid"
-	fi
+read_security() {
+	security=
+	IFS= read -r security || true
+	case $security in ''|open|psk|8021x) ;; *) die "invalid security type" ;; esac
 }
 
+join() {
+	set -- "$1" "$ssid"
+	[ "$1" != connect ] || [ -z "$security" ] || set -- "$@" "$security"
+	if [ -n "$pass" ]; then
+		reply=$(run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$@")
+	else
+		reply=$(run 45 iwctl station "$WIFI_IF" "$@")
+	fi
+	rc=$?
+	if [ "$rc" != 0 ] && [ "$1" = connect-hidden ]; then
+		case $reply in
+		*AlreadyProvisioned*|*"Already provisioned"*) join connect; return $? ;;
+		esac
+	fi
+	printf '%s\n' "$reply"
+	return "$rc"
+}
+
+pass= security=
 case ${1:-} in
 list)
 	run 10 iwctl known-networks list
@@ -71,20 +88,24 @@ status)
 add)
 	read_ssid
 	read_pass
+	read_security
 	join connect
 	;;
 add-hidden)
 	read_ssid
 	read_pass
+	read_security
 	join connect-hidden
 	;;
 connect)
 	read_ssid
-	run 45 iwctl station "$WIFI_IF" connect "$ssid"
+	read_security
+	join connect
 	;;
 connect-hidden)
 	read_ssid
-	run 45 iwctl station "$WIFI_IF" connect-hidden "$ssid"
+	read_security
+	join connect-hidden
 	;;
 forget)
 	read_ssid

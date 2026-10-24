@@ -45,7 +45,7 @@ wifi_pick() (
 	done <"$states/networks"
 	menu Wi-Fi 'Enter connect · Esc cancel · Hidden SSID: sys wifi hidden' <"$states/networks" || exit 1
 	[ -n "$selected" ] || exit 1
-	awk -F '\t' -v id="$selected" '$1 == id {print $2}' "$states/networks"
+	awk -F '\t' -v id="$selected" '$1 == id {print $2 "\t" $3}' "$states/networks"
 )
 wifi_join_reply() {
 	_reply=$(wifi_wan "$1"); _result=$?
@@ -69,8 +69,10 @@ wifi_join_reply() {
 wifi_join() {
 	suffix=$1; shift
 	[ "$#" -le 1 ] || usage
+	security=
 	if [ "$#" = 0 ] && [ -z "$suffix" ]; then
-		ssid=$(wifi_pick) || return
+		picked=$(wifi_pick) || return
+		ssid=${picked%"$tab"*}; security=${picked##*"$tab"}
 	else
 		onearg SSID "$@"; ssid=$answer
 	fi
@@ -80,9 +82,9 @@ wifi_join() {
 	if [ -n "$pass" ]; then
 		bytes=$(printf %s "$pass" | LC_ALL=C wc -c)
 		[ "$bytes" -ge 8 ] && [ "$bytes" -le 63 ] || die 'passphrase must be 8-63 bytes'
-		printf '%s\n%s\n' "$ssid" "$pass" | wifi_join_reply "add$suffix"
+		printf '%s\n%s\n%s\n' "$ssid" "$pass" "$security" | wifi_join_reply "add$suffix"
 	else
-		printf '%s\n' "$ssid" | wifi_join_reply "connect$suffix"
+		printf '%s\n%s\n' "$ssid" "$security" | wifi_join_reply "connect$suffix"
 	fi
 }
 wifi_forget() {
