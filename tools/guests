@@ -11,11 +11,11 @@ tls=$state/tls
 conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
-work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touched=
-applying= recovering= rebuilding=
+work= loop= mounted= pending= demoted= starting= probes= initializing=
+applying= recovering= rebuilding= polling=
 step=setup
 
-fail() { logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
+fail() { [ -n "$polling" ] || logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
 # Keep lock descriptors out of clients and any helpers they leave running.
 ic() {
@@ -49,10 +49,30 @@ retry() {
     # VMs boot slowly; the svc container is up in seconds.
     case "$*" in *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;; *) wait=$boot_timeout ;; esac
     deadline=$(($(date +%s) + wait))
-    until "$@"; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fail "$* timed out after ${wait}s"; return 1; }
+    polling=1
+    waiting=
+    until "$@" 2>"$work/retry.err"; do
+        if [ -z "$waiting" ]; then
+            case "$*" in seed_applied\ svc) echo 'guests: waiting for svc seed' >&2 ;;
+            *) echo "guests: waiting for $*" >&2 ;; esac
+            waiting=1
+        fi
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            polling=
+            cat "$work/retry.err" >&2
+            [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(cat "$work/retry.err")" 2>/dev/null || :
+            fail "$* timed out after ${wait}s" || :
+            case $1:${2:-} in pin:fw1|pin:fw2|pin:wan|seed_applied:fw1|seed_applied:fw2|seed_applied:wan|healthy:fw1|healthy:fw2|healthy:wan)
+                ic console "$2" --show-log | tail -n 20 >&2
+                case $2 in fw1|fw2) echo "guests: next: sys firewall rebuild $2" >&2 ;;
+                wan) echo 'guests: next: guests update wan /var/lib/convergent/release-guests/guests/wan' >&2 ;; esac
+                ;;
+            esac
+            return 1
+        fi
         sleep 2
     done
+    polling=
 }
 running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running ]; }
 volumes() {
@@ -101,6 +121,7 @@ rollback() {
 }
 cleanup() {
     result=$1
+    polling=
     failed_status=$result failed_step=$step
     trap - 0
     trap '' HUP INT TERM
@@ -124,11 +145,7 @@ cleanup() {
         fi
     fi
     if [ -n "$starting" ] && ! running "$starting"; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
-    # A replaced firewall starts with the image's DNS data, whether or not the whole update succeeded.
-    if [ -n "$fw_touched" ] && [ -f /var/lib/convergent/dns/list.rpz ]; then
-        exec 8>&- 6>&-
-        dns-push local || { fail 'the DNS push failed; run sudo dns-push local'; result=1; }
-    fi
+    [ -z "$work" ] || dns_restore || result=1
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
     [ "$result" = 0 ] || logger -p user.err -t guests "$failed_step: failed (status $result, original $failed_status); cleanup finished" 2>/dev/null || :
@@ -140,6 +157,13 @@ cleanup() {
         if [ "$result" = 0 ]; then update_status 'done'; else update_status failed; fi
     fi
     exit "$result"
+}
+dns_restore() {
+    [ -f "$state/dns.stale" ] && [ -f /var/lib/convergent/dns/list.rpz ] || return 0
+    exec 8>&-
+    dns-push local 9>&- 7>&- 6>&- || { fail 'the DNS push failed; run sudo dns-push local'; return 1; }
+    exec 8>/run/convergent/dns-push.lock
+    flock -w 120 8 || { fail 'a DNS push is still running'; return 1; }
 }
 update_status() {
     mkdir -p /run/convergent/status
@@ -398,11 +422,9 @@ seed_remove() {
     fi
     rm -f "$state/seeds/$1.img"
 }
-# A guest that ignores the power button shows its console tail, then goes off.
 stop_guest() {
     ic stop "$1" --timeout 60 && return
-    echo "guests: graceful stop failed; forcing $1 off" >&2
-    ic console "$1" --show-log 2>/dev/null | tail -n 20 >&2
+    echo "guests: graceful stop failed; forcing $1 off; inspect with incus --force-local --project default console $1 --show-log" >&2
     ic stop "$1" --force
 }
 seed_start() {
@@ -664,7 +686,6 @@ replace() {
     guest=$1
     snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$${rebuilding:+-rebuild}
     import_image "$guest"
-    case $guest in fw1|fw2) fw_touched=1 ;; esac
     if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
         running "$guest" && stop_guest "$guest"
         seed_remove "$guest"
@@ -709,6 +730,7 @@ replace_root() {
     ic query "/1.0/instances/$guest/snapshots?recursion=1" >"$work/snapshots"
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots"
     while read -r old; do ic snapshot delete "$guest" "$old"; done <"$work/old-snapshots"
+    case $guest in fw1|fw2) touch "$state/dns.stale"; sync ;; esac
     locked ic rebuild "candidate-$guest" "$guest"
     case $guest in
     wan)
@@ -739,9 +761,13 @@ commit_update() {
             mv "$work/committed" "$state/committed" && sync || return
     fi
     cp "$state/committed" "$work/committed" || return
+    : >"$work/updates" || return
+    [ ! -f "$state/updates" ] || cp "$state/updates" "$work/updates" || return
     while read -r guest snap; do
-        printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates" || return
+        awk -v g="$guest" -v s="$snap" 'NF == 3 && $2 == g && $3 == s {found=1} END {exit !found}' "$work/updates" && continue
+        printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$work/updates" || return
     done <"$work/committed"
+    sync && mv "$work/updates" "$state/updates" && sync || return
     rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
     rm "$state/committed" && sync || return
@@ -799,7 +825,8 @@ rebuild() {
     # A completed handback can be committed after an interruption.
     if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
         { [ -f "$state/fw.rebuilt" ] || [ -f "$state/committed" ]; } && pair fw1 fw2 && fw_check "$1" release; then
-        fw_touched=1
+        touch "$state/dns.stale"
+        sync
     else
         [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
         if ! carp "$peer" MASTER; then
@@ -963,6 +990,7 @@ update() {
     prepare_cleanup
     [ ! -f "$state/pending" ] || { pending=1; rollback; }
     fw_release
+    dns_restore
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
@@ -1065,7 +1093,37 @@ ifconfig -g handoff carpdemote 128'
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
     esac
+    record_installed "$1" "$2"
     logger -t guests "update $1 done: $2" 2>/dev/null || :
+}
+record_installed() {
+    installed=/var/lib/convergent/release-guests
+    [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
+    mkdir -p "$installed/guests"
+    case $1 in def|int) installed_kind=browser ;; *) installed_kind=$1 ;; esac
+    [ ! -L "$installed/guests/$installed_kind" ] && [ ! -L "$installed/guests/$installed_kind.old" ] || die 'installed guest is a symlink'
+    case $1 in
+    def|int)
+        # One role cannot certify the whole browser generation.
+        rm -f "$installed/guests/browser/SHA256SUMS"
+        sync
+        return
+        ;;
+    esac
+    installed_source=$2
+    if [ -z "$applying" ]; then
+        mkdir "$work/installed"
+        cp -a "$2/." "$work/installed/"
+        installed_source=$work/installed
+    fi
+    sync
+    if [ -e "$installed/guests/$1" ]; then
+        rm -rf "$installed/guests/$1.old"
+        mv "$installed/guests/$1" "$installed/guests/$1.old"
+    fi
+    mv "$installed_source" "$installed/guests/$1"
+    sync
+    rm -rf "$installed/guests/$1.old"
 }
 apply() {
     applying=1
@@ -1076,7 +1134,11 @@ apply() {
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
-    [ -d "$staged/$booted" ] || [ -d "$state/browser.rename" ] || browser_legacy || return 0
+    journals=
+    for journal in pending preparing committed browser.ready browser.rename fw.handoff profiles.before dns.stale; do
+        [ ! -e "$state/$journal" ] || journals=1
+    done
+    [ -d "$staged/$booted" ] || [ -n "$journals" ] || browser_legacy || return 0
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
@@ -1103,6 +1165,7 @@ apply() {
             fi
         fi
     fi
+    dns_restore
     [ -d "$staged" ] || return 0
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
@@ -1117,9 +1180,6 @@ apply() {
     [ -d "$staged" ] || return 0
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     [ -z "$(find "$staged" -type l -print)" ] || die "$staged contains symlinks"
-    installed=/var/lib/convergent/release-guests
-    [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
-    mkdir -p "$installed/guests"
     kinds='svc wan fw browser'
     if [ -d "$state/browser.rename" ] || browser_legacy; then kinds='browser svc wan fw'; fi
     for kind in $kinds; do
@@ -1127,13 +1187,6 @@ apply() {
         echo "guests: applying $kind from release $booted"
         update "$kind" "$staged/$kind"
         [ "$kind" != browser ] || [ -z "$browser_pending" ] || continue
-        [ ! -L "$installed/guests/$kind" ] && [ ! -L "$installed/guests/$kind.old" ] || die 'installed guest is a symlink'
-        if [ -e "$installed/guests/$kind" ]; then
-            rm -rf "$installed/guests/$kind.old"
-            mv "$installed/guests/$kind" "$installed/guests/$kind.old"
-        fi
-        mv "$staged/$kind" "$installed/guests/$kind"
-        rm -rf "$installed/guests/$kind.old"
         echo "guests: applied $kind from release $booted"
     done
     rmdir "$staged" 2>/dev/null || :
@@ -1156,6 +1209,8 @@ mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
+# A killed seed writer may still have a guest disk mounted below its scratch directory.
+rm -rf --one-file-system "$state"/work.??????
 if [ "$1" != apply ] && [ "$1" != rebuild ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
     flock -n 6 || die 'close browsers before updating guests'

@@ -241,6 +241,9 @@ if [ "$mode" = list ]; then
 	[ ! -f "$state/last-push" ] || { printf 'Last successful push (UTC): '; cat "$state/last-push"; }
 	exit 0
 fi
+if [ "$mode" = auto ] && [ -f /var/lib/convergent/guests/dns.stale ]; then
+	if [ -f "$state/list.rpz" ]; then mode=local; else mode=full; fi
+fi
 if [ "$mode" = auto ]; then
 	last=$(cat "$state/stamp" 2>/dev/null || :)
 	case $last in '' | *[!0-9]*) last=0 ;; esac
@@ -319,4 +322,6 @@ mv "$state/last-push.new" "$state/last-push"
 : >"$state/committed"
 sync
 rollback
+rm -f /var/lib/convergent/guests/dns.stale
+sync
 echo "dns-push: updated both firewalls"
