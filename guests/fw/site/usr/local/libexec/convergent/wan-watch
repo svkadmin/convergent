@@ -1,5 +1,5 @@
 #!/bin/sh
-# Own 128 of wanwatch's demotion, with three good rounds to recover.
+# Own 128 of wanwatch's demotion: two lost rounds demote, three good rounds recover.
 set -eu
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 die() { logger -t wan-watch "$*"; echo "wan-watch: $*" >&2; exit 1; }
@@ -18,18 +18,21 @@ while [ -z "$src" ]; do
 done
 read_owned
 case $owned in 0|128) ;; *) logger -t wan-watch "reconciling unexpected wanwatch demotion: $owned" || : ;; esac
-good=0
+good=0 lost=0
 while :; do
 	want=$owned
 	case $want in 0|128) ;; *) want=128 ;; esac
 	# -w waits after the last probe; SIGINT preserves success on any reply.
-	if pgrep -x unbound >/dev/null &&
-	    timeout -p -s INT 1 ping -q -n -I "$src" -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
+	if ! pgrep -x unbound >/dev/null; then
+		good=0 lost=2 want=128
+	elif timeout -p -s INT 1 ping -q -n -I "$src" -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
+		lost=0
 		[ "$good" -ge 3 ] || good=$((good + 1))
 		[ "$good" -lt 3 ] || want=0
 	else
-		good=0
-		want=128
+		# One lost round can be a busy second; the second in a row demotes.
+		good=0 lost=$((lost + 1))
+		[ "$lost" -lt 2 ] || want=128
 	fi
 	if [ "$want" != "$owned" ]; then
 		step=$((want - owned))
@@ -43,5 +46,6 @@ while :; do
 		read_owned
 		logger -t wan-watch "wanwatch $op $step" || :
 	fi
-	[ "$good" -ne 0 ] || sleep 1
+	# The round after a first loss follows at once.
+	[ "$good" -ne 0 ] || [ "$lost" = 1 ] || sleep 1
 done
