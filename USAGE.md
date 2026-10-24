@@ -338,6 +338,10 @@ six segments. A failed handover is undone; an interrupted action retains recover
 After maintenance, run `sys fw undo`: both firewalls must be healthy, and normal fw1-master /
 fw2-backup roles are checked after releasing the demotion. Finish maintenance before guest updates.
 If undo cannot reach a firewall, restore management access or rebuild that node, then retry undo.
+Remote work may outlive an SSH timeout; retry undo after it finishes. Do not remove
+`/var/run/convergent-maintenance.lock`: it is a persistent advisory lock file, and its recorded
+PID alone does not show whether the lock is held. A firewall reboot clears `/var/run`; the next
+mutation recreates the file. Reboot firewalls still using the old symlink lock before using this version.
 
 `sys firewall rebuild fw1` (or `fw2`; root command: `guests rebuild fw1|fw2`) recreates a broken
 firewall from the installed guest release and laptop seed. The peer must be healthy; rebuild

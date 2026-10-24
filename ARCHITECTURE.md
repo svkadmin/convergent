@@ -152,7 +152,10 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   maintenance stays until `sys fw undo`. A persistent host journal makes interrupted actions
   recoverable without decrementing health/upgrade counters. Undo checks both nodes and the
   normal fw1-master pair. Guest and DNS push locks serialize the operation; finish maintenance
-  before performing guest updates.
+  before performing guest updates. Each remote mutation uses base Perl's nonblocking `flock`
+  on `/var/run/convergent-maintenance.lock`, held across exec and inherited by children.
+  The file is created when missing and never unlinked; its PID is informational. The kernel
+  releases the lock when the last holder closes it, even if the remote work outlives SSH.
   `sys firewall rebuild fw1|fw2` replaces a broken node from installed images with a healthy peer,
   stopping the target if needed for peer takeover. It reuses guest journals, seeding, handback
   and DNS push; a durable marker records completed replacement and seeding before resume can skip them.

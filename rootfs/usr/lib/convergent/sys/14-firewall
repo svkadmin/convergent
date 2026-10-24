@@ -15,20 +15,18 @@ firewall_mutate() (
 	# The remote lock and journal protect commands that outlive SSH.
 	trap '' HUP INT TERM
 	set +e
-	(run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'set -e
-lock=/var/run/convergent-maintenance.lock
-if ! ln -s "$$" "$lock" 2>/dev/null; then
-    pid=$(readlink "$lock") || exit 1
-    case $pid in ""|*[!0-9]*) exit 1 ;; esac
-    if kill -0 "$pid" 2>/dev/null; then
-        case $(ps -ww -o command= -p "$pid") in *convergent-maintenance.lock*) exit 1 ;; esac
-    fi
-    [ "$(readlink "$lock")" = "$pid" ] || exit 1
-    rm "$lock" && ln -s "$$" "$lock" || exit 1
-fi
-trap '\''[ "$(readlink "$lock")" != "$$" ] || rm "$lock"'\'' 0
-trap '\''exit 1'\'' HUP INT TERM
-'"$2" 9>&- 8>&-)
+	script=$(printf '%s\n' "$2" | sed "s/'/'\\\\''/g")
+	(run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
+sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_CREAT|O_NOFOLLOW, 0600) or exit 1;
+flock($lock, LOCK_EX|LOCK_NB) or exit 1;
+# Keep the lock across exec and in mutation children.
+fcntl($lock, F_SETFD, 0) or exit 1;
+truncate($lock, 0) or exit 1;
+syswrite($lock, "$$\n") == length("$$\n") or exit 1;
+exec "/bin/sh", "-ec", $ARGV[0];
+exit 1;
+'\'' '\''trap "exit 1" HUP INT TERM
+'"$script""'" 9>&- 8>&-)
 	code=$?
 	exit "$code"
 )
