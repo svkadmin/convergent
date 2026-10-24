@@ -498,8 +498,19 @@ TITLE=Recovery' --cmdline "@$profiles/cmdline" --os-release '' --output "$profil
 done
 
 # 6. The manifest: what the release is made of.
+release_key=none
+if [ -f "$root/etc/convergent/release.pub" ]; then
+	public_key=$(openssl pkey -pubin -in "$root/etc/convergent/release.pub" -pubout) || die "invalid embedded release key"
+	release_key=$(printf '%s\n' "$public_key" | sha256sum | cut -d' ' -f1)
+fi
+update_channel=none
+if [ -f "$root/etc/convergent/update.conf" ]; then
+	update_channel=$(sed -n 's|^UPDATE_URL=https://.*/\([a-z0-9-][a-z0-9-]*\)$|\1|p' "$root/etc/convergent/update.conf")
+fi
 {
 	echo "release $release"
+	echo "release-key $release_key"
+	echo "update-channel ${update_channel:-none}"
 	echo "version $VERSION"
 	echo "kernel $kver"
 	echo "roothash $roothash"

@@ -273,6 +273,12 @@ openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
 A laptop trusts only the key its image was built with; without that key its next update comes
 from USB with `CONVERGENT_UNSIGNED=1`.
 
+The manifest records `release-key` (SHA-256 of the embedded public key's canonical PEM,
+including its final newline) and `update-channel` (from the embedded update URL), or `none`
+when absent. Signing and publication require both to match the selected channel, with only
+the one-way bridge below allowed. Older manifests without these fields need a rebuild.
+Both steps also require exactly one checksum and accurate size for the slot image and each UKI.
+
 `build/publish <release-dir>` uploads to the public R2 bucket named in
 `/etc/convergent/r2-<channel>.env` (mode 600: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
 `R2_SECRET_ACCESS_KEY` of a token limited to the bucket, `R2_BUCKET`, `R2_PUBLIC_URL`, and
@@ -282,6 +288,11 @@ at it (`build/sign` writes it). A
 mirror cannot forge the pointer, but can hold back newer releases by replaying an older signed one;
 `fetch-release` shows how old the signature is. Two releases per channel stay; it refuses to grow
 the bucket past about 9 GiB (R2's free tier is 10 GB).
+The signed pointer must name the local guest manifest's SHA-256, or `none` when absent.
+The currently advertised release is immutable: a retry compares the published file set and
+bytes (including the pointer and signatures), then succeeds without writes if identical.
+Changed files or a newly signed pointer need a new release ID. The comparison downloads
+each file in turn to a temporary file, so allow space for the largest payload.
 
 For the temporary 0.1.0 bridge, keep the existing bleeding-edge signing key as the beta key
 on the build host: `/etc/convergent/keys/beta.{key,pub}` must match

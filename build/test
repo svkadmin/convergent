@@ -18,6 +18,103 @@ umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
+	(
+	die() { echo "test: $*" >&2; exit 1; }
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' EXIT
+	trap 'exit 1' HUP INT TERM
+	dir=$work/release root=$work/root out=$work/release
+	release=42 VERSION=0 kver=test roothash=none CHANNEL=beta
+	mkdir -p "$dir" "$root/etc/convergent"
+	openssl genpkey -algorithm ed25519 -out "$work/key"
+	openssl pkey -in "$work/key" -pubout -out "$root/etc/convergent/release.pub"
+	pub=$root/etc/convergent/release.pub
+	printf 'UPDATE_URL=https://example.test/beta\n' >"$root/etc/convergent/update.conf"
+	for f in slot.img convergent-42-a.efi convergent-42-b.efi; do printf '%s\n' "$f" >"$dir/$f"; done
+	# Keep offline fixtures independent of host keys and bucket credentials.
+	sed -n '/^# 6\. The manifest:/,/^# Signed separately:/p' "$here/image" >"$work/image-check"
+	. "$work/image-check"
+	cp "$dir/manifest" "$work/manifest"
+	for script in sign publish; do
+		sed -n '/^# Preserve the trust configuration/,/^done$/p' "$here/$script" >"$work/$script-check"
+	done
+	sed -n '/^guests=none$/,/latest does not match the guest bundle/p' "$here/publish" >"$work/guests-check"
+	sed -n '/^keys_of()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
+	refuse() {
+		if (. "$1") >"$work/log" 2>&1; then die "accepted $2"; fi
+		grep -q "$3" "$work/log" || { cat "$work/log" >&2; die "wrong refusal for $2"; }
+	}
+	for script in sign publish; do
+		gate=$work/$script-check
+		(. "$gate")
+		CHANNEL=bleeding-edge
+		(. "$gate")
+		CHANNEL=stable
+		refuse "$gate" "$script cross-channel release" 'embedded release key or update channel'
+		CHANNEL=beta
+		sed 's/^release-key .*/release-key 0000000000000000000000000000000000000000000000000000000000000000/' "$work/manifest" >"$dir/manifest"
+		CHANNEL=bleeding-edge
+		refuse "$gate" "$script bridge key mismatch" 'embedded release key or update channel'
+		CHANNEL=beta
+		for field in release-key update-channel; do
+			for fault in missing duplicate wrong; do
+				awk -v field="$field" -v fault="$fault" '
+					$1 == field {if (fault == "missing") next; if (fault == "duplicate") print; if (fault == "wrong") $2="none"}
+					{print}' "$work/manifest" >"$dir/manifest"
+				refuse "$gate" "$script $fault $field" 'embedded release key or update channel'
+			done
+		done
+		sed 's/update-channel beta/update-channel bleeding-edge/' "$work/manifest" >"$dir/manifest"
+		refuse "$gate" "$script reverse bridge" 'embedded release key or update channel'
+		for f in slot.img convergent-42-a.efi convergent-42-b.efi; do
+			for fault in missing-hash duplicate-hash missing-size duplicate-size wrong-size; do
+				awk -v f="$f" -v fault="$fault" '
+					$2 == f && $1 != "size" {if (fault == "missing-hash") next; if (fault == "duplicate-hash") print}
+					$1 == "size" && $2 == f {if (fault == "missing-size") next; if (fault == "duplicate-size") print; if (fault == "wrong-size") $3++}
+					{print}' "$work/manifest" >"$dir/manifest"
+				refuse "$gate" "$script $fault $f" 'one checksum and accurate size'
+			done
+		done
+		cp "$work/manifest" "$dir/manifest"
+	done
+	printf 'release 42\nsigned 1\nguests none\n' >"$dir/latest"
+	(. "$work/guests-check")
+	printf 'release 42\n' >"$dir/guests.manifest"
+	refuse "$work/guests-check" 'host-only pointer with guests' 'latest does not match'
+	guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
+	printf 'release 42\nsigned 1\nguests %s\n' "$guests" >"$dir/latest"
+	(. "$work/guests-check")
+	mv "$dir/guests.manifest" "$work/guests.manifest"
+	refuse "$work/guests-check" 'guest pointer without bundle' 'latest does not match'
+	mv "$work/guests.manifest" "$dir/guests.manifest"
+	printf 'guests %s\n' "$guests" >>"$dir/latest"
+	refuse "$work/guests-check" 'duplicate guest pointer' 'latest does not match'
+	printf 'release 42\nsigned 1\n' >"$dir/latest"
+	refuse "$work/guests-check" 'missing guest pointer' 'latest does not match'
+	printf 'release 42\nsigned 1\nguests wrong\n' >"$dir/latest"
+	refuse "$work/guests-check" 'wrong guest digest' 'latest does not match'
+	printf 'release 42\nsigned 1\nguests %s\n' "$guests" >"$dir/latest"
+	files='slot.img convergent-42-a.efi convergent-42-b.efi manifest.sig manifest guests.manifest.sig guests.manifest'
+	for f in manifest guests.manifest latest; do
+		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/$f" -out "$dir/$f.sig"
+	done
+	ep=$work/bucket latest=42
+	mkdir -p "$ep/beta/42"
+	for f in $files; do cp "$dir/$f" "$ep/beta/42/$f"; done
+	cp "$dir/latest" "$dir/latest.sig" "$ep/beta/"
+	objects=$(for f in $files; do printf '%s beta/42/%s\n' "$(stat -c %s "$dir/$f")" "$f"; done)
+	s3() { [ "$#" = 3 ] && [ "$1" = -o ] || die 'unexpected bucket mutation'; cp "$3" "$2"; }
+	(. "$work/retry-check")
+	for f in $files latest latest.sig; do
+		cp "$dir/$f" "$work/saved"
+		printf 'changed\n' >>"$dir/$f"
+		refuse "$work/retry-check" "changed published $f" 'use a new release ID'
+		mv "$work/saved" "$dir/$f"
+	done
+	files="$files extra"
+	refuse "$work/retry-check" 'changed published file set' 'use a new release ID'
+	echo 'test: release chain gates passed'
+	)
 	exec sh "$here/advisories" --selftest
 fi
 if [ "${1:-}" = --install-options ]; then
