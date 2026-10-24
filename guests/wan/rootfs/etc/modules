@@ -6,6 +6,6 @@ nft_masq
 nft_chain_nat
 ptp_kvm
 virtio_balloon
-# Incus shuts the VM down with an ACPI power-button event; busybox acpid reads it through evdev.
-button
-evdev
+# Incus stops the VM with the ACPI power button. On this kernel the button driver never binds to
+# the fixed power button; tiny_power_button signals init directly (modprobe.d sets SIGUSR2: poweroff).
+tiny_power_button
