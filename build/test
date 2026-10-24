@@ -451,10 +451,11 @@ done
     [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
     if guests update fw "$release/guests/fw" >"$release/maintenance-refusal" 2>&1; then exit 1; fi
     grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
-    ic restart fw1 --timeout 120
+    fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
+    ic restart fw1 --timeout 120 || { fw1_state "restart failed ($?)"; exit 1; }
     n=0
     until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'; do
-        n=$((n + 1)); [ "$n" -lt 60 ]; sleep 5
+        n=$((n + 1)); [ "$n" -lt 60 ] || { fw1_state 'no ssh after the restart'; exit 1; }; sleep 5
     done
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
     for f in fw1 fw2; do
