@@ -9,6 +9,25 @@ firewall_rsh() {
 	host=$1; shift
 	run timeout 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$host" "$@" 9>&- 8>&-
 }
+firewall_mutate() (
+	# Keep host locks until SSH/timeout returns, even if sys is killed.
+	# The remote lock and journal protect commands that outlive SSH.
+	trap '' HUP INT TERM
+	set +e
+	(run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'set -e
+lock=/var/run/convergent-maintenance.lock
+if ! mkdir "$lock" 2>/dev/null; then
+    kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null && exit 1
+    rm -f "$lock/pid"
+    rmdir "$lock" && mkdir "$lock" || exit 1
+fi
+echo $$ >"$lock/pid"
+trap '\''rm -f "$lock/pid"; rmdir "$lock"'\'' 0
+trap '\''exit 1'\'' HUP INT TERM
+'"$2" 9>&- 8>&-)
+	code=$?
+	exit "$code"
+)
 firewall_role() {
 	output=$(firewall_rsh "$1" ifconfig) || return
 	printf '%s\n' "$output" | awk -v want="$2" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n==6 && !bad)}'
@@ -48,13 +67,19 @@ firewall_status() (
 )
 firewall_release() {
 	# Removing our group also removes only our demotion, even after an uncertain SSH result.
-	firewall_rsh "$master" 'set -e
+	firewall_mutate "$master" '
+rm -f /etc/convergent/seeded/maintenance
+sync
 for i in carp0 carp1 carp2 carp3 carp4 carp5; do
     info=$(ifconfig "$i")
     groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
     case " $groups " in *" sysmaint "*) ifconfig "$i" -group sysmaint ;; esac
-done' || return
-	rm -f "$journal"
+    info=$(ifconfig "$i")
+    groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
+    case " $groups " in *" sysmaint "*) exit 1 ;; esac
+done
+test ! -e /etc/convergent/seeded/maintenance' || return
+	rm -f "$journal" && sync
 }
 firewall_wait() {
 	for attempt in 1 2 3 4 5 6; do
@@ -93,11 +118,15 @@ firewall_change() (
 	confirm "Demote $master and move all six segments to $peer until sys firewall undo" || exit 1
 	printf '%s\n' "$master" >"$journal.new" && mv "$journal.new" "$journal" || exit 1
 	sync
-	trap 'rc=$?; trap - 0; trap "" HUP INT TERM; firewall_release || echo "Undo pending: run sys firewall undo" >&2; exit "$rc"' 0
+	settled=
+	trap 'rc=$?; trap - 0; trap "" HUP INT TERM; [ -n "$settled" ] && firewall_release || echo "Undo pending: run sys firewall undo" >&2; exit "$rc"' 0
 	trap 'exit 1' HUP INT TERM
-	firewall_rsh "$master" 'set -e
+	firewall_mutate "$master" '
+touch /etc/convergent/seeded/maintenance
+sync
 for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group sysmaint; done
-ifconfig -g sysmaint carpdemote 128' || die 'demotion failed; undoing'
+ifconfig -g sysmaint carpdemote 128' || die 'demotion uncertain; run sys firewall undo'
+	settled=1
 	firewall_wait "$peer" "$master" && firewall_healthy "$peer" || die 'peer did not take over healthily; undoing'
 	trap - 0 HUP INT TERM
 	logger -t sys-firewall "$peer took over all six segments; $master in maintenance" || :

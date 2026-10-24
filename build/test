@@ -361,6 +361,138 @@ result=0
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
+# Remote exclusion must survive host death and recover after remote death.
+for failure in timeout host-kill remote-kill; do
+(
+    set -e
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance'
+    rm -f /run/convergent/maintenance-test-returned
+    {
+        cat <<'LOCAL'
+run() { "$@"; rc=$?; [ "$2" != -k ] || touch /run/convergent/maintenance-test-returned; return "$rc"; }
+noargs() { [ "$#" = 0 ]; }
+confirm() { return 0; }
+die() { echo "$*" >&2; exit 1; }
+LOCAL
+        awk -v failure="$failure" '
+            function pause() {
+                print "trap \"\" HUP"
+                print "echo CV-MAINTENANCE-WAIT"
+                print "n=0"
+                print "until [ -f /tmp/convergent-test-maintenance ]; do"
+                print "    [ \"$n\" -lt 90 ] || exit 1"
+                print "    sleep 1; n=$((n + 1))"
+                print "done"
+                print "rm /tmp/convergent-test-maintenance"
+            }
+            /^\tsettled=$/ {
+                print "\tsh -c \047echo \"$PPID\"\047 >/run/convergent/maintenance-test.pid"
+            }
+            /^touch \/etc\/convergent\/seeded\/maintenance$/ && failure != "remote-kill" {pause()}
+            /^ifconfig -g sysmaint carpdemote 128/ && failure == "remote-kill" {
+                print "ifconfig -g sysmaint carpdemote 128"
+                pause()
+                sub(/^ifconfig -g sysmaint carpdemote 128/, ":")
+            }
+            {print}
+        ' /usr/lib/convergent/sys/14-firewall
+        echo 'firewall_maintenance'
+    } >"$release/maintenance-test"
+    log=/var/log/firewall-maintenance-$failure.log
+    sh "$release/maintenance-test" >"$log" 2>&1 &
+    changer=$!
+    n=0
+    until grep -qx CV-MAINTENANCE-WAIT "$log"; do
+        n=$((n + 1)); [ "$n" -lt 60 ]; sleep 1
+    done
+    if flock -n /run/convergent/guests.lock true; then exit 1; fi
+    if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
+    case $failure in
+    host-kill) kill -KILL "$(cat /run/convergent/maintenance-test.pid)" ;;
+    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(cat /var/run/convergent-maintenance.lock/pid)"' ;;
+    esac
+    if wait "$changer"; then exit 1; fi
+    if [ "$failure" = host-kill ]; then
+        if flock -n /run/convergent/guests.lock true; then exit 1; fi
+        if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
+        n=0
+        until flock -n /run/convergent/guests.lock true && flock -n /run/convergent/dns-push.lock true; do
+            n=$((n + 1)); [ "$n" -lt 45 ]; sleep 1
+        done
+        [ -f /run/convergent/maintenance-test-returned ]
+    else
+        grep -q 'demotion uncertain' "$log"
+    fi
+    [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
+    if [ "$failure" = remote-kill ]; then
+        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance &&
+            test -d /var/run/convergent-maintenance.lock && ! kill -0 "$(cat /var/run/convergent-maintenance.lock/pid)" 2>/dev/null'
+    else
+        if printf 'yes\n' | sys firewall undo; then exit 1; fi
+        [ -f /var/lib/convergent/firewall-maintenance ]
+        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && touch /tmp/convergent-test-maintenance'
+        n=0
+        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance && test ! -d /var/run/convergent-maintenance.lock'; do
+            n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
+        done
+    fi
+    printf 'yes\n' | sys firewall undo
+    [ ! -e /var/lib/convergent/firewall-maintenance ]
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && test ! -d /var/run/convergent-maintenance.lock'
+    carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
+    if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
+)
+[ "$?" = 0 ] || bad $LINENO
+done
+# Maintenance must survive a reboot and fw-seed, then release before replacement.
+(
+    set -e
+    printf 'yes\n' | sys firewall maintenance
+    [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
+    if guests update fw "$release/guests/fw" >"$release/maintenance-refusal" 2>&1; then exit 1; fi
+    grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
+    ic restart fw1 --timeout 120
+    n=0
+    until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'; do
+        n=$((n + 1)); [ "$n" -lt 60 ]; sleep 5
+    done
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
+    for f in fw1 fw2; do
+        case $f in fw1) want=BACKUP ;; fw2) want=MASTER ;; esac
+        carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig)
+        printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}'
+    done
+    printf 'yes\n' | sys firewall undo
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
+)
+[ "$?" = 0 ] || bad $LINENO
+# Use a local list so stopped-daemon recovery does not depend on a download.
+(
+    set -e
+    dns=/var/lib/convergent/dns
+    mkdir -p "$dns"
+    if [ ! -s "$dns/list.rpz" ]; then
+        . /etc/convergent/dns.conf
+        awk -v n="$BLOCKLIST_MIN_DOMAINS" 'BEGIN {
+            print "$TTL 300\n@ SOA localhost. root.localhost. 1 3600 600 86400 300\n  NS localhost."
+            for (i=1; i<=n; i++) print "test-" i ".example.net CNAME ."
+        }' >"$dns/list.rpz"
+    fi
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
+    dns-push local
+    [ ! -e "$dns/pending" ]
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
+    touch "$dns/pending"
+    dns-push list
+    [ ! -e "$dns/pending" ]
+    for f in fw1 fw2; do
+        timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'rcctl check unbound &&
+            cd /var/unbound/etc && cmp blocklist.rpz.prev blocklist.rpz && cmp local-owner.conf.prev local-owner.conf'
+    done
+    dns-push local
+)
+[ "$?" = 0 ] || bad $LINENO
 before=$(ic config get svc volatile.base_image) || bad $LINENO
 service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
 [ -n "$before" ] && [ -n "$service" ] || bad $LINENO
@@ -450,7 +582,8 @@ awk '/^\+ replace fw2$/ && n == 0 {n++}
     END {exit !(n == 4)}' /var/log/guests-update-fw.log || bad $LINENO
 for f in fw1 fw2; do
 	# A replaced fw2 is seeded into the upgrade group at demotion 0; only fw1 must leave it.
-	case $f in fw1) want=MASTER groups='handoff|upgrade' ;; fw2) want=BACKUP groups=handoff ;; esac
+	case $f in fw1) want=MASTER groups='handoff|upgrade|sysmaint' ;; fw2) want=BACKUP groups='handoff|sysmaint' ;; esac
+	timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'test ! -e /etc/convergent/seeded/maintenance' || bad $LINENO
 	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || bad $LINENO
 	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || bad $LINENO
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
