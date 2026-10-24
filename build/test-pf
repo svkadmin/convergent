@@ -12,7 +12,8 @@ cleanup() {
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
-	portal off || r=1
+	# portal retries a node it could not reach; one retry here, as cron would.
+	portal off || { sleep 30; portal off; } || r=1
 	ic exec svc -- sh -c '
 		for p in 3000 8428; do
 			[ ! -f /run/cv-pf-$p.pid ] || { kill "$(cat /run/cv-pf-$p.pid)" && rm /run/cv-pf-$p.pid; }
