@@ -10,7 +10,8 @@
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
 #   build/test --guests <release> <guests-dir>
-#   build/test --guests-update <release> <guests-dir> <broken-svc-dir>
+#   build/test --guests-maint <release> <guests-dir>   maintenance, DNS and handoff recovery
+#   build/test --guests-update <release> <guests-dir> <broken-svc-dir>   updates and rollback
 #   build/test --online <release> <guests-dir>   once <release> is published: its guests from R2
 #   build/test --advisories                  offline gate fixtures; no root needed
 set -eu
@@ -168,7 +169,7 @@ fi
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
@@ -177,7 +178,7 @@ case ${1:-} in
 --recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
 --rescue) mode=rescue; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
---guests | --guests-update | --online)
+--guests | --guests-maint | --guests-update | --online)
 	mode=${1#--}; shift
 	if [ "$mode" = guests-update ]; then
 		[ $# = 3 ] || usage
@@ -467,7 +468,7 @@ EOF
 }
 
 inject_guest_update() {
-	cp -a "$broken" "$var/lib/convergent/test-release/broken-svc"
+	[ "$mode" != guests-update ] || cp -a "$broken" "$var/lib/convergent/test-release/broken-svc"
 	cat >"$var/lib/convergent/test-release/update-test" <<'EOF'
 #!/bin/sh
 set -u
@@ -479,6 +480,28 @@ result=0
 # Each failed check names its line in this script.
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
+fw_diag() {
+    for f in fw1 fw2; do
+        timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
+            ifconfig carp | grep -E "^carp|carp: |groups:"
+            for group in carp wanwatch sysmaint upgrade handoff pfsync; do
+                echo "group $group"
+                ifconfig -g "$group" || true
+            done
+            rcctl check wan_watch || true
+            uptime
+            pgrep -lf "[r]eorder_kernel|[u]nbound|[w]an-watch" || true
+            for log in /var/log/daemon /var/log/messages; do
+                echo "$log"
+                grep -E "wan-watch|carp" "$log" | tail -n 15
+            done
+        ' 2>&1 | sed "s/^/CV-FWDIAG $f /" || true
+    done
+}
+[ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
+EOF
+	if [ "$mode" = guests-maint ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 # Polling must keep transient failures out of stderr and syslog.
 (
     set -e
@@ -592,25 +615,6 @@ for sample in valid compressed corrupt unsigned traversal malformed identity; do
 	fi
 done
 CHECK
-fw_diag() {
-    for f in fw1 fw2; do
-        timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
-            ifconfig carp | grep -E "^carp|carp: |groups:"
-            for group in carp wanwatch sysmaint upgrade handoff pfsync; do
-                echo "group $group"
-                ifconfig -g "$group" || true
-            done
-            rcctl check wan_watch || true
-            uptime
-            pgrep -lf "[r]eorder_kernel|[u]nbound|[w]an-watch" || true
-            for log in /var/log/daemon /var/log/messages; do
-                echo "$log"
-                grep -E "wan-watch|carp" "$log" | tail -n 15
-            done
-        ' 2>&1 | sed "s/^/CV-FWDIAG $f /" || true
-    done
-}
-[ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
 fw_unlocked() {
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
         sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_NOFOLLOW) or exit 2;
@@ -767,9 +771,6 @@ done
     dns-push local
 )
 [ "$?" = 0 ] || bad $LINENO
-before=$(ic config get svc volatile.base_image) || bad $LINENO
-service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
-[ -n "$before" ] && [ -n "$service" ] || bad $LINENO
 # Kill while SSH is waiting, both before and after adding the handoff groups.
 for phase in delayed partial; do
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-handoff' || bad $LINENO
@@ -822,6 +823,9 @@ REMOTE
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig) || bad $LINENO
     printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* (handoff|upgrade)( |$)' && bad $LINENO
 done
+EOF
+	fi
+	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 # Recreate a killed handoff and its leftover probe routes before the normal update.
 touch "$state/fw.handoff" && sync || bad $LINENO
 timeout 30 ssh -F /etc/convergent/ssh_config fw1 'set -e
@@ -830,6 +834,12 @@ ifconfig -g handoff carpdemote 128' || bad $LINENO
 for address in 100.80.0.10 100.80.2.10; do
     ip route replace "$address/32" via 100.80.1.3 dev host || bad $LINENO
 done
+EOF
+	if [ "$mode" = guests-update ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+before=$(ic config get svc volatile.base_image) || bad $LINENO
+service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
+[ -n "$before" ] && [ -n "$service" ] || bad $LINENO
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
@@ -1033,6 +1043,9 @@ status=$?
 echo CV-UPDATE status "$status"
 [ "$status" = 0 ] || bad $LINENO
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
+EOF
+	fi
+	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 sync
 echo CV-UPDATE-RESULT "$result"
 EOF
@@ -1085,7 +1098,7 @@ inject_guests() {
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
 	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
 	cp -r "$here/fixtures/browser-legacy" "$var/lib/convergent/test-release/"
-	if [ "$mode" = guests-update ]; then
+	if [ "$mode" = guests-maint ] || [ "$mode" = guests-update ]; then
 		cp "$here/../guests/svc/dashboards/check-data" "$var/lib/convergent/test-release/dashboard-check"
 		cp -r "$here/../guests/svc/rootfs/usr/share/grafana/dashboards" "$var/lib/convergent/test-release/"
 		inject_guest_update
@@ -1840,7 +1853,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=3600 ;; guests-update) memory=8192; limit=10800 ;; online) memory=8192; limit=7200 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192; limit=3600 ;; guests-maint | guests-update | online) memory=8192; limit=7200 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -1857,8 +1870,8 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
-guest_test = goal in ("guests", "guests-update", "online", "desktop", "update")
-marker = {"guests-update": b"CV-UPDATE-RESULT", "online": b"CV-ONLINE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
+guest_test = goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update")
+marker = {"guests-maint": b"CV-UPDATE-RESULT", "guests-update": b"CV-UPDATE-RESULT", "online": b"CV-ONLINE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -1882,7 +1895,7 @@ qemu = subprocess.Popen([
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
-    (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-update", "online") else ["-nic", "none"]),
+    (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "online") else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
@@ -2017,7 +2030,7 @@ detach
 [ "$mode" != update ] || inject_update
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | recovery | rescue | desktop | guests | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | recovery | rescue | desktop | guests | guests-maint | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 case $mode in update | recovery | rescue) run_vm "$mode" ;; *) run_vm ;; esac
 case $mode in
@@ -2065,10 +2078,10 @@ desktop)
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
 	[ "$ended" = desktop-0 ] || die "desktop smoke test failed ($ended); CV-DESKTOP lines in $log"
 	;;
-guests | guests-update | online)
+guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=3600 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
+	case $mode in guests) budget=3600 ;; *) budget=7200 ;; esac
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
