@@ -18,7 +18,7 @@ touchpad_set() {
 		touchpad_status || return
 		ask 'Option (pointer_accel/accel_profile/tap/natural_scroll/dwt/scroll_method/scroll_factor/middle_emulation)'; setting=$answer
 		case $setting in
-		pointer_accel) prompt='Speed (-1 to 1)' ;;
+		pointer_accel|accel_speed) prompt='Speed (-1 to 1)' ;;
 		accel_profile) prompt='Profile (adaptive/flat)' ;;
 		tap|natural_scroll|dwt|middle_emulation) prompt='Value (enabled/disabled)' ;;
 		scroll_method) prompt='Method (none/two_finger/edge/on_button_down)' ;;
@@ -29,6 +29,8 @@ touchpad_set() {
 	fi
 	[ "$#" = 2 ] || usage
 	setting=$1; value=$2; text_valid "$setting"; text_valid "$value"
+	# Status shows libinput's name for it.
+	[ "$setting" != accel_speed ] || setting=pointer_accel
 	case $setting:$value in
 	pointer_accel:*)
 		printf '%s\n' "$value" | grep -Eq '^-?[01](\.[0-9]{1,3})?$' &&
