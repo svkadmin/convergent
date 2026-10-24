@@ -38,6 +38,8 @@ for file in /etc/convergent/carp/hostname.carp*; do
     {
         echo 'group upgrade'
         [ "${file##*/}" != hostname.carp0 ] || echo '!test ! -f /etc/convergent/seeded/demote || ifconfig -g upgrade carpdemote 128'
+        echo '!test ! -f /etc/convergent/seeded/maintenance || ifconfig $if group sysmaint'
+        [ "${file##*/}" != hostname.carp0 ] || echo '!test ! -f /etc/convergent/seeded/maintenance || ifconfig -g sysmaint carpdemote 128'
         sed "s/@CARPPASS@/$pass/g" "$file"
     } >"$stage/${file##*/}"
     if grep -q '@' "$stage/${file##*/}"; then exit 1; fi
