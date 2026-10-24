@@ -10,6 +10,12 @@ read_owned() {
 }
 
 wan=${1:?wan address required}
+# Probe from our own transit address: replies to the CARP address follow the role this probe decides.
+src=
+while [ -z "$src" ]; do
+	src=$(ifconfig | awk -v net="${wan%.*}." '/^[a-z]/ {carp = $1 ~ /^carp/} $1 == "inet" && !carp && index($2, net) == 1 {print $2; exit}')
+	[ -n "$src" ] || sleep 1
+done
 read_owned
 case $owned in 0|128) ;; *) logger -t wan-watch "reconciling unexpected wanwatch demotion: $owned" || : ;; esac
 good=0
@@ -18,7 +24,7 @@ while :; do
 	case $want in 0|128) ;; *) want=128 ;; esac
 	# -w waits after the last probe; SIGINT preserves success on any reply.
 	if pgrep -x unbound >/dev/null &&
-	    timeout -p -s INT 1 ping -q -n -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
+	    timeout -p -s INT 1 ping -q -n -I "$src" -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
 		[ "$good" -ge 3 ] || good=$((good + 1))
 		[ "$good" -lt 3 ] || want=0
 	else
