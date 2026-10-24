@@ -36,6 +36,30 @@ bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" 
 mf() { case $1 in guests/*) echo "$gm" ;; *) echo "$dir/manifest" ;; esac; }
 # A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (build/guests: the same).
 ident() { (cd "$1" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
+staged_current() (
+	[ -d "$staged/$latest" ] || return 1
+	private "$staged"
+	private "$staged/$latest"
+	[ -z "$(find "$staged/$latest" -type l -print)" ] || return 1
+	paths=$(printf '%s\n' "$guest_files" | tr '\n' ' ')
+	for g in $changed; do [ -d "$staged/$latest/$g" ] || return 1; done
+	for g in fw wan svc browser; do
+		[ -d "$staged/$latest/$g" ] || continue
+		guest_id=$(field guest "$g" "$gm" | tr A-F a-f)
+		[ "$(ident "$staged/$latest/$g")" = "$guest_id" ] || return 1
+		awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+			{ sub(/^\*/, "", $2); print $2 }' "$staged/$latest/$g/SHA256SUMS" >"$dir/artifacts" || return 1
+		while read -r artifact; do
+			f=guests/$g/$artifact
+			guest_path "$f" || return 1
+			case " $paths " in
+			*" $f "* | *" $f.zst "*) ;;
+			*) return 1 ;;
+			esac
+		done <"$dir/artifacts"
+		(cd "$staged/$latest/$g" && sha256sum -c --quiet SHA256SUMS) || return 1
+	done
+)
 download() {
 	f=$1
 	size=$(field size "$f" "$(mf "$f")")
@@ -223,6 +247,18 @@ if [ "$mode" = check ]; then
 	fi
 	exit 0
 fi
+if [ -n "$sync" ]; then
+	exec 8>/run/convergent/guests.lock
+	flock -s -w 600 8 || die 'another guests operation is running'
+	if staged_current; then
+		[ -z "$src_open" ] || close_src || die "a firewall kept the update source open; it expires within 4 hours"
+		rm -rf "$dir"
+		echo "updating the guests of release $latest now:$changed (already staged)"
+		exec 8>&- 9>&-
+		exec /usr/local/sbin/guests apply
+	fi
+	exec 8>&-
+fi
 if [ -d "$dir/guests" ]; then
 	find "$dir/guests" -type f | while IFS= read -r path; do
 		f=${path#"$dir/"}
@@ -283,7 +319,7 @@ if [ -n "$changed" ]; then
 	find "$dir/guests" -type f -name '*.zst' -delete
 	mv "$dir/guests" "$staged/$latest"
 	chmod 0700 "$staged/$latest"
-	sync
+	sync -f "$staged" || die "could not sync staged guests"
 fi
 exec 8>&-
 if [ -n "$sync" ]; then

@@ -270,6 +270,8 @@ jq -e 'all(.[] | select((.project // "default") == "default" and .name == "svc")
     "$work/instances" >/dev/null || bad 'svc memory limit differs'
 
 if [ "${1:-}" = accept ]; then
+    jq -e 'any(.[]; .name == "def") and any(.[]; .name == "int")' "$work/incus" >/dev/null ||
+        die 'open and close both def and int browsers, then retry acceptance'
     [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'refusing acceptance: host verification failed'; }
     mkdir -p "$work/accepted/etc" "$work/accepted/fw" || die 'cannot prepare acceptance'
     cp "$manifest" "$work/accepted/manifest" || die 'cannot retain manifest'

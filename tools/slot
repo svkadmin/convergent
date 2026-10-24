@@ -255,11 +255,12 @@ write() {
 	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"+*.efi.new; do
 		if [ -e "$f" ]; then rm "$f"; fi
 	done
-	sync
+	sync -f "$esp" || die "could not sync the ESP"
 	# Remove /var from a previous failed attempt at this release.
 	for v in "$stm/var-$new" "$stm/var-$new.new"; do
 		if [ -z "${rescue_target:-}" ] && [ -d "$v" ]; then btrfs -q subvolume delete "$v" || die "could not remove $v"; fi
 	done
+	sync -f "$stm" || die "could not sync the state volume"
 	log "writing release $new to slot $inactive"
 	dd if="$dir/slot.img" of="$part" bs=1M conv=fsync status=none || die "writing slot $inactive failed"
 	blockdev --flushbufs "$part"
@@ -269,7 +270,9 @@ write() {
 	# Stage the UKI before exposing its three-try boot entry.
 	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
 	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
-		sync && mv "$dst.new" "$dst" && sync || die "could not install the UKI"
+		sync -f "$esp" && mv "$dst.new" "$dst" && sync -f "$esp" || die "could not install the UKI"
+	for d in $mounted; do umount "$d" || die "could not unmount $d"; done
+	mounted=
 	log "release $new is in slot $inactive with three tries; reboot to try it"
 }
 

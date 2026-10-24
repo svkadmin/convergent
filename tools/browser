@@ -283,4 +283,13 @@ while kill -0 "$browser" 2>/dev/null; do
         [ $((${uptime%.*} - checked)) -lt 180 ] || die 'portal status is stale'
     fi
 done
-wait "$browser" || die "the $role browser exited with status $?"
+wait "$browser" || {
+    rc=$?
+    case $rc in
+    21) die "the $role browser exited with status $rc: Chromium reports this profile is in use on another host" ;;
+    7) die "the $role browser exited with status $rc: required Chromium files are missing" ;;
+    31) die "the $role browser exited with status $rc: Chromium encountered an invalid sandbox state" ;;
+    37) die "the $role browser exited with status $rc: Chromium exhausted system resources" ;;
+    *) die "the $role browser exited with status $rc" ;;
+    esac
+}
