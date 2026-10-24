@@ -360,6 +360,30 @@ result=0
 # Each failed check names its line in this script.
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
+fw_diag() {
+    for f in fw1 fw2; do
+        timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
+            ifconfig carp | grep -E "^carp|carp: |groups:"
+            for group in carp wanwatch sysmaint upgrade handoff pfsync; do
+                echo "group $group"
+                ifconfig -g "$group" || true
+            done
+            echo /var/run/convergent-wan-demote
+            cat /var/run/convergent-wan-demote || true
+            if [ -e /var/run/convergent-wan-demote.new ]; then
+                echo "/var/run/convergent-wan-demote.new exists"
+            else
+                echo "/var/run/convergent-wan-demote.new absent"
+            fi
+            uptime
+            pgrep -lf "[r]eorder_kernel|[u]nbound" || true
+            for log in /var/log/daemon /var/log/messages; do
+                echo "$log"
+                grep -E "wan-watch|carp" "$log" | tail -n 15
+            done
+        ' 2>&1 | sed "s/^/CV-FWDIAG $f /" || true
+    done
+}
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
@@ -442,7 +466,7 @@ LOCAL
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
     if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
 )
-[ "$?" = 0 ] || bad $LINENO
+[ "$?" = 0 ] || { fw_diag; bad $LINENO; }
 done
 # Maintenance must survive a reboot and fw-seed, then release before replacement.
 (
@@ -453,10 +477,10 @@ done
     grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
     fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
     ic restart fw1 --timeout 120 || { fw1_state "restart failed ($?)"; exit 1; }
-    # OpenBSD relinks its libraries at every boot before sshd starts: minutes in a loaded nested VM.
-    deadline=$(($(date +%s) + 900))
-    until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fw1_state 'no ssh 15 minutes after the restart'; exit 1; }
+    # Wait for OpenBSD's boot relinking: libraries before sshd, kernel after.
+    deadline=$(($(date +%s) + 1800))
+    until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound && ! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
+        [ "$(date +%s)" -lt "$deadline" ] || { fw1_state 'boot or unbound not ready 30 minutes after the restart'; exit 1; }
         sleep 5
     done
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
@@ -468,7 +492,7 @@ done
     printf 'yes\n' | sys firewall undo
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
 )
-[ "$?" = 0 ] || bad $LINENO
+[ "$?" = 0 ] || { fw_diag; bad $LINENO; }
 # Use a local list so stopped-daemon recovery does not depend on a download.
 (
     set -e
@@ -572,7 +596,7 @@ probe=$!
 fw=$?
 kill "$probe" 2>/dev/null
 echo CV-UPDATE fw "$fw"
-[ "$fw" = 0 ] || bad $LINENO
+[ "$fw" = 0 ] || { fw_diag; bad $LINENO; }
 [ ! -e "$state/fw.handoff" ] || bad $LINENO
 for address in 100.80.0.10 100.80.2.10; do
     [ -z "$(ip route show "$address/32")" ] || bad $LINENO
