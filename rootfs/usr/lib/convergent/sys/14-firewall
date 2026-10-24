@@ -17,13 +17,16 @@ firewall_mutate() (
 	set +e
 	(run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'set -e
 lock=/var/run/convergent-maintenance.lock
-if ! mkdir "$lock" 2>/dev/null; then
-    kill -0 "$(cat "$lock/pid" 2>/dev/null)" 2>/dev/null && exit 1
-    rm -f "$lock/pid"
-    rmdir "$lock" && mkdir "$lock" || exit 1
+if ! ln -s "$$" "$lock" 2>/dev/null; then
+    pid=$(readlink "$lock") || exit 1
+    case $pid in ""|*[!0-9]*) exit 1 ;; esac
+    if kill -0 "$pid" 2>/dev/null; then
+        case $(ps -ww -o command= -p "$pid") in *convergent-maintenance.lock*) exit 1 ;; esac
+    fi
+    [ "$(readlink "$lock")" = "$pid" ] || exit 1
+    rm "$lock" && ln -s "$$" "$lock" || exit 1
 fi
-echo $$ >"$lock/pid"
-trap '\''rm -f "$lock/pid"; rmdir "$lock"'\'' 0
+trap '\''[ "$(readlink "$lock")" != "$$" ] || rm "$lock"'\'' 0
 trap '\''exit 1'\'' HUP INT TERM
 '"$2" 9>&- 8>&-)
 	code=$?

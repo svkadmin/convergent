@@ -25,7 +25,9 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 			printf "convergent_carp_advskew{interface=\"%s\"} %d\n", ifn, a
 		}'
 	echo "convergent_carp_preempt $(sysctl -n net.inet.carp.preempt)"
-	for group in carp wanwatch upgrade; do
+	if rcctl check wan_watch >/dev/null 2>&1; then up=1; else up=0; fi
+	echo "convergent_wan_watch_up $up"
+	for group in carp wanwatch sysmaint upgrade handoff; do
 		ifconfig -g "$group" 2>/dev/null | awk -v g="$group" '
 			/demote/ { printf "convergent_carp_demotion{group=\"%s\"} %d\n", g, $NF; exit }'
 	done

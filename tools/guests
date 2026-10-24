@@ -742,7 +742,7 @@ commit_update() {
     while read -r guest snap; do
         printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$state/updates" || return
     done <"$work/committed"
-    rm -f "$state/pending" && rm -rf "$state/profiles.before" && sync || return
+    rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
     rm "$state/committed" && sync || return
     while read -r guest snap; do prune "$guest" || return; done <"$work/committed"
@@ -771,7 +771,8 @@ rebuild() {
     step="rebuild $1"
     case $1 in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) die 'rebuild accepts fw1 or fw2' ;; esac
     [ -f "$state/initialized" ] || die 'init has not completed'
-    [ ! -e /var/lib/convergent/firewall-maintenance ] || die 'end firewall maintenance with sys firewall undo first'
+    [ ! -e /var/lib/convergent/firewall-maintenance ] ||
+        [ "$(cat /var/lib/convergent/firewall-maintenance)" = "$1" ] || die 'the peer is in maintenance; run sys firewall undo first'
     for journal in profiles.before browser.ready browser.rename; do
         [ ! -e "$state/$journal" ] || die 'finish the guest update before rebuilding a firewall'
     done
@@ -796,11 +797,18 @@ rebuild() {
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
     rebuilding=$1
     # A completed handback can be committed after an interruption.
-    if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] && pair fw1 fw2 && fw_check "$1" release; then
+    if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
+        { [ -f "$state/fw.rebuilt" ] || [ -f "$state/committed" ]; } && pair fw1 fw2 && fw_check "$1" release; then
         fw_touched=1
     else
         [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
-        carp "$peer" MASTER || die "$peer must be MASTER on all six segments before rebuilding $1"
+        if ! carp "$peer" MASTER; then
+            running "$1" || die "$peer must be MASTER on all six segments before rebuilding $1"
+            stop_guest "$1"
+            retry carp "$peer" MASTER || die "$peer did not take over all six segments"
+        fi
+        rm -f "$state/fw.rebuilt"
+        sync
         # An incomplete firewall export has no data volumes to restore.
         if [ -f "$state/preparing" ]; then
             read -r prep_guest prep_snap prep_start <"$state/preparing"
@@ -810,6 +818,8 @@ rebuild() {
         fi
         [ ! -f "$state/pending" ] || pending=1
         replace "$1"
+        touch "$state/fw.rebuilt"
+        sync
         fw_check "$1"
         retry pair "$peer" "$1"
     fi
@@ -1145,13 +1155,13 @@ fi
 mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
-if [ "$1" = rebuild ]; then flock -n 9; else flock -w 600 9; fi || die 'another guests operation is running'
-if [ "$1" != apply ] && [ "${2:-}" != browser ]; then
+flock -w 600 9 || die 'another guests operation is running'
+if [ "$1" != apply ] && [ "$1" != rebuild ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
     flock -n 6 || die 'close browsers before updating guests'
 fi
 exec 8>/run/convergent/dns-push.lock
-if [ "$1" = rebuild ]; then flock -n 8; else flock -w 120 8; fi || die 'a DNS push is still running'
+flock -w 120 8 || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
 flock -w 60 7 || die 'a portal change is still running'
 work=$(mktemp -d "$state/work.XXXXXX")

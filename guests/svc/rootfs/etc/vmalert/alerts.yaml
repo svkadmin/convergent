@@ -14,6 +14,11 @@ groups:
         for: 1m
         labels: {severity: critical}
         annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}; recovery: sys firewall rebuild {{ $labels.node }}'}
+      - alert: WanWatchDown
+        expr: convergent_wan_watch_up{node=~"fw1|fw2"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: 'WAN failover watcher stopped on {{ $labels.node }}'}
       - alert: CarpSplit
         expr: sum by (interface,vhid) (convergent_carp_state{node=~"fw1|fw2"} == bool 2) != 1
         for: 1m
