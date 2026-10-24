@@ -165,7 +165,7 @@ Support depends on the hardware; `sys touchpad status` shows the current libinpu
 | Option | Values |
 |---|---|
 | `pointer_accel` | -1 to 1 (pointer speed/sensitivity; default 1, the maximum) |
-| `accel_profile` | `adaptive`, `flat` |
+| `accel_profile` | `adaptive` (default: faster finger movement goes further), `flat` |
 | `tap`, `natural_scroll`, `dwt`, `middle_emulation` | `enabled`, `disabled`; `dwt` disables the touchpad while typing |
 | `scroll_method` | `none`, `two_finger`, `edge`, `on_button_down` (uses the device's scroll button) |
 | `scroll_factor` | 0–10 (scroll speed multiplier; default 3, 0 stops scrolling) |
