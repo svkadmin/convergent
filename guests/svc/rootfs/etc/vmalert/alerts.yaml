@@ -13,7 +13,7 @@ groups:
         expr: up{job="node",node=~"fw1|fw2"} == 0
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}'}
+        annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}; recovery: sys firewall rebuild {{ $labels.node }}'}
       - alert: CarpSplit
         expr: sum by (interface,vhid) (convergent_carp_state{node=~"fw1|fw2"} == bool 2) != 1
         for: 1m

@@ -124,7 +124,7 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 | `portal` | `status`, `on`, `off` |
 | `wired` | `status`, `attach [VENDOR:PRODUCT SERIAL]` *, `remove` * |
 | `dns` | `list`, `add [NAME IPv4]` *, `remove [NAME]` *, `allow [DOMAIN]` *, `unallow [DOMAIN]` *, `push` |
-| `firewall` (`fw`) | `status`, `maintenance` *, `undo` * |
+| `firewall` (`fw`) | `status`, `rebuild` *, `maintenance` *, `undo` * |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair [MAC]`, `connect [MAC]`, `disconnect [MAC]`, `forget [MAC]` * (device picker without MAC) |
 | `usb` | `status`, `allow N\|ID` *, `enrol` *, `review`, `revoke RULE` * |
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `mic on\|off`, `micmute` |
@@ -338,6 +338,12 @@ six segments. A failed handover is undone; an interrupted action retains recover
 After maintenance, run `sys fw undo`: both firewalls must be healthy, and normal fw1-master /
 fw2-backup roles are checked after releasing the demotion. Finish maintenance before guest updates.
 If undo cannot reach a firewall, retry it after restoring management access.
+
+`sys firewall rebuild fw1` (or `fw2`; root command: `guests rebuild fw1|fw2`) recreates a broken
+firewall from the installed guest release and laptop seed. The peer must be healthy and MASTER
+on all six segments; guest updates, handoffs, maintenance and DNS pushes must be finished, and
+browsers closed. It checks the replacement, restores fw1 MASTER / fw2 BACKUP and pushes stored
+DNS data. Repeat the same command after interruption to resume its replacement journal.
 
 ## Backups
 

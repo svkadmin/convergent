@@ -1,6 +1,7 @@
 title=Firewalls
 alias=fw
 actions='status	Show both firewalls and DNS push status	root
+rebuild	Recreate a firewall from the installed release [fw1|fw2]	root confirm
 maintenance	Move all segments to the healthy peer	root
 undo	End maintenance demotion	root'
 
@@ -54,7 +55,7 @@ firewall_status() (
 			/^carp[0-5]:/ {i=substr($1,5,1)+1}
 			/carp: / {print "  " seg[i] ": " $2; n++}
 			END {if (n!=6) exit 1}' || result=1
-		else result=1; fi
+		else echo "$fw unreachable; recovery: sys firewall rebuild $fw"; result=1; fi
 		firewall_rsh "$fw" 'set -e; info=$(pfctl -si); printf "%s\n" "$info" | sed -n "/^Status:/p; /current entries/p"; rcctl check unbound; unbound-control status' || result=1
 	done
 	printf 'Last successful DNS push to both (UTC): '
@@ -134,3 +135,8 @@ ifconfig -g sysmaint carpdemote 128' || die 'demotion uncertain; run sys firewal
 )
 firewall_maintenance() { firewall_change maintenance "$@"; }
 firewall_undo() { firewall_change undo "$@"; }
+firewall_rebuild() {
+	onearg 'Firewall to rebuild (fw1/fw2)' "$@"
+	case $answer in fw1|fw2) ;; *) die 'rebuild accepts fw1 or fw2' ;; esac
+	run sudo /usr/local/sbin/guests rebuild "$answer"
+}

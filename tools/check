@@ -349,7 +349,7 @@ for node in fw1 fw2; do
             printf 'cv_firewall_ruleset_expected_info{firewall="%s",loaded="SHA256 (stdin) = %s"} 1\n' "$node" "$expected" >>"$work/metrics"
         fi
     done
-    rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed"
+    rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed; recovery: sys firewall rebuild $node"
     rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
 awk '/^carp[0-9]+:/ {iface=$1} /carp: / {n++; if ($2 == "MASTER") m++; else if ($2 != "BACKUP") bad=1

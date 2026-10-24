@@ -12,7 +12,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing= fw_touched=
-applying= recovering=
+applying= recovering= rebuilding=
 step=setup
 
 fail() { logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
@@ -662,9 +662,15 @@ prepare_cleanup() {
 replace() {
     step="replace $1"
     guest=$1
-    snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$
+    snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$${rebuilding:+-rebuild}
     import_image "$guest"
     case $guest in fw1|fw2) fw_touched=1 ;; esac
+    if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
+        running "$guest" && stop_guest "$guest"
+        seed_remove "$guest"
+        replace_root
+        return
+    fi
     step="backup $guest"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
     prep_start=no
@@ -695,11 +701,15 @@ replace() {
     if [ "$guest" = wan ]; then
         wan_read
     fi
+    replace_root
+}
+replace_root() {
+    if [ "$rebuilding" = fw1 ]; then touch "$state/fw.handoff"; sync; fi
     step="rebuild $guest"
     ic query "/1.0/instances/$guest/snapshots?recursion=1" >"$work/snapshots"
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots"
     while read -r old; do ic snapshot delete "$guest" "$old"; done <"$work/old-snapshots"
-    ic rebuild "candidate-$guest" "$guest"
+    locked ic rebuild "candidate-$guest" "$guest"
     case $guest in
     wan)
         wan_mount
@@ -755,6 +765,59 @@ good_slot() {
         $1 == "slot" {release[$2]=$3; status[$2]=$4}
         END {exit !(r ~ /^[0-9]+$/ && r == g && r <= h && release[s] == r && status[s] == "good")}' "$work/slot" ||
         die 'booted host slot is not marked good'
+}
+
+rebuild() {
+    step="rebuild $1"
+    case $1 in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) die 'rebuild accepts fw1 or fw2' ;; esac
+    [ -f "$state/initialized" ] || die 'init has not completed'
+    [ ! -e /var/lib/convergent/firewall-maintenance ] || die 'end firewall maintenance with sys firewall undo first'
+    for journal in profiles.before browser.ready browser.rename; do
+        [ ! -e "$state/$journal" ] || die 'finish the guest update before rebuilding a firewall'
+    done
+    resuming=
+    for journal in preparing pending committed; do
+        [ -e "$state/$journal" ] || continue
+        awk -v node="$1" -v journal="$journal" '
+            $1 != node || $2 !~ /^guests-[0-9]+T[0-9]+-[0-9]+-rebuild$/ ||
+            NF != (journal == "preparing" ? 3 : 2) {bad=1}
+            END {exit !(NR == 1 && !bad)}' "$state/$journal" ||
+            die 'another guest update or rebuild is pending; finish it first'
+        resuming=1
+    done
+    [ ! -e "$state/fw.handoff" ] || { [ "$1" = fw1 ] && [ -f "$state/pending" ]; } ||
+        die 'a firewall handoff is pending; finish the guest update first'
+    image_dir=/var/lib/convergent/release-guests/guests/fw
+    [ -d "$image_dir" ] || die 'installed firewall images are missing'
+    verify_image fw
+    [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+    fw_check "$peer" || die "$peer must be healthy before rebuilding $1"
+    actual=$(rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
+    [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
+    rebuilding=$1
+    # A completed handback can be committed after an interruption.
+    if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] && pair fw1 fw2 && fw_check "$1" release; then
+        fw_touched=1
+    else
+        [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
+        carp "$peer" MASTER || die "$peer must be MASTER on all six segments before rebuilding $1"
+        # An incomplete firewall export has no data volumes to restore.
+        if [ -f "$state/preparing" ]; then
+            read -r prep_guest prep_snap prep_start <"$state/preparing"
+            [ -f "$state/pending" ] || rm -f "$state/backups/$prep_guest-$prep_snap.tar.gz"
+            rm "$state/preparing"
+            sync
+        fi
+        [ ! -f "$state/pending" ] || pending=1
+        replace "$1"
+        fw_check "$1"
+        retry pair "$peer" "$1"
+    fi
+    fw_release
+    retry pair fw1 fw2
+    if [ "$1" = fw2 ]; then backup_soak; else soak fw1 fw2; fi
+    commit_update
+    echo "guests: rebuilt $1; fw1 MASTER / fw2 BACKUP on all six segments"
 }
 
 init() {
@@ -1071,7 +1134,7 @@ trap 'cleanup "$?"' 0
 trap 'die "received HUP"' HUP
 trap 'die "received INT"' INT
 trap 'die "received TERM"' TERM
-case ${1:-}:$# in init:2|update:3|apply:1|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | apply | status' ;; esac
+case ${1:-}:$# in init:2|update:3|rebuild:2|apply:1|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | rebuild fw1|fw2 | apply | status' ;; esac
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ "$1" = status ]; then
     step=status
@@ -1082,15 +1145,21 @@ fi
 mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
-flock -w 600 9 || die 'another guests operation is running'
+if [ "$1" = rebuild ]; then flock -n 9; else flock -w 600 9; fi || die 'another guests operation is running'
 if [ "$1" != apply ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
     flock -n 6 || die 'close browsers before updating guests'
 fi
 exec 8>/run/convergent/dns-push.lock
-flock -w 120 8 || die 'a DNS push is still running'
+if [ "$1" = rebuild ]; then flock -n 8; else flock -w 120 8; fi || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
 flock -w 60 7 || die 'a portal change is still running'
 work=$(mktemp -d "$state/work.XXXXXX")
-case $1 in init) init "$2" ;; update) update "$2" "$3" ;; apply) apply ;;
+if [ "$1" != rebuild ]; then
+    for journal in preparing pending committed; do
+        node=$(awk '$2 ~ /-rebuild$/ {print $1; exit}' "$state/$journal" 2>/dev/null) || node=
+        [ -z "$node" ] || die "interrupted firewall rebuild; run sys firewall rebuild $node"
+    done
+fi
+case $1 in init) init "$2" ;; update) update "$2" "$3" ;; rebuild) rebuild "$2" ;; apply) apply ;;
 esac

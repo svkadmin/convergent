@@ -152,6 +152,7 @@ non-applicable errata need an explicit reason in `build/advisories.exceptions`.
   recoverable without decrementing health/upgrade counters. Undo checks both nodes and the
   normal fw1-master pair. Guest and DNS push locks serialize the operation; finish maintenance
   before performing guest updates.
+  `sys firewall rebuild fw1|fw2` replaces a broken node from installed images with a healthy MASTER peer, reusing guest journals, seeding, handback and DNS push.
 - **Routes:** default via wan's transit address; every internal segment is directly connected.
 - **Also:** an NTP client of the host, node_exporter, syslog to svc, SSH from the host only.
 - **No DHCP:** every address is static (section 4.1).
