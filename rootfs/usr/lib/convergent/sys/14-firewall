@@ -95,9 +95,10 @@ firewall_change() (
 	[ "$(id -u)" = 0 ] || { run sudo sys firewall "$op"; exit $?; }
 	mkdir -p /run/convergent /var/lib/convergent || exit 1
 	exec 9>/run/convergent/guests.lock
-	flock -n 9 || die 'another guest operation is running'
+	# The minute check holds this lock briefly.
+	flock -w 120 9 || die 'another guest operation is running'
 	exec 8>/run/convergent/dns-push.lock
-	flock -n 8 || die 'DNS push in progress'
+	flock -w 120 8 || die 'DNS push in progress'
 	journal=/var/lib/convergent/firewall-maintenance
 	if [ "$op" = undo ]; then
 		[ -f "$journal" ] || die 'no maintenance demotion recorded'
