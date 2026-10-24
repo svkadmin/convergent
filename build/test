@@ -328,6 +328,33 @@ refuse() {
 refuse unsigned 'the release is not signed'
 refuse tampered 'the manifest signature does not verify'
 refuse wrongkey 'the manifest signature does not verify'
+sh -eu <<'CHECK' || r=1
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' /usr/local/sbin/slot >"$work/finish"
+for fault in none sync1 sync2 esp state; do
+	if (
+		tmp=$work esp=$work/esp stm=$work/state linux=EFI/Linux new=123 inactive=b
+		mkdir -p "$esp/$linux" "$stm"
+		echo UKI >"$tmp/uki"
+		mounted="$esp $stm"
+		count=0
+		sync() { [ "$1" = -f ] && [ "$2" = "$esp" ] || exit 2; count=$((count + 1)); [ "$fault" != "sync$count" ]; }
+		umount() { echo "unmount $1"; [ "$1" != "$work/$fault" ]; }
+		die() { echo "$*"; exit 1; }
+		log() { echo "$*"; }
+		. "$work/finish"
+		[ -z "$mounted" ]
+	) >"$work/out"; then
+		[ "$fault" = none ]
+		[ "$(grep -c '^unmount ' "$work/out")" = 2 ]
+		grep -q 'release 123 is in slot b' "$work/out"
+	else
+		[ "$fault" != none ]
+		if grep -q 'release 123 is in slot b' "$work/out"; then exit 1; fi
+	fi
+done
+CHECK
 if slot write "$update/good"; then echo CV-SIG good written
 else echo CV-SIG good FAILED; r=1; fi
 status=$(slot status) || r=1
@@ -360,6 +387,50 @@ result=0
 # Each failed check names its line in this script.
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
+# Polling must keep transient failures out of stderr and syslog.
+(
+    set -e
+    work=$(mktemp -d "$release/wait.XXXXXX")
+    eval "$(sed -n '/^fail()/p; /^retry() {/,/^}/p; /^stop_guest() {/,/^}/p' /usr/local/sbin/guests)"
+    polling= step=test boot_timeout=10
+    logger() { printf '%s\n' "$*" >>"$work/logged"; }
+    sleep() { :; }
+    attempts=0
+    seed_applied() {
+        attempts=$((attempts + 1))
+        echo "$attempts"
+        [ "$attempts" = 3 ] || fail 'seed not ready'
+    }
+    retry seed_applied svc >"$work/out" 2>"$work/err"
+    [ -z "$polling" ] && [ "$attempts" = 3 ] && [ ! -e "$work/logged" ] || exit 1
+    [ "$(cat "$work/out")" = "$(printf '1\n2\n3')" ]
+    [ "$(cat "$work/err")" = 'guests: waiting for svc seed' ]
+    seed_applied() { fail 'wrong seed ID'; }
+    GUEST_SVC_TIMEOUT=0
+    if retry seed_applied svc 2>"$work/err"; then exit 1; fi
+    [ -z "$polling" ] && grep -q 'wrong seed ID' "$work/err" || exit 1
+    grep -q 'wrong seed ID' "$work/logged"
+    grep -q 'seed_applied svc timed out after 0s' "$work/err"
+    ic() {
+        case $1 in console) seq 1 25 ;; stop) [ "${3:-}" = --force ] || fail 'stop timed out' ;; esac
+    }
+    pin() { fail 'no host key announcement'; }
+    boot_timeout=0
+    for node in fw1 fw2 wan; do
+        if retry pin "$node" 2>"$work/err"; then exit 1; fi
+        [ -z "$polling" ] && [ "$(grep -c '^[0-9]' "$work/err")" = 20 ] || exit 1
+        grep -q 'guests: next:' "$work/err"
+        grep -q 'no host key announcement' "$work/logged"
+    done
+    stop_guest wan 2>"$work/err"
+    if grep -q '^[0-9]' "$work/err"; then exit 1; fi
+    grep -q 'incus --force-local --project default console wan --show-log' "$work/err"
+    ic() { fail 'forced stop failed'; }
+    if stop_guest wan 2>"$work/err"; then exit 1; fi
+    grep -q 'forced stop failed' "$work/err"
+    rm -rf "$work"
+)
+[ "$?" = 0 ] || bad $LINENO
 fw_diag() {
     for f in fw1 fw2; do
         timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
@@ -517,6 +588,13 @@ done
     dns-push local
     [ ! -e "$dns/pending" ]
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'
+    date +%s >"$dns/stamp"
+    stamp=$(cat "$dns/stamp")
+    touch "$state/dns.stale"
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
+    dns-push auto
+    [ ! -e "$state/dns.stale" ] && [ "$(cat "$dns/stamp")" = "$stamp" ] || exit 1
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound'
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
     touch "$dns/pending"
     dns-push list
@@ -628,6 +706,7 @@ sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-
 wan=$?
 echo CV-UPDATE wan "$wan"
 [ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; bad $LINENO; }
+cmp "$release/guests/wan/SHA256SUMS" /var/lib/convergent/release-guests/guests/wan/SHA256SUMS || bad $LINENO
 # Who still holds the guests lock, if anyone.
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
@@ -695,8 +774,11 @@ FAULT
             [ "$(sha256sum "$state/profiles.before/svc.yaml")" = "$saved" ] &&
                 [ "$(ic profile get svc user.convergent.lock-test)" = held ]
         ) || bad $LINENO
-        # Recovery runs before image validation; no second replacement is needed.
-        /usr/local/sbin/guests update svc "$release/no-such-image" >/var/log/guests-update-export-resume.log 2>&1 && bad $LINENO
+        # Recovery must run even with no staged images.
+        touch "$state/dns.stale"
+        /usr/local/sbin/guests apply >/var/log/guests-update-export-resume.log 2>&1 || bad $LINENO
+        [ ! -e "$state/dns.stale" ] || bad $LINENO
+        for scratch in "$state"/work.??????; do [ ! -e "$scratch" ] || bad $LINENO; done
     fi
     for volume in svc-metrics svc-logs svc-grafana; do
         ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.after"
@@ -759,7 +841,7 @@ for fault in committed pruning; do
     awk -v fault="$fault" '
         {print}
         fault == "pruning" && $0 == "prune() {" {print "    return 1"}
-        fault == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return" {
+        fault == "committed" && $0 == "    sync && mv \"$work/updates\" \"$state/updates\" && sync || return" {
             print "    kill -KILL \"$$\""
         }
     ' /usr/local/sbin/guests >"$release/guests-commit"
@@ -768,7 +850,9 @@ for fault in committed pruning; do
     case $fault in committed) [ "$code" = 137 ] ;; pruning) [ "$code" = 1 ] ;; esac || bad $LINENO
     if [ "$fault" = committed ]; then
         [ -f "$state/committed" ] && [ -f "$state/profiles.before/svc.yaml" ] || bad $LINENO
-        /usr/local/sbin/guests update svc "$release/no-such-image" >/var/log/guests-update-commit-resume.log 2>&1 && bad $LINENO
+        read -r committed_guest committed_snap <"$state/committed"
+        /usr/local/sbin/guests apply >/var/log/guests-update-commit-resume.log 2>&1 || bad $LINENO
+        awk -v g="$committed_guest" -v s="$committed_snap" '$2 == g && $3 == s {n++} END {exit n != 1}' "$state/updates" || bad $LINENO
     fi
     [ "$(ic profile get svc user.convergent.commit-test)" = '' ] || bad $LINENO
     for journal in committed pending profiles.before; do [ ! -e "$state/$journal" ] || bad $LINENO; done
@@ -781,6 +865,7 @@ sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-apply.log || bad $LI
 [ "$(wc -l <"$state/updates")" -gt "$updates" ] || bad $LINENO
 grep -q '^+ ic rebuild candidate-svc svc$' /var/log/guests-update-apply.log || bad $LINENO
 cmp "$release/guests/svc/SHA256SUMS" "$installed/SHA256SUMS" || bad $LINENO
+cmp "$release/guests/svc/incus.yaml" "$installed/incus.yaml" || bad $LINENO
 [ ! -e "$staged" ] && [ "$(cat /run/convergent/status/guests-update)" = done ] || bad $LINENO
 /usr/local/sbin/guests status
 status=$?
@@ -803,9 +888,18 @@ export LC_ALL=C
 result=0
 [ "$1" = 0 ] || { sync; echo CV-ONLINE-RESULT 1; exit 1; }
 rm -rf /var/lib/convergent/release-guests/guests
-timeout -k 10 5400 fetch-release >/var/log/online-fetch.log 2>&1 || result=1
+# An open browser defers apply; retry must reuse the verified staging.
+exec 6>/run/convergent/browser-update.lock
+flock -s 6 || result=1
+timeout -k 10 5400 fetch-release 6>&- >/var/log/online-fetch.log 2>&1 || result=1
 tail -n 25 /var/log/online-fetch.log
 grep -q '^updating the guests of release ' /var/log/online-fetch.log || result=1
+grep -q 'a browser is open' /var/log/online-fetch.log || result=1
+exec 6>&-
+timeout -k 10 5400 fetch-release >/var/log/online-retry.log 2>&1 || result=1
+tail -n 25 /var/log/online-retry.log
+grep -q '(already staged)' /var/log/online-retry.log || result=1
+if grep -q '^downloading guests/' /var/log/online-retry.log; then result=1; fi
 [ "$(cat /run/convergent/status/guests-update 2>/dev/null)" = done ] || result=1
 for g in fw wan svc browser; do
 	[ -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] || { echo "CV-ONLINE missing $g"; result=1; }
@@ -1413,6 +1507,48 @@ t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(sta
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'
 t sh -c 'XDG_RUNTIME_DIR=/tmp/smoke-run timeout 4 /usr/local/sbin/bar </dev/null >/tmp/bar.out
 	head -n 1 /tmp/bar.out | jq -e .version >/dev/null && sed -n 3p /tmp/bar.out | jq -e "length > 8 and any(.[]; .name == \"alerts\")" >/dev/null'
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+sed "s|^st=/run/convergent/status$|st=$work|" /usr/local/sbin/bar >"$work/bar"
+for sample in fresh stale missing malformed recovered; do
+	echo 0 >"$work/guestmem"
+	expected='RAM [0-9]'
+	case $sample in
+	stale) touch -d '4 minutes ago' "$work/guestmem"; expected='RAM [?]' ;;
+	missing) rm "$work/guestmem"; expected='RAM [?]' ;;
+	malformed) echo unknown >"$work/guestmem"; expected='RAM [?]' ;;
+	esac
+	XDG_RUNTIME_DIR="$work" timeout 2 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
+	sed -n 3p "$work/out" | jq -er '.[].full_text' | grep -q "$expected"
+done
+sed -n '/^wait "\$browser"/,$p' /usr/local/sbin/browser >"$work/wait"
+for code in 0 7 21 31 37 42; do
+	if (role=def; die() { echo "$*"; exit 1; }; (exit "$code") & browser=$!; . "$work/wait") >"$work/out"; then
+		[ "$code" = 0 ]
+	else
+		grep -q "exited with status $code" "$work/out"
+		case $code in
+		7) grep -q 'required Chromium files are missing' "$work/out" ;;
+		21) grep -q 'profile is in use on another host' "$work/out" ;;
+		31) grep -q 'invalid sandbox state' "$work/out" ;;
+		37) grep -q 'exhausted system resources' "$work/out" ;;
+		42) grep -qx 'the def browser exited with status 42' "$work/out" ;;
+		*) exit 1 ;;
+		esac
+	fi
+done
+sed -n '/^    jq -e .*def.*int/,/retry acceptance/p' /usr/local/sbin/check >"$work/accept"
+for names in '[]' '[{"name":"def"}]' '[{"name":"int"}]' '[{"name":"def"},{"name":"int"}]'; do
+	printf '%s\n' "$names" >"$work/incus"
+	if (die() { echo "$*"; exit 1; }; . "$work/accept") >"$work/out"; then
+		[ "$names" = '[{"name":"def"},{"name":"int"}]' ]
+	else
+		[ "$names" != '[{"name":"def"},{"name":"int"}]' ]
+		grep -q 'open and close both def and int browsers, then retry acceptance' "$work/out"
+	fi
+done
+CHECK
 t su -s /bin/sh nobody -c '/usr/local/sbin/sys help >/dev/null'
 t su -s /bin/sh nobody -c '[ "$(/usr/local/sbin/sys --pick | wc -l)" -ge 30 ]'
 t su -s /bin/sh nobody -c '
