@@ -3070,7 +3070,7 @@
         "w": 5,
         "h": 2
       },
-      "description": "Source: vmalert ALERTS, firing only; zero means no firing series.",
+      "description": "Source: vmalert ALERTS, firing only; zero requires a successful vmalert scrape less than 90 seconds old. Otherwise UNKNOWN.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -3078,7 +3078,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "count(ALERTS{alertstate=\"firing\"}) or on() vector(0)",
+          "expr": "(count(ALERTS{alertstate=\"firing\"}) or on() vector(0)) and on() ((up{job=\"vmalert\"} == 1) and (time() - timestamp(up{job=\"vmalert\"}) < 90))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -3092,7 +3092,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "—",
+          "noValue": "UNKNOWN",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -3356,7 +3356,7 @@
         "w": 17,
         "h": 5
       },
-      "description": "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels.",
+      "description": "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels. Hidden when vmalert scrapes fail or are over 90 seconds old; check the firing count for UNKNOWN.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -3364,7 +3364,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "ALERTS{alertstate=\"firing\"}",
+          "expr": "ALERTS{alertstate=\"firing\"} and on() ((up{job=\"vmalert\"} == 1) and (time() - timestamp(up{job=\"vmalert\"}) < 90))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -3372,7 +3372,7 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "cvOptional": "No firing alerts is normal.",
+          "cvOptional": "An empty table means no firing alerts only when the firing count is zero, not UNKNOWN.",
           "format": "table"
         }
       ],

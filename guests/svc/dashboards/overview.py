@@ -76,8 +76,10 @@ def path(page):
 def generate():
     p = Page()
     path(p)
-    p.stat("", [target('count(ALERTS{alertstate="firing"}) or on() vector(0)', "firing alerts")],
-           grid(7, 0, 5, 2), "Source: vmalert ALERTS, firing only; zero means no firing series.", th=BAD)
+    evaluator = '(up{job="vmalert"} == 1) and (time() - timestamp(up{job="vmalert"}) < 90)'
+    p.stat("", [target('(count(ALERTS{alertstate="firing"}) or on() vector(0)) and on() (' + evaluator + ')', "firing alerts")],
+           grid(7, 0, 5, 2), "Source: vmalert ALERTS, firing only; zero requires a successful vmalert scrape less than 90 seconds old. Otherwise UNKNOWN.",
+           th=BAD)["fieldConfig"]["defaults"]["noValue"] = "UNKNOWN"
     q = target(ERRORS + ' AND _time:1h | stats count() as errors', "error / warning lines · 1 h", ds=LOGS, queryType="stats")
     p.stat("", [q], grid(12, 0, 6, 2),
            "Source: VictoriaLogs syslog severity 0–4, last hour; routine audit records and kernel stack continuations excluded. Lines, not incidents.", th=BAD)["datasource"] = LOGS
@@ -85,9 +87,9 @@ def generate():
                 target('max(time() - node_textfile_mtime_seconds{file=~".*(convergent_fw|wan)[.]prom"})', "live facts age")],
            grid(18, 0, 6, 2), "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
            overrides=[ov("collectors", mappings=OK), ov("live facts age", unit="s", thresholds=thresholds(("text", None), (AMBER, 180)))])
-    alerts = p.table("Active alerts · now", [target('ALERTS{alertstate="firing"}', optional="No firing alerts is normal.")],
+    alerts = p.table("Active alerts · now", [target('ALERTS{alertstate="firing"} and on() (' + evaluator + ')', optional="An empty table means no firing alerts only when the firing count is zero, not UNKNOWN.")],
             grid(7, 2, 17, 5), ["alertname", "node", "severity", "project", "name", "interface", "device", "collector"], ["state"],
-            "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels.",
+            "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels. Hidden when vmalert scrapes fail or are over 90 seconds old; check the firing count for UNKNOWN.",
             [ov("state", mappings=vmap([(1, "FIRING", AMBER)]))])
     del alerts["transformations"][1]["options"]["includeByName"]
     for title, expr, gp, unit, maximum, optional in [

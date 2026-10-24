@@ -71,7 +71,6 @@ display_set() (
 	display_lock
 	json=$(display_json) || return
 	printf '%s\n' "$json" | jq -e --arg name "$output" 'any(.[]; .name == $name)' >/dev/null || die 'unknown output'
-	printf '%s\n' "$json" | display_key >/dev/null || die 'ambiguous monitor identities'
 	case $setting in
 	enable|disable)
 		[ "$#" = 2 ] || usage
@@ -82,7 +81,15 @@ display_set() (
 	mode|scale|position)
 		[ "$#" = 3 ] || usage
 		display_value "$setting" "$3"
-		if [ "$setting" = position ]; then
+		if [ "$setting" = mode ]; then
+			mode=$(printf '%s\n' "$json" | jq -er --arg name "$output" --arg mode "${3%Hz}" '
+				($mode | capture("^(?<w>[0-9]+)x(?<h>[0-9]+)(@(?<r>[0-9.]+))?$")) as $m |
+				first(.[] | select(.name == $name) | .modes[] |
+					select(.width == ($m.w | tonumber) and .height == ($m.h | tonumber) and
+						($m.r == null or .refresh == ($m.r | tonumber * 1000 | round)))) |
+				"\(.width)x\(.height)@\(.refresh/1000)Hz"') || die 'mode not advertised; see sys display status'
+			command="output $output mode $mode"
+		elif [ "$setting" = position ]; then
 			command="output $output position ${3%,*} ${3#*,}"
 		else
 			command="output $output $setting $3"
@@ -90,14 +97,14 @@ display_set() (
 	*) usage ;;
 	esac
 	work=$(mktemp -d "$XDG_RUNTIME_DIR/display-preview.XXXXXX") || exit 1
-	printf '%s\n' "$json" | display_snapshot >"$work/before" || exit 1
+	printf '%s\n' "$json" | display_snapshot preview >"$work/before" || exit 1
 	printf 'keep\n' >"$work/keep"; printf 'revert\n' >"$work/revert"
 	timer=
 	display_cleanup() {
 		trap - 0
 		if ln "$work/revert" "$work/decision" 2>/dev/null; then
 			[ -z "$timer" ] || kill "$timer" 2>/dev/null || :
-			display_restore "$work/before"
+			display_restore "$work/before" preview
 		elif [ "$(cat "$work/decision")" = keep ]; then
 			[ -z "$timer" ] || kill "$timer" 2>/dev/null || :
 		fi
@@ -115,10 +122,15 @@ display_set() (
 		trap 'kill "$sleeper" 2>/dev/null || :; exit 0' TERM
 		wait "$sleeper" || exit 0
 		trap - TERM
-		if ln "$work/revert" "$work/decision" 2>/dev/null; then display_restore "$work/before"; fi
+		if ln "$work/revert" "$work/decision" 2>/dev/null; then display_restore "$work/before" preview; fi
 	) </dev/null >"$work/rollback.log" 2>&1 &
 	timer=$!
 	display_command "$command" || exit 1
+	if [ "$setting" = mode ]; then
+		actual=$(display_json | jq -er --arg name "$output" '.[] | select(.name == $name and .active) |
+			.current_mode | "\(.width)x\(.height)@\(.refresh/1000)Hz"') || exit 1
+		[ "$actual" = "$mode" ] || die "requested $mode, compositor selected $actual; reverting"
+	fi
 	printf 'Preview: %s\nKeep this layout? Type yes within 15 seconds: ' "$command"
 	if timeout --foreground -k 1 15 sh -c 'IFS= read -r a && [ "$a" = yes ]' && ln "$work/keep" "$work/decision" 2>/dev/null; then
 		echo 'Kept. Use sys display save to remember this monitor set.'
@@ -140,7 +152,8 @@ display_key() {
 	printf '%s\n' "$identities" | sha256sum | cut -d ' ' -f 1
 }
 display_snapshot() {
-	jq -e '[.[] | {id: [.make // "", .model // "", .serial // ""], active,
+	jq -e --arg kind "${1:-}" '[.[] | {id: ([.make // "", .model // "", .serial // ""] +
+		(if $kind == "preview" then [.name] else [] end)), active,
 		mode: (if .active then "\(.current_mode.width)x\(.current_mode.height)@\(.current_mode.refresh/1000)Hz" else "" end),
 		scale: ((.scale // 1)*1000 | round/1000), position: "\(.rect.x),\(.rect.y)", transform: (.transform // "normal")}]'
 }
@@ -152,11 +165,12 @@ display_command() {
 }
 display_apply() (
 	current=$(display_json) || exit 1
-	# Match identities to today's connectors; never use saved connector names or shell code.
-	rows=$(jq -er --argjson current "$current" '
-		if type != "array" or length == 0 or (all(.[]; (.id | type == "array" and length == 3) and (.active | type == "boolean")) | not)
+	# Only temporary rollbacks qualify identities with connectors.
+	rows=$(jq -er --argjson current "$current" --arg kind "${2:-}" '
+		if type != "array" or length == 0 or (all(.[]; (.id | type == "array" and length == (if $kind == "preview" then 4 else 3 end)) and (.active | type == "boolean")) | not)
 		then error("invalid display profile") else . end |
-		[.[] as $s | $current[] | select([.make // "", .model // "", .serial // ""] == $s.id) |
+		[.[] as $s | $current[] | select(([.make // "", .model // "", .serial // ""] +
+			(if $kind == "preview" then [.name] else [] end)) == $s.id) |
 		[$s.active, .name, $s.mode, $s.scale, $s.position, $s.transform]] |
 		sort_by(.[0]) | reverse | .[] | @tsv' "$1") || exit 1
 	# Validate the whole profile before changing any output. Enable survivors before disabling others.
@@ -178,10 +192,10 @@ display_defaults() {
 	for name in $names; do
 		token "$name"
 		case $name in eDP-*|LVDS-*) scale=1.3 ;; *) scale=1 ;; esac
-		display_command "output $name enable mode --preferred scale $scale" || return
+		display_command "output $name enable scale $scale" || return
 	done
 }
-display_restore() { display_apply "$1" || display_defaults; }
+display_restore() { display_apply "$1" "${2:-}" || display_defaults; }
 display_save() (
 	noargs "$@"
 	display_lock

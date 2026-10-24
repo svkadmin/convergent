@@ -149,7 +149,7 @@ Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys
 Save once docked and once undocked. Profiles use the connected set of monitor make/model/serial
 identities, including disabled panels; connector names and connection order can change.
 The session applies the matching profile at login and whenever the connected set changes.
-Unrecognised sets enable connected screens at their preferred modes (laptop panel scale 1.3,
+Unrecognised sets enable connected screens (laptop panel scale 1.3,
 external scale 1), unless an older `~/.config/sway/config.d/outputs` file still applies; it stays in
 charge until the first save. Identical identities cannot be saved unambiguously; `save` refuses them.
 `reset` removes only the current set's saved profile; it leaves the live layout alone.
@@ -196,7 +196,7 @@ Browsers use Chromium's own default appearance.
 
 Works when: a window titled `[def] …` opens and the bar shows `BR:1`. A failed start from
 Super+b or Super+Shift+t shows a line at the top with the reason; the full output is in
-`$XDG_RUNTIME_DIR/browser.log`.
+`$XDG_RUNTIME_DIR/browser-def.*.log` or `$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
 
 | Role | For | State |
 |---|---|---|
