@@ -98,6 +98,7 @@ rm "$work/etc.list"
 for project in default "$owner"; do
     mkdir "$payload/projects/$project"
     if [ "$project" = "$owner" ]; then
+        ic profile list --format json >"$payload/projects/$project/profiles.json"
         ic list --format json >"$work/instances.json"
         jq -r '.[] | select(.type == "virtual-machine") | "instance " + .name' "$work/instances.json" >>"$payload/EXCLUDED"
         jq -r '.[] | select(.type == "container") | .name' "$work/instances.json" >"$work/instances"

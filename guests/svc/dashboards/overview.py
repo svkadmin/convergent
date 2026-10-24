@@ -85,10 +85,11 @@ def generate():
                 target('max(time() - node_textfile_mtime_seconds{file=~".*(convergent_fw|wan)[.]prom"})', "live facts age")],
            grid(18, 0, 6, 2), "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
            overrides=[ov("collectors", mappings=OK), ov("live facts age", unit="s", thresholds=thresholds(("text", None), (AMBER, 180)))])
-    p.table("Active alerts · now", [target('max by (alertname,node,severity) (ALERTS{alertstate="firing"})', optional="No firing alerts is normal.")],
-            grid(7, 2, 17, 5), ["alertname", "node", "severity"], ["state"],
-            "Source: vmalert ALERTS instant query; one row per alert name, node and severity. Empty means no alerts firing.",
+    alerts = p.table("Active alerts · now", [target('ALERTS{alertstate="firing"}', optional="No firing alerts is normal.")],
+            grid(7, 2, 17, 5), ["alertname", "node", "severity", "project", "name", "interface", "device", "collector"], ["state"],
+            "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels.",
             [ov("state", mappings=vmap([(1, "FIRING", AMBER)]))])
+    del alerts["transformations"][1]["options"]["includeByName"]
     for title, expr, gp, unit, maximum, optional in [
             ("Host CPU · busy", HOST_CPU, grid(7, 7, 8, 5), "percent", 100, ""),
             ("Host RAM · used", HOST_RAM, grid(15, 7, 9, 5), "percent", 100, ""),

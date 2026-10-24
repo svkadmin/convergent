@@ -109,6 +109,9 @@ printf 'Image: %s (%s bytes)\n' "$out" "$(stat -c %s "$out")"
 sha256sum "$out"
 printf 'Check /dev/sdX carefully: this overwrites the entire device; it must fit the image.\n'
 quoted=$(printf '%s' "$out" | sed "s/'/'\\\\''/g")
-printf "dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
+printf 'if [ "$(blockdev --getss /dev/sdX)" = 512 ]; then\n'
+printf "    dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
+printf "else\n    echo 'Image writing requires 512-byte logical sectors; target refused.' >&2\nfi\n"
+printf 'For a 4Kn internal disk, boot compatible USB media and run convergent-install.\n'
 printf 'Boot with Secure Boot OFF; unlock LUKS and log in as %s.\n' "$owner"
 printf 'The first boot grows auto-sized state and creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'

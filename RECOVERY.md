@@ -217,7 +217,7 @@ For example from Rocky, with the Convergent disk attached as `/dev/sdX`. As root
 
 ```sh
 cryptsetup open /dev/disk/by-partlabel/cv-state cvstate     # asks the LUKS passphrase
-mkdir -p /mnt/cv && mount -o ro,subvolid=5 /dev/mapper/cvstate /mnt/cv
+mkdir -p /mnt/cv && mount -o ro,nologreplay,subvolid=5 /dev/mapper/cvstate /mnt/cv
 ls /mnt/cv          # home, pool (guests), var-<release> (one per release), etc
 umount /mnt/cv && cryptsetup close cvstate
 ```
@@ -240,10 +240,92 @@ sudo cryptsetup luksDump /dev/disk/by-partlabel/cv-state             # check
 ## 11. Start over
 
 Write the disk image again (README, Install). Everything on the disk is lost, including `/home`.
-A `backup` holds `/home`, the writable `/etc` files, the owner's instances and the custom volumes;
-not the firewalls, wan (with its saved Wi-Fi networks), svc, or the credentials in
-`/var/lib/convergent`. There is no restore tool: unpack the archives and bring instances back
-with `incus import`.
+A `backup` holds `/home`, the writable `/etc` files, the owner's containers and profiles, and
+custom filesystem/ISO volumes. VM instances, custom block volumes, the system guest instances
+and credentials in `/var/lib/convergent` are excluded; read `EXCLUDED` in the backup.
+There is no restore tool. Finish automatic guest setup first, mount the backup disk, then as root
+select a generation and verify it before restoring anything:
+
+```sh
+set -e
+backup=/mnt/backup/convergent-backups/backup-YYYYmmddTHHMMSSZ
+(cd "$backup" && sha256sum -c SHA256SUMS)
+```
+
+Unpack `home.tar` and restore the needed writable files from `etc.tar`, preserving numeric
+ownership, ACLs and xattrs. Recreate the pools/networks referenced by the owner's profiles.
+Restore profiles in the recreated owner project before importing containers (older backups
+lack `profiles.json` and need their profiles reconstructed manually):
+
+```sh
+project=owner                       # the original owner project name
+ic() { incus --force-local --project "$project" "$@"; }
+ic project create "$project"        # skip if it already exists
+jq -r '.[].name' "$backup/projects/$project/profiles.json" > /run/restore-profiles
+while IFS= read -r name; do
+    ic profile show "$name" >/dev/null 2>&1 || ic profile create "$name"
+    jq --arg n "$name" '.[] | select(.name == $n) | {config,description,devices}' \
+        "$backup/projects/$project/profiles.json" | ic profile edit "$name"
+done < /run/restore-profiles
+rm /run/restore-profiles
+```
+
+Restore custom volumes before importing the owner's containers. Use the same project
+and pool as each archive's `projects/<project>/<pool>/` directory. Browser and svc data use
+project `default`, pool `default`; they need `incus storage volume import`, not `incus import`
+or manual unpacking. Close all browsers, stop svc, and do not run guest setup/updates during
+the following steps:
+
+```sh
+project=default
+pool=default
+ic stop svc --timeout 120
+ic list                           # def, int and svc must be STOPPED
+```
+
+Repeat for each row, setting `volume`, `profile` and `device` from the table. Check the instance's
+`ic config show <guest>` first (add `--expanded` to see inherited devices); if its local
+`devices` override the profile, update that device too. Older backups may call the browser
+archives `browser-web-state.tar.gz` and
+`browser-admin-state.tar.gz`; use those archive paths for def and int respectively.
+
+| volume | profile | device | guest |
+|---|---|---|---|
+| browser-def-state | browser-def | state | def |
+| browser-int-state | browser-int | state | int |
+| svc-metrics | svc | metrics | svc |
+| svc-logs | svc | logs | svc |
+| svc-grafana | svc | grafana | svc |
+
+```sh
+volume=svc-metrics; profile=svc; device=metrics
+ic storage volume import "$pool" "$backup/projects/$project/$pool/$volume.tar.gz" "$volume-restored"
+ic storage volume rename "$pool" "$volume" "$volume-before-restore"
+ic storage volume rename "$pool" "$volume-restored" "$volume"
+ic profile device set "$profile" "$device" source="$volume"
+# Only when the instance has a local override of this device:
+# ic config device set <guest> "$device" source="$volume"
+ic storage volume show "$pool" "$volume"
+ic storage volume show "$pool" "$volume-before-restore"
+```
+
+The temporary names must be unused. Renaming the old volume also redirects its existing
+attachments, so reset every listed consumer's profile/local device to the restored original
+name before restarting. Keep `*-before-restore` until the restored data works; its `used_by`
+must be empty after reattachment. Repeat for owner volumes with their own project, pool and
+consumers; if no volume exists yet, omit the old-volume rename. Start svc with `ic start svc`,
+then open def/int normally and verify saved profiles/downloads and Grafana/history. Only then
+remove the unused old volumes with `ic storage volume delete "$pool" <volume-before-restore>`.
+
+Finally import the owner's containers, then start them after checking their expanded devices:
+
+```sh
+project=owner                       # the original owner project name
+for archive in "$backup/projects/$project"/instance-*.tar.gz; do
+    [ -f "$archive" ] || continue
+    ic import "$archive"
+done
+```
 
 ## 12. An online update fails
 

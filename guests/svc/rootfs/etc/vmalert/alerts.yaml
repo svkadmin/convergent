@@ -77,7 +77,7 @@ groups:
         expr: (up == 0) or (convergent_pf_enabled{node=~"fw1|fw2"} == 0)
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Scrape or expected service failed; inspect labels'}
+        annotations: {summary: 'Scrape or expected service failed: node={{ $labels.node }} job={{ $labels.job }} instance={{ $labels.instance }}'}
   - name: hardware-capacity
     interval: 30s
     concurrency: 1

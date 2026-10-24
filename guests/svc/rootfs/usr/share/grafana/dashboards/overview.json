@@ -3356,7 +3356,7 @@
         "w": 17,
         "h": 5
       },
-      "description": "Source: vmalert ALERTS instant query; one row per alert name, node and severity. Empty means no alerts firing.",
+      "description": "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -3364,7 +3364,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (alertname,node,severity) (ALERTS{alertstate=\"firing\"})",
+          "expr": "ALERTS{alertstate=\"firing\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -3448,18 +3448,16 @@
               "Value #A": "state",
               "Value": "state"
             },
-            "includeByName": {
-              "alertname": true,
-              "node": true,
-              "severity": true,
-              "Value #A": true,
-              "Value": true
-            },
             "indexByName": {
               "alertname": 0,
               "node": 1,
               "severity": 2,
-              "Value #A": 3
+              "project": 3,
+              "name": 4,
+              "interface": 5,
+              "device": 6,
+              "collector": 7,
+              "Value #A": 8
             }
           }
         }

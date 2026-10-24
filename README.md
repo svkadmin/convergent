@@ -80,8 +80,15 @@ Linux:
 
 ```sh
 lsblk -o NAME,SIZE,MODEL,TRAN                        # find the disk: TRAN usb, the right size
-zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
+if [ "$(sudo blockdev --getss /dev/sdX)" = 512 ]; then
+    zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
+else
+    echo 'Image writing requires 512-byte logical sectors; target refused.' >&2
+fi
 ```
+
+For a 4Kn internal disk (4096-byte logical sectors), boot compatible USB media and use the
+physical installer below.
 
 The image holds both slots (B empty), the encrypted state with the owner's account, and the guest
 images. Auto-sized state grows to the end of its disk at unlock; fixed and percentage install
