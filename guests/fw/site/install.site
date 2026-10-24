@@ -24,7 +24,7 @@ for f in net "node.$node"; do
 done
 
 templates="
-	/etc/pf.conf /etc/ifstated.conf /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
+	/etc/pf.conf /etc/rc.d/wan_watch /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
 	/etc/rc.conf.local /etc/mygate /etc/resolv.conf /etc/ssh/sshd_config
 	/etc/hostname.vio0 /etc/hostname.vio1 /etc/hostname.vio2 /etc/hostname.vio3
 	/etc/hostname.vio4 /etc/hostname.vio5 /etc/hostname.vio6
@@ -41,8 +41,9 @@ done
 rm -f "$subst"
 
 # Modes: the secrets private, the rest as the system expects.
-chown root:wheel /etc/pf.conf /etc/hostname.* /etc/ssh/sshd_config /etc/ifstated.conf
-chmod 0600 /etc/pf.conf /etc/hostname.* /etc/ifstated.conf
+chown root:wheel /etc/pf.conf /etc/hostname.* /etc/ssh/sshd_config /etc/rc.d/wan_watch
+chmod 0600 /etc/pf.conf /etc/hostname.*
+chmod 0755 /etc/rc.d/wan_watch
 chmod 0644 /etc/ssh/sshd_config /etc/convergent/update_src
 chmod 0640 /etc/convergent/pf.guests
 chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
@@ -63,7 +64,7 @@ chmod 700 /root/.ssh
 ln -sf /etc/convergent/seeded/management.pub /root/.ssh/authorized_keys
 ln -sf /etc/convergent/seeded/syslog-ca.crt /etc/ssl/convergent-ca.pem
 ln -s /etc/convergent/seeded/seed-id /var/db/convergent-seeded
-rcctl disable unbound ifstated sshd
+rcctl disable unbound wan_watch sshd
 rcctl set syslogd flags ''
 
 # pkg_add verifies packages from the build host.
@@ -88,9 +89,9 @@ rm -f /etc/ssh/ssh_host_*
 unbound-anchor -a /var/unbound/db/root.key || [ -s /var/unbound/db/root.key ] || die "no DNSSEC root anchor"
 chown _unbound /var/unbound/db/root.key
 unbound-checkconf /var/unbound/etc/unbound.conf >/dev/null || die "unbound-checkconf failed"
-ifstated -nf /etc/ifstated.conf || die "ifstated.conf does not parse"
 sh -n /usr/local/libexec/convergent/fw-facts || die "fw-facts does not parse"
 sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
+sh -n /etc/rc.d/wan_watch || die "wan_watch does not parse"
 
 . ./net
 echo "$node.$DOMAIN" >/etc/myname

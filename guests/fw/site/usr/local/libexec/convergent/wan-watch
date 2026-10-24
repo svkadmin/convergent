@@ -1,26 +1,40 @@
 #!/bin/sh
-# Reconcile our demotion contribution once per probe.
+# Own 128 of wanwatch's demotion, with three good rounds to recover.
 set -eu
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 state=/var/run/convergent-wan-demote
 umask 077
 die() { logger -t wan-watch "$*"; echo "wan-watch: $*" >&2; exit 1; }
 
-want=128
-# CARP lives in the kernel and outlasts a killed resolver; such a firewall must not stay master.
-pgrep -x unbound >/dev/null && ping -q -c 1 -w 1 "${1:?wan address required}" >/dev/null && want=0
+wan=${1:?wan address required}
 owned=0
 [ ! -e "$state" ] || owned=$(cat "$state") || die "cannot read owned demotion"
 case $owned in 0|128) ;; *) die "invalid owned demotion" ;; esac
 # Ambiguous interrupted adjustment: refuse until reboot.
 [ ! -e "$state.new" ] || die "interrupted adjustment; reboot to reconcile demotions"
-if [ "$want" != "$owned" ]; then
-	if [ "$want" = 128 ]; then op=carpdemote; else op=-carpdemote; fi
-	printf '%s\n' "$want" >"$state.new" || die "cannot prepare owned demotion"
-	if ! ifconfig -g wanwatch "$op" 128; then
-		rm -f "$state.new"
-		die "cannot adjust wanwatch by $op 128; will retry"
+good=0
+while :; do
+	want=$owned
+	# -w waits after the last probe; SIGINT preserves success on any reply.
+	if pgrep -x unbound >/dev/null &&
+	    timeout -p -s INT 1 ping -q -n -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
+		[ "$good" -ge 3 ] || good=$((good + 1))
+		[ "$good" -lt 3 ] || want=0
+	else
+		good=0
+		want=128
 	fi
-	mv "$state.new" "$state" || die "cannot record owned demotion; reboot to reconcile"
-fi
-[ "$want" = 0 ]
+	if [ "$want" != "$owned" ]; then
+		if [ "$want" = 128 ]; then op=carpdemote; else op=-carpdemote; fi
+		printf '%s\n' "$want" >"$state.new" || die "cannot prepare owned demotion"
+		if ! ifconfig -g wanwatch "$op" 128; then
+			rm -f "$state.new" || die "cannot clear failed adjustment"
+			sleep 1
+			continue
+		fi
+		mv "$state.new" "$state" || die "cannot record owned demotion; reboot to reconcile"
+		owned=$want
+		logger -t wan-watch "wanwatch $op 128" || :
+	fi
+	[ "$good" -ne 0 ] || sleep 1
+done

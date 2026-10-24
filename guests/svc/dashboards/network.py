@@ -45,6 +45,6 @@ def generate():
                                                           target('rate(node_network_transmit_drop_total{device!="lo"}[$__rate_interval])', "TX drop · {{node}} {{device}}")],
                  grid(0, 23, 12, 8), "pps", "Source: node_exporter netdev on scraped nodes. Interface errors/drops are queue or link failures, not pf policy drops; platforms may expose only some counters.")
     p.logs("Firewall and CARP changes", FW_CHANGES, grid(12, 23, 12, 8),
-           "Source: fw syslogd via TLS to VictoriaLogs; CARP role transitions, ifstated and pfctl. The same role-transition filter is the disabled-by-default annotation.")
+           "Source: fw syslogd via TLS to VictoriaLogs; CARP role transitions, wan-watch and pfctl. The same role-transition filter is the disabled-by-default annotation.")
     p.footer(SCREEN_ROWS, "pf passed/blocked packets by rule label (fw-facts exports diagnostic counters only); DNS latency, RPZ hits and per-client queries; host/WAN default next hops; Wi-Fi radio/SSID/signal/PMF; BFD. Resolver up means unbound-control responds, not an external DNS query.")
     return p.dashboard("cv-network-path", "Convergent · Network", "Six CARP segments, pf, DNS, uplink and interface health.")

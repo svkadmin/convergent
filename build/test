@@ -376,7 +376,7 @@ fw_diag() {
                 echo "/var/run/convergent-wan-demote.new absent"
             fi
             uptime
-            pgrep -lf "[r]eorder_kernel|[u]nbound" || true
+            pgrep -lf "[r]eorder_kernel|[u]nbound|[w]an-watch" || true
             for log in /var/log/daemon /var/log/messages; do
                 echo "$log"
                 grep -E "wan-watch|carp" "$log" | tail -n 15
