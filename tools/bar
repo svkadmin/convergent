@@ -38,10 +38,14 @@ exec 3<&0
 reader=$!
 exec 3<&-
 
-# The first battery, if any.
-bat=
+# The first battery, if any, and the external supplies: a charge limit reports "Not charging" on mains.
+bat= mains=
 for b in "$ps"/*; do
-	[ -r "$b/type" ] && read -r ty <"$b/type" && [ "$ty" = Battery ] && { bat=$b; break; }
+	[ -r "$b/type" ] && read -r ty <"$b/type" || continue
+	case $ty in
+	Battery) [ -n "$bat" ] || bat=$b ;;
+	Mains | USB*) [ ! -r "$b/online" ] || mains="$mains $b/online" ;;
+	esac
 done
 # The booted release cannot change during the session.
 release='?'
@@ -119,7 +123,7 @@ while :; do
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
 	# One formatter per frame; procfs/sysfs reads need no helper processes. UTF-8: the network
 	# name is cut by characters.
-	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
+	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v mains="$mains" -v now="$now" -v mtime="$mtime" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
 		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
 		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" -v rel="$release" '
@@ -243,13 +247,16 @@ while :; do
 		days=int(uptime[1]/86400)
 		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")
 		block(clock, "")
-		profile=get("/run/convergent-power.profile")
-		block("PWR " (profile == "ac" || profile == "battery" ? profile : "?"), "")
+		ac=0; n=split(mains, m, " "); for (i=1; i<=n; i++) if (get(m[i]) == "1") ac=1
 		if (bat == "") block("AC", "")
 		else {
-			cap=get(bat "/capacity"); bs=get(bat "/status"); color=""
-			if (bs == "Discharging" && cap ~ /^[0-9]+$/) color=cap+0<15 ? red : cap+0<30 ? orange : ""
-			block("BAT " (cap == "" ? "-" : cap) "% " (bs == "Charging" ? "+" : bs == "Discharging" ? "-" : ""),color)
+			cap=get(bat "/capacity"); bs=get(bat "/status"); color=""; level=(cap == "" ? "-" : cap) "%"
+			if (bs == "Charging") text="BAT " level " +"
+			else if (bs == "Discharging") {
+				text="BAT " level " -"
+				if (cap ~ /^[0-9]+$/) color=cap+0<15 ? red : cap+0<30 ? orange : ""
+			} else text=(ac || bs == "Full" ? "AC " : "") "BAT " level
+			block(text, color)
 		}
 		printf "]\n"
 		exit

@@ -429,7 +429,7 @@ separators:
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
 WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 0.1.0 good | NL | 0 1 0 | PORTAL
-US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
+US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 ```
 
 | Block | Shows | Look or fix with |
@@ -444,11 +444,10 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | PWR battery | BAT 87% -
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
-| `PWR` | last successfully applied CPU profile: `ac` or `battery`; `?` if unavailable or failed | `sys power status` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
-| `BAT` | capacity, `+` charging or `-` discharging; orange below 30 %, red below 15 % discharging; `AC` without a battery | `sys power status` |
+| `BAT` | capacity, `+` charging or `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging (full or charge limit); `AC` without a battery | `sys power status` |
 
 Topology: the uplink first, `WLAN:<network>` (green connected, red with no network, grey when wan
 does not answer; names over 16 characters are cut) or `ETH` for a passed-through wired NIC. `WAN`
