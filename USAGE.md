@@ -78,7 +78,7 @@ The look is stock Sway, foot, mako and swaylock on a black background and bar; o
 |---|---|
 | Super+m | `sys`: the menu of areas and actions, in a terminal |
 | Super+a | pick one `sys` action by name and run it in its own terminal |
-| Super+d | an app by name: Default browser, Temporary browser, Internal dashboards, Settings, Screenshot, Files, Notes, Foot |
+| Super+d | an app by name: Browser_default, Browser_internal, Browser_temporary, Settings, Screenshot, Files, Notes, Foot |
 | Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
@@ -359,7 +359,7 @@ unplugging. What it leaves out and how to restore: [RECOVERY 11](RECOVERY.md#11-
 summary or description, and the API's active-since timestamp. The bar counts open the same
 list on left-click. An unavailable or invalid response reports an error, not an empty list.
 
-Open **Internal dashboards** (`sys browser int`) for Overview, Network, Guests and Security.
+Open **Browser_internal** (`sys browser int`) for Overview, Network, Guests and Security.
 Overview puts the path, alerts, collector freshness, host and guests on the first screen; the
 other pages share the same navigation. Guests has project/instance selectors. Current-state
 tables show one row per item; graphs show history. CARP role-change annotations are off until
