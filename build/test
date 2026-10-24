@@ -379,6 +379,12 @@ fw_diag() {
     done
 }
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
+fw_unlocked() {
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
+        sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_NOFOLLOW) or exit 2;
+        exit(flock($lock, LOCK_EX|LOCK_NB) ? 0 : 1);
+    '\'''
+}
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
 (
@@ -427,7 +433,7 @@ LOCAL
     if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
     case $failure in
     host-kill) kill -KILL "$(cat /run/convergent/maintenance-test.pid)" ;;
-    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(readlink /var/run/convergent-maintenance.lock)"' ;;
+    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(cat /var/run/convergent-maintenance.lock)"' ;;
     esac
     if wait "$changer"; then exit 1; fi
     if [ "$failure" = host-kill ]; then
@@ -444,19 +450,27 @@ LOCAL
     [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
     if [ "$failure" = remote-kill ]; then
         timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance &&
-            test -L /var/run/convergent-maintenance.lock && ! kill -0 "$(readlink /var/run/convergent-maintenance.lock)" 2>/dev/null'
+            test -f /var/run/convergent-maintenance.lock && ! kill -0 "$(cat /var/run/convergent-maintenance.lock)" 2>/dev/null'
     else
+        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -0 "$(cat /var/run/convergent-maintenance.lock)"'
+        rc=0; fw_unlocked || rc=$?; [ "$rc" = 1 ]
         if printf 'yes\n' | sys firewall undo; then exit 1; fi
         [ -f /var/lib/convergent/firewall-maintenance ]
         timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && touch /tmp/convergent-test-maintenance'
         n=0
-        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance && test ! -L /var/run/convergent-maintenance.lock'; do
+        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance'; do
             n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
         done
     fi
+    # A killed shell's children may still hold the descriptor briefly.
+    n=0
+    until fw_unlocked; do
+        n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
+    done
     printf 'yes\n' | sys firewall undo
     [ ! -e /var/lib/convergent/firewall-maintenance ]
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && test ! -L /var/run/convergent-maintenance.lock'
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
+    fw_unlocked
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
     if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
 )
