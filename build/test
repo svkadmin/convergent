@@ -914,6 +914,37 @@ EOF
 before=$(ic config get svc volatile.base_image) || bad $LINENO
 service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
 [ -n "$before" ] && [ -n "$service" ] || bad $LINENO
+# Force renewal while keeping the CA and private keys.
+tls=$state/tls
+sha256sum "$tls/ca.crt" "$tls/"*.key >"$release/tls-pins"
+old_client=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | cut -d' ' -f1)
+for cert in server incus-server incus-client; do
+    openssl x509 -in "$tls/$cert.crt" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
+        -set_serial "0x$(openssl rand -hex 16)" -days 1 -out "$tls/$cert.crt.new" || bad $LINENO
+    mv "$tls/$cert.crt.new" "$tls/$cert.crt" || bad $LINENO
+done
+ic config trust remove "$old_client" || bad $LINENO
+ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics || bad $LINENO
+old_client=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | cut -d' ' -f1)
+/usr/local/sbin/guests apply || bad $LINENO
+sha256sum -c "$release/tls-pins" || bad $LINENO
+for cert in server incus-server incus-client; do
+    openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout || bad $LINENO
+    openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" || bad $LINENO
+done
+cmp "$tls/incus-server.crt" /var/lib/incus/server.crt || bad $LINENO
+for entry in 'server.crt victoria-logs' 'incus-client.crt victoria-metrics'; do
+    set -- $entry
+    ic exec svc -- cat "/etc/$2/tls/$1" >"$release/current.crt" || bad $LINENO
+    cmp "$tls/$1" "$release/current.crt" || bad $LINENO
+done
+ic config trust list --format json >"$release/trust" || bad $LINENO
+! jq -e --arg fp "$old_client" '.[] | select(.fingerprint == $fp)' "$release/trust" >/dev/null || bad $LINENO
+new_client=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | cut -d' ' -f1)
+jq -e --arg fp "$new_client" '.[] | select(.fingerprint == $fp and .type == "metrics")' "$release/trust" >/dev/null || bad $LINENO
+sha256sum "$tls/"*.crt >"$release/tls-renewed"
+/usr/local/sbin/guests apply || bad $LINENO
+sha256sum -c "$release/tls-renewed" || bad $LINENO
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2

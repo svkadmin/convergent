@@ -213,23 +213,80 @@ credentials() {
             -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
     fi
     for cert in server incus-server incus-client; do
-        [ ! -f "$tls/$cert.crt" ] || continue
+        if [ -f "$tls/$cert.crt" ]; then
+            openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null && continue
+            [ -s "$tls/$cert.key" ] || die "missing key for $cert"
+        fi
         case $cert in
         server) san='IP:100.80.2.10,DNS:svc'; purpose=serverAuth ;;
         incus-server) san='DNS:host,IP:100.80.1.10'; purpose=serverAuth ;;
         incus-client) san='DNS:svc'; purpose=clientAuth ;;
         esac
-        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-            -keyout "$tls/$cert.key" -out "$work/request" -subj "/CN=$cert"
+        if [ ! -f "$tls/$cert.key" ]; then
+            openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/$cert.key.new"
+            mv "$tls/$cert.key.new" "$tls/$cert.key"
+        fi
+        openssl req -new -key "$tls/$cert.key" -out "$work/request" -subj "/CN=$cert"
         printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
             "$purpose" "$san" >"$work/extensions"
         openssl x509 -req -in "$work/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
-            -set_serial "0x$(openssl rand -hex 16)" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt"
+            -set_serial "0x$(openssl rand -hex 16)" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt.new"
+        openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt.new"
+        if [ "$cert" = incus-client ] && [ -f "$tls/$cert.crt" ] && [ ! -f "$tls/incus-client.previous" ]; then
+            cp "$tls/$cert.crt" "$tls/incus-client.previous"
+        fi
+        sync
+        mv "$tls/$cert.crt.new" "$tls/$cert.crt"
+        sync
     done
     for secret in admin-password secret-key; do
         secret_create "$tls/$secret" 32
     done
 }
+certificates_apply() (
+    credentials
+    if ! cmp -s "$tls/incus-server.crt" /var/lib/incus/server.crt; then
+        ic admin update-certificate "$tls/incus-server.crt" "$tls/incus-server.key"
+    fi
+    trust=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
+    ic config trust list --format json >"$work/trust"
+    jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null ||
+        ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
+    running svc || ic start svc
+    retry ic exec svc -- true
+    for entry in 'server.crt victoria-logs vmlogs' 'incus-client.crt victoria-metrics vmmetrics'; do
+        set -- $entry
+        ic exec svc -- cat "/etc/$2/tls/$1" >"$work/current.crt"
+        cmp -s "$tls/$1" "$work/current.crt" && continue
+        # Retry restarts even if interrupted after installing the certificates.
+        touch "$tls/deploy"
+        sync
+        ic exec svc -- sh -c '
+            set -eu
+            umask 077
+            cat >"$1.new"
+            chown "root:$2" "$1.new"
+            chmod 640 "$1.new"
+            mv "$1.new" "$1"
+            sync
+        ' sh "/etc/$2/tls/$1" "$3" <"$tls/$1"
+    done
+    if [ -f "$tls/deploy" ]; then
+        ic exec svc -- rc-service victoria-logs restart
+        ic exec svc -- rc-service victoria-metrics restart
+        retry healthy svc
+        rm "$tls/deploy"
+        sync
+    fi
+    if [ -f "$tls/incus-client.previous" ]; then
+        old=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
+        if [ "$old" != "$trust" ] && jq -e --arg fp "$old" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null; then
+            ic config trust remove "$old"
+        fi
+        rm "$tls/incus-client.previous"
+        sync
+    fi
+)
 verify_image() {
     step="verify $1"
     case $1 in
@@ -1050,6 +1107,7 @@ update() {
     [ ! -f "$state/pending" ] || { pending=1; rollback; }
     fw_release
     dns_restore
+    certificates_apply
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
@@ -1201,11 +1259,6 @@ apply() {
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
     parallel_autostart
-    journals=
-    for journal in pending preparing committed browser.ready browser.rename fw.handoff profiles.before dns.stale; do
-        [ ! -e "$state/$journal" ] || journals=1
-    done
-    [ -d "$staged/$booted" ] || [ -n "$journals" ] || browser_legacy || return 0
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
@@ -1233,6 +1286,7 @@ apply() {
         fi
     fi
     dns_restore
+    certificates_apply
     [ -d "$staged" ] || return 0
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
