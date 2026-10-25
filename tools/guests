@@ -75,6 +75,18 @@ retry() {
     polling=
 }
 running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running ]; }
+autorestart_hold() {
+    # Mark in the same update; imports and renames retain ownership of the override.
+    ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
+}
+autorestart_clear() (
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/autorestart-instances" || return
+    jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | .name' \
+        "$work/autorestart-instances" >"$work/autorestart" || return
+    while read -r node; do
+        ic config unset "$node" boot.autorestart user.convergent.autorestart || return
+    done <"$work/autorestart"
+)
 volumes() {
     case $1 in
     svc) echo 'svc-metrics svc-logs svc-grafana' ;;
@@ -97,12 +109,14 @@ rollback() {
         echo "guests: restoring $guest/$snap" >&2
         ic query '/1.0/instances?recursion=1&project=default' >"$work/instances" || return
         if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
+            autorestart_hold "$guest" || return
             if running "$guest"; then ic stop "$guest" --force || return; fi
             seed_remove "$guest" || return
             ic config set "$guest" security.protection.delete=false || return
             ic delete "$guest" || return
         fi
         ic import "$backup" "$guest" || return
+        autorestart_hold "$guest" || return
         for volume in $(volumes "$guest"); do
             if [ "$volume" = svc-logs ]; then
                 warning="rollback svc/$snap: logs accepted by the candidate after the snapshot may be lost"
@@ -146,6 +160,7 @@ cleanup() {
     fi
     if [ -n "$starting" ] && ! running "$starting"; then ic start "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     [ -z "$work" ] || dns_restore || result=1
+    [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides'; result=1; }
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
     [ "$result" = 0 ] || logger -p user.err -t guests "$failed_step: failed (status $result, original $failed_status); cleanup finished" 2>/dev/null || :
@@ -423,12 +438,14 @@ seed_remove() {
     rm -f "$state/seeds/$1.img"
 }
 stop_guest() {
+    autorestart_hold "$1" || return
     ic stop "$1" --timeout 60 && return
     echo "guests: graceful stop failed; forcing $1 off; inspect with incus --force-local --project default console $1 --show-log" >&2
     ic stop "$1" --force
 }
 seed_start() {
     step="seed_start $1"
+    autorestart_hold "$1"
     if [ -z "$initializing" ] || [ -f "$state/seeds/$1.img" ] || [ ! -f "$state/init/seed-$1" ]; then
         if running "$1"; then stop_guest "$1"; fi
         seed_attach "$1"
@@ -541,6 +558,7 @@ browser_migrate() {
     done
     # Reap the retired ephemeral role before removing its unused profile.
     if jq -e 'any(.[]; .name == "portal" and .ephemeral and .profiles == ["browser-base", "browser-portal"])' "$work/browsers" >/dev/null; then
+        autorestart_hold portal
         if running portal; then ic stop portal --force; else ic delete portal; fi
     fi
 }
@@ -686,6 +704,7 @@ replace() {
     guest=$1
     snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$${rebuilding:+-rebuild}
     import_image "$guest"
+    autorestart_hold "$guest"
     if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
         running "$guest" && stop_guest "$guest"
         seed_remove "$guest"
@@ -862,6 +881,7 @@ init() {
     [ ! -e "$state/initialized" ] || die 'already initialized'
     rc-service incus status >/dev/null 9>&- 8>&- 7>&- 6>&- || rc-service incus start 9>&- 8>&- 7>&- 6>&-
     retry ic query /1.0 >/dev/null
+    autorestart_clear
     release=$(cd "$1" && pwd)
     for kind in fw wan svc browser; do
         image_dir=$release/guests/$kind
@@ -1229,6 +1249,7 @@ flock -w 120 8 || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
 flock -w 60 7 || die 'a portal change is still running'
 work=$(mktemp -d "$state/work.XXXXXX")
+[ "$1" = init ] || autorestart_clear
 if [ "$1" != rebuild ]; then
     for journal in preparing pending committed; do
         node=$(awk '$2 ~ /-rebuild$/ {print $1; exit}' "$state/$journal" 2>/dev/null) || node=
