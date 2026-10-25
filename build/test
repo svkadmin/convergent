@@ -539,6 +539,17 @@ result=0
 # Each failed check names its line in this script.
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
 ic() { incus --force-local --project default "$@"; }
+# A stored blocklist, so DNS pushes never depend on a download.
+local_list() {
+    dns=/var/lib/convergent/dns
+    mkdir -p "$dns"
+    [ ! -s "$dns/list.rpz" ] || return 0
+    . /etc/convergent/dns.conf
+    awk -v n="$BLOCKLIST_MIN_DOMAINS" 'BEGIN {
+        print "$TTL 300\n@ SOA localhost. root.localhost. 1 3600 600 86400 300\n  NS localhost."
+        for (i=1; i<=n; i++) print "test-" i ".example.net CNAME ."
+    }' >"$dns/list.rpz"
+}
 fw_diag() {
     for f in fw1 fw2; do
         timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
@@ -950,15 +961,7 @@ done
 # Use a local list so stopped-daemon recovery does not depend on a download.
 (
     set -e
-    dns=/var/lib/convergent/dns
-    mkdir -p "$dns"
-    if [ ! -s "$dns/list.rpz" ]; then
-        . /etc/convergent/dns.conf
-        awk -v n="$BLOCKLIST_MIN_DOMAINS" 'BEGIN {
-            print "$TTL 300\n@ SOA localhost. root.localhost. 1 3600 600 86400 300\n  NS localhost."
-            for (i=1; i<=n; i++) print "test-" i ".example.net CNAME ."
-        }' >"$dns/list.rpz"
-    fi
+    local_list
     timeout 90 ssh -F /etc/convergent/ssh_config fw1 'rcctl stop unbound'
     dns-push local
     [ ! -e "$dns/pending" ]
@@ -1287,7 +1290,8 @@ FAULT
             [ "$(sha256sum "$state/profiles.before/svc.yaml")" = "$saved" ] &&
                 [ "$(ic profile get svc user.convergent.lock-test)" = held ]
         ) || bad $LINENO
-        # Recovery must run even with no staged images.
+        # Recovery must run even with no staged images; a stored list lets it push DNS again.
+        local_list || bad $LINENO
         touch "$state/dns.stale"
         /usr/local/sbin/guests apply >/var/log/guests-update-recovery.log 2>&1 || bad $LINENO
         [ ! -e "$state/dns.stale" ] || bad $LINENO

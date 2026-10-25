@@ -52,7 +52,7 @@ id=$(printf '%s\n' "$header" | cut -d' ' -f3)
 expires=${header##* }
 sed -n '2p' "$tmp/script" | grep -aEq '^# purpose: [ -~]{1,200}$' || die "invalid purpose"
 purpose=$(sed -n '2p' "$tmp/script")
-sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
+sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}(\.eu)?\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
 upload=$(sed -n '3s/^# upload: //p' "$tmp/script")
 awk '
 	NR < 4 {next}
@@ -88,6 +88,10 @@ mv "$tmp/output" "$state/$id.txt"
 chmod 0600 "$state/$id.txt"
 printf 'Local output: %s\n' "$state/$id.txt"
 [ "$rc" = 0 ] || printf 'Diagnostic stopped (exit %s).\n' "$rc"
+# Nothing leaves before the owner has had the chance to read it.
+printf 'Read it first with: sudo less %s\nSend it? [y/N] ' "$state/$id.txt" >/dev/tty
+IFS= read -r answer </dev/tty || die "input cancelled; local output kept"
+case $answer in y | Y) ;; *) echo "Not sent; local output kept."; exit 0 ;; esac
 { printf '%s\n' "$id"; cat "$state/$id.txt"; } >"$tmp/output"
 openssl pkeyutl -sign -inkey "$state/signing.key" -rawin -in "$tmp/output" -out "$tmp/output.sig" || die "output signing failed"
 cat "$tmp/output.sig" "$tmp/output" >"$tmp/signed"
