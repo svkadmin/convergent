@@ -74,6 +74,7 @@ Rescue test coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
 | 10 | [Second passphrase and header backup](#10-second-passphrase-and-header-backup) |
 | 11 | [Start over](#11-start-over) |
 | 12 | [An online update fails](#12-an-online-update-fails) |
+| 13 | [Incus state torn by a power loss](#13-incus-state-torn-by-a-power-loss) |
 
 ## 1. Wrong passphrase, the laptop powers off
 
@@ -358,3 +359,17 @@ Keep a copy before acknowledging a crash. Remove only its reviewed timestamp dir
 `cv_crash_records` (the archived file count). `CrashRecorded` clears when no archived files remain. Firmware must support EFI
 variable writes during a panic. An empty archive alone does not prove the last shutdown was clean.
 If the release keeps crashing, boot the other slot (recipe 3).
+
+## 13. Incus state torn by a power loss
+
+Incus does two of the guest tool's steps in halves that a power loss can separate. `guests` then
+refuses every command (the bar shows the failed update; `/var/log/guests-update.log` has the
+message with the exact commands) rather than fail later with the guest down. Two cases:
+
+- A guest without a storage record: the loss hit a rebuild between dropping and recreating the
+  record (a few milliseconds). Run the printed `incus admin sql global "INSERT ..."`, then the
+  printed `incus rebuild <image> <guest>` (the image is the one in
+  `/var/lib/convergent/guests/pending`), then `sys guests update`, which re-seeds the guest.
+- A state volume with a `.incustmp` copy beside it or instead of it: the loss hit a snapshot
+  restore (well under a second). Volume missing: `sudo mv` the copy back. Volume present: the
+  restore completed, `sudo btrfs subvolume delete` the copy. Then `sys guests update`.
