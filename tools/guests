@@ -46,7 +46,7 @@ fw_mutate() {
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
-    # VMs boot slowly; the svc container is up in seconds; a halted VM's QEMU exits within minutes.
+    # VMs boot slowly; the svc container is up in seconds; a halted VM stops within minutes.
     case "$*" in
     stopped\ *) wait=$((boot_timeout < 300 ? boot_timeout : 300)) ;;
     *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;;
@@ -538,10 +538,9 @@ seed_remove() {
 stop_guest() {
     autorestart_hold "$1" || return
     ic stop "$1" --timeout 60 && return
-    # A halted guest's QEMU may still be releasing devices (VFIO); force only one that did not halt.
-    retry stopped "$1" && return
     echo "guests: graceful stop failed; forcing $1 off; inspect with incus --force-local --project default console $1 --show-log" >&2
-    ic stop "$1" --force
+    # A guest that halted late is stopping on its own: then the force has nothing left to do.
+    ic stop "$1" --force || retry stopped "$1"
 }
 start_guest() {
     # The previous QEMU may hold the VFIO group for a moment after its guest stopped.
