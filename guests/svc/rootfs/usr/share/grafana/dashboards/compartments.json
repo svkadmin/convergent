@@ -1160,7 +1160,7 @@
         },
         "target": {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND hostname:~\"^fw[12]$\" AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\"",
+          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"

@@ -88,5 +88,25 @@ while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
         fail=1
     fi
 done <"$work/logs" 3<"$work/status"
+# Exercise forged identities without storing test events.
+nodes='{"100.80.1.10":"host","100.80.2.2":"fw1","100.80.2.3":"fw2","100.80.0.10":"wan"}'
+rows=$(jq -nr --argjson nodes "$nodes" '[($nodes | keys[], "100.80.3.10") as $ip |
+    {remote_ip:$ip, hostname:"fw1", app_name:"kernel", _msg:"carp0: BACKUP -> MASTER", _stream:"{hostname=\"fw1\"}"},
+    {remote_ip:$ip, hostname:"host", app_name:"sudo", _msg:"COMMAND=/bin/true", _stream:"{hostname=\"host\"}"}]
+    | map(tojson) | join(",")')
+for page in network-path security; do
+    expected=2; [ "$page" != security ] || expected=6
+    expr=$(jq -r '.panels[] | select(.type == "logs") | .targets[].expr' "$dir/$page.json")
+    if ! curl -qfsS --noproxy '*' --max-time 10 -G \
+        --data-urlencode "query=NOT * | union rows($rows) | filter $expr" \
+        --data-urlencode limit=20 "$base/select/logsql/query" >"$work/identity" ||
+        ! jq -se --argjson nodes "$nodes" --argjson expected "$expected" '
+            length == $expected and all(.[];
+                $nodes[.remote_ip] as $node | .hostname == $node and
+                (._stream | contains("hostname=\"" + $node + "\"")))' "$work/identity" >/dev/null; then
+        echo "dashboards: log identity regression: $page"
+        fail=1
+    fi
+done
 echo "dashboards: $count instant metric queries, $empty empty, $logs log queries, result=$fail"
 exit "$fail"

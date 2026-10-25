@@ -3,10 +3,9 @@ include <tunables/global>
 
 @{browser} = /run/convergent/browser/{def,int,tmp-portal,tmp-[2-9][0-9]}
 
-# complain until the laptop runs clean (denials show in sys security events); then enforce.
 # A real copy at its own path: /usr/bin/pipewire-pulse is a symlink to pipewire, and AppArmor
 # attaches by the resolved path, which would also cover the session's own PipeWire.
-profile pipewire-pulse /usr/libexec/convergent/pipewire-pulse flags=(attach_disconnected, complain) {
+profile pipewire-pulse /usr/libexec/convergent/pipewire-pulse flags=(attach_disconnected) {
   include <abstractions/base>
   include <abstractions/dbus-strict>
   include <abstractions/dbus-session-strict>

@@ -38,6 +38,14 @@ GUEST_STATE = ('(count by (project,name) (incus_cpu_seconds_total{job="incus"}) 
                'or max by (project,name) (cv_guest_expected_running) * 0) '
                'and on() (max(up{job="incus"}) == 1)')
 INFRA = 'remote_ip:in("100.80.1.10","100.80.2.2","100.80.2.3","100.80.0.10")'
+FIREWALLS = 'remote_ip:in("100.80.2.2","100.80.2.3")'
+# Message hostnames are untrusted, including in retained stream labels.
+LOG_IDENTITY = (' | copy remote_ip as hostname'
+                ' | format if (remote_ip:="100.80.1.10") "host" as hostname'
+                ' | format if (remote_ip:="100.80.2.2") "fw1" as hostname'
+                ' | format if (remote_ip:="100.80.2.3") "fw2" as hostname'
+                ' | format if (remote_ip:="100.80.0.10") "wan" as hostname'
+                ' | set_stream_fields hostname, app_name')
 # Keep the first warning of a stack trace; exclude its continuation records and routine audit.
 STACK = (r'^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|'
          r'RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|'
@@ -48,8 +56,8 @@ ERRORS = INFRA + ' AND (severity:in("0","1","2","3","4") OR level:in("emerg","al
 SECURITY = (INFRA + ' AND (_msg:~' + json.dumps('apparmor="DENIED"|pam_faillock|authentication failure|Failed password') + ' '
             'OR (app_name:="usbguard" AND _msg:~"(?i)block|reject|denied") '
             'OR (app_name:="sudo" AND _msg:~"COMMAND=|incorrect password|not in the sudoers")) AND ' + QUIET)
-CARP_CHANGES = INFRA + ' AND hostname:~"^fw[12]$" AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)"'
-FW_CHANGES = (INFRA + ' AND hostname:~"^fw[12]$" AND '
+CARP_CHANGES = FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)"'
+FW_CHANGES = (FIREWALLS + ' AND '
               '(_msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)" OR app_name:="wan-watch" OR app_name:="pfctl") AND ' + QUIET)
 SECURITY_EVENTS = (INFRA + ' AND ('
                    '(app_name:in("greetd","tuigreet","login","su","sudo","sshd") AND '
@@ -59,7 +67,7 @@ SECURITY_EVENTS = (INFRA + ' AND ('
                    'OR _msg:~' + json.dumps('apparmor="(DENIED|ALLOWED)"|type=(USER_DEVICE|1137) ') + ' '
                    'OR (app_name:~"^usbguard(-daemon)?$" AND _msg:~"(?i)allow|block|reject|denied") '
                    'OR app_name:in("slot","fetch-release","guests","convergent-watchdog","sys-firewall") '
-                   'OR (hostname:~"^fw[12]$" AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND ' + QUIET +
+                   'OR (' + FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND ' + QUIET +
                    ' | replace (' + json.dumps('apparmor="ALLOWED"') + ', ' +
                    json.dumps('apparmor="ALLOWED" [complain]') + ')')
 ACTIONABLE = '(' + ERRORS + ') OR (' + SECURITY + ') OR (' + FW_CHANGES + ')'
@@ -261,6 +269,7 @@ class Page:
                             "tooltip": {"mode": "single"}})
 
     def logs(self, title, expr, gp, description):
+        expr += LOG_IDENTITY
         p = self.add("logs", title, gp, description,
                      [target(expr, ds=LOGS, queryType="instant", maxLines=50)], options={
                          "showTime": True, "showLabels": True, "wrapLogMessage": True,
@@ -268,7 +277,7 @@ class Page:
                          "showCommonLabels": False, "enableInfiniteScrolling": False})
         p["datasource"] = LOGS
         p["links"] = [{"title": "These lines in Explore", "url": explore(LOGS, expr, "instant")},
-                      {"title": "All logs in Explore", "url": explore(LOGS, "*", "instant")}]
+                      {"title": "All logs in Explore", "url": explore(LOGS, "*" + LOG_IDENTITY, "instant")}]
         return p
 
     def row(self, title, y):
@@ -288,7 +297,7 @@ class Page:
                 "panels": self.panels, "templating": {"list": list(variables)}, "links": nav(),
                 "annotations": {"list": [{"name": "CARP role changes · toggle", "enable": False, "hide": False,
                                           "iconColor": VIOLET, "datasource": LOGS,
-                                          "target": target(CARP_CHANGES, ds=LOGS, queryType="instant", maxLines=100)}]}}
+                                          "target": target(CARP_CHANGES + LOG_IDENTITY, ds=LOGS, queryType="instant", maxLines=100)}]}}
 
 
 def guests_table(page, gp, compact=False):

@@ -1,12 +1,13 @@
 abi <abi/3.0>,
 include <tunables/global>
 
-# complain until the laptop runs clean (denials show in sys security events); then enforce.
-profile bluetoothd /usr/{bin,sbin,libexec/bluetooth,lib/bluetooth,lib64/bluetooth}/bluetoothd flags=(complain) {
+profile bluetoothd /usr/{bin,sbin,libexec/bluetooth,lib/bluetooth,lib64/bluetooth}/bluetoothd {
   include <abstractions/base>
   include <abstractions/dbus-strict>
 
   capability net_admin,
+  # Standard Bluetooth service PSMs require privileged binds.
+  capability net_bind_service,
   capability net_raw,
   # HCI management, L2CAP, RFCOMM and SCO for input and audio.
   network bluetooth raw,

@@ -23,8 +23,10 @@ never turned into a healthy zero, except explicit counts (alerts and closed brow
 The log targets are LogsQL, not PromQL: VictoriaLogs `instant` fetches log lines, `stats`
 returns the attention count. The checker also validates log panels and annotations against
 VictoriaLogs; empty log results are normal. They are never sent as PromQL to VictoriaMetrics.
-Syslog fields are hostname, app_name, level, severity and facility_keyword; source addresses
-scope the four senders without assuming the host's name. Noise is filtered in queries, never
+Syslog fields are hostname, app_name, level, severity and facility_keyword; connection addresses
+scope the four senders and firewall events. Log panels, annotations and Explore links derive
+hostname and stream labels from remote_ip; app_name and messages remain sender claims.
+TLS authenticates svc, while pf's source isolation protects the sender address. Noise is filtered in queries, never
 discarded at ingestion; all logs have an Explore link. CARP annotations are disabled by
 default and use actual role-transition messages, not every nonzero CARP scrape. Percentage
 graphs have fixed 0–100 bounds; other graphs have zero minima and unit-appropriate soft
@@ -37,6 +39,8 @@ takeovers and host/guest update, bless and fallback messages. It keeps 50 lines,
 four infrastructure senders and selected time range, with no aggregation or deduplication.
 Overview's attention count keeps its narrower failure filter. `check-data` already runs this
 LogsQL target; empty event windows remain valid.
+The checker also queries synthetic CARP/sudo records with forged hostnames to verify source
+filtering and connection-derived labels without ingesting test events.
 
 Sources: `tools/facts`, `tools/check`, firewall `fw-facts`, WAN `wan-check`, node_exporter's
 configured/default collectors, Incus `/1.0/metrics`, and vmalert `ALERTS`. pf pass/block label
