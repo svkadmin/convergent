@@ -1,8 +1,8 @@
 # Using Convergent
 
-Tools live in `/usr/local/sbin`. `sys`, `browser` and the bar run as the owner (`sys` calls `sudo`
-where needed). The others (`slot`, `fetch-release`, `guests`, `check`, `devices`, `backup`,
-`account`, …) need `sudo` (password, 5-minute ticket).
+Tools live in `/usr/local/sbin`. `sys`, `browser` and the bar run as owner; `sys` uses `sudo` as
+needed. Others (`slot`, `fetch-release`, `guests`, `check`, `devices`, `backup`, `account`, …) need
+`sudo` (password, 5-minute ticket).
 
 Contents: [Coming from Arch](#coming-from-arch) · [Keys](#keys) · [The sys tool](#the-sys-tool) ·
 [Browsers](#browsers) · [Wi-Fi](#wi-fi) · [Captive portals](#captive-portals) ·
@@ -13,12 +13,11 @@ When something breaks: [RECOVERY.md](RECOVERY.md).
 
 ## Install
 
-Use `config.example.yaml` as the build/install input, selected with `CONVERGENT_CONFIG` on
-the builder or `convergent-install --config /path/config.yaml /path/release` on the UEFI-booted
-stick. It contains no secrets, including in comments. The installer saves the validated copy
-at `/var/lib/convergent/config.yaml` for reference; nothing reads that YAML at runtime.
-Password hashes are no longer accepted: enter the owner password and LUKS passphrase at the
-prompts (or on stdin, in that order, for `build/stick`).
+Input: `config.example.yaml`, selected by `CONVERGENT_CONFIG` on the builder or
+`convergent-install --config /path/config.yaml /path/release` on the UEFI-booted stick. No secrets,
+comments included. The installer saves the validated copy at `/var/lib/convergent/config.yaml`;
+nothing reads it at runtime. Password hashes are no longer accepted: enter owner password and LUKS
+passphrase at the prompts (or on stdin, in that order, for `build/stick`).
 
 ```yaml
 install:
@@ -27,96 +26,95 @@ install:
   swap: none
 ```
 
-`disk: auto` requires exactly one internal NVMe or SATA/ATA SSD, excluding the boot disk,
-removable and hotplug devices. Zero or multiple candidates is an error; select a whole disk
-with `/dev/disk/by-id/<id>` instead. The installer shows the selected disk and still requires
-the path or serial erase confirmation. Mounted disks, active swap, holders, the boot disk and
-read-only targets are refused. `build/stick` uses its own loop image regardless of this key.
+`disk: auto` needs exactly one internal NVMe or SATA/ATA SSD, excluding boot, removable and hotplug
+disks. Zero or several candidates is an error; pick a whole disk with `/dev/disk/by-id/<id>`. The
+installer shows the disk and still requires the path or serial erase confirmation. Refused: mounted
+disks, active swap, holders, boot disk, read-only targets. `build/stick` uses its own loop image
+regardless of this key.
 
-`state_size` accepts `auto`, an integer `1%` through `100%` of available space after the release
-ESP, slots and alignment, or whole GiB such as `64GiB` (32..999999 GiB). Auto consumes the
-remainder and grows when copied to a larger disk; percentage and GiB selections stay at their
-installed size. The release fixes the ESP at 1 GiB and each A/B slot at 8 GiB. GPT, LUKS2 and
-Btrfs stay mandatory; `esp_mib`, `slot_mib` and `state_max_gib` are no longer accepted.
+`state_size`: `auto`; an integer percentage from `1%` to `100%` of space left after release ESP, slots and alignment; or whole
+GiB, such as `64GiB` (32..999999). Auto takes the rest and grows when copied to a larger disk. Percent and GiB
+sizes keep their installed size. Release fixes ESP at 1 GiB, each A/B slot at 8 GiB. GPT, LUKS2 and
+Btrfs mandatory. `esp_mib`, `slot_mib` and `state_max_gib` no longer accepted.
 
-`swap` accepts `none`, `zram:4GiB` or `state:8GiB`, with whole sizes 1..1024 GiB. Zram's size
-is its uncompressed capacity. State swap is a file in a separate Btrfs subvolume inside LUKS2,
-outside release snapshots. There is no hibernation. OpenRC activates the generated swap setting;
-editing the reference YAML has no effect.
+`swap`: `none`, `zram:4GiB` or `state:8GiB`; whole sizes 1..1024 GiB. Zram size is its uncompressed
+capacity. State swap is a file in a separate Btrfs subvolume inside LUKS2, outside release
+snapshots. No hibernation. OpenRC activates the generated swap setting; editing the reference YAML
+does nothing.
 
-Both stick build and install validate every key and check capacity before partitioning.
-State must leave at least 32 GiB for data, plus disk swap; build media needs at least 12 GiB
-plus disk swap. With `build/stick`, sizing applies to the image itself: increase `image_size`
-or its positional size argument for larger state/swap requests. The default 30 GiB image fits
-auto state with no swap or zram; even 1 GiB of state swap needs a larger image.
+Stick build and install validate every key and check capacity before partitioning. State leaves at least
+32 GiB for data plus disk swap; build media needs 12 GiB plus disk swap. With `build/stick`, sizing applies to the image itself; raise `image_size` or its positional size argument for larger state or swap. The default 30 GiB image fits auto
+state with no swap or zram. Even 1 GiB of state swap needs a larger image.
 
 ## Coming from Arch
 
 | On Arch | Here |
 |---|---|
-| `pacman -Syu` | No package manager on the laptop. An update is a whole new signed release: `sys update install` downloads and writes it (README, Update) |
+| `pacman -Syu` | No package manager on the laptop. An update is a whole signed release: `sys update install` downloads and writes it (README, Update) |
 | `systemctl status`, `restart` | `rc-status -a` lists all runlevels; `sudo rc-service <name> status`, `restart` |
 | `systemctl enable` | Services are fixed in the release |
 | `journalctl` | `/var/log/messages` (warnings and up; `sys logs`), `/var/log/incus/`, Grafana; see RECOVERY 8 |
-| Editing `/etc` | `/etc` is read-only. Only accounts, `machine-id` and `/etc/usbguard/rules.conf` are kept; other changes come with a release |
-| `passwd` | `sys security password` (or `sudo account password [user]`); plain `passwd` cannot replace `/etc/shadow`, which is a bind mount |
+| Editing `/etc` | Read-only. Only accounts, `machine-id` and `/etc/usbguard/rules.conf` are kept; other changes come with a release |
+| `passwd` | `sys security password` (or `sudo account password [user]`). Plain `passwd` cannot replace `/etc/shadow`, a bind mount |
 | Your files | `/home` is on the encrypted state volume and survives updates |
-| `incus` | Guests are managed with `guests`; the owner's own Incus project is not set up yet |
+| `incus` | Guests use `guests`; owner's own Incus project not set up yet |
 | A network manager | Wi-Fi is in `sys wifi`; the radio lives in the `wan` VM |
 
-The firewalls run OpenBSD. You do not log in to them for daily use; for a look,
-`sudo ssh -F /etc/convergent/ssh_config fw1` gives a shell (`pfctl -sr` shows the rules,
-`ifconfig carp` the failover state).
+Firewalls run OpenBSD. Daily use needs no firewall login. To look:
+`sudo ssh -F /etc/convergent/ssh_config fw1` gives a shell (`pfctl -sr` shows rules; `ifconfig carp`
+shows failover state).
 
 ## Keys
 
 Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
 
-The look is stock Sway, foot, mako and swaylock on a black background and bar; owners can override each in their `~/.config/` directories.
+Stock Sway, foot, mako and swaylock on a black background and bar. Owners can override each in
+`~/.config/`.
 
 | Key | Does |
 |---|---|
-| Super+m | `sys`: the menu of areas and actions, in a terminal |
-| Super+a | pick one `sys` action by name and run it in its own terminal |
+| Super+m | `sys`: menu of areas and actions, in a terminal |
+| Super+a | one `sys` action by name, in its own terminal |
 | Super+d | an app by name: Browser_default, Browser_internal, Browser_temporary, Settings, Screenshot, Files, Notes, Foot |
 | Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
 | Super+Enter | terminal (foot) |
 | Super+Shift+q | close the window |
-| Super+1 … 9, Super+Shift+1 … 9 | go to a workspace, move the window there |
+| Super+1 … 9, Super+Shift+1 … 9 | go to a workspace; move the window there |
 | Super+f | fullscreen |
 | Super+Shift+c | reload the sway configuration |
 | Super+Shift+e | exit sway |
-| Print | select an area, save it to `~/Pictures/screenshots` and copy it (Escape cancels) |
+| Print | select an area; save to `~/Pictures/screenshots` and copy (Escape cancels) |
 | Shift+Print | save and copy the focused screen after 1 s |
 | Volume and mute keys | `wpctl` on PipeWire |
 | Mic-mute key | toggle the default microphone; while locked, only mute |
 | Brightness keys | `sys display bright -5` / `+5` (5 % steps) |
 
-Use Super+a for `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
-During a display preview, type `yes` then Enter within 15 seconds to keep it; any other answer,
-Escape then Enter, or no answer restores the previous layout. Dock/undock needs no key.
+Super+a also runs `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
 
-Files (Super+d) opens Midnight Commander in foot, with its internal editor (`mcedit`) and
-`modarin256-defbg` dark skin using the terminal background. Notes opens Vim's directory list
-in `~/Documents/notes`, creating the folder if needed. Keep notes as plain `.md` files;
-`:e name.md` opens a note and `:w` saves it.
+Display preview: type `yes` then Enter within 15 seconds to keep it. Any other answer, Escape then
+Enter, or no answer restores the previous layout. Dock and undock need no key.
+
+Files (Super+d) opens Midnight Commander in foot, with its internal editor (`mcedit`) and the
+`modarin256-defbg` dark skin on the terminal background. Notes opens Vim's directory list in `~/Documents/notes`, creating it if
+needed. Keep notes as plain `.md`: `:e name.md` opens one, `:w` saves.
 
 ## The sys tool
 
-Use `sys AREA [ACTION] [ARGS]`; the first action in each row is the default. An unrecognized
-second word becomes an argument to that default: `sys backup /mnt/x proj` works;
-`sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
-errors. `sys help` lists actions and aliases; `*` marks actions that ask for `yes` in the terminal (default No).
+`sys AREA [ACTION] [ARGS]`. First action in each row is the default. An unknown second word becomes
+an argument to that default (`sys backup /mnt/x proj` works; `sys wifi foo` is a usage error).
+Missing arguments are prompted for; partial lists are usage errors. `sys help` lists actions and aliases.
+`*` marks actions that ask for `yes` in the terminal (default No).
 
-`sys` (Super+m) looks like the Archer menu: the list left, the highlighted row's status and
-commands right, terminal colours with a blue highlight. Enter opens or runs, Esc goes back, typing
-filters, Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
-Super+a runs one action by name.
-The Wi-Fi network picker uses the same keys: type to filter, Enter selects the highlighted
-SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hidden SSIDs use
-`sys wifi hidden` and a typed name; Alt+Enter does not join an unscanned name.
+`sys` (Super+m) looks like the Archer menu: list left, highlighted row's status and commands right,
+in terminal colours with a blue highlight.
+Enter opens or runs; Esc goes back; typing filters. Alt+Enter runs what was typed
+(`area action args`, or `action args` inside an area).
+
+Wi-Fi picker: type to filter, Enter selects the highlighted SSID, Esc cancels, Ctrl+u clears the
+filter, Alt+Up/Down scrolls its status. Hidden SSIDs: `sys wifi hidden` and a typed name. Alt+Enter
+does not join an unscanned name.
 
 | Area (alias) | Actions, default first |
 |---|---|
@@ -142,25 +140,23 @@ SSID, Esc cancels, Ctrl+u clears the filter, Alt+Up/Down scrolls its status. Hid
 | `logs` | `host` (`/var/log/messages`), `services` (`rc-status -a`) |
 | `selftest` | `run` |
 
-DNS edits, wired assignment and firewall maintenance ask inside the action, after displaying
-the proposed change or checking health. Not built in `sys`: owner guest management and printing.
+DNS edits, wired assignment and firewall maintenance ask inside the action, after showing the change
+or checking health. Not built into `sys`: owner guest management and printing.
 
-Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys display save`.
-Save once docked and once undocked. Profiles use the connected set of monitor make/model/serial
-identities, including disabled panels; connector names and connection order can change.
-The session applies the matching profile at login and whenever the connected set changes.
-Unrecognised sets enable connected screens (laptop panel scale 1.3,
-external scale 1), unless an older `~/.config/sway/config.d/outputs` file still applies; it stays in
-charge until the first save. Identical identities cannot be saved unambiguously; `save` refuses them.
-`reset` removes only the current set's saved profile; it leaves the live layout alone.
-Profiles live in `~/.config/convergent/displays/`; saving retires the old
-`~/.config/sway/config.d/outputs` file. The `display_scale` build setting still sets the initial
-Sway scale before the profile hook runs.
+Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys display save`. Save
+once docked and once undocked. Profiles key on the connected make/model/serial set, including
+disabled panels; connector names and order can change. Profiles apply at login and on any set
+change. Unrecognised sets enable connected screens (laptop panel scale 1.3, external scale 1),
+unless an older `~/.config/sway/config.d/outputs` file applies, which stays in charge until the
+first save. Identical identities cannot be saved, so `save` refuses them. `reset` clears only the
+current set's profile, not the live layout. Profiles live in `~/.config/convergent/displays/`;
+saving retires the old outputs file. The `display_scale` build setting still sets the initial Sway scale
+before the profile hook runs.
 
-Touchpad: `sys touchpad set` prompts, or pass an option and value directly, for example
-`sys touchpad set pointer_accel 0.3`. Settings apply live to all touchpads and are saved in
-`~/.config/sway/config.d/touchpad` for every login, independently of keyboard and display settings.
-Support depends on the hardware; `sys touchpad status` shows the current libinput settings.
+Touchpad: `sys touchpad set` prompts, or takes an option and value
+(`sys touchpad set pointer_accel 0.3`). Settings apply live to all touchpads and save to
+`~/.config/sway/config.d/touchpad` for every login, independently of keyboard and display settings. Support depends
+on hardware; `sys touchpad status` shows libinput settings.
 
 | Option | Values |
 |---|---|
@@ -170,15 +166,14 @@ Support depends on the hardware; `sys touchpad status` shows the current libinpu
 | `scroll_method` | `none`, `two_finger`, `edge`, `on_button_down` (uses the device's scroll button) |
 | `scroll_factor` | 0–10 (scroll speed multiplier; default 3, 0 stops scrolling) |
 
-Screenshots create the directory if missing and use `screenshot-YYYYmmdd-HHMMSS.png` names.
-After saving and copying, mako shows **Screenshot saved** with the file name for 3 seconds,
-using its usual look. A second capture with the same timestamp is refused instead of overwriting.
+Screenshots create the directory if missing and use `screenshot-YYYYmmdd-HHMMSS.png` names. After saving and copying, mako
+shows **Screenshot saved** and the file name for 3 seconds, in its usual look. A repeated timestamp is refused, not
+overwritten.
 
-Leave the microphone enabled in firmware. At each Sway login, the session waits for PipeWire's
-default source and mutes it. `sys audio mic on` enables it; `sys audio mic off` mutes it.
-The bar shows orange `MIC` while the default source is unmuted (refreshed every 5 s), or grey
-`MIC?` if its state is unknown. This indicates permission to record, not active recording.
-Config reloads do not reset mute. Browser containers still have playback-only audio.
+Leave the microphone enabled in firmware. Each Sway login waits for PipeWire's default source and
+mutes it; `sys audio mic on` and `off` change that. The bar shows orange `MIC` while unmuted
+(refreshed every 5 s), or grey `MIC?` if unknown. That means permission to record, not recording.
+Config reloads do not reset mute.
 
 ## Browsers
 
@@ -187,16 +182,14 @@ browser def|tmp|int [url]
 browser tmp --portal [url]
 ```
 
-Run it as the owner in the Sway session; it needs no password. `sys browser def|tmp|int`
-(or the menu) opens one without a URL. `sys browser` lists running browsers.
-Only HTTP and HTTPS URLs are accepted. Each browser is
-Chromium in its own container with a restricted Wayland socket and playback-only audio; the
-window title starts with `[role]`.
-Browsers use Chromium's own default appearance.
+Run as owner in the Sway session; no password. `sys browser def|tmp|int` (or the menu) opens one
+without a URL; `sys browser` lists running ones. Only HTTP and HTTPS URLs are accepted. Each browser
+is Chromium in its own container, with a restricted Wayland socket and playback-only audio. Window
+title starts with `[role]`. Chromium's default appearance is kept.
 
-Works when: a window titled `[def] …` opens and the bar shows `BR:1`. A failed start from
-Super+b or Super+Shift+t shows a line at the top with the reason; the full output is in
-`$XDG_RUNTIME_DIR/browser-def.*.log` or `$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
+Works when a window titled `[def] …` opens and the bar shows `BR:1`. If Super+b or Super+Shift+t
+fails, a line at the top gives the reason. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
+`$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
 
 | Role | For | State |
 |---|---|---|
@@ -205,41 +198,39 @@ Super+b or Super+Shift+t shows a line at the top with the reason; the full outpu
 | tmp --portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; owns portal mode |
 | int | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
 
-A second start of def or int brings the open window forward; portal mode refuses one; normal tmp can run many
-at once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no sync, no password
-manager, no telemetry; int and tmp in portal mode allow no extensions. The int browser starts Grafana in
-svc and stops it on close. Log in as `owner` with the password in
-`/var/lib/convergent/guests/tls/admin-password` (`sudo cat`). A handler that sends links from
-other programs to `tmp` is not built.
+A second def or int start raises the open window. Portal mode refuses one; normal tmp runs many at
+once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no
+sync, no password manager, no telemetry. Int and tmp in portal mode allow no extensions. The int
+browser starts Grafana in svc and stops it on close. Log in as `owner` with the password in
+`/var/lib/convergent/guests/tls/admin-password` (`sudo cat`). A handler that sends links from other
+programs to `tmp` is not built.
 
-The def and tmp browsers use the `web` network segment; int uses `admin`.
-Portal mode uses a single tmp container at 100.80.3.11 without a GPU, with HTTP allowed and
-capture, extensions and search disabled. Normal tmp browsers use 100.80.3.20–99 and their usual policies.
+def and tmp use the `web` segment; int uses `admin`. Portal mode is one GPU-less tmp container at
+100.80.3.11, with HTTP allowed and capture, extensions and search disabled. Normal tmp uses
+100.80.3.20–99 and its usual policies.
 
 ## Wi-Fi
 
-The radio belongs to wan; `sys wifi` runs the commands in it over SSH.
+The radio belongs to wan; `sys wifi` runs its commands there over SSH.
 
-`sys wifi connect` offers scanned SSIDs in the sys picker, with security and signal strength,
-then asks `Passphrase (empty for a known or open network):`; the passphrase stays in wan.
-`sys wifi connect 'SSID with spaces'` skips the picker. Authentication/no-signal failures include
-guidance from wan's reply; a successful association without an IPv4 lease reports DHCP failure.
+`sys wifi connect` offers scanned SSIDs in the picker, with security and signal, then asks
+`Passphrase (empty for a known or open network):`. The passphrase stays in wan.
+`sys wifi connect 'SSID with spaces'` skips the picker. Authentication and no-signal failures
+include guidance from wan's reply. A successful association with no IPv4 lease reports DHCP failure.
 
-Hidden networks: `sys wifi hidden`. An upstream network that overlaps
-100.80.0.0/16 is refused and raises UpstreamOverlap.
-After moving a refused wired adapter to a safe network, retry DHCP with
-`sudo ssh -F /etc/convergent/ssh_config wan 'check retry'`. This retries only configured wired
-uplinks and rechecks the lease; the overlap latch clears only after a safe lease arrives.
+Hidden networks: `sys wifi hidden`. An upstream network overlapping 100.80.0.0/16 is refused and
+raises UpstreamOverlap. After moving a refused wired adapter to a safe network, retry DHCP with
+`sudo ssh -F /etc/convergent/ssh_config wan 'check retry'`. That retries only configured wired
+uplinks and rechecks the lease. The overlap latch clears only after a safe lease arrives.
 
 ## Captive portals
 
-`sys portal on` starts tmp in portal mode, which owns the mode for its lifetime. It opens two pf rules
-on both firewalls and wan's DNS pass-through, for the portal browser only; the bar shows `PORTAL`.
-It works over Wi-Fi or wired; it ends when the browser closes, with `sys portal off`, or after 30 minutes.
-`browser tmp --portal [url]` uses the same lifecycle. A new launch closes stale rules
-on all three guests before opening any; it refuses to open if closure fails. Cron also detects an
-abandoned browser session and retries incomplete closure every minute. `sys portal status` shows
-the reason (active, timeout, browser closed, interrupted, or closure pending) and each guest's state.
+`sys portal on` starts tmp in portal mode, which owns the mode until the browser closes,
+`sys portal off`, or 30 minutes. It opens two pf rules on both firewalls and wan's DNS pass-through,
+for the portal browser only. The bar shows `PORTAL`. Works over Wi-Fi or wired.
+`browser tmp --portal [url]` is the same. A new launch first closes stale rules on all three guests
+and refuses to open if closure fails. Every minute, cron detects abandoned browser sessions and retries incomplete closure. `sys portal status` gives the reason (active, timeout, browser closed,
+interrupted, or closure pending) and each guest's state.
 
 ```sh
 sudo portal on [A.B.C.D/LEN]   # diagnostic opening; without a browser it expires after a minute
@@ -249,24 +240,26 @@ sudo portal status             # wan, fw1, fw2; verdict on, off, mixed or unknow
 
 ## Devices
 
-USBGuard denies devices without an allowance. Attach only trusted devices and run `sys usb enrol`:
-review each named device (including hubs), type `yes` for each one you trust, then confirm the
-complete replacement. Nothing is saved until that final confirmation. This replaces the existing
-policy, including a block-all list or the older installer's input/storage/hub class policy.
-Devices you decline remain blocked; there is no blanket approval of attached devices.
-`sys usb review` shows saved allow/block rules with names, including unplugged devices, and the
-current attached-device decisions. `sys usb revoke RULE` takes an allowed **rule number** from
-that review, removes it and adds a device-specific deny against overlapping old allowances.
-Enrol first if the only existing allowance is a broad class rule. Enrol and revoke restart
-USBGuard to apply the policy now; revoking an input device or storage can disconnect it.
-`sys usb status` shows blocked USB and unauthorized Thunderbolt devices;
-`sys usb allow N|ID` still takes an attached USB **device number** or Thunderbolt ID.
-`sys bluetooth` shows power and known devices. Bluetooth stays off at boot; use
-`sys bluetooth on` first. `sys bluetooth pair` scans for 10 seconds, then lists discovered and
-known devices by MAC and name. `connect`, `disconnect` and `forget` use the current device list;
-run `sys bluetooth scan` to refresh it. Pick with fzf in a terminal or bemenu outside one;
-Escape cancels without changing a device. Explicit MAC arguments still work and are validated.
-`forget` still asks for `yes` in the terminal before opening the picker. By hand:
+USBGuard denies devices without an allowance. Attach only trusted devices, then run `sys usb enrol`.
+Review each named device (hubs included). Type `yes` for each one you trust, then confirm the full
+replacement; nothing is saved before that. Enrol replaces the existing policy, including any
+block-all list or the older installer's input/storage/hub class policy. Declined devices stay
+blocked. No blanket approval of attached devices.
+
+`sys usb review` lists saved allow and block rules by name, including unplugged devices, and
+decisions for attached ones. `sys usb revoke RULE` takes an allowed **rule number** from that
+review, removes it, and adds a device-specific deny over overlapping old allowances. Enrol first if
+the only existing allowance is a broad class rule. Enrol and revoke restart USBGuard now; revoking
+an input device or storage can disconnect it. `sys usb status` shows blocked USB and unauthorized
+Thunderbolt devices. `sys usb allow N|ID` still takes an attached USB **device number** or
+Thunderbolt ID.
+
+`sys bluetooth` shows power and known devices. Bluetooth stays off at boot; run `sys bluetooth on`
+first. `sys bluetooth pair` scans for 10 seconds, then lists discovered and known devices by MAC and
+name. `connect`, `disconnect` and `forget` use the current list; `sys bluetooth scan` refreshes it.
+The picker is fzf in a terminal, or bemenu outside one. Escape cancels without changing a device.
+Explicit MAC arguments work and are validated. `forget` asks for `yes` in the terminal before the
+picker opens. By hand:
 
 ```sh
 sudo devices list
@@ -274,52 +267,52 @@ sudo devices allow <number>    # USB, permanent; warns for keyboards, storage, n
 sudo devices allow tb <id>     # Thunderbolt PCIe tunnel, until unplugged
 ```
 
-Both ask you to type `yes`. USB approvals are written to `/etc/usbguard/rules.conf`.
+Both ask for a typed `yes`. USB approvals go to `/etc/usbguard/rules.conf`.
 
-For a USB serial adapter, approve it once with `sys usb allow NUMBER` (find NUMBER in
-`sys usb status`), then run `tio -b 115200 /dev/ttyUSB0`; change the baud rate to match the
-console. CDC ACM adapters use `/dev/ttyACM0`. Exit with Ctrl+t then q. The owner gets
-Gentoo's `dialout` group at installation and on the first boot of an updated image.
+USB serial adapter: approve once with `sys usb allow NUMBER` (from `sys usb status`), then run
+`tio -b 115200 /dev/ttyUSB0`, with the baud rate set to match the console. CDC ACM adapters use
+`/dev/ttyACM0`. Exit with Ctrl+t then q. The owner gets Gentoo's `dialout` group at installation and
+on the first boot of an updated image.
 
-For the Dell dock's Realtek Ethernet, allow its USBGuard device number first, then run
-`sys wired status` to read its serial and `sys wired attach 0bda:8153 SERIAL` (or omit arguments
-for prompts). Confirm the exact identity shown. The `wired-uplink` Incus USB device persists on
-wan and matches that vendor, product and serial on replug; another adapter does not qualify.
-An empty or ambiguous serial is refused. `sys wired remove` removes the role, including future
-automatic attachment, without revoking the USBGuard approval. Unplugging alone keeps the role.
-The host never runs DHCP or assigns addresses to the NIC. Wan uses it as `eth1`, prefers its
-wired default route, and retries DHCP on replug at its next check (within a minute).
+Dell dock Realtek Ethernet: allow its USBGuard device number first. Run `sys wired status` for its
+serial, then `sys wired attach 0bda:8153 SERIAL` (or omit the arguments for prompts). Confirm the exact
+identity shown. The `wired-uplink` Incus USB device persists on wan and matches that vendor, product and serial
+on replug; another adapter does not qualify. An empty or ambiguous serial is refused.
+`sys wired remove` drops the role, including automatic attachment, but keeps the USBGuard approval.
+Unplugging alone keeps the role. The host never runs DHCP or assigns addresses to the NIC. Wan uses
+it as `eth1`, prefers its wired default route, and retries DHCP on replug at its next check (within
+a minute).
 
-The camera starts disabled. `sys camera on` saves the choice and loads the camera driver now;
-`sys camera off` saves disabled first, then unloads it. If an application holds the driver,
-close it and retry `off`; unloading is never forced. `sys camera status` shows both the saved
-choice and whether the video core is loaded. `CAM` in the bar means enabled (not necessarily
-recording); `CAM!` means a video driver remains loaded despite the disabled choice.
-The choice survives reboot in `/var/lib/convergent/devices/camera`, following the release's
-state snapshot on update/rollback. USB cameras also need their own USBGuard allowance.
-Meeting compartments and screen sharing are not part of this release.
+Camera starts disabled. `sys camera on` saves the choice and loads the driver now. `sys camera off`
+saves disabled first, then unloads it. If an application holds the driver, close it and retry `off`;
+unloading is never forced. `sys camera status` shows the saved choice and whether the video core is
+loaded. `CAM` in the bar means enabled, not necessarily recording; `CAM!` means a driver stays
+loaded despite the disabled choice. The choice survives reboot in
+`/var/lib/convergent/devices/camera` and follows the release's state snapshot on update or rollback.
+USB cameras need their own USBGuard allowance too. Meeting compartments and screen sharing are not
+in this release.
 
 ## DNS: blocklist and own records
 
 The firewalls resolve all DNS. Cron downloads the blocklist weekly (URL and limits in
-`/etc/convergent/dns.conf`), validates it and pushes it to both firewalls; a failed push is rolled
-back on both. The owner's files are on the laptop:
+`/etc/convergent/dns.conf`), validates it and pushes it to both firewalls; a failed push rolls back
+on both. Owner files on the laptop:
 
 - `/var/lib/convergent/dns/allow`: domains exempt from the blocklist, one per line, `#` comments.
 - `/var/lib/convergent/dns/records`: Unbound `local-data` and `local-data-ptr` lines.
 
 Use `sys dns list`, then `sys dns add printer.home.arpa 192.168.1.50` or
-`sys dns remove printer.home.arpa`. The editor manages IPv4 A records; other record types can
-still be maintained in the owner file. Names are normalized to lowercase; duplicate names,
-invalid addresses and built-in name conflicts are refused. Removing a name with non-A records
-requires editing the owner file. A local DNS record does not grant firewall access to that address.
+`sys dns remove printer.home.arpa`. The editor manages IPv4 A records; other types stay in the owner
+file. Names are lowercased. Duplicate names, invalid addresses and built-in name conflicts are
+refused. Removing a name with non-A records needs an edit to the owner file. A local DNS record does
+not grant firewall access to that address.
 
 `sys dns allow example.org` adds a blocklist exception for that name and its subdomains;
-`sys dns unallow example.org` removes it. Each edit shows a diff and needs `yes` before applying
-to both firewalls. Failed or interrupted edits restore the previous owner files and firewall data;
-if a firewall is unreachable, recovery stays pending until the next push can reach both.
-Run `sudo dns-push` once if there is no stored blocklist. `sys dns push` reapplies the current
-files with the stored blocklist. `sys dns list` shows the last successful push time in UTC.
+`sys dns unallow example.org` removes it. Each edit shows a diff and needs `yes` before it applies
+to both firewalls. Failed or interrupted edits restore the previous owner files and firewall data.
+If a firewall is unreachable, recovery stays pending until a push reaches both. Run `sudo dns-push`
+once if there is no stored blocklist. `sys dns push` reapplies the current files with the stored
+blocklist. `sys dns list` shows the last successful push time in UTC.
 
 ```sh
 sudo dns-push          # download, validate, push the blocklist and records
@@ -328,28 +321,29 @@ sudo dns-push local    # push the stored blocklist with the current files
 
 ## Firewall maintenance
 
-`sys firewall status` (or `sys fw`) shows fw1 and fw2 CARP roles for transit, host, svc, web,
-admin and guests, PF state counts, Unbound status, and the last successful DNS push to both.
-Unreachable guests and pending DNS recovery are shown explicitly.
+`sys firewall status` (or `sys fw`) shows fw1 and fw2 CARP roles for transit, host, svc, web, admin
+and guests, PF state counts, Unbound status, and the last successful DNS push to both. Unreachable
+guests and pending DNS recovery are shown explicitly.
 
-`sys fw maintenance` checks the six-segment MASTER/BACKUP pair, PF, pfsync with defer, Unbound
-and a local DNS answer before asking to demote the master. It verifies that the peer owns all
-six segments. A failed handover is undone; an interrupted action retains recovery information.
-After maintenance, run `sys fw undo`: both firewalls must be healthy, and normal fw1-master /
-fw2-backup roles are checked after releasing the demotion. Finish maintenance before guest updates.
-If undo cannot reach a firewall, restore management access or rebuild that node, then retry undo.
-Remote work may outlive an SSH timeout; retry undo after it finishes. Do not remove
-`/var/run/convergent-maintenance.lock`: it is a persistent advisory lock file, and its recorded
-PID alone does not show whether the lock is held. A firewall reboot clears `/var/run`; the next
-mutation recreates the file. Reboot firewalls still using the old symlink lock before using this version.
+`sys fw maintenance` checks the six-segment MASTER/BACKUP pair, PF, pfsync with defer, Unbound and a
+local DNS answer before it asks to demote the master. It verifies that the peer owns all six
+segments. A failed handover is undone; an interrupted action keeps its recovery information.
+
+After maintenance, run `sys fw undo`. Both firewalls must be healthy; normal fw1-master / fw2-backup
+roles are checked after the demotion is released. Finish maintenance before guest updates. If undo
+cannot reach a firewall, restore management access or rebuild that node, then retry undo. Remote
+work may outlive an SSH timeout; retry undo after it finishes. Do not remove
+`/var/run/convergent-maintenance.lock`: it is a persistent advisory lock file, and its recorded PID
+alone does not show whether the lock is held. A firewall reboot clears `/var/run`; the next mutation
+recreates the file. Reboot firewalls still using the old symlink lock before using this version.
 
 `sys firewall rebuild fw1` (or `fw2`; root command: `guests rebuild fw1|fw2`) recreates a broken
-firewall from the installed guest release and laptop seed. The peer must be healthy; rebuild
-stops the target if needed and waits for the peer to become MASTER on all six segments.
-Finish guest updates and handoffs first. Maintenance may name the target; run `sys fw undo`
-after rebuilding it. Rebuild waits for guest checks and DNS pushes, and browsers may stay open.
-It checks the replacement, restores fw1 MASTER / fw2 BACKUP and pushes stored DNS data.
-Repeat the same command after interruption to resume its replacement journal.
+firewall from the installed guest release and laptop seed. The peer must be healthy. Rebuild stops
+the target if needed, then waits for the peer to be MASTER on all six segments. Finish guest updates
+and handoffs first. Maintenance may name the target; run `sys fw undo` after rebuilding it. Rebuild
+waits for guest checks and DNS pushes; browsers may stay open. It checks the replacement, restores
+fw1 MASTER / fw2 BACKUP, and pushes stored DNS data. After an interruption, repeat the same command
+to resume its replacement journal.
 
 ## Backups
 
@@ -357,43 +351,45 @@ Repeat the same command after interruption to resume its replacement journal.
 sudo backup [<mountpoint> <owner-project>]
 ```
 
-`sys backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks `Mounted encrypted
-external disk:` and `Owner Incus project:`. It needs an external USB disk with LUKS, unlocked and
-mounted at a root-owned directory, not on the laptop's own disk, and an Incus project for the
-owner's guests (not `default`; nothing creates one yet). It writes `convergent-backups/backup-<UTC>`:
-a snapshot of `/home`, the writable `/etc` files, exports of the owner's instances and the custom
-volumes of both projects, reads it all back, and keeps three. Unmount and close the disk before
-unplugging. What it leaves out and how to restore: [RECOVERY 11](RECOVERY.md#11-start-over).
+`sys backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks
+`Mounted encrypted external disk:` and `Owner Incus project:`. It needs an external USB disk with
+LUKS, unlocked and mounted at a root-owned directory (not the laptop's own disk), and an Incus
+project for the owner's guests (not `default`; none is created yet). It writes
+`convergent-backups/backup-<UTC>`: a snapshot of `/home`, the writable `/etc` files, exports of the
+owner's instances, and the custom volumes of both projects. It reads the backup back and keeps
+three. Unmount and close the disk before unplugging. For what is left out and how to restore, see
+[RECOVERY 11](RECOVERY.md#11-start-over).
 
 ## Health and alerts
 
-`sys alerts` (also `sys security alerts`) lists firing alerts from vmalert: severity, name,
-summary or description, and the API's active-since timestamp. The bar counts open the same
-list on left-click. An unavailable or invalid response reports an error, not an empty list.
+`sys alerts` (also `sys security alerts`) lists firing vmalert alerts: severity, name, summary or
+description, and the API's active-since time. Left-clicking the bar's alert counts opens the same
+list. An unavailable or invalid response reports an error, not an empty list.
 
-Open **Browser_internal** (`sys browser int`) for Overview, Network, Guests and Security.
-Overview puts the path, alerts, collector freshness, host and guests on the first screen; the
-other pages share the same navigation. Guests has project/instance selectors. Current-state
-tables show one row per item; graphs show history. CARP role-change annotations are off until
-toggled on. Log panels show actionable records; **Explore · all logs** includes routine audit
-and full kernel traces. A dash means no data; each panel names its source and each footer lists
-what is not collected. Battery is always 0–100%.
+Open **Browser_internal** (`sys browser int`) for Overview, Network, Guests and Security. Overview
+shows the path, alerts, collector freshness, host and guests on the first screen. Other pages share
+its navigation. Guests has project and instance selectors. Current-state tables show one row per
+item; graphs show history. CARP role-change annotations stay off until toggled on. Log panels show
+actionable records; **Explore · all logs** adds routine audit and full kernel traces. A dash means
+no data. Each panel names its source; each footer lists what is not collected. Battery is always
+0–100%.
 
-Security's recent-events list includes successful/failed logins, sudo commands/password failures,
-USBGuard decisions, AppArmor denials, firewall takeovers, guest updates/failures and host
-update/bless/fallback records. It shows the latest 50 records in the selected range.
-`sys security events` works without svc: up to 100 matches from the last 5000 lines of each
+Security's recent-events list covers successful and failed logins, sudo commands and password
+failures, USBGuard decisions, AppArmor denials, firewall takeovers, guest updates and failures, and
+host update, bless and fallback records. It shows the latest 50 records in the selected range.
+
+`sys security events` works without svc. It shows up to 100 matches from the last 5000 lines of each
 current host log (`/var/log/messages`, then `/var/log/audit/audit.log`), with source and original
-timestamp; files are not merged by time and rotated logs are not scanned. Missing logs are
-reported. Local firewall events cover maintenance and changes observed by the minute status
-probe; brief transitions between probes require the firewall logs in Grafana. Fallback records
-identify an older boot with an exhausted newer UKI. Audit and PAM may describe the same login.
+timestamp. Files are not merged by time; rotated logs are not scanned. Missing logs are reported.
+Local firewall events cover maintenance and changes the minute status probe sees; brief transitions
+between probes need the firewall logs in Grafana. Fallback records identify an older boot with an
+exhausted newer UKI. Audit and PAM may describe the same login.
 
-There are two checkers. `check` runs on the host and compares it with the accepted release:
-verity, the writable `/etc` files, autostart and SUID inventories, the guests' Incus settings, the
-radio's VFIO binding, CARP and pf on both firewalls. Cron runs it after boot and updates, and
-daily once it passes. svc's alert rules watch metrics and logs from every compartment; the host
-checker's result reaches them as CheckerFailed and CheckerStale.
+Two checkers exist. `check` runs on the host and compares it with the accepted release: verity,
+writable `/etc` files, autostart and SUID inventories, guest Incus settings, the radio's VFIO
+binding, and CARP and pf on both firewalls. Cron runs it after boot and updates, and daily once it
+passes. svc's alert rules watch metrics and logs from every compartment; the host result reaches
+them as CheckerFailed and CheckerStale.
 
 ```sh
 sys security check                    # run the checker now (sudo check); report in /var/lib/convergent/check/last
@@ -404,39 +400,37 @@ sudo check accept-fw <guest-dir>/fw   # accept new firewall hashes after a firew
 ```
 
 The checker fails until a baseline is accepted (`<release-dir>` holds `manifest` and
-`guests/fw/fw{1,2}.{pf,rules}.sha256`) and while Secure Boot is off. Acceptance needs Secure Boot on
-and out of Setup Mode. `check` does not verify the manifest's signature, so check the release
+`guests/fw/fw{1,2}.{pf,rules}.sha256`), and while Secure Boot is off. Acceptance needs Secure Boot
+on and out of Setup Mode. `check` does not verify the manifest's signature, so check the release
 yourself before accepting it.
 
 `sys selftest` checks this boot (sudo once, at the start) and writes a report to
 `~/selftest-YYYYmmdd-HHMMSS.txt`. Each check prints PASS, FAIL or SKIP with its detail. Every check
 has a time limit, so the run cannot hang.
 
-`sys debug` (also Logs → debug) downloads the developer's signed diagnostic, shows its purpose
-and expiry, and asks before running it as root. It refuses expired or already-run requests,
-limits the run to five minutes and output to 8 MiB, and sends the output encrypted to the
-developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; its path
-is printed so you can read what was sent with `sudo cat`. Only `CHANNEL=beta` builds carry it;
-stable builds never do. A failed diagnostic reports its script exit status
-even when output reaches the cap; timeout reports 124 (137 if it needs a forced kill).
-Returned output is not authenticated: anyone holding the public request can upload a forgery.
-Compare it with the laptop's local copy at `/var/lib/convergent/debug/<id>.txt`.
+`sys debug` (also Logs → debug) downloads the developer's signed diagnostic, shows its purpose and
+expiry, and asks before running it as root. It refuses expired or already-run requests. Runs stop
+after five minutes; output is capped at 8 MiB and sent encrypted to the developer. A root-only
+plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; the path is printed, so `sudo cat`
+shows what was sent. Only `CHANNEL=beta` builds carry it; stable builds never do. A failed
+diagnostic reports its script exit status, even at the cap. Timeout reports 124 (137 if it needs a
+forced kill). Returned output is not authenticated: anyone holding the public request can upload a
+forgery. Compare it with the local copy at `/var/lib/convergent/debug/<id>.txt`.
 
-An oops triggers a kernel panic; the host reboots 10 seconds after a panic. At boot, `facts`
-copies EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700),
-verifies and syncs them, then clears pstore. `cv_crash_records` counts archived files; the
-existing `CrashRecorded` alert stays active until acknowledged (RECOVERY, recipe 13).
-Crash counts appear beside checker results in the Security dashboard. `kernel.panic_on_oops=1`
-is KSPP hardening. If a driver repeatedly oopses, `sudo sysctl -w kernel.panic_on_oops=0`
-disables that panic trigger until reboot. For a persistent exception, set it to `0` in
-`rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release; the running root is read-only.
-If it reboots before you can apply the override, boot the previous slot (RECOVERY, recipe 3).
-Host cron and anacron have mail disabled; their jobs and logging still run.
+An oops triggers a kernel panic; the host reboots 10 seconds after any panic. At boot, `facts` copies EFI
+pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700), verifies and syncs
+them, then clears pstore. `cv_crash_records` counts archived files. The existing `CrashRecorded`
+alert stays active until acknowledged (RECOVERY, recipe 13). The Security dashboard shows crash
+counts beside checker results. `kernel.panic_on_oops=1` is KSPP hardening. If a driver repeatedly
+oopses, `sudo sysctl -w kernel.panic_on_oops=0` disables the panic trigger until reboot. For a
+lasting override, set it to `0` in `rootfs/etc/sysctl.d/90-convergent.conf` and build and install a
+release; the running root is read-only. If it reboots before you can apply the override, boot the
+previous slot (RECOVERY, recipe 3). Host cron and anacron have mail disabled; their jobs and logging
+still run.
 
 ## The bar
 
-Refreshed every second. Blocks are shown here with `|` between them; the bar draws its own
-separators:
+Refreshed every second. Blocks are shown here separated by `|`; the bar draws its own separators:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
@@ -447,34 +441,36 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | Block | Shows | Look or fix with |
 |---|---|---|
 | `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | `sys power status` lists every sensor |
-| `RAM`, `SWP` | used/total GiB; RAM includes cache (`MemTotal - MemFree`) and subtracts what the guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
+| `RAM`, `SWP` | used/total GiB; RAM includes cache (`MemTotal - MemFree`) and subtracts what guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
-| Topology | the uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
-| `rel` | booted semantic version (release ID on older images); grey `good` when the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
+| Topology | uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
+| `rel` | booted semantic version (release ID on older images); grey `good` if the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
-| `MIC` | default microphone unmuted (orange); hidden when muted, `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
-| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) when svc cannot be read (also while SETUP runs, until svc is up); every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
+| `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
+| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) if svc cannot be read, including during SETUP until svc is up; every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
-| `BAT` | capacity, `+` charging or `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging (full or charge limit); `AC` without a battery | `sys power status` |
+| `BAT` | capacity; `+` charging, `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging (full or at charge limit); `AC` without a battery | `sys power status` |
 
-Topology: the uplink first, `WLAN:<network>` (green connected, red with no network, grey when wan
+Topology starts with the uplink: `WLAN:<network>` (green connected, red with no network, grey when wan
 does not answer; names over 16 characters are cut) or `ETH` for a passed-through wired NIC. `WAN`
-green with an uplink, orange without one, red when wan is down.
-Each firewall is bold bright green as CARP master, dim green as standby, orange when its CARP
-interfaces disagree, red when down. `SVC` green or red; the host name green; `BR:n` counts running
-browser containers (grey at zero). Cron refreshes it every minute; older than three minutes, it
-turns grey. The idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid lock still works.
+is green with an uplink, orange without one, red when wan is down. Each firewall is bold bright
+green as CARP master, dim green as standby, orange when its CARP interfaces disagree, red when down.
+`SVC` is green or red; the host name is green. `BR:n` counts running browser containers (grey at
+zero). Cron refreshes it every minute; if it is older than three minutes, it turns grey. The
+idle-lock pause is the file `$XDG_RUNTIME_DIR/nolock`; the lid lock still works.
 
 ## Releases and guests
 
-New installs use the `beta` update channel. `dev` is unpublished; `stable` is rebuilt from a
-candidate's exact commit with the offline key and tested again. Candidate tags such as `v0.1.0-rc1` are not channels.
-`sys update status` and `slot status` show the booted version and timestamp release ID;
-the checker and selftest reports include both. The timestamp still controls slot ordering.
+New installs use the `beta` update channel. `dev` is unpublished. `stable` is rebuilt from a
+candidate's exact commit with the offline key and tested again. Candidate tags such as `v0.1.0-rc1`
+are not channels.
+
+`sys update status` and `slot status` show the booted version and timestamp release ID; checker and
+selftest reports include both. The timestamp still controls slot ordering.
 
 ```sh
 sys update                           # release slots; `sys update check` asks whether a newer one is published
@@ -485,37 +481,40 @@ sudo guests update fw|wan|svc|browser|def|int <image-dir>
 
 Online releases carry guests; only changed guests download with `sys update install`. After reboot
 and marking the host good, they apply in order: svc, wan, fw, browser. The bar shows GUESTS while
-applying and GUESTS failed on failure. Close browsers and run `sys guests update` to retry a pending
-browser update. Updating `browser` also moves the image used for future tmp instances, including portal mode;
-`def` or `int` normally replaces that instance only; a role migration updates both. One guest operation runs at a time. Writing a release
-and manual guest updates: [README, Update](README.md#update).
-An interrupted browser update blocks launches until the guest update is retried.
-The first full browser update renames existing web/admin instances and state volumes to def/int,
-keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on
-the next browser update; the old role names are not command aliases.
+applying and GUESTS failed on failure. To retry a pending browser update, close browsers and run
+`sys guests update`. Updating `browser` also moves the image for future tmp instances, including
+portal mode. `def` or `int` normally replaces only that instance; a role migration updates both. One
+guest operation runs at a time. For writing a release and manual guest updates, see [README,
+Update](README.md#update). An interrupted browser update blocks launches until the guest update is
+retried.
 
-If you added a root crontab as a stopgap for the v8/v9 cron bug, remove that stopgap with
-`sudo crontab -r` after the first v10 boot; otherwise those jobs run twice.
+The first full browser update renames existing web/admin instances and state volumes to def/int,
+keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on the next
+browser update. The old role names are not command aliases.
+
+If you added a root crontab as a stopgap for the v8/v9 cron bug, remove it with `sudo crontab -r`
+after the first v10 boot. Otherwise those jobs run twice.
 
 ## Power and locking
 
 - The screen locks after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes
   (swayidle, swaylock). Display-off follows `idle_lock_minutes + 1` minutes of inactivity.
-  `sys power lock` locks now. NL pauses idle locking and display-off only; manual and lid locking still work.
-- `power` sets the CPU energy preference and an optional clock cap for AC or battery (none by default;
-  `cpu_cap_khz`). It runs at boot and on AC adapter events; by hand: `sys power ac` or
-  `sys power battery` (`sudo power [ac|battery]`).
-  Repeated events with no setting changes are silent; changes and failures are logged.
-  The bar shows the applied profile, including a manual override until the next plug event.
-  AC uses `balance_performance`, battery uses `power`; both keep the configured clock cap.
+  `sys power lock` locks now. NL pauses only idle locking and display-off; manual and lid locking
+  still work.
+- `power` sets the CPU energy preference and an optional clock cap for AC or battery (none by
+  default; `cpu_cap_khz`). It runs at boot and on AC adapter events. By hand: `sys power ac` or
+  `sys power battery` (`sudo power [ac|battery]`). Repeated events with no setting change are
+  silent; changes and failures are logged. The bar shows the applied profile, including a manual
+  override until the next plug event. AC uses `balance_performance`, battery uses `power`; both keep
+  the configured clock cap.
 - `sys power charge 80` stops charging at 80 %, with a start threshold of 75 % where supported.
   Valid limits are 55-100. `sys power charge off` (the default) allows full charging: end 100 %,
   start 95 %. Where Dell exposes `charge_types`, a limit selects Custom mode and off selects
-  Standard mode. This does not discharge a battery already above the limit.
-- `sys power thermal quiet|balanced|performance` selects a profile offered by the firmware;
-  firmware still controls fan speeds. No thermal override is applied until one is selected.
-  Charge and thermal choices persist in `/var/lib/convergent/power/`, are restored at boot and
-  AC events, and follow the release's state snapshot on update/rollback. Missing sysfs controls
-  are optional: actions report unsupported, and other power controls continue to work.
-  `sys power status` shows the actual thresholds, thermal profile and available choices.
-  The resource review and unimplemented tuning proposals are in ARCHITECTURE section 11.
+  Standard mode. The limit does not discharge a battery already above it.
+- `sys power thermal quiet|balanced|performance` selects a profile the firmware offers; firmware
+  still controls fan speeds. No thermal override applies until one is selected. Charge and thermal
+  choices persist in `/var/lib/convergent/power/`, are restored at boot and AC events, and follow
+  the release's state snapshot on update or rollback. Missing sysfs controls are optional: actions
+  report unsupported, and other power controls keep working. `sys power status` shows the actual
+  thresholds, thermal profile and available choices. The resource review and unimplemented tuning
+  proposals are in ARCHITECTURE section 11.
