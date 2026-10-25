@@ -108,21 +108,33 @@ clear_probes() {
 }
 rollback() {
     step=rollback
-    while read -r guest snap <"$state/pending"; do
-        backup=$state/backups/$guest-$snap.tar.gz
-        [ -s "$backup" ] || { fail "missing backup $backup"; return 1; }
+    while read -r guest snap image <"$state/pending"; do
         echo "guests: restoring $guest/$snap" >&2
-        ic query '/1.0/instances?recursion=1&project=default' >"$work/instances" || return
-        if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
+        if [ -z "$image" ]; then
+            # A journal from before 0.1.3: the old guest was exported, the candidate rebuilt in place.
+            backup=$state/backups/$guest-$snap.tar.gz
+            gzip -t "$backup" 2>/dev/null || { fail "missing or damaged backup $backup"; return 1; }
+            ic query '/1.0/instances?recursion=1&project=default' >"$work/instances" || return
+            if jq -e --arg n "$guest" '.[] | select(.name == $n)' "$work/instances" >/dev/null; then
+                autorestart_hold "$guest" || return
+                if running "$guest"; then ic stop "$guest" --force || return; fi
+                seed_remove "$guest" || return
+                ic config set "$guest" security.protection.delete=false || return
+                ic delete "$guest" || return
+            fi
+            locked ic import "$backup" "$guest" || return
+            autorestart_hold "$guest" || return
+        else
+            # Back to the image the guest ran on; a second pass redoes the same rebuild.
             autorestart_hold "$guest" || return
             if running "$guest"; then ic stop "$guest" --force || return; fi
             seed_remove "$guest" || return
-            ic config set "$guest" security.protection.delete=false || return
-            ic delete "$guest" || return
+            rebuild_root "$guest" "$image" || return
+            image_alias "$guest" "$image" || return
         fi
-        ic import "$backup" "$guest" || return
-        autorestart_hold "$guest" || return
         for volume in $(volumes "$guest"); do
+            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
+            grep -Fxq "$snap" "$work/volume-snapshots" || continue
             if [ "$volume" = svc-logs ]; then
                 warning="rollback svc/$snap: logs accepted by the candidate after the snapshot may be lost"
                 printf '%s WARNING %s\n' "$(date -u +%FT%TZ)" "$warning" >>"$state/updates" && sync || return
@@ -130,10 +142,15 @@ rollback() {
                 logger -p user.err -t guests "$warning" 2>/dev/null || :
             fi
             ic storage volume snapshot restore default "$volume" "$snap" || return
+            ic storage volume snapshot delete default "$volume" "$snap" || return
         done
         cp "$state/known_hosts.before" "$keys/known_hosts" || return
-        case $guest in def|int|web|admin) ;; *) start_guest "$guest" || return; retry healthy "$guest" || return ;; esac
+        case $guest in
+        def|int|web|admin) ;;
+        *) if [ -n "$image" ]; then (set -e; seed_start "$guest") || return; else start_guest "$guest" || return; retry healthy "$guest" || return; fi ;;
+        esac
         tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
+        rm -rf "$state/iwd.$guest" "$state/backups/$guest-$snap.tar.gz" || return
     done
     rm "$state/pending" || return
     pending=
@@ -341,21 +358,21 @@ import_image() {
     image_alias "$1" "$fingerprint"
 }
 image_alias() {
-    ic image alias list --format json >"$work/aliases"
+    ic image alias list --format json >"$work/aliases" || return
     if [ "$1" = browser ]; then
-        old=$(jq -r '.[] | select(.name == "browser") | .target' "$work/aliases")
+        old=$(jq -r '.[] | select(.name == "browser") | .target' "$work/aliases") || return
         if [ -n "$old" ]; then
             printf '%s\n' "$old" >>"$state/images.superseded"
             sync
-            ic image alias delete browser
+            ic image alias delete browser || return
         fi
     fi
-    target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases")
+    target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases") || return
     [ "$target" != "$2" ] || return 0
     if [ -n "$target" ]; then
         printf '%s\n' "$target" >>"$state/images.superseded"
         sync
-        ic image alias delete "candidate-$1"
+        ic image alias delete "candidate-$1" || return
     fi
     ic image alias create "candidate-$1" "$2"
 }
@@ -363,8 +380,11 @@ images_prune() {
     [ -f "$state/images.superseded" ] || return 0
     sort -u "$state/images.superseded" >"$work/superseded" || return
     ic image list --format json >"$work/images" || return
+    # A guest's own image stays: a failed update rebuilds from it.
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/instances" || return
     while read -r old_image; do
-        if jq -e --arg fp "$old_image" '.[] | select(.fingerprint == $fp and (.aliases | length) == 0)' "$work/images" >/dev/null; then
+        if jq -e --arg fp "$old_image" '.[] | select(.fingerprint == $fp and (.aliases | length) == 0)' "$work/images" >/dev/null &&
+            ! jq -e --arg fp "$old_image" 'any(.[]; .config["volatile.base_image"] == $fp)' "$work/instances" >/dev/null; then
             ic image delete "$old_image" || return
         fi
     done <"$work/superseded"
@@ -783,23 +803,17 @@ wan_mount() {
     mounted=1
 }
 prune() {
-    printf '%s\n' "$state/backups/$1-"*.tar.gz | sort -r | sed '1,3d' >"$work/prune" || return
-    while read -r backup; do
-        old=${backup##*/}; old=${old#"$1-"}; old=${old%.tar.gz}
-        for volume in $(volumes "$1"); do
-            # A previous prune (or volume recreation) may already have removed it.
-            ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
-            if grep -Fxq "$old" "$work/volume-snapshots"; then
-                ic storage volume snapshot delete default "$volume" "$old" || return
-            fi
-        done
-        rm "$backup" || return
-    done <"$work/prune"
+    # The last three state snapshots stay for a restore by hand.
+    for volume in $(volumes "$1"); do
+        ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
+        awk '/^guests-/' "$work/volume-snapshots" | sort -r | sed '1,3d' >"$work/prune" || return
+        while read -r old; do ic storage volume snapshot delete default "$volume" "$old" || return; done <"$work/prune"
+    done
 }
 prepare_cleanup() {
     [ -f "$state/preparing" ] || return 0
     read -r prep_guest prep_snap prep_start <"$state/preparing" || return
-    if ! grep -qxF "$prep_guest $prep_snap" "$state/pending" 2>/dev/null; then
+    if ! awk -v g="$prep_guest" -v s="$prep_snap" '$1 == g && $2 == s {found=1} END {exit !found}' "$state/pending" 2>/dev/null; then
         prep_deadline=$(($(date +%s) + boot_timeout))
         for volume in $(volumes "$prep_guest"); do
             # A disconnected client can leave an Incus operation running.
@@ -818,7 +832,7 @@ prepare_cleanup() {
                 locked ic storage volume snapshot delete default "$volume" "$prep_snap" || return
             fi
         done
-        rm -f "$state/backups/$prep_guest-$prep_snap.tar.gz" || return
+        rm -rf "$state/iwd.$prep_guest" || return
         if [ "$prep_start" = yes ]; then
             running "$prep_guest" || start_guest "$prep_guest" || return
             retry healthy "$prep_guest" || return
@@ -838,7 +852,10 @@ replace() {
         replace_root
         return
     fi
-    step="backup $guest"
+    step="prepare $guest"
+    # The way back: the image the guest runs on, kept in the store while it is in use (images_prune).
+    image=$(ic config get "$guest" volatile.base_image)
+    [ -n "$image" ] && ic query "/1.0/images/$image" >/dev/null || die "the image $guest runs on is gone; a failed update could not be undone"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
     prep_start=no
     if running "$guest"; then prep_start=yes; fi
@@ -853,11 +870,16 @@ replace() {
         mem=$(ic config get "$guest" limits.memory)
         [ -z "$mem" ] || ic config unset "$guest" limits.memory ;;
     esac
-    mkdir -p "$state/backups"
     for volume in $(volumes "$guest"); do locked ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
-    locked ic export "$guest" "$state/backups/$guest-$snap.tar.gz" --instance-only || { rm -f "$state/backups/$guest-$snap.tar.gz"; die 'cannot export guest backup'; }
+    if [ "$guest" = wan ]; then
+        # The networks outlive the old disk; both the new disk and a rollback get them.
+        wan_read
+        rm -rf "$state/iwd.wan"
+        mv "$work/iwd" "$state/iwd.wan"
+        sync
+    fi
     if [ -n "$pending" ]; then cp "$state/pending" "$work/pending"; else : >"$work/pending"; fi
-    printf '%s %s\n' "$guest" "$snap" >>"$work/pending"
+    printf '%s %s %s\n' "$guest" "$snap" "$image" >>"$work/pending"
     sync
     mv "$work/pending" "$state/pending"
     pending=1
@@ -865,31 +887,32 @@ replace() {
     sync
     rm "$state/preparing"
     sync
-    if [ "$guest" = wan ]; then
-        wan_read
-    fi
     replace_root
+}
+# In place, from an image: devices, MACs and seeds stay. An interrupted rebuild is redone whole.
+rebuild_root() {
+    ic query "/1.0/instances/$1/snapshots?recursion=1" >"$work/snapshots" || return
+    jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots" || return
+    while read -r old; do ic snapshot delete "$1" "$old" || return; done <"$work/old-snapshots"
+    locked ic rebuild "$2" "$1" || return
+    case $1 in
+    wan)
+        wan_mount || return
+        mkdir -p "$work/root/var/lib/iwd" || return
+        [ ! -d "$state/iwd.wan" ] || cp -a "$state/iwd.wan/." "$work/root/var/lib/iwd/" || return
+        unmount_root || return
+        ;;
+    def|int)
+        ic file pull "$1/usr/local/bin/browser-launch" "$work/browser-launch" || return
+        sh -n "$work/browser-launch" 9>&- 8>&- 7>&- 6>&- || return
+        ;;
+    esac
 }
 replace_root() {
     if [ "$rebuilding" = fw1 ]; then touch "$state/fw.handoff"; sync; fi
     step="rebuild $guest"
-    ic query "/1.0/instances/$guest/snapshots?recursion=1" >"$work/snapshots"
-    jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots"
-    while read -r old; do ic snapshot delete "$guest" "$old"; done <"$work/old-snapshots"
     case $guest in fw1|fw2) touch "$state/dns.stale"; sync ;; esac
-    locked ic rebuild "candidate-$guest" "$guest"
-    case $guest in
-    wan)
-        wan_mount
-        mkdir -p "$work/root/var/lib/iwd"
-        cp -a "$work/iwd/." "$work/root/var/lib/iwd/"
-        unmount_root
-        ;;
-    def|int)
-        ic file pull "$guest/usr/local/bin/browser-launch" "$work/browser-launch"
-        sh -n "$work/browser-launch" 9>&- 8>&- 7>&- 6>&-
-        ;;
-    esac
+    rebuild_root "$guest" "candidate-$guest"
     case $guest in
     def|int) ;;
     *)
@@ -909,16 +932,20 @@ commit_update() {
     cp "$state/committed" "$work/committed" || return
     : >"$work/updates" || return
     [ ! -f "$state/updates" ] || cp "$state/updates" "$work/updates" || return
-    while read -r guest snap; do
+    while read -r guest snap image; do
         awk -v g="$guest" -v s="$snap" 'NF == 3 && $2 == g && $3 == s {found=1} END {exit !found}' "$work/updates" && continue
         printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$guest" "$snap" >>"$work/updates" || return
     done <"$work/committed"
     sync && mv "$work/updates" "$state/updates" && sync || return
+    # A replay after a power loss finds the proven guest stopped: it belongs running.
+    while read -r guest snap image; do
+        case $guest in def|int|web|admin) ;; *) running "$guest" || start_guest "$guest" || return; retry healthy "$guest" || return ;; esac
+    done <"$work/committed"
     rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
     rm "$state/committed" && sync || return
     images_prune || return
-    while read -r guest snap; do prune "$guest" || return; done <"$work/committed"
+    while read -r guest snap image; do rm -rf "$state/iwd.$guest" && prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
     # The durable marker means both replacements passed; recovery finishes the commit.
@@ -955,7 +982,7 @@ rebuild() {
         [ -e "$state/$journal" ] || continue
         awk -v node="$1" -v journal="$journal" '
             $1 != node || $2 !~ /^guests-[0-9]+T[0-9]+-[0-9]+-rebuild$/ ||
-            NF != (journal == "preparing" ? 3 : 2) {bad=1}
+            (journal == "preparing" && NF != 3) || NF < 2 || NF > 3 {bad=1}
             END {exit !(NR == 1 && !bad)}' "$state/$journal" ||
             die 'another guest update or rebuild is pending; finish it first'
         resuming=1
@@ -985,13 +1012,9 @@ rebuild() {
         fi
         rm -f "$state/fw.rebuilt"
         sync
-        # An incomplete firewall export has no data volumes to restore.
-        if [ -f "$state/preparing" ]; then
-            read -r prep_guest prep_snap prep_start <"$state/preparing"
-            [ -f "$state/pending" ] || rm -f "$state/backups/$prep_guest-$prep_snap.tar.gz"
-            rm "$state/preparing"
-            sync
-        fi
+        # Firewalls have no data volumes: an interrupted preparation left nothing behind.
+        rm -f "$state/preparing"
+        sync
         [ ! -f "$state/pending" ] || pending=1
         replace "$1"
         touch "$state/fw.rebuilt"
@@ -1396,6 +1419,8 @@ flock -w 120 8 || die 'a DNS push is still running'
 exec 7>/run/convergent/portal.lock
 flock -w 60 7 || die 'a portal change is still running'
 work=$(mktemp -d "$state/work.XXXXXX")
+# Exports from before 0.1.3 matter only to a pending journal of theirs.
+[ -f "$state/pending" ] || rm -rf "$state/backups"
 [ "$1" = init ] || autorestart_clear
 if [ "$1" != rebuild ]; then
     for journal in preparing pending committed; do

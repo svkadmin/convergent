@@ -502,8 +502,11 @@ withhold nor swap it. Guest identity is SHA256SUMS plus delivered profiles. Deli
 application: [USAGE, Releases and guests](USAGE.md#releases-and-guests). Host-only releases remain
 valid.
 
-Guests update only on host slot already marked good, one at a time, each after instance export and
-snapshots of custom state volumes; last three backups per guest kept. Firewalls update one at a
+Guests update only on host slot already marked good, one at a time, each after snapshots of custom
+state volumes. The guest is rebuilt in place from the release image; the image it ran on stays in
+the store until the checks pass, so a failed or interrupted update rebuilds it from that image,
+re-seeds it and restores the snapshots (wan's saved networks wait in host state meanwhile). Last
+three state snapshots per volume kept. Firewalls update one at a
 time: fw2 first, checked (CARP state, pfsync, pf ruleset hash, resolution and short traffic soak
 through it), then failover to it, then fw1. Firewall failing checks returns to previous image before
 other is touched. New firewall copies nothing from old one; after `guests update fw`, host pushes
