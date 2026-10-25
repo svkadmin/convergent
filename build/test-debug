@@ -1,0 +1,47 @@
+#!/bin/sh
+# Offline output authentication fixtures; no root or bucket credentials needed.
+set -eu
+umask 077
+here=$(cd "$(dirname "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-debug: $*" >&2; exit 1; }
+tmp=$work state=$work keys=$work BUILDER=$work
+id=00000000000000000000000000000001
+mkdir "$work/debug"
+openssl genpkey -algorithm ED25519 -out "$state/signing.key"
+openssl pkey -in "$state/signing.key" -pubout -out "$BUILDER/debug/$id.pub"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=test-debug \
+	-keyout "$keys/debug.key" -out "$tmp/cert" >/dev/null 2>&1
+cp "$tmp/cert" "$keys/debug.crt"
+printf 'diagnostic output\n\000binary\n' >"$state/$id.txt"
+sed -n '/^{ printf.*"\$id"; cat /,/die "output encryption failed"/p' "$here/../tools/debug" >"$work/encrypt"
+sed -n '/^	openssl cms -decrypt/,/^	tail -n +2 /p' "$here/debug" >"$work/decrypt"
+[ -s "$work/encrypt" ] && [ -s "$work/decrypt" ]
+. "$work/encrypt"
+(. "$work/decrypt") >"$work/result"
+cmp "$state/$id.txt" "$work/result"
+cp "$tmp/output.cms" "$work/good.cms"
+refuse() {
+	if (. "$work/decrypt") >"$work/result" 2>"$work/error"; then die "accepted $1"; fi
+	[ ! -s "$work/result" ] || die "printed unverified $1"
+	grep -q "$2" "$work/error" || { cat "$work/error" >&2; die "wrong refusal for $1"; }
+}
+# A public recipient certificate permits encryption of arbitrary fabricated output.
+printf '%064d%s\nforged\n' 0 "$id" >"$tmp/signed"
+openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$tmp/signed" -out "$tmp/output.cms" "$tmp/cert"
+refuse forgery 'not signed by the pinned laptop'
+# An authentic result is bound to the original request.
+cp "$work/good.cms" "$tmp/output.cms"
+old=$id
+id=00000000000000000000000000000002
+cp "$BUILDER/debug/$old.pub" "$BUILDER/debug/$id.pub"
+refuse replay 'another request'
+id=$old
+openssl genpkey -algorithm ED25519 -out "$state/signing.key"
+. "$work/encrypt"
+refuse 'another laptop' 'not signed by the pinned laptop'
+: >"$tmp/output.cms"
+refuse corruption 'replaced or corrupt'
+echo 'test: debug output authentication passed'

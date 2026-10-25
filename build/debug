@@ -1,6 +1,7 @@
 #!/bin/sh
-# build/debug send <script-file> <purpose>   publish a signed diagnostic for one hour
+# build/debug send <script-file> <purpose>   publish a signed diagnostic for 24 hours
 # build/debug fetch [id]                    decrypt output (last sent by default), then delete it
+# Pin the laptop's `sudo debug key` output as /etc/convergent/keys/debug-laptop.pub over a trusted channel.
 set -eu
 export LC_ALL=C
 umask 077
@@ -42,7 +43,10 @@ send)
 		[ "$(printf '%s' "$purpose" | tr -cd ' -~')" = "$purpose" ] || die "purpose must be 1-200 printable characters"
 	id=$(openssl rand -hex 16)
 	now=$(date -u +%s)
-	expires=$((now + 3600))
+	expires=$((now + 86400))
+	[ -f "$keys/debug-laptop.pub" ] || die "pin the laptop's debug public key in $keys/debug-laptop.pub first"
+	mkdir -p "$BUILDER/debug"
+	openssl pkey -pubin -in "$keys/debug-laptop.pub" -pubout -out "$BUILDER/debug/$id.pub"
 	mkdir -p "$keys"
 	if [ ! -e "$keys/debug.key" ] && [ ! -e "$keys/debug.crt" ]; then
 		openssl req -x509 -newkey rsa:3072 -nodes -days 36500 -subj /CN=convergent-debug \
@@ -79,7 +83,7 @@ query = urlencode(sorted({
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
     "X-Amz-Credential": access + "/" + scope,
     "X-Amz-Date": stamp,
-    "X-Amz-Expires": "3600",
+    "X-Amz-Expires": "86400",
     "X-Amz-SignedHeaders": "host",
 }.items()), quote_via=quote, safe="~")
 request = "\n".join(("PUT", path, query, "host:" + host + "\n", "host", "UNSIGNED-PAYLOAD"))
@@ -111,11 +115,16 @@ PY
 fetch)
 	id=${2:-$(cat "$last")}
 	printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{32}$' || die "invalid diagnostic id"
+	[ -f "$BUILDER/debug/$id.pub" ] || die "no pinned laptop key for request $id"
 	s3 -o "$tmp/output.cms" "$ep/debug-out/$id" || die "cannot fetch output for $id"
 	openssl cms -decrypt -binary -inform DER -in "$tmp/output.cms" -recip "$keys/debug.crt" \
-		-inkey "$keys/debug.key" -out "$tmp/output" || die "result replaced or corrupt; publish a new request"
-	printf 'debug: output does not authenticate the laptop; compare with /var/lib/convergent/debug/%s.txt on the laptop\n' "$id" >&2
-	cat "$tmp/output"
+		-inkey "$keys/debug.key" -out "$tmp/signed" || die "result replaced or corrupt; publish a new request"
+	head -c 64 "$tmp/signed" >"$tmp/output.sig"
+	tail -c +65 "$tmp/signed" >"$tmp/output"
+	openssl pkeyutl -verify -pubin -inkey "$BUILDER/debug/$id.pub" -rawin -in "$tmp/output" \
+		-sigfile "$tmp/output.sig" >/dev/null || die "output is not signed by the pinned laptop"
+	[ "$(head -n 1 "$tmp/output")" = "$id" ] || die "output belongs to another request"
+	tail -n +2 "$tmp/output"
 	s3 -o /dev/null -X DELETE "$ep/debug-out/$id" || die "cannot delete output for $id"
 	;;
 esac

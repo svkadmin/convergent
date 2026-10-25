@@ -1,5 +1,6 @@
 #!/bin/sh
-# debug: run one signed diagnostic after consent, then send its encrypted output.
+# debug: run one signed diagnostic after consent, then sign and encrypt its output.
+# debug key: print the laptop's public signing key for trusted provisioning on the builder.
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
@@ -18,14 +19,25 @@ cleanup() {
 }
 
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 0 ] || die "usage: debug"
-[ -f /etc/convergent/update.conf ] && [ -f "$key" ] || die "this release has no online updates"
-. /etc/convergent/update.conf
-update_url
+[ $# = 0 ] || { [ $# = 1 ] && [ "$1" = key ]; } || die "usage: debug [key]"
 lock_src
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 private "$state"
+if [ ! -e "$state/signing.key" ]; then
+	openssl genpkey -algorithm ED25519 -out "$state/signing.key.new"
+	chmod 0600 "$state/signing.key.new"
+	sync
+	mv "$state/signing.key.new" "$state/signing.key"
+	sync
+fi
+if [ "${1:-}" = key ]; then
+	openssl pkey -in "$state/signing.key" -pubout
+	exit
+fi
+[ -f /etc/convergent/update.conf ] && [ -f "$key" ] || die "this release has no online updates"
+. /etc/convergent/update.conf
+update_url
 tmp=$(mktemp -d "$state/.run.XXXXXX")
 open_src "$host"
 get --max-time 60 --max-filesize 1048576 -o "$tmp/script" "$url/debug/script" &&
@@ -76,7 +88,10 @@ mv "$tmp/output" "$state/$id.txt"
 chmod 0600 "$state/$id.txt"
 printf 'Local output: %s\n' "$state/$id.txt"
 [ "$rc" = 0 ] || printf 'Diagnostic stopped (exit %s).\n' "$rc"
-openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$state/$id.txt" -out "$tmp/output.cms" "$tmp/cert" ||
+{ printf '%s\n' "$id"; cat "$state/$id.txt"; } >"$tmp/output"
+openssl pkeyutl -sign -inkey "$state/signing.key" -rawin -in "$tmp/output" -out "$tmp/output.sig" || die "output signing failed"
+cat "$tmp/output.sig" "$tmp/output" >"$tmp/signed"
+openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$tmp/signed" -out "$tmp/output.cms" "$tmp/cert" ||
 	die "output encryption failed"
 [ "$(date +%s)" -lt "$expires" ] || die "diagnostic has expired; local output kept"
 host=${upload#https://}
