@@ -119,6 +119,67 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	files="$files extra"
 	refuse "$work/retry-check" 'changed published file set' 'use a new release ID'
 	echo 'test: release chain gates passed'
+	(
+	key=$pub usb= pointer=$work/pointer
+	mkdir "$pointer"
+	eval "$(sed -n '/^field()/p; /^num()/p; /^bytes()/p; /^read_pointer() {/,/^}/p' "$here/../tools/fetch-release")"
+	eval "$(sed -n '/^verify()/p' "$here/../rootfs/usr/lib/convergent/update.sh")"
+	printf 'read_pointer\n' >"$work/pointer-check"
+	# Fix the clock so boundary fixtures cannot cross a second while signing.
+	now=$(date +%s)
+	date() { printf '%s\n' "$now"; }
+	pointer_fixture() {
+		printf 'release 42\nsigned %s\nguests %s\n' "$((now - $1))" "$2" >"$pointer/latest"
+		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$pointer/latest" -out "$pointer/latest.sig"
+	}
+	for age in 0 2592000 -300; do
+		pointer_fixture "$age" none
+		read_pointer 2>"$work/log"
+		[ ! -s "$work/log" ]
+		case $signed_ago in *warning*) die 'fresh pointer warning' ;; esac
+	done
+	pointer_fixture 2592001 none
+	for usb in '' "$dir"; do
+		read_pointer 2>"$work/log"
+		grep -q 'warning: latest is older than 30 days' "$work/log"
+		case $signed_ago in *'warning: latest is older than 30 days'*) ;; *) die 'missing stale pointer status warning' ;; esac
+	done
+	for usb in '' "$dir"; do
+		pointer_fixture -301 none
+		refuse "$work/pointer-check" 'future pointer' 'more than 5 minutes'
+	done
+	pointer_fixture 0 none
+	mv "$pointer/latest.sig" "$work/latest.sig"
+	refuse "$work/pointer-check" 'unsigned USB pointer' 'not signed'
+	mv "$work/latest.sig" "$pointer/latest.sig"
+	printf 'changed\n' >>"$pointer/latest"
+	refuse "$work/pointer-check" 'tampered USB pointer' 'not signed'
+	pointer_fixture 0 none
+	sed 's/release 42/release 43/' "$pointer/latest" >"$work/latest"
+	mv "$work/latest" "$pointer/latest"
+	openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$pointer/latest" -out "$pointer/latest.sig"
+	refuse "$work/pointer-check" 'mismatched USB release' 'does not match latest'
+	pointer_fixture 0 ''
+	refuse "$work/pointer-check" 'missing guest binding' 'malformed'
+	pointer_fixture 0 "$guests"
+	read_pointer
+	gm=$dir/guests.manifest
+	sed -n '/^elif \[ "\$gsum" = none \]; then$/,/^fi$/p' "$here/../tools/fetch-release" |
+		sed '1s/^elif/if/' >"$work/guest-check"
+	usb=$work/usb
+	mkdir "$usb"
+	cp "$gm" "$gm.sig" "$usb/"
+	(. "$work/guest-check")
+	rm "$usb/guests.manifest"
+	refuse "$work/guest-check" 'stripped USB guests' 'cannot copy USB guest manifest'
+	printf 'release 42\nchanged\n' >"$usb/guests.manifest"
+	openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$usb/guests.manifest" -out "$usb/guests.manifest.sig"
+	refuse "$work/guest-check" 'substituted signed USB guests' 'not the one latest names'
+	gsum=none
+	mkdir -p "$dir"
+	(. "$work/guest-check")
+	echo 'test: fetch-release metadata gates passed'
+	)
 	)
 	exec sh "$here/advisories" --selftest
 fi
@@ -246,6 +307,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 chroot_mount
+qemu_identity
 
 attach() {
 	loop=$(losetup -fP --show "$disk")
@@ -1189,7 +1251,7 @@ done
 [ -z "$(ls -A /var/lib/convergent/guest-updates 2>/dev/null)" ] || result=1
 line=$(timeout -k 5 120 fetch-release check 2>&1)
 echo "CV-ONLINE check: $line"
-case $line in 'up to date:'*) ;; *) result=1 ;; esac
+printf '%s\n' "$line" | grep -q '^up to date:' || result=1
 /usr/local/sbin/guests status
 sync
 echo CV-ONLINE-RESULT "$result"
@@ -1619,7 +1681,7 @@ background=yes owner env PIPEWIRE_REMOTE="$runtime/pipewire-0" PIPEWIRE_CONFIG_D
 	prlimit --fsize=1048576:1048576 /usr/libexec/convergent/pipewire-pulse -c pulse.conf >"$run/pulse.log" 2>&1 &
 audio=$!; children="$children $audio"
 wait_socket "$run/sockets/pulse-0" "$audio" "$run/pulse.log"
-grep -qx 'pipewire-pulse (complain)' "/proc/$audio/attr/current" || die "pipewire-pulse runs as $(cat "/proc/$audio/attr/current")"
+grep -qx 'pipewire-pulse (enforce)' "/proc/$audio/attr/current" || die "pipewire-pulse runs as $(cat "/proc/$audio/attr/current")"
 grep -Eq '^Max file size +1048576 +1048576 +bytes' "/proc/$audio/limits" || die 'unbounded Pulse log'
 # Pulse clients are in the browser guests; this mode checks the listener and its confinement.
 kill -0 "$wayland" "$audio" || die 'a socket provider exited'
@@ -1637,12 +1699,11 @@ confined() {
 	pids=$(pidof "$1") && [ -n "$pids" ] || return 1
 	for pid in $pids; do grep -qx "$1 ($2)" "/proc/$pid/attr/current" || return 1; done
 }
-# Loaded profiles and modes from the kernel (no aa-status: it needs Python). Desktop-facing
-# profiles complain until the laptop runs clean; the rest enforce.
-for p in chronyd:enforce node_exporter:enforce bluetoothd:complain way-secure:complain pipewire-pulse:complain; do
+# Read kernel modes without aa-status's Python dependency.
+for p in chronyd:enforce node_exporter:enforce bluetoothd:enforce way-secure:complain pipewire-pulse:enforce; do
 	t grep -qx "${p%%:*} (${p#*:})" /sys/kernel/security/apparmor/profiles
 done
-for d in chronyd:enforce node_exporter:enforce bluetoothd:complain; do t confined "${d%%:*}" "${d#*:}"; done
+for d in chronyd:enforce node_exporter:enforce bluetoothd:enforce; do t confined "${d%%:*}" "${d#*:}"; done
 t timeout 10 chronyc -n sources
 t timeout 10 chronyc tracking
 t sh -c 'mkdir -p /var/lib/node_exporter; echo "convergent_apparmor_smoke 1" >/var/lib/node_exporter/apparmor-smoke.prom; chmod 0644 /var/lib/node_exporter/apparmor-smoke.prom'
@@ -1979,7 +2040,7 @@ run_vm() {
 	echo "test: boot $runs ($mode), console: $log"
 	# chroot execs Python, so the cleanup trap can reap its QEMU child.
 	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
-		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" \
+		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" CVTEST_QEMU_ID="$qemu_id" \
 		chroot "$BUILDER" python3 - <<'EOF' &
 import json, os, re, select, signal, socket, subprocess, time
 
@@ -2001,6 +2062,8 @@ for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
     "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
+    "-run-with", "user=" + os.environ["CVTEST_QEMU_ID"],
+    "-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
     "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
@@ -2012,7 +2075,8 @@ qemu = subprocess.Popen([
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
     (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "online") else ["-nic", "none"]),
-    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 seen, messages = b"", b""
 sent = ready = quitting = powered_off = rebooted = False
@@ -2057,7 +2121,13 @@ try:
                         event = json.loads(line)
                         if "QMP" in event:
                             command("qmp_capabilities")
-                        if "return" in event:
+                        if "return" in event and not ready:
+                            with open(f"/proc/{qemu.pid}/status") as status:
+                                credentials = dict(line.rstrip().split(":", 1) for line in status if ":" in line)
+                            uid, gid = os.environ["CVTEST_QEMU_ID"].split(":")
+                            if (credentials["Uid"].split() != [uid] * 4 or credentials["Gid"].split() != [gid] * 4 or
+                                    int(credentials["CapEff"], 16) != 0 or credentials["Seccomp"].strip() != "2"):
+                                raise RuntimeError("QEMU privilege drop or seccomp failed")
                             ready = True
                         if event.get("event") == "SHUTDOWN":
                             powered_off |= event.get("data", {}).get("reason") == "guest-shutdown"

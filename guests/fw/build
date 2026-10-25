@@ -7,6 +7,7 @@ export LC_ALL=C
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins"
+. "$here/../../build/chroot.sh"
 
 die() { echo "build: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed"; }
@@ -19,6 +20,7 @@ out=${1:-}
 for t in qemu-system-x86_64 qemu-img curl python3 tar sha256sum awk timeout; do need "$t"; done
 signify=$(command -v signify || command -v signify-openbsd || true)
 [ -n "$signify" ] || die "signify is needed"
+qemu_identity
 
 # UEFI firmware.
 ovmf_code=${OVMF_CODE:-}
@@ -82,6 +84,8 @@ stty com0 115200
 set tty com0
 boot tftp:/bsd.rd
 BOOTCONF
+chmod 0711 "$work"
+chmod -R a+rX "$tftp"
 
 cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/BUILDINFO" "$dl/bsd" "$dl/bsd.mp" "$dl/base$v.tgz" "$www/sets/"
 
@@ -131,7 +135,10 @@ kill -0 "$httppid" 2>/dev/null || die "cannot serve on 127.0.0.1:80 ($(tail -n 1
 # Unattended install, then the patch boot; reboot ends QEMU. A node is redone from scratch
 # up to three times: the unpatched kernel has panicked mid-syspatch in nested test VMs.
 run_qemu() {
-	timeout "$@" &
+	limit=$1
+	shift
+	timeout "$limit" env -i PATH="$PATH" LC_ALL=C qemu-system-x86_64 -run-with "user=$qemu_id" \
+		-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny "$@" &
 	qemupid=$!
 	rc=0
 	wait "$qemupid" || rc=$?
@@ -145,7 +152,7 @@ install_node() {
 	qemu-img create -q -f qcow2 "$img" "$FW_DISK" || return 1
 	cp "$ovmf_vars" "$work/$n.vars.fd" || return 1
 	echo "build: installing $n (console log: $log)"
-	run_qemu 1800 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+	run_qemu 1800 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
@@ -157,7 +164,7 @@ install_node() {
 	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
 	log=$out/$n.syspatch.log
 	echo "build: patching $n (console log: $log)"
-	run_qemu 900 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
+	run_qemu 900 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.vars.fd" \
@@ -196,7 +203,9 @@ build_node() {
 		i=$((i + 1))
 	done
 	# shellcheck disable=SC2086
-	qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 1 -m 1024 \
+	env -i PATH="$PATH" LC_ALL=C qemu-system-x86_64 -run-with "user=$qemu_id" \
+		-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny \
+		-machine q35,accel=kvm -cpu host -smp 1 -m 1024 \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \
 		-drive "if=pflash,format=raw,unit=1,file=$work/$n.smoke.vars.fd" \

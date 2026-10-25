@@ -4,6 +4,18 @@
 chroot_users=/run/convergent-builder.users
 chroot_started() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 
+qemu_identity() {
+	(
+		flock 8
+		id convergent-qemu >/dev/null 2>&1 ||
+			useradd -r -U -M -d /nonexistent -s /sbin/nologin convergent-qemu
+	) 8>/run/convergent-qemu.lock
+	qemu_uid=$(id -u convergent-qemu)
+	qemu_gid=$(stat -c %g /dev/kvm)
+	[ "$qemu_uid" != 0 ] && [ "$qemu_gid" != 0 ] || die 'QEMU needs a non-root UID and KVM group'
+	qemu_id=$qemu_uid:$qemu_gid
+}
+
 chroot_mount() {
 	(
 		flock 8
