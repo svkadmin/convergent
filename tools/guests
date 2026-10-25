@@ -235,6 +235,7 @@ credentials() {
         if [ "$cert" = incus-client ] && [ -f "$tls/$cert.crt" ] && [ ! -f "$tls/incus-client.previous" ]; then
             cp "$tls/$cert.crt" "$tls/incus-client.previous"
         fi
+        touch "$tls/pending"
         sync
         mv "$tls/$cert.crt.new" "$tls/$cert.crt"
         sync
@@ -243,7 +244,14 @@ credentials() {
         secret_create "$tls/$secret" 32
     done
 }
-certificates_apply() (
+certificates_due() {
+    [ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ] && [ ! -f "$tls/incus-client.previous" ] || return 0
+    for cert in server incus-server incus-client; do
+        openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null 2>&1 || return 0
+    done
+    return 1
+}
+certificates_prepare() {
     credentials
     if ! cmp -s "$tls/incus-server.crt" /var/lib/incus/server.crt; then
         ic admin update-certificate "$tls/incus-server.crt" "$tls/incus-server.key"
@@ -252,12 +260,15 @@ certificates_apply() (
     ic config trust list --format json >"$work/trust"
     jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
+}
+certificates_apply() (
+    certificates_due || return 0
+    certificates_prepare
     running svc || ic start svc
     retry ic exec svc -- true
     for entry in 'server.crt victoria-logs vmlogs' 'incus-client.crt victoria-metrics vmmetrics'; do
         set -- $entry
-        ic exec svc -- cat "/etc/$2/tls/$1" >"$work/current.crt"
-        cmp -s "$tls/$1" "$work/current.crt" && continue
+        if ic exec svc -- cat "/etc/$2/tls/$1" >"$work/current.crt" && cmp -s "$tls/$1" "$work/current.crt"; then continue; fi
         # Retry restarts even if interrupted after installing the certificates.
         touch "$tls/deploy"
         sync
@@ -286,6 +297,8 @@ certificates_apply() (
         rm "$tls/incus-client.previous"
         sync
     fi
+    rm -f "$tls/pending"
+    sync
 )
 verify_image() {
     step="verify $1"
@@ -324,6 +337,14 @@ import_image() {
 }
 image_alias() {
     ic image alias list --format json >"$work/aliases"
+    if [ "$1" = browser ]; then
+        old=$(jq -r '.[] | select(.name == "browser") | .target' "$work/aliases")
+        if [ -n "$old" ]; then
+            printf '%s\n' "$old" >>"$state/images.superseded"
+            sync
+            ic image alias delete browser
+        fi
+    fi
     target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases")
     [ "$target" != "$2" ] || return 0
     if [ -n "$target" ]; then
@@ -1036,9 +1057,6 @@ init() {
     volume_create browser-int-state 512MiB
     image_dir=$release/guests/browser
     import_image browser
-    fingerprint=$(ic query /1.0/images/aliases/candidate-browser | jq -er .target)
-    ic image alias list --format json | jq -e '.[] | select(.name == "browser")' >/dev/null && ic image alias delete browser
-    ic image alias create browser "$fingerprint"
     if [ -d "$state/browser.rename" ]; then
         browser_image=$fingerprint
         ic query '/1.0/instances?recursion=1&project=default' >"$work/browsers"
@@ -1107,7 +1125,6 @@ update() {
     [ ! -f "$state/pending" ] || { pending=1; rollback; }
     fw_release
     dns_restore
-    certificates_apply
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
@@ -1159,10 +1176,12 @@ ifconfig -g handoff carpdemote 128'
             ic profile device set wan eth0 security.ipv4_filtering=false
             ic profile set wan boot.autorestart=true
         fi
+        [ "$1" != svc ] || certificates_prepare
         [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
         replace "$1"
         commit_update
         rm -rf "$state/profiles.before"
+        [ "$1" != svc ] || certificates_apply
         ;;
     def|int)
         browser_migrate
@@ -1249,6 +1268,14 @@ record_installed() {
     rm -f "$installed/guests/$1.stale"
     sync
 }
+maintenance_due() {
+    for journal in preparing pending committed browser.ready browser.rename profiles.before dns.stale fw.handoff; do
+        [ ! -e "$state/$journal" ] || return 0
+    done
+    [ -f "$state/normalized" ] || return 0
+    certificates_due && return 0
+    [ -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ] && browser_legacy
+}
 apply() {
     applying=1
     update_status running
@@ -1258,7 +1285,7 @@ apply() {
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
-    parallel_autostart
+    [ -d "$staged/$booted" ] || maintenance_due || return 0
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
@@ -1266,6 +1293,10 @@ apply() {
         browser_pending=1
         return 0
     fi
+    parallel_autostart
+    [ -f "$state/normalized" ] || touch "$tls/pending"
+    touch "$state/normalized"
+    sync
     recovering=1
     [ ! -f "$state/committed" ] || commit_update
     if [ ! -d "$staged/$booted/browser" ]; then
@@ -1286,8 +1317,7 @@ apply() {
         fi
     fi
     dns_restore
-    certificates_apply
-    [ -d "$staged" ] || return 0
+    [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
         [ -e "$entry" ] || [ -L "$entry" ] || continue
@@ -1298,7 +1328,7 @@ apply() {
         [ "$entry" = "$staged/$booted" ] || rm -rf "$entry"
     done
     staged=$staged/$booted
-    [ -d "$staged" ] || return 0
+    [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     [ -z "$(find "$staged" -type l -print)" ] || die "$staged contains symlinks"
     kinds='svc wan fw browser'
@@ -1311,6 +1341,7 @@ apply() {
         echo "guests: applied $kind from release $booted"
     done
     rmdir "$staged" 2>/dev/null || :
+    certificates_apply
 }
 
 # Capture the command status before diagnostics or rollback can change it.
