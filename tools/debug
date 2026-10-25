@@ -41,8 +41,7 @@ expires=${header##* }
 sed -n '2p' "$tmp/script" | grep -aEq '^# purpose: [ -~]{1,200}$' || die "invalid purpose"
 purpose=$(sed -n '2p' "$tmp/script")
 sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
-upload=$(sed -n '3p' "$tmp/script")
-upload=${upload#'# upload: '}
+upload=$(sed -n '3s/^# upload: //p' "$tmp/script")
 awk '
 	NR < 4 {next}
 	NR == 4 {if ($0 != "# cert-begin") exit 1; next}
@@ -77,11 +76,14 @@ mv "$tmp/output" "$state/$id.txt"
 chmod 0600 "$state/$id.txt"
 printf 'Local output: %s\n' "$state/$id.txt"
 [ "$rc" = 0 ] || printf 'Diagnostic stopped (exit %s).\n' "$rc"
-openssl cms -encrypt -binary -aes256 -outform DER -in "$state/$id.txt" -out "$tmp/output.cms" "$tmp/cert" ||
+openssl cms -encrypt -binary -aes-256-gcm -outform DER -in "$state/$id.txt" -out "$tmp/output.cms" "$tmp/cert" ||
 	die "output encryption failed"
+[ "$(date +%s)" -lt "$expires" ] || die "diagnostic has expired; local output kept"
 host=${upload#https://}
 host=${host%%/*}
 open_src "$host"
-get --max-time 300 -o /dev/null -T "$tmp/output.cms" "$upload" || die "output upload failed; local output kept"
+get --max-time 300 -o /dev/null -T "$tmp/output.cms" -K - <<EOF || die "output upload failed; local output kept"
+url = "$upload"
+EOF
 close_src || die "could not close the upload source"
 echo "Encrypted output sent."

@@ -1,5 +1,5 @@
 #!/bin/sh
-# build/debug send <script-file> <purpose>   publish a signed diagnostic for 24 hours
+# build/debug send <script-file> <purpose>   publish a signed diagnostic for one hour
 # build/debug fetch [id]                    decrypt output (last sent by default), then delete it
 set -eu
 export LC_ALL=C
@@ -8,6 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 die() { echo "debug: $*" >&2; exit 1; }
 usage() { die "usage: build/debug send <script-file> <purpose> | fetch [id]"; }
+[ "$CHANNEL" = beta ] || die "diagnostics are beta/testing-only"
 [ "$(id -u)" = 0 ] || die "run as root"
 case ${1:-} in
 send) [ $# = 3 ] || usage ;;
@@ -41,7 +42,7 @@ send)
 		[ "$(printf '%s' "$purpose" | tr -cd ' -~')" = "$purpose" ] || die "purpose must be 1-200 printable characters"
 	id=$(openssl rand -hex 16)
 	now=$(date -u +%s)
-	expires=$((now + 86400))
+	expires=$((now + 3600))
 	mkdir -p "$keys"
 	if [ ! -e "$keys/debug.key" ] && [ ! -e "$keys/debug.crt" ]; then
 		openssl req -x509 -newkey rsa:3072 -nodes -days 36500 -subj /CN=convergent-debug \
@@ -78,7 +79,7 @@ query = urlencode(sorted({
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
     "X-Amz-Credential": access + "/" + scope,
     "X-Amz-Date": stamp,
-    "X-Amz-Expires": "86400",
+    "X-Amz-Expires": "3600",
     "X-Amz-SignedHeaders": "host",
 }.items()), quote_via=quote, safe="~")
 request = "\n".join(("PUT", path, query, "host:" + host + "\n", "host", "UNSIGNED-PAYLOAD"))
@@ -99,10 +100,10 @@ PY
 	openssl pkeyutl -sign -inkey "$keys/$CHANNEL.key" -rawin -in "$tmp/script" -out "$tmp/script.sig"
 	openssl pkeyutl -verify -pubin -inkey "$keys/$CHANNEL.pub" -rawin -in "$tmp/script" -sigfile "$tmp/script.sig" >/dev/null ||
 		die "signature does not verify with the channel key"
+	mkdir -p "$BUILDER"
 	for f in script.sig script; do
 		s3 -o /dev/null -H 'Cache-Control: no-store' -T "$tmp/$f" "$ep/$CHANNEL/debug/$f" || die "upload of $f failed"
 	done
-	mkdir -p "$BUILDER"
 	printf '%s\n' "$id" >"$last.new"
 	mv "$last.new" "$last"
 	printf 'debug: sent %s (expires %s)\n' "$id" "$expires"
@@ -112,8 +113,8 @@ fetch)
 	printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{32}$' || die "invalid diagnostic id"
 	s3 -o "$tmp/output.cms" "$ep/debug-out/$id" || die "cannot fetch output for $id"
 	openssl cms -decrypt -binary -inform DER -in "$tmp/output.cms" -recip "$keys/debug.crt" \
-		-inkey "$keys/debug.key" -out "$tmp/output" || die "output decryption failed"
-	printf 'debug: returned output is not authenticated; anyone holding the public request can upload a forgery; compare with the laptop local copy /var/lib/convergent/debug/%s.txt\n' "$id" >&2
+		-inkey "$keys/debug.key" -out "$tmp/output" || die "result replaced or corrupt; publish a new request"
+	printf 'debug: output does not authenticate the laptop; compare with /var/lib/convergent/debug/%s.txt on the laptop\n' "$id" >&2
 	cat "$tmp/output"
 	s3 -o /dev/null -X DELETE "$ep/debug-out/$id" || die "cannot delete output for $id"
 	;;
