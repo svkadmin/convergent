@@ -25,7 +25,8 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	trap 'rm -rf "$work"' EXIT
 	trap 'exit 1' HUP INT TERM
 	dir=$work/release root=$work/root out=$work/release
-	release=42 VERSION=0 kver=test roothash=none CHANNEL=beta
+	release=42 VERSION=0.1.2 kver=test CHANNEL=beta
+	roothash=0000000000000000000000000000000000000000000000000000000000000000
 	mkdir -p "$dir" "$root/etc/convergent"
 	openssl genpkey -algorithm ed25519 -out "$work/key"
 	openssl pkey -in "$work/key" -pubout -out "$root/etc/convergent/release.pub"
@@ -36,6 +37,10 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	sed -n '/^# 6\. The manifest:/,/^# Signed separately:/p' "$here/image" >"$work/image-check"
 	. "$work/image-check"
 	cp "$dir/manifest" "$work/manifest"
+	cp "$dir/provenance" "$work/provenance"
+	# Exercise the installer's strict manifest grammar.
+	sed -n '/^awk -v r="\$release" /,/malformed manifest/p' "$here/../install/install" >"$work/manifest-check"
+	. "$work/manifest-check"
 	sed -n '/^guests=none$/,/latest does not match the guest bundle/p' "$here/publish" >"$work/guests-check"
 	sed -n '/^keys_of()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
 	refuse() {
@@ -44,12 +49,15 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	}
 	gate=$here/release-check
 	(. "$gate")
+	rm "$dir/provenance"
+	refuse "$gate" 'missing provenance' 'embedded release key or update channel'
+	cp "$work/provenance" "$dir/provenance"
 	CHANNEL=bleeding-edge
 	(. "$gate")
 	CHANNEL=stable
 	refuse "$gate" "cross-channel release" 'embedded release key or update channel'
 	CHANNEL=beta
-	sed 's/^release-key .*/release-key 0000000000000000000000000000000000000000000000000000000000000000/' "$work/manifest" >"$dir/manifest"
+	sed 's/^release-key .*/release-key 0000000000000000000000000000000000000000000000000000000000000000/' "$work/provenance" >"$dir/provenance"
 	CHANNEL=bleeding-edge
 	refuse "$gate" "bridge key mismatch" 'embedded release key or update channel'
 	CHANNEL=beta
@@ -57,12 +65,13 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 		for fault in missing duplicate wrong; do
 			awk -v field="$field" -v fault="$fault" '
 				$1 == field {if (fault == "missing") next; if (fault == "duplicate") print; if (fault == "wrong") $2="none"}
-				{print}' "$work/manifest" >"$dir/manifest"
+				{print}' "$work/provenance" >"$dir/provenance"
 			refuse "$gate" "$fault $field" 'embedded release key or update channel'
 		done
 	done
-	sed 's/update-channel beta/update-channel bleeding-edge/' "$work/manifest" >"$dir/manifest"
+	sed 's/update-channel beta/update-channel bleeding-edge/' "$work/provenance" >"$dir/provenance"
 	refuse "$gate" "reverse bridge" 'embedded release key or update channel'
+	cp "$work/provenance" "$dir/provenance"
 	for f in slot.img convergent-42-a.efi convergent-42-b.efi; do
 		for fault in missing-hash duplicate-hash missing-size duplicate-size wrong-size; do
 			awk -v f="$f" -v fault="$fault" '

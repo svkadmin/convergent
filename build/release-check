@@ -6,7 +6,7 @@ awk -v key="$fingerprint" -v channel="$CHANNEL" '
 	$1 == "release-key" {keys++; if (NF != 2 || $2 != key) bad=1}
 	$1 == "update-channel" {channels++; if (NF != 2 || !($2 == channel || (channel == "bleeding-edge" && $2 == "beta"))) bad=1}
 	END {exit bad || keys != 1 || channels != 1}
-' "$dir/manifest" || die "embedded release key or update channel does not match $CHANNEL"
+' "$dir/provenance" || die "embedded release key or update channel does not match $CHANNEL"
 for f in slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
 	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
 	size=$(stat -c %s "$dir/$f")
