@@ -260,7 +260,10 @@ suid() {
 }
 autostart 2>>"$work/report" || bad 'autostart scan failed'
 suid 2>>"$work/report" || bad 'SUID scan failed'
-incus --force-local list --all-projects --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
+incus --force-local list --all-projects --fast --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
+incus --force-local query '/1.0/profiles/browser-tmp?project=default' >"$work/browser-tmp.raw" 2>>"$work/report" || bad 'browser-tmp profile query failed'
+jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
+    {config, devices}' "$work/browser-tmp.raw" >"$work/browser-tmp" || bad 'browser-tmp profile unreadable'
 incus_limits() {
     jq -S 'map(if .name == "svc" and (.config["limits.memory"] == "350MiB" or .config["limits.memory"] == "768MiB")
         then .config["limits.memory"] = "350MiB" else . end) | sort_by(.name)' "$1"
@@ -288,7 +291,7 @@ if [ "${1:-}" = accept ]; then
         case $entry in ''|'#'*) continue ;; esac
         cp -a --parents "/etc/$entry" "$work/accepted/" || die "cannot accept /etc/$entry"
     done <"$list"
-    cp "$work/autostart" "$work/suid" "$work/incus" "$work/accepted/" || die 'cannot retain inventories'
+    cp "$work/autostart" "$work/suid" "$work/incus" "$work/browser-tmp" "$work/accepted/" || die 'cannot retain inventories'
     baseline=$work/accepted
 fi
 if [ "${1:-}" = accept-fw ]; then
@@ -310,7 +313,7 @@ while IFS= read -r entry; do
     [ -e "$baseline/etc/$entry" ] && [ -e "/etc/$entry" ] || bad "missing /etc/$entry or accepted copy"
     [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"
 done <"$list"
-for inventory in autostart suid incus; do
+for inventory in autostart suid incus browser-tmp; do
     accepted=$baseline/$inventory
     if [ "$inventory" = incus ]; then
         accepted=$work/incus.accepted

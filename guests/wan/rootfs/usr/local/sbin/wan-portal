@@ -11,9 +11,18 @@ mkdir -p "$d" || die "could not create $d"
 exec 8> "$d/portal.lock"
 flock -x 8 || die "could not lock portal mode"
 
-# First resolver from iwd/udhcpc lease records.
+# A disconnected uplink can retain its lease records.
 resolver() {
-	cat "$d"/resolv.*.dns 2>/dev/null | awk '$1 == "nameserver" { print $2; exit }'
+	routes=$(ip -4 route show default) || return 1
+	ifc=$(printf '%s\n' "$routes" | awk -v transit="$TRANSIT_IF" '
+		$1 == "default" && $0 !~ /linkdown/ {
+			for (i=1;i<NF;i++) if ($i == "dev" && $(i+1) != transit) {print $(i+1); exit}
+		}')
+	case $ifc in '' | *[!A-Za-z0-9_-]*) return 1 ;; esac
+	ns=$(awk '$1 == "nameserver" {print $2; exit}' "$d/resolv.$ifc.dns") || return 1
+	is_ipv4 "$ns" || return 1
+	! overlaps_internal "$ns" 32 || return 1
+	echo "$ns"
 }
 
 close_map() {
@@ -25,13 +34,7 @@ EOF
 }
 
 set_map() {
-	ns=$(resolver)
-	[ -n "$ns" ] || return 1
-	is_ipv4 "$ns" || return 1
-
-	if overlaps_internal "$ns" 32; then
-		return 1
-	fi
+	ns=$(resolver) || return 1
 	nft -f - <<EOF || return 1
 flush map inet wan portal_dns
 flush set inet wan portal_ns
@@ -46,7 +49,11 @@ EOF
 case ${1:-} in
 on)
 	mkdir -p "$d"
-	ns=$(set_map) || die "no usable upstream resolver (no lease with DNS)"
+	ns=$(set_map) || {
+		close_map || die "could not close portal DNS"
+		rm -f "$d/portal"
+		die "no usable upstream resolver (no lease with DNS)"
+	}
 	date +%s > "$d/portal"
 	logger -t wan-portal "portal mode on, resolver $ns for $PORTAL_BROWSER, at most $PORTAL_MAX_MIN minutes"
 	;;
@@ -66,7 +73,8 @@ refresh)
 	;;
 status)
 	if [ -e "$d/portal" ]; then
-		echo "on $(resolver)"
+		ns=$(resolver) || die "no usable upstream resolver"
+		echo "on $ns"
 	else
 		echo off
 	fi

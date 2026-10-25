@@ -71,8 +71,18 @@ list)
 	run 10 iwctl known-networks list
 	;;
 scan)
-	run 10 iwctl station "$WIFI_IF" scan >/dev/null
-	sleep 4
+	run 10 iwctl station "$WIFI_IF" scan >/dev/null || exit $?
+	deadline=$(($(date +%s) + 15))
+	while :; do
+		remaining=$((deadline - $(date +%s)))
+		[ "$remaining" -gt 0 ] || die "scan timed out"
+		reply=$(run "$remaining" iwctl station "$WIFI_IF" show) || exit $?
+		case $(printf '%s\n' "$reply" | awk '$1 == "Scanning" {print $2}') in
+		no) break ;;
+		yes) sleep 1 ;;
+		*) die "scan status unavailable" ;;
+		esac
+	done
 	run 10 iwctl station "$WIFI_IF" get-networks
 	;;
 status)
