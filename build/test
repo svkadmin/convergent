@@ -933,7 +933,7 @@ FAULT
         ) || bad $LINENO
         # Recovery must run even with no staged images.
         touch "$state/dns.stale"
-        /usr/local/sbin/guests apply >/var/log/guests-update-export-resume.log 2>&1 || bad $LINENO
+        /usr/local/sbin/guests apply >/var/log/guests-update-recovery.log 2>&1 || bad $LINENO
         [ ! -e "$state/dns.stale" ] || bad $LINENO
         for scratch in "$state"/work.??????; do [ ! -e "$scratch" ] || bad $LINENO; done
     fi
