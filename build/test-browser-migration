@@ -52,6 +52,8 @@ for mode in normal interrupted detached renamed committed; do
 			r=0
 			sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
 			step="$fault fault assertions"
+			# Trace the assertions: a failure names its check on the console.
+			set -x
 			case $fault in pruning) [ "$r" = 1 ] ;; *) [ "$r" = 137 ] ;; esac
 			for role in base def tmp int; do
 				cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
@@ -70,6 +72,7 @@ for mode in normal interrupted detached renamed committed; do
 					[ "$(ic profile device get "browser-$role" state source)" = "browser-$role-state" ]
 				done
 			;; esac
+			set +x
 			echo "CV-BROWSER migration fault: $fault"
 		done
 	fi
