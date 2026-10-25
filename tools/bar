@@ -171,9 +171,14 @@ while :; do
 		total=0; for (i=2;i<=8;i++) total+=cpu[i]
 		idle=cpu[5]+cpu[6]; busy="-"
 		if (prev[1] != "" && total>prev[1]) busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
-		lo=""; hi=""; package="-"; hottest="-"
+		lo=""; hi=""; package=prev[8]; hottest=prev[9]
+		# Temperature reads can wake idle cores.
+		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=5
+		if (refresh) {package="-"; hottest="-"}
 		for (i=1;i<ARGC;i++) {
-			path=ARGV[i]; value=get(path)
+			path=ARGV[i]
+			if (!refresh && path !~ /scaling_cur_freq$/) continue
+			value=get(path)
 			if (value !~ /^[0-9]+$/) continue
 			if (path ~ /scaling_cur_freq$/) {
 				if (lo == "" || value+0<lo) lo=value+0
@@ -188,8 +193,10 @@ while :; do
 			}
 		}
 		freq=lo == "" ? "-" : sprintf("%.1f-%.1f",lo/1000000,hi/1000000)
-		if (package != "-") package=sprintf("%.0f",package/1000)
-		if (hottest != "-") hottest=sprintf("%.0f",hottest/1000)
+		if (refresh) {
+			if (package != "-") package=sprintf("%.0f",package/1000)
+			if (hottest != "-") hottest=sprintf("%.0f",hottest/1000)
+		}
 		printf "%s[", comma
 		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
 		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
@@ -211,8 +218,8 @@ while :; do
 			prev[5] ~ /^[0-9]+$/ && prev[6] ~ /^[0-9]+$/ && tx+0>=prev[5]+0 && rx+0>=prev[6]+0)
 			rate=sprintf("NET tx %.1f rx %.1f Mb/s",(tx-prev[5])*8/elapsed/1000000,(rx-prev[6])*8/elapsed/1000000)
 		block(rate, "")
-		printf "%.0f %.0f %.2f %s %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
-			tx == "" ? "-" : tx,rx == "" ? "-" : rx > (work "/previous")
+		printf "%.0f %.0f %.2f %s %s %s %.0f %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
+			tx == "" ? "-" : tx,rx == "" ? "-" : rx,refresh ? now : prev[7],package,hottest > (work "/previous")
 		close(work "/previous")
 		while ((getline line < "/proc/mounts") > 0) {
 			split(line,m," ")
