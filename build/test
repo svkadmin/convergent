@@ -1348,10 +1348,10 @@ incus() {
     command incus "$@"
 }
 FAULT
-awk '{print} /^        seed_start "\$guest"$/ {print "        touch /var/lib/convergent/test-release/rollback-phase; die \"injected failure after seeding\""}' /usr/local/sbin/guests >>"$release/guests-seed-fail"
+awk '{print} /^        seed_start "\$guest"$/ {print "        touch /var/lib/convergent/test-release/rollback-phase; GUEST_SVC_TIMEOUT=10; die \"injected failure after seeding\""}' /usr/local/sbin/guests >>"$release/guests-seed-fail"
 rm -f "$release/rollback-phase"
-GUEST_SVC_TIMEOUT=10 sh -x "$release/guests-seed-fail" update svc "$release/guests/svc" 2>/var/log/guests-update-seed-fail.log
-[ "$?" = 1 ] && [ -f "$state/pending" ] && grep -q 'pending journal retained' /var/log/guests-update-seed-fail.log || bad $LINENO
+sh -x "$release/guests-seed-fail" update svc "$release/guests/svc" 2>/var/log/guests-update-seed-fail.log
+[ "$?" = 1 ] && [ -f "$release/rollback-phase" ] && [ -f "$state/pending" ] && grep -q 'pending journal retained' /var/log/guests-update-seed-fail.log || bad $LINENO
 rm -f "$release/rollback-phase"
 /usr/local/sbin/guests apply >/var/log/guests-update-seed-fail-resume.log 2>&1 || bad $LINENO
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
@@ -1580,17 +1580,42 @@ until pair_ok; do
     [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
     sleep 10
 done
-# A firewall rebuild killed after its rebuild: apply (as at boot) rolls fw1 back to its old image.
-awk '{print} /^    locked ic rebuild "\$2" "\$1" \|\| return$/ {print "    kill -KILL \"$$\""}' /usr/local/sbin/guests >"$release/guests-rebuild-kill"
-sh "$release/guests-rebuild-kill" rebuild fw1 >/var/log/guests-rebuild-kill.log 2>&1
-[ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || bad $LINENO
-sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-kill-resume.log || { tail -n 15 /var/log/guests-rebuild-kill-resume.log; fw_diag; bad $LINENO; }
-grep -q '^+ ic rebuild [0-9a-f]* fw1$' /var/log/guests-rebuild-kill-resume.log || bad $LINENO
-[ ! -e "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
-deadline=$(($(date +%s) + 1500))
-until pair_ok; do
-    [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
-    sleep 10
+# Killed before the handoff marker or after rebuilding: apply restores fw1 and releases its demotion.
+for step in journal rebuilt; do
+    awk -v step="$step" '{print}
+        step == "journal" && /^    mv "\$work\/pending" "\$state\/pending"$/ {print "    kill -KILL \"$$\""}
+        step == "rebuilt" && /^    locked ic rebuild "\$2" "\$1" \|\| return$/ {print "    kill -KILL \"$$\""}
+    ' /usr/local/sbin/guests >"$release/guests-rebuild-kill"
+    grep -q '^ *kill -KILL "\$\$"$' "$release/guests-rebuild-kill" || bad $LINENO
+    sh "$release/guests-rebuild-kill" rebuild fw1 >"/var/log/guests-rebuild-kill-$step.log" 2>&1
+    [ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || bad $LINENO
+    if [ "$step" = journal ]; then
+        [ ! -e "$state/fw.handoff" ] || bad $LINENO
+        # A boot with the peer unavailable must leave the running target and journal alone.
+        ic start fw1 && ic stop fw2 --force || bad $LINENO
+        cp "$state/pending" "$release/rebuild-pending" || bad $LINENO
+        sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-peer.log
+        [ "$?" = 1 ] && cmp "$state/pending" "$release/rebuild-pending" || bad $LINENO
+        grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-peer.log || bad $LINENO
+        ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-peer.log || bad $LINENO
+        incus --force-local query /1.0/instances/fw1/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
+        ic stop fw1 --force && ic start fw2 || bad $LINENO
+        deadline=$(($(date +%s) + 1500))
+        until timeout 30 ssh -F /etc/convergent/ssh_config fw2 ifconfig 2>/dev/null |
+            awk '/carp: / {n++; if ($2 != "MASTER") bad=1} END {exit !(n == 6 && !bad)}'; do
+            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+            sleep 2
+        done
+    fi
+    sh -x /usr/local/sbin/guests apply 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
+    grep -q '^+ ic rebuild [0-9a-f]* fw1$' "/var/log/guests-rebuild-kill-$step-resume.log" || bad $LINENO
+    [ ! -e "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
+    deadline=$(($(date +%s) + 1500))
+    until pair_ok; do
+        [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+        sleep 2
+    done
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/demote' || bad $LINENO
 done
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
