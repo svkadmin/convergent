@@ -139,7 +139,8 @@ mkdir -p /run/convergent/browser
 exec 8>/run/convergent/browser/tmp-portal.lock
 flock -n 8
 for mode in off on off; do
-	if [ "$mode" = on ]; then portal begin; want=allow; else portal off; want=deny; fi
+	# One retry as in cleanup: a loaded nested wan can miss one SSH connect.
+	if [ "$mode" = on ]; then portal begin; want=allow; else portal off || { sleep 30; portal off; }; want=deny; fi
 	echo "CV-PF portal=$mode"
 	for port in 80 443; do probe "$want" pf-portal 10.0.2.100 "$port"; done
 	for port in 53 9100; do probe deny pf-portal 10.0.2.100 "$port"; done
