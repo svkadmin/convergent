@@ -138,7 +138,7 @@ run_qemu() {
 	limit=$1
 	shift
 	timeout "$limit" env -i PATH="$PATH" LC_ALL=C qemu-system-x86_64 -run-with "user=$qemu_id" \
-		-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny "$@" &
+		-sandbox on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny "$@" &
 	qemupid=$!
 	rc=0
 	wait "$qemupid" || rc=$?
@@ -204,7 +204,7 @@ build_node() {
 	done
 	# shellcheck disable=SC2086
 	env -i PATH="$PATH" LC_ALL=C qemu-system-x86_64 -run-with "user=$qemu_id" \
-		-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny \
+		-sandbox on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny \
 		-machine q35,accel=kvm -cpu host -smp 1 -m 1024 \
 		-display none -monitor none -serial "file:$log" -no-reboot \
 		-drive "if=pflash,format=raw,unit=0,readonly=on,file=$ovmf_code" \

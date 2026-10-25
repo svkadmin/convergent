@@ -137,12 +137,24 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 		read_pointer 2>"$work/log"
 		[ ! -s "$work/log" ]
 		case $signed_ago in *warning*) die 'fresh pointer warning' ;; esac
+		[ "$current" = 'up to date' ]
 	done
 	pointer_fixture 2592001 none
 	for usb in '' "$dir"; do
 		read_pointer 2>"$work/log"
 		grep -q 'warning: latest is older than 30 days' "$work/log"
 		case $signed_ago in *'warning: latest is older than 30 days'*) ;; *) die 'missing stale pointer status warning' ;; esac
+		booted=42
+		eval "$(sed -n '/^uptodate=/p' "$here/../tools/fetch-release")"
+		case $uptodate in 'signed metadata is stale (30 days old):'*) ;; *) die 'missing stale status text' ;; esac
+		case $uptodate in *'up to date'*) die 'stale metadata reported current' ;; esac
+		sed -n '/^if \[ "\$mode" = check \]; then$/,/^fi$/p' "$here/../tools/fetch-release" >"$work/check-output"
+		for sync in '' 1; do
+			mode=check available=42 changed=svc
+			(. "$work/check-output") >"$work/status"
+			grep -q 'signed metadata is stale (30 days old)' "$work/status"
+			if grep -q 'up to date' "$work/status"; then die 'stale check reported current'; fi
+		done
 	done
 	for usb in '' "$dir"; do
 		pointer_fixture -301 none
@@ -661,6 +673,7 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	state=$work initializing=1
 	mkdir -p "$state/init" "$state/seeds"
 	eval "$(sed -n '/^seed_launch() {/,/^}/p' /usr/local/sbin/guests)"
+	autorestart_hold() { :; }
 	running() { return 0; }
 	stop_guest() { echo stop; }
 	seed_attach() { echo attach; }
@@ -672,6 +685,74 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	touch "$state/seeds/fw1.img"
 	seed_launch fw1 >"$work/launch"
 	[ "$(cat "$work/launch")" = "$(printf 'stop\nattach')" ]
+)
+# Unchanged certificates do not probe svc; interrupted deployment resumes.
+(
+	tls=$work/tls
+	mkdir "$tls"
+	eval "$(sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p' /usr/local/sbin/guests)"
+	openssl() { return 0; }
+	certificates_prepare() { trust=new; echo prepare >>"$work/cert-events"; }
+	running() { return 1; }
+	retry() { "$@"; }
+	healthy() { :; }
+	ic() {
+		case "$*" in
+		'exec svc -- cat '*) return 1 ;; # Missing deployed certificates are repairable.
+		'exec svc -- sh '*) cat >/dev/null; echo install >>"$work/cert-events" ;;
+		'exec svc -- rc-service '*) echo restart >>"$work/cert-events"; [ -z "$restart_failure" ] ;;
+		*) echo "$*" >>"$work/cert-events" ;;
+		esac
+	}
+	certificates_apply
+	[ ! -e "$work/cert-events" ]
+	for cert in server incus-client; do echo new >"$tls/$cert.crt"; done
+	touch "$tls/pending"
+	restart_failure=1
+	set +e
+	(set -e; certificates_apply)
+	code=$?
+	set -e
+	[ "$code" != 0 ] && [ -f "$tls/pending" ] && [ -f "$tls/deploy" ]
+	restart_failure=
+	certificates_apply
+	[ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ]
+	[ "$(grep -c '^install$' "$work/cert-events")" = 4 ]
+	[ "$(grep -c '^restart$' "$work/cert-events")" = 3 ]
+	rm "$work/cert-events"
+	certificates_apply
+	[ ! -e "$work/cert-events" ]
+	eval "$(sed -n '/^maintenance_due() {/,/^}/p' /usr/local/sbin/guests)"
+	state=$work/maintenance
+	mkdir "$state"
+	browser_legacy() { return 1; }
+	maintenance_due
+	touch "$state/normalized"
+	if maintenance_due; then exit 1; fi
+	for journal in pending browser.rename dns.stale; do
+		touch "$state/$journal"
+		maintenance_due
+		rm "$state/$journal"
+	done
+	touch "$tls/pending"
+	maintenance_due
+)
+# Replacement repairs svc before deployment; unrelated updates do not probe it.
+(
+	state=$work/update-state
+	mkdir "$state"
+	touch "$state/initialized"
+	eval "$(sed -n '/^update() {/,/^}/p' /usr/local/sbin/guests | sed "s|/run/convergent/browser-update.lock|$work/browser.lock|")"
+	for fn in logger good_slot flock prepare_cleanup fw_release dns_restore verify_image stale_installed ic commit_update parallel_autostart record_installed; do
+		eval "$fn() { :; }"
+	done
+	certificates_prepare() { echo prepare; }
+	replace() { echo "replace $1"; }
+	certificates_apply() { echo deploy; }
+	update svc "$work" >"$work/order"
+	[ "$(cat "$work/order")" = "$(printf 'prepare\nreplace svc\ndeploy')" ]
+	update wan "$work" >"$work/order"
+	[ "$(cat "$work/order")" = 'replace wan' ]
 )
 # Only recorded, now-unaliased images may be reaped.
 (
@@ -693,6 +774,19 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	images_prune
 	[ "$(cat "$work/deleted")" = old ]
 	[ ! -e "$state/images.superseded" ]
+	# Setup's redundant browser alias must not pin the first generation forever.
+	ic() {
+		case "$*" in
+		'image alias list --format json') echo '[{"name":"browser","target":"initial"},{"name":"candidate-browser","target":"new"}]' ;;
+		'image alias delete browser') grep -qx initial "$state/images.superseded" ;;
+		'image list --format json') echo '[{"fingerprint":"initial","aliases":[]},{"fingerprint":"new","aliases":[{"name":"candidate-browser"}]}]' ;;
+		'image delete initial') echo initial >>"$work/deleted" ;;
+		*) exit 1 ;;
+		esac
+	}
+	image_alias browser new
+	images_prune
+	[ "$(tail -n 1 "$work/deleted")" = initial ]
 )
 # Reuse and fresh downloads share identity, path and checksum validation.
 eval "$(sed -n '/^field()/p; /^ident()/p; /^guest_path() {/,/^}/p; /^guest_valid() (/,/^)/p; /^staged_current() (/,/^)/p' /usr/local/sbin/fetch-release)"
@@ -2063,7 +2157,7 @@ for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
 qemu = subprocess.Popen([
     "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
     "-run-with", "user=" + os.environ["CVTEST_QEMU_ID"],
-    "-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
+    "-sandbox", "on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
     "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
