@@ -570,7 +570,7 @@ for fault in none unmount detach remove; do
 	esac
 done
 # Role updates leave the reusable archive intact; only a whole update clears identity.
-sed -n '/^record_installed() {/,/^}/p' /usr/local/sbin/guests |
+sed -n '/^stale_installed() {/,/^}/p; /^record_installed() {/,/^}/p' /usr/local/sbin/guests |
 	sed "s|installed=/var/lib/convergent/release-guests|installed=$work/archive|" >"$work/record"
 . "$work/record"
 mkdir -p "$work/archive/guests/browser"
@@ -578,6 +578,7 @@ echo checksum >"$work/archive/guests/browser/SHA256SUMS"
 sync() { :; }
 applying=
 for role in def int; do
+	stale_installed "$role"
 	record_installed "$role" "$work/archive/guests/browser"
 	grep -qx checksum "$installed/guests/browser/SHA256SUMS"
 	[ -f "$installed/guests/browser.stale" ]
@@ -585,6 +586,70 @@ done
 record_installed browser "$installed/guests/browser"
 grep -qx checksum "$installed/guests/browser/SHA256SUMS"
 [ ! -e "$installed/guests/browser.stale" ]
+# A failed recorder must leave the old archive visibly stale.
+mkdir -p "$work/archive/guests/svc" "$work/source"
+echo A >"$work/archive/guests/svc/SHA256SUMS"
+echo B >"$work/source/SHA256SUMS"
+stale_installed svc
+rm -rf "$work/installed"
+set +e
+(set -e; cp() { return 1; }; record_installed svc "$work/source")
+code=$?
+set -e
+[ "$code" != 0 ]
+grep -qx A "$installed/guests/svc/SHA256SUMS"
+[ -f "$installed/guests/svc.stale" ]
+sed -n '/^\t\[ ! -f "\/var\/lib\/convergent\/release-guests\/guests\/\$g\/SHA256SUMS" \]/,/installed=$(ident/p' /usr/local/sbin/fetch-release |
+	sed "s|/var/lib/convergent/release-guests|$work/archive|g" >"$work/identity"
+[ -s "$work/identity" ]
+(
+	g=svc installed=
+	ident() { echo A; }
+	. "$work/identity"
+	[ -z "$installed" ]
+)
+rm -rf "$work/installed"
+record_installed svc "$work/source"
+grep -qx B "$installed/guests/svc/SHA256SUMS"
+[ ! -e "$installed/guests/svc.stale" ]
+# A completed initialization seed must not be attached again on resume.
+(
+	state=$work initializing=1
+	mkdir -p "$state/init" "$state/seeds"
+	eval "$(sed -n '/^seed_launch() {/,/^}/p' /usr/local/sbin/guests)"
+	running() { return 0; }
+	stop_guest() { echo stop; }
+	seed_attach() { echo attach; }
+	seed_launch fw1 >"$work/launch"
+	[ "$(cat "$work/launch")" = "$(printf 'stop\nattach')" ]
+	touch "$state/init/seed-fw1"
+	seed_launch fw1 >"$work/launch"
+	[ ! -s "$work/launch" ]
+	touch "$state/seeds/fw1.img"
+	seed_launch fw1 >"$work/launch"
+	[ "$(cat "$work/launch")" = "$(printf 'stop\nattach')" ]
+)
+# Only recorded, now-unaliased images may be reaped.
+(
+	state=$work
+	eval "$(sed -n '/^image_alias() {/,/^}/p; /^images_prune() {/,/^}/p' /usr/local/sbin/guests)"
+	ic() {
+		case "$*" in
+		'image alias list --format json') echo '[{"name":"candidate-svc","target":"old"}]' ;;
+		'image alias delete candidate-svc') grep -qx old "$state/images.superseded" ;;
+		'image alias create candidate-svc new') : ;;
+		'image list --format json') echo '[{"fingerprint":"old","aliases":[]},{"fingerprint":"shared","aliases":[{"name":"owner"}]},{"fingerprint":"unrelated","aliases":[]}]' ;;
+		'image delete old') echo old >>"$work/deleted" ;;
+		*) exit 1 ;;
+		esac
+	}
+	image_alias svc new
+	[ ! -e "$work/deleted" ]
+	printf 'old\nshared\nmissing\n' >>"$state/images.superseded"
+	images_prune
+	[ "$(cat "$work/deleted")" = old ]
+	[ ! -e "$state/images.superseded" ]
+)
 # Reuse and fresh downloads share identity, path and checksum validation.
 eval "$(sed -n '/^field()/p; /^ident()/p; /^guest_path() {/,/^}/p; /^guest_valid() (/,/^)/p; /^staged_current() (/,/^)/p' /usr/local/sbin/fetch-release)"
 dir=$work staged=$work/staged latest=1 changed=browser gm=$work/manifest
@@ -1007,18 +1072,20 @@ booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 staged=/var/lib/convergent/guest-updates/$booted
 installed=/var/lib/convergent/release-guests/guests/svc
 # Commit recovery must keep the candidate profile, even if pruning fails.
-for fault in committed pruning; do
+for fault in committed pruning recording; do
     ic profile set svc user.convergent.commit-test old || bad $LINENO
     awk -v fault="$fault" '
         {print}
         fault == "pruning" && $0 == "prune() {" {print "    return 1"}
+        fault == "recording" && $0 == "record_installed() {" {print "    return 1"}
         fault == "committed" && $0 == "    sync && mv \"$work/updates\" \"$state/updates\" && sync || return" {
             print "    kill -KILL \"$$\""
         }
     ' /usr/local/sbin/guests >"$release/guests-commit"
     sh "$release/guests-commit" update svc "$release/guests/svc" >"/var/log/guests-update-$fault.log" 2>&1
     code=$?
-    case $fault in committed) [ "$code" = 137 ] ;; pruning) [ "$code" = 1 ] ;; esac || bad $LINENO
+    case $fault in committed) [ "$code" = 137 ] ;; *) [ "$code" = 1 ] ;; esac || bad $LINENO
+    [ -f "$installed.stale" ] || bad $LINENO
     if [ "$fault" = committed ]; then
         [ -f "$state/committed" ] && [ -f "$state/profiles.before/svc.yaml" ] || bad $LINENO
         read -r committed_guest committed_snap <"$state/committed"
@@ -1358,6 +1425,15 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 release=/var/lib/convergent/test-release
 result=0
+awk '/^\+ ic start (fw1|fw2|wan|svc)$/ {if (!started[$4]++) n++}
+    /^\+ retry pin fw1$/ {if (n != 4) bad=1; checked=1}
+    END {exit (bad || !checked)}' /var/log/guests-trace.log || { echo 'CV-BOOT failed: serialized starts'; result=1; }
+for node in fw1 fw2 wan svc; do
+	incus --force-local query "/1.0/instances/$node?project=default" |
+		jq -e '.expanded_config | .["boot.autostart.priority"] == null and .["boot.autostart.delay"] == null and
+		    .["boot.autostart"] == "true" and .["boot.autorestart"] == "true"' >/dev/null ||
+		{ echo "CV-BOOT failed: $node autostart"; result=1; }
+done
 r=0; timeout -k 30 300 sh "$release/browser-test" || r=$?
 case $r in
 0) ;;

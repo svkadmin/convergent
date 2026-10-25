@@ -254,8 +254,23 @@ image_alias() {
     ic image alias list --format json >"$work/aliases"
     target=$(jq -r --arg n "candidate-$1" '.[] | select(.name == $n) | .target' "$work/aliases")
     [ "$target" != "$2" ] || return 0
-    [ -z "$target" ] || ic image alias delete "candidate-$1"
+    if [ -n "$target" ]; then
+        printf '%s\n' "$target" >>"$state/images.superseded"
+        sync
+        ic image alias delete "candidate-$1"
+    fi
     ic image alias create "candidate-$1" "$2"
+}
+images_prune() {
+    [ -f "$state/images.superseded" ] || return 0
+    sort -u "$state/images.superseded" >"$work/superseded" || return
+    ic image list --format json >"$work/images" || return
+    while read -r old_image; do
+        if jq -e --arg fp "$old_image" '.[] | select(.fingerprint == $fp and (.aliases | length) == 0)' "$work/images" >/dev/null; then
+            ic image delete "$old_image" || return
+        fi
+    done <"$work/superseded"
+    rm "$state/images.superseded" && sync
 }
 pin() {
     step="pin $1"
@@ -428,12 +443,18 @@ stop_guest() {
     ic stop "$1" --force
 }
 seed_start() {
+    seed_launch "$1"
+    seed_finish "$1"
+}
+seed_launch() {
     step="seed_start $1"
     if [ -z "$initializing" ] || [ -f "$state/seeds/$1.img" ] || [ ! -f "$state/init/seed-$1" ]; then
         if running "$1"; then stop_guest "$1"; fi
         seed_attach "$1"
     fi
     running "$1" || ic start "$1"
+}
+seed_finish() {
     case $1 in fw1|fw2|wan) retry pin "$1" ;; esac
     retry seed_applied "$1"
     retry healthy "$1"
@@ -441,6 +462,20 @@ seed_start() {
     seed_remove "$1"
 }
 init_done() { touch "$state/init/$1"; sync; }
+parallel_autostart() {
+    ic profile list --format json >"$work/profiles"
+    jq -r '.[] | select(.name == "fw" or .name == "wan" or .name == "svc") |
+        select(.config["boot.autostart.priority"] != null or .config["boot.autostart.delay"] != null) | .name' "$work/profiles" >"$work/autostart"
+    while read -r p; do
+        ic profile unset "$p" boot.autostart.priority boot.autostart.delay
+    done <"$work/autostart"
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/instances"
+    jq -r '.[] | select(.name == "fw1" or .name == "fw2" or .name == "wan" or .name == "svc") |
+        select(.config["boot.autostart.priority"] != null or .config["boot.autostart.delay"] != null) | .name' "$work/instances" >"$work/autostart"
+    while read -r node; do
+        ic config unset "$node" boot.autostart.priority boot.autostart.delay
+    done <"$work/autostart"
+}
 volume_create() {
     if ic storage volume list default --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null; then
         ic query "/1.0/storage-pools/default/volumes/custom/$1" |
@@ -771,6 +806,7 @@ commit_update() {
     rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
     rm "$state/committed" && sync || return
+    images_prune || return
     while read -r guest snap; do prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
@@ -784,6 +820,7 @@ browser_commit() {
     sync
     rm "$state/browser.ready"
     sync
+    images_prune
 }
 good_slot() {
     slot status >"$work/slot" 9>&- 8>&- 7>&- 6>&-
@@ -942,20 +979,20 @@ init() {
     for node in fw1 fw2; do
         init_guest "$node" --vm --profile fw
     done
-    ic config set fw1 boot.autostart.priority=40
-    ic config set fw2 boot.autostart.priority=30
     image_dir=$release/guests/wan
     init_guest wan --vm --profile wan
     radio
     image_dir=$release/guests/svc
     init_guest svc --profile svc
     ic config set svc security.idmap.isolated=true
+    parallel_autostart
     image_dir=$release/guests/fw
-    for node in fw1 fw2; do seed_start "$node"; done
+    for node in fw1 fw2 wan svc; do seed_launch "$node"; done
+    for node in fw1 fw2; do seed_finish "$node"; done
     retry pair fw1 fw2
-    seed_start wan
+    seed_finish wan
     retry pair fw1 fw2
-    seed_start svc
+    seed_finish svc
     mkdir -p /var/lib/convergent/syslog-ca /var/lib/syslog-ng
     ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
     install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0"
@@ -963,6 +1000,8 @@ init() {
     for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart=true; done
     sync
     touch "$state/initialized"
+    sync
+    images_prune
     # Clears the bar's SETUP after a manual retry too.
     [ ! -e /run/convergent/status/setup ] || echo 'done' >/run/convergent/status/setup
 }
@@ -994,10 +1033,11 @@ update() {
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'
     image_dir=$2
     verify_image "$1"
+    stale_installed "$1"
     case $1 in
     fw)
         [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
-        ic profile set fw boot.autostart.delay=0 boot.autorestart=true
+        ic profile set fw boot.autorestart=true
         # Installs from before 1 GiB: KARL beside the blocklist ran 384 MiB out of memory. A running
         # VM cannot always grow, so each keeps its old size locally until replace() drops the pin.
         old=$(ic profile get fw limits.memory)
@@ -1039,7 +1079,7 @@ ifconfig -g handoff carpdemote 128'
     wan|svc)
         if [ "$1" = wan ]; then
             ic profile device set wan eth0 security.ipv4_filtering=false
-            ic profile set wan boot.autostart.delay=0 boot.autorestart=true
+            ic profile set wan boot.autorestart=true
         fi
         [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
         replace "$1"
@@ -1093,8 +1133,18 @@ ifconfig -g handoff carpdemote 128'
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
     esac
+    parallel_autostart
     record_installed "$1" "$2"
     logger -t guests "update $1 done: $2" 2>/dev/null || :
+}
+stale_installed() {
+    installed=/var/lib/convergent/release-guests
+    [ ! -L "$installed" ] && [ ! -L "$installed/guests" ] || die 'installed guests directory is a symlink'
+    mkdir -p "$installed/guests"
+    case $1 in def|int) installed_kind=browser ;; *) installed_kind=$1 ;; esac
+    # A committed replacement can outlive a failed archive copy.
+    touch "$installed/guests/$installed_kind.stale"
+    sync
 }
 record_installed() {
     installed=/var/lib/convergent/release-guests
@@ -1102,14 +1152,8 @@ record_installed() {
     mkdir -p "$installed/guests"
     case $1 in def|int) installed_kind=browser ;; *) installed_kind=$1 ;; esac
     [ ! -L "$installed/guests/$installed_kind" ] && [ ! -L "$installed/guests/$installed_kind.old" ] || die 'installed guest is a symlink'
-    case $1 in
-    def|int)
-        # One role cannot certify the whole browser generation.
-        : >"$installed/guests/browser.stale"
-        sync
-        return
-        ;;
-    esac
+    # One role cannot certify the whole browser generation.
+    case $1 in def|int) return ;; esac
     installed_source=$2
     if [ -z "$applying" ]; then
         mkdir "$work/installed"
@@ -1124,7 +1168,8 @@ record_installed() {
     mv "$installed_source" "$installed/guests/$1"
     sync
     rm -rf "$installed/guests/$1.old"
-    [ "$1" != browser ] || { rm -f "$installed/guests/browser.stale"; sync; }
+    rm -f "$installed/guests/$1.stale"
+    sync
 }
 apply() {
     applying=1
@@ -1135,6 +1180,7 @@ apply() {
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
+    parallel_autostart
     journals=
     for journal in pending preparing committed browser.ready browser.rename fw.handoff profiles.before dns.stale; do
         [ ! -e "$state/$journal" ] || journals=1
