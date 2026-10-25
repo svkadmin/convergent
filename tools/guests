@@ -52,7 +52,8 @@ retry() {
     *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;;
     *) wait=$boot_timeout ;;
     esac
-    deadline=$(($(date +%s) + wait))
+    now=$(date +%s) || return
+    deadline=$((now + wait))
     polling=1
     waiting=
     until "$@" 2>"$work/retry.err"; do
@@ -61,7 +62,8 @@ retry() {
             *) echo "guests: waiting for $*" >&2 ;; esac
             waiting=1
         fi
-        if [ "$(date +%s)" -ge "$deadline" ]; then
+        now=$(date +%s) || return
+        if [ "$now" -ge "$deadline" ]; then
             polling=
             cat "$work/retry.err" >&2
             [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(cat "$work/retry.err")" 2>/dev/null || :
@@ -74,7 +76,7 @@ retry() {
             esac
             return 1
         fi
-        sleep 2
+        sleep 2 || return
     done
     polling=
 }
@@ -126,6 +128,13 @@ rollback() {
             autorestart_hold "$guest" || return
         else
             # Back to the image the guest ran on; a second pass redoes the same rebuild.
+            case $guest:$snap in
+            fw1:*-rebuild|fw2:*-rebuild)
+                case $guest in fw1) peer=fw2 ;; fw2) peer=fw1 ;; esac
+                running "$peer" && healthy "$peer" && carp "$peer" MASTER ||
+                    { fail "$peer must be healthy and MASTER on all six segments; run sys firewall rebuild $guest"; return 1; }
+                ;;
+            esac
             autorestart_hold "$guest" || return
             if running "$guest"; then ic stop "$guest" --force || return; fi
             seed_remove "$guest" || return
@@ -149,14 +158,13 @@ rollback() {
         def|int|web|admin) ;;
         *)
             if [ -n "$image" ]; then
-                # On its own line: a subshell inside an || list would run without errexit.
-                (set -e; seed_start "$guest")
-                [ "$?" = 0 ] || return 1
+                seed_start "$guest" || return
             else
                 start_guest "$guest" || return
                 retry healthy "$guest" || return
             fi ;;
         esac
+        [ "$guest" != fw1 ] || { touch "$state/fw.handoff" && sync && fw_release || return; }
         tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
         rm -rf "$state/iwd.$guest" "$state/backups/$guest-$snap.tar.gz" || return
     done
@@ -408,11 +416,15 @@ pin() {
     wan) address=100.80.0.10 ;;
     esac
     ic console "$1" --show-log >"$work/console" || return 1
-    expected=$(tr -d '\r' <"$work/console" | awk -v n="$1" -v id="$(cat "$state/seeds/$1.id")" \
-        '{ i = index($0, "CONVERGENT-HOSTKEY "); if (!i) next; split(substr($0, i), f, " ") } f[2] == n && f[3] == id { key = f[4] } END { print key }')   # console lines interleave
+    seed_id=$(cat "$state/seeds/$1.id") || return
+    tr -d '\r' <"$work/console" >"$work/console-clean" || return
+    expected=$(awk -v n="$1" -v id="$seed_id" \
+        '{ i = index($0, "CONVERGENT-HOSTKEY "); if (!i) next; split(substr($0, i), f, " ") } f[2] == n && f[3] == id { key = f[4] } END { print key }' "$work/console-clean") || return   # console lines interleave
     [ -n "$expected" ] || { fail 'no host key announcement for this seed'; return 1; }
     ssh-keyscan -T 5 -t ed25519 "$address" >"$work/scan" 2>/dev/null 9>&- 8>&- 7>&- 6>&- || { fail 'host key scan failed'; return 1; }
-    [ "$(ssh-keygen -E sha256 -lf "$work/scan" | awk '{print $2}')" = "$expected" ] || { fail 'scanned host key differs from console'; return 1; }
+    ssh-keygen -E sha256 -lf "$work/scan" >"$work/scan-key" || return
+    scanned=$(awk '{print $2}' "$work/scan-key") || return
+    [ "$scanned" = "$expected" ] || { fail 'scanned host key differs from console'; return 1; }
     awk -v n="$1" '{print n, $2, $3}' "$work/scan" >"$work/pin" || return
     [ -f "$keys/known_hosts" ] || : >"$keys/known_hosts" || return
     awk -v n="$1" '$1 != n' "$keys/known_hosts" >"$work/known_hosts" || return
@@ -491,55 +503,62 @@ done' || return
 # The persistent seed survives errors until verified or the replacement is rolled back.
 seed_create() {
     step="seed_create $1"
-    mkdir -p "$state/seeds" "$work/root"
+    mkdir -p "$state/seeds" "$work/root" || return
     if [ -e "$state/seeds/$1.img" ]; then
-        [ "$(sha256sum "$state/seeds/$1.img" | awk '{print $1}')" = "$(cat "$state/seeds/$1.sha256")" ] || die "seed for $1 differs"
+        sha256sum "$state/seeds/$1.img" >"$work/seed.sha256" || return
+        seed_hash=$(awk '{print $1}' "$work/seed.sha256") || return
+        seed_expected=$(cat "$state/seeds/$1.sha256") || return
+        [ "$seed_hash" = "$seed_expected" ] || { fail "seed for $1 differs"; return 1; }
         return
     fi
-    truncate -s 16M "$work/seed.img"
-    mkfs.vfat -F 16 -n CVSEED "$work/seed.img" >/dev/null
-    loop=$(losetup --find --show "$work/seed.img")
-    mount -t vfat -o nodev,nosuid,noexec,umask=077 "$loop" "$work/root" 9>&- 8>&- 7>&- 6>&-
+    truncate -s 16M "$work/seed.img" || return
+    mkfs.vfat -F 16 -n CVSEED "$work/seed.img" >/dev/null || return
+    loop=$(losetup --find --show "$work/seed.img") || return
+    mount -t vfat -o nodev,nosuid,noexec,umask=077 "$loop" "$work/root" 9>&- 8>&- 7>&- 6>&- || return
     mounted=1
-    openssl rand -hex 16 >"$state/seeds/$1.id"
-    cp "$state/seeds/$1.id" "$work/root/seed-id"
+    openssl rand -hex 16 >"$state/seeds/$1.id" || return
+    cp "$state/seeds/$1.id" "$work/root/seed-id" || return
     case $1 in
     fw1|fw2|wan)
-        cp "$keys/id_ed25519.pub" "$work/root/management.pub"
-        cp "$tls/ca.crt" "$work/root/syslog-ca.crt"
-        case $1 in fw1|fw2) cp "$state/carp-pass" "$work/root/carp-pass" ;; esac
-        if [ "$1" = fw1 ] && [ -n "$pending" ]; then touch "$work/root/demote"; fi
+        cp "$keys/id_ed25519.pub" "$work/root/management.pub" || return
+        cp "$tls/ca.crt" "$work/root/syslog-ca.crt" || return
+        case $1 in fw1|fw2) cp "$state/carp-pass" "$work/root/carp-pass" || return ;; esac
+        if [ "$1" = fw1 ] && [ -n "$pending" ]; then touch "$work/root/demote" || return; fi
         ;;
     svc)
         for file in server.crt server.key ca.crt incus-client.crt incus-client.key admin-password secret-key; do
-            cp "$tls/$file" "$work/root/$file"
+            cp "$tls/$file" "$work/root/$file" || return
         done
         ;;
     esac
-    unmount_root
-    sha256sum "$work/seed.img" | awk '{print $1}' >"$state/seeds/$1.sha256"
-    sync
-    mv "$work/seed.img" "$state/seeds/$1.img"
-    sync
+    unmount_root || return
+    sha256sum "$work/seed.img" >"$work/seed.sha256" || return
+    awk '{print $1}' "$work/seed.sha256" >"$state/seeds/$1.sha256" || return
+    sync || return
+    mv "$work/seed.img" "$state/seeds/$1.img" || return
+    sync || return
 }
 seed_attach() {
-    seed_create "$1"
+    seed_create "$1" || return
     step="seed_attach $1"
-    ic query "/1.0/instances/$1" >"$work/instance"
-    if jq -e '.devices.seed' "$work/instance" >/dev/null; then ic config device remove "$1" seed; fi
+    ic query "/1.0/instances/$1" >"$work/instance" || return
+    seed_attached=$(jq -r '.devices | has("seed")' "$work/instance") || return
+    if [ "$seed_attached" = true ]; then ic config device remove "$1" seed || return; fi
     seed_source=$state/seeds/$1.img
     case $1 in
     svc)
-        [ -f "$state/seeds/svc.autostart" ] || ic config get svc boot.autostart >"$state/seeds/svc.autostart"
-        ic config set svc boot.autostart=false
-        for seed_loop in $(losetup -j "$seed_source" | cut -d: -f1); do losetup -d "$seed_loop"; done
-        seed_source=$(losetup --find --show --read-only "$seed_source")
-        uid=$(jq -er '(.config["volatile.idmap.next"] // .config["volatile.idmap.current"]) | fromjson[] | select(.Isuid and .Nsid == 0) | .Hostid' "$work/instance")
-        gid=$(jq -er '(.config["volatile.idmap.next"] // .config["volatile.idmap.current"]) | fromjson[] | select(.Isgid and .Nsid == 0) | .Hostid' "$work/instance")
+        [ -f "$state/seeds/svc.autostart" ] || ic config get svc boot.autostart >"$state/seeds/svc.autostart" || return
+        ic config set svc boot.autostart=false || return
+        losetup -j "$seed_source" >"$work/seed-loops" || return
+        seed_loops=$(cut -d: -f1 "$work/seed-loops") || return
+        for seed_loop in $seed_loops; do losetup -d "$seed_loop" || return; done
+        seed_source=$(losetup --find --show --read-only "$seed_source") || return
+        uid=$(jq -er '(.config["volatile.idmap.next"] // .config["volatile.idmap.current"]) | fromjson[] | select(.Isuid and .Nsid == 0) | .Hostid' "$work/instance") || return
+        gid=$(jq -er '(.config["volatile.idmap.next"] // .config["volatile.idmap.current"]) | fromjson[] | select(.Isgid and .Nsid == 0) | .Hostid' "$work/instance") || return
         ic config device add "$1" seed disk source="$seed_source" readonly=true \
-            path=/var/lib/convergent/seed raw.mount.options="uid=$uid,gid=$gid,dmask=077,fmask=177,nodev,nosuid,noexec"
+            path=/var/lib/convergent/seed raw.mount.options="uid=$uid,gid=$gid,dmask=077,fmask=177,nodev,nosuid,noexec" || return
         ;;
-    *) ic config device add "$1" seed disk source="$seed_source" readonly=true ;;
+    *) ic config device add "$1" seed disk source="$seed_source" readonly=true || return ;;
     esac
 }
 seed_applied() {
@@ -549,7 +568,8 @@ seed_applied() {
     wan) applied=$(rsh wan seed-status) || return 1 ;;
     svc) applied=$(ic exec svc -- cat /var/lib/convergent/seeded) || return 1 ;;
     esac
-    [ "$applied" = "$(cat "$state/seeds/$1.id")" ] || fail 'applied seed ID differs'
+    seed_id=$(cat "$state/seeds/$1.id") || return
+    [ "$applied" = "$seed_id" ] || fail 'applied seed ID differs'
 }
 seed_remove() {
     step="seed_remove $1"
@@ -557,9 +577,12 @@ seed_remove() {
     ic config device show "$1" >"$work/devices" || return
     if grep -q '^seed:' "$work/devices"; then ic config device remove "$1" seed || return; fi
     if [ "$1" = svc ]; then
-        for seed_loop in $(losetup -j "$state/seeds/$1.img" | cut -d: -f1); do losetup -d "$seed_loop" || return; done
+        losetup -j "$state/seeds/$1.img" >"$work/seed-loops" || return
+        seed_loops=$(cut -d: -f1 "$work/seed-loops") || return
+        for seed_loop in $seed_loops; do losetup -d "$seed_loop" || return; done
         if [ -f "$state/seeds/svc.autostart" ]; then
-            ic config set svc boot.autostart="$(cat "$state/seeds/svc.autostart")" || return
+            seed_autostart=$(cat "$state/seeds/svc.autostart") || return
+            ic config set svc boot.autostart="$seed_autostart" || return
             rm "$state/seeds/svc.autostart" || return
         fi
     fi
@@ -577,7 +600,7 @@ start_guest() {
     attempt=0
     until ic start "$1"; do
         [ $((attempt += 1)) -lt 3 ] || return 1
-        sleep 10
+        sleep 10 || return
     done
 }
 seed_start() {
@@ -597,10 +620,10 @@ seed_finish() {
     case $1 in fw1|fw2|wan) retry pin "$1" || return ;; esac
     retry seed_applied "$1" || return
     retry healthy "$1" || return
-    [ -z "$initializing" ] || init_done "seed-$1"
+    [ -z "$initializing" ] || init_done "seed-$1" || return
     seed_remove "$1"
 }
-init_done() { touch "$state/init/$1"; sync; }
+init_done() { touch "$state/init/$1" && sync; }
 parallel_autostart() {
     ic profile list --format json >"$work/profiles"
     jq -r '.[] | select(.name == "fw" or .name == "wan" or .name == "svc") |
