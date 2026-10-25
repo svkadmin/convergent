@@ -169,8 +169,11 @@ sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MAST
 ```
 
 No address or default route in wan diag: check Wi-Fi (`sys wifi status`) and the upstream network. A
-captive portal (hotel, train) needs `sys portal on` first. fw1 cannot reach 9.9.9.9:853: fw1, wan or
-routing is down, or the upstream blocks DNS over TLS. Anything else: send the output.
+captive portal (hotel, train) needs `sys portal on` first. Portal DNS uses the selected default-route
+uplink's first nameserver; it must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not
+tried, so `no usable upstream resolver` does not prove the lease has no usable resolver. fw1 cannot
+reach 9.9.9.9:853: fw1, wan or routing is down, or the upstream blocks DNS over TLS. Anything else:
+send the output.
 
 ## 7. A USB device does not work
 
@@ -326,6 +329,7 @@ how old its signature is. Channel migration: [BUILD, Sign and publish](BUILD.md#
 | `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built (README, Update) |
 | `this release has no online updates` | The image lacks its release key or update URL: update from USB |
 | `not enough free space in /var` | Free what is still missing in `/var`, plus 1 GiB |
+| `latest is signed more than 5 minutes in the future; check the clock` | Set the clock (`date`), then run it again |
 
 Works when `sys update` shows the new release with `+3`. Then reboot (recipe 2 if it does not become
 good).

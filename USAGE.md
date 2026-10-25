@@ -221,6 +221,8 @@ networks.
 `Passphrase (empty for a known or open network):`. The passphrase stays in wan.
 `sys wifi connect 'SSID with spaces'` skips the picker. Authentication and no-signal failures
 include guidance from wan's reply. A successful association with no IPv4 lease reports DHCP failure.
+After scan initiation succeeds, completion is polled for up to 15 seconds; initiation/result
+retrieval have separate timeouts, and command failures propagate.
 
 Hidden networks: `sys wifi hidden`. An upstream network overlapping 100.80.0.0/16 is refused and
 raises UpstreamOverlap. After moving a refused wired adapter to a safe network, retry DHCP with
@@ -231,7 +233,10 @@ uplinks and rechecks the lease. The overlap latch clears only after a safe lease
 
 `sys portal on` starts tmp in portal mode, which owns the mode until the browser closes,
 `sys portal off`, or 30 minutes. It opens two pf rules on both firewalls and wan's DNS pass-through,
-for the portal browser only. The bar shows `PORTAL`. Works over Wi-Fi or wired.
+for the portal browser only. Portal DNS uses the selected default-route uplink's first nameserver;
+it must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not tried. If that nameserver is
+unusable, `sys portal on` refuses and closes everything again. The bar shows `PORTAL`. Works over
+Wi-Fi or wired.
 `browser tmp --portal [url]` is the same. A new launch first closes stale rules on all three guests
 and refuses to open if closure fails. Every minute, cron detects abandoned browser sessions and
 retries incomplete closure. `sys portal status` gives the reason (active, timeout, browser closed,
@@ -387,7 +392,9 @@ no data. Each panel names its source; each footer lists what is not collected. B
 
 Security's recent-events list covers successful and failed logins, sudo commands and password
 failures, USBGuard decisions, AppArmor denials, firewall takeovers, guest updates and failures, and
-host update, bless and fallback records. It shows the latest 50 records in the selected range.
+host update, bless and fallback records. It shows the latest 50 records in the selected range. Each
+record's host comes from the connection that delivered it; app name and message are the sender's
+claims.
 
 `sys security events` works without svc. It shows up to 100 matches from the last 5000 lines of each
 current host log (`/var/log/messages`, then `/var/log/audit/audit.log`), with source and original
@@ -407,8 +414,9 @@ sudo check accept-fw <guest-dir>/fw   # accept new firewall hashes after a firew
 ```
 
 The checker fails until a baseline is accepted (`<release-dir>` holds `manifest` and
-`guests/fw/fw{1,2}.{pf,rules}.sha256`), and while Secure Boot is off. Acceptance needs Secure Boot
-on and out of Setup Mode. `check` does not verify the manifest's signature, so check the release
+`guests/fw/fw{1,2}.{pf,rules}.sha256`), and while Secure Boot is off. A baseline from an earlier
+release lacks the temporary browser's profile record: accept again. Acceptance needs Secure Boot on
+and out of Setup Mode. `check` does not verify the manifest's signature, so check the release
 yourself before accepting it.
 
 `sys selftest` checks this boot (sudo once, at the start) and writes a report to
@@ -444,7 +452,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 
 | Block | Shows | Look or fix with |
 |---|---|---|
-| `CPU` | busy percent, lowest-highest core clock, package/hottest temperature; `-` if missing | `sys power status` lists every sensor |
+| `CPU` | busy percent, lowest-highest core clock, package/hottest temperature (every 5 s); `-` if missing | `sys power status` lists every sensor |
 | `RAM`, `SWP` | used/total GiB; RAM includes cache (`MemTotal - MemFree`) and subtracts what guests hold (`check status` sums their cgroups and VM processes every minute) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
 | Topology | uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
@@ -489,7 +497,11 @@ the image for future tmp instances, including portal mode. If the booted release
 but its guests were not installed (host-only update), `sys update install` downloads and applies
 them at once. `def` or `int` normally replaces only that instance; a role migration updates both.
 One guest operation runs at a time. Host updates: [README, Update](README.md#update). An interrupted
-browser update blocks launches until the guest update is retried.
+browser update blocks launches until the guest update is retried. Superseded guest images are
+deleted once an update commits and no alias uses them. A guest is marked stale from the start of its
+update. Full guest-kind updates clear staleness after recording; def/int updates leave the browser
+generation stale until a full browser update. Recording failure leaves the guest needing update;
+the next `sys update install` reuses valid staged payloads or downloads them.
 
 The first full browser update renames existing web/admin instances and state volumes to def/int,
 keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on the next

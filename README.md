@@ -98,19 +98,23 @@ Recovery menu: [RECOVERY, Recovery boot menu](RECOVERY.md#recovery-boot-menu).
 ## Update
 
 **Online** (Wi-Fi up): `sys update check` prints `up to date: release …` or
-`release N is available`. `sys update install` downloads the newest host release for the image's
-channel (about 1 GB) and only the changed guests, checks the signature and hashes, writes the other
-slot and offers the reboot. By hand: `sudo fetch-release` (`check` only reports). Guest application:
+`release N is available`, with the age of the signed metadata. Over 30 days old, it says
+`signed metadata is stale (N days old)` instead of `up to date`. `sys update install` downloads the
+newest host release for the image's channel (about 1 GB) and only the changed guests, checks the
+signature and hashes, writes the other slot and offers the reboot. By hand: `sudo fetch-release`
+(`check` only reports). Guest application:
 [USAGE, Releases and guests](USAGE.md#releases-and-guests); failures:
 [RECOVERY 12](RECOVERY.md#12-an-online-update-fails).
 
-**From USB:** copy the release directory (`manifest`, `manifest.sig`, `slot.img`, both `.efi` files,
-`guests/`, `guests.manifest` and `guests.manifest.sig`) to a FAT32 or exFAT stick. Allow it
-(`sudo devices list`, `sudo devices allow <number>`). `sys update usb` mounts it and writes the
-release. From a release before v10, run `sys update usb` again after booting v10, with the same
-stick, to install its guests. Updating from a stick without guests leaves the old browser image and
-web/admin objects intact. def/int and `tmp --portal` need `sys update install` or a USB release
-carrying guests. By hand on v10:
+**From USB:** copy the release directory (`latest`, `latest.sig`, `manifest`, `manifest.sig`,
+`slot.img`, both `.efi` files, `guests/`, `guests.manifest` and `guests.manifest.sig`) to a FAT32 or
+exFAT stick. Once guests are set up, a stick whose `latest` names guests must carry
+`guests.manifest` and its signature, or the update is refused. Allow it (`sudo devices list`,
+`sudo devices allow <number>`). `sys update usb` mounts it and writes the release. From a release
+before v10, run `sys update usb` again after booting v10, with the same stick, to install its
+guests. Updating from a stick without guests leaves the old browser image and web/admin objects
+intact. def/int and `tmp --portal` need `sys update install` or a USB release carrying guests. By
+hand on v10:
 
 ```sh
 sudo mkdir -p /run/usb && sudo mount -o ro /dev/sdX1 /run/usb

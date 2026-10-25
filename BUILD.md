@@ -77,11 +77,12 @@ holds the owner's account: never publish one.
 
 ### Firewall images
 
-Image build applies signify-verified syspatches on temporary DHCP boot and verifies the patched
-kernel on an offline smoke boot. Each node's installed patches are recorded in `<node>.syspatch`.
-Lists and OpenBSD version go into the signed guest payload. Before publishing, the advisory gate
-checks every published erratum, including gaps in the patch list. Non-applicable errata need an
-explicit reason in `build/advisories.exceptions`.
+Install applies signify-verified syspatches, then runs `pkg_add -u` from the OpenBSD mirror. Image
+build patches the real kernel on a temporary DHCP boot and verifies it on an offline smoke boot. Its
+QEMU runs under the same sandbox as the tests: [Test in QEMU](#test-in-qemu). Each node's installed
+patches are recorded in `<node>.syspatch`. Lists and OpenBSD version go into the signed guest
+payload. Before publishing, the advisory gate checks every published erratum, including gaps in the
+patch list. Non-applicable errata need an explicit reason in `build/advisories.exceptions`.
 
 ### Sign and publish
 
@@ -116,12 +117,13 @@ checksum and an accurate size for the slot image and each UKI.
 lists go up, with a valid signature only, to `<channel>/<release>/`. The signed `<channel>/latest`
 then points at it (`build/sign` writes it). Manifest sizes bound each download. A mirror cannot
 forge the pointer, but it can hold back newer releases by replaying an older signed one;
-`fetch-release` shows how old the signature is. Two releases per channel stay, and `build/publish`
-refuses to grow the bucket past about 9 GiB (R2's free tier is 10 GB). The pointer must name the
-local guest manifest's SHA-256, or `none` when absent. The currently advertised release is
-immutable: a retry compares the published file set and bytes (pointer and signatures included) and
-succeeds without writes if identical. Changed files or a newly signed pointer need a new release ID.
-Each file downloads in turn to a temporary file, so allow space for the largest payload.
+`fetch-release` reports stale signatures ([README, Update](README.md#update)). Two releases per
+channel stay, and `build/publish` refuses to grow the bucket past about 9 GiB (R2's free tier is 10
+GB). The pointer must name the local guest manifest's SHA-256, or `none` when absent. The currently
+advertised release is immutable: a retry compares the published file set and bytes (pointer and
+signatures included) and succeeds without writes if identical. Changed files or a newly signed
+pointer need a new release ID. Each file downloads in turn to a temporary file, so allow space for
+the largest payload.
 
 For the temporary 0.1.0 bridge, keep the existing bleeding-edge signing key as the beta key on the
 build host. `/etc/convergent/keys/beta.{key,pub}` must match
@@ -175,6 +177,10 @@ sockets under headless Sway. Bluetooth pairing and audio devices still need lapt
 Each test boots the release on a throwaway disk in `builder/test/<release>-<mode>`. It passes or
 fails by itself. Tests can run side by side as memory allows (8 to 12 GiB each).
 
+QEMU runs as the unprivileged `convergent-qemu` user, in the group that owns `/dev/kvm`, under
+`-sandbox on` with seccomp. The user is created on first use. The test fails if QEMU retains root
+IDs, effective capabilities, or lacks seccomp filtering.
+
 ```sh
 build/test <release>                                  # boots and marks itself good
 build/test --recovery <release>                       # recovery profile, unlock, continue and bless
@@ -210,7 +216,9 @@ password reset, next-slot selection and log export for separate testing.
 
 `build/image` checks AppArmor profile syntax. `build/lint` checks dashboard JSON drift.
 `build/test --guests-update` checks every metric panel query against real svc scrapes, allowing
-explicitly optional hardware and quiet alerts, and every LogsQL target.
+explicitly optional hardware and quiet alerts, every LogsQL target, and that forged hostnames cannot
+move log records to another host. `build/test-debug` checks diagnostic output authentication
+offline.
 
 Run `build/lint` before a push. On tracked files it checks shell syntax, shellcheck (when
 installed), leaked secrets or session and scratch paths, and CRLF line endings. It also checks that

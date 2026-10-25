@@ -103,10 +103,13 @@ address by DHCP, performs the system's only NAT.
   clears stale ifup state before retrying DHCP. Identity checks, hotplug and routing:
   [USAGE, Devices](USAGE.md#devices).
 - **Egress:** own traffic limited to DHCP and NAT; starts nothing inward except syslog to svc.
-- **Management:** no Incus agent or guest API; SSH from host only, on transit address.
+- **Management:** no Incus agent or guest API; SSH from host only, on transit address, with
+  OpenSSH's default (post-quantum hybrid) key exchange.
 - **Overlap:** refuses upstream lease overlapping internal range; raises alert.
-- **Captive portals:** DNS to wan's transit address reaches upstream resolver by NAT rule, no
-  forwarder process. Only from portal browser, only in portal mode. Portal mode ends by itself after
+- **Captive portals:** portal DNS uses the selected default-route uplink's first nameserver; it
+  must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not tried. DNS to wan's transit
+  address reaches it by NAT rule, no forwarder process. Only from portal browser, only in portal
+  mode. If that nameserver is unusable, portal mode fails closed. Portal mode ends by itself after
   30 minutes.
 - **Time:** host clock (PTP over KVM, disciplined by chrony in VM).
 - **Size:** memory capped at 512 MiB; emulated HPET off, free page reporting on (both measured on
@@ -192,8 +195,8 @@ infrastructure instances, networks or profiles.
   and internet on web ports.
 - Containers unprivileged, own ID range, process limit. Every guest has memory limit.
 - VMs use UEFI with virtual TPM. Menu creates them from installer image, opens console.
-- Infrastructure instances (fw1, fw2, wan, svc, browsers) protected from deletion, started in order
-  at boot. Crashed one restarted.
+- fw1, fw2, wan and svc autostart and restart after crashes (section 5.2). Browsers launch on
+  demand; def/int are deletion-protected, tmp is ephemeral.
 - Guest needing VPN runs it inside itself.
 
 ---
@@ -268,6 +271,8 @@ forwarding off. The host is never a router; the firewalls are.
   address and certificate name. Validates DNSSEC; answers internal segments only.
 - **IPv4 only:** DNS transport IPv4 only; AAAA answers not suppressed. DNS-over-HTTPS canary domain
   answers NXDOMAIN, so applications fall back to system resolver.
+- **Rebinding:** configured IPv4 private, shared-space and loopback ranges, plus IPv4-mapped IPv6
+  addresses, are stripped.
 - **Local names:** built-in names and reverse records from `local-names.conf` template, filled with
   address prefixes at firewall image build. Owner records in one file, validated, pushed to both
   firewalls with blocklist.
@@ -314,8 +319,9 @@ guests and logs filling the space `/var` and `/home` need.
    entries after merging missing image system accounts (IDs below 1000; keeps existing entries,
    warns on ID collisions) and adding existing owner to `dialout` in group/gshadow. Mounts `/run`
    and `/tmp` as tmpfs, arms hardware watchdog, switches to real root.
-5. OpenRC starts host, then Incus, then guests: fw1, fw2, wan, svc. No start step needs name before
-   firewalls' resolvers answer.
+5. OpenRC starts host, then Incus. Incus autostarts fw1, fw2, wan and svc. With priority/delay unset,
+   instances use bulk startup, limited to `max(floor(CPU threads/4), 1)` concurrent starts. No start
+   step needs name before firewalls' resolvers answer.
 
 Verity checks every block when read. Tampered block fails to read, at boot or later.
 
@@ -383,8 +389,8 @@ explicit list: `machine-id`, `passwd`, `shadow`, `group`, `gshadow`, `subuid`, `
 [section 10](#10-security-model).
 
 Image's `rootfs/etc/apparmor.d/` profiles confine chronyd, node_exporter, bluetoothd, way-secure and
-pipewire-pulse. chronyd and node_exporter enforce. bluetoothd, way-secure and pipewire-pulse only
-complain (log, do not block) until real-hardware use shows no denials. Chronyd can adjust time and
+pipewire-pulse. chronyd, node_exporter, bluetoothd and pipewire-pulse enforce. way-secure only
+complains (log, do not block) until real-hardware use shows no denials. Chronyd can adjust time and
 use RTC and its NTS state. Exporter reads kernel metrics and its textfiles. BlueZ uses system D-Bus,
 Bluetooth sockets and pairing state. Browser helpers can use owner's Wayland/PipeWire sockets and
 named session sockets; Pulse also supports owner's ordinary session server. Profile syntax and
@@ -466,12 +472,18 @@ mounts its seed). Without seed, fw keeps CARP and dependent daemons off, and Alp
 credential-dependent services stopped, so fw build's seedless smoke boot leaves release
 unpersonalised.
 
+First boot starts fw1, fw2, wan and svc together; their pinning and checks still run one at a time,
+in order. Service certificates (`server`, `incus-server`, `incus-client`) with at most 30 days
+remaining renew during the next successful guest apply after all browsers close. They are reissued
+from their existing keys and the CA, installing new trust before consumers restart.
+
 ### 7.2 Update
 
 1. Take release from `fetch-release` (URL in image) or USB stick. Check signature against image's
-   key and every hash. Refused: update from slot not yet marked good (would overwrite only good
-   one), and any release not newer than highest ever marked good (kept on state volume, so rollback
-   by hand does not reopen way to older releases).
+   key and every hash. The signed `latest` may be at most five minutes ahead of the clock; over 30
+   days old, it is reported as stale, not refused. Refused: update from slot not yet marked good
+   (would overwrite only good one), and any release not newer than highest ever marked good (kept on
+   state volume, so rollback by hand does not reopen way to older releases).
 2. Write image to inactive slot; read back and verify.
 3. Install its UKI with boot counter: systemd-boot gives it three tries.
 4. Reboot. Initramfs snapshots `/var` cold before anything starts.
@@ -539,21 +551,25 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
 ## 8. Observability
 
 - **Metrics:** VictoriaMetrics scrapes node_exporter (host, firewalls, wan) and Incus metrics
-  (instance state) every 30 seconds. Retention: 14 days. Time and synchronisation come from
-  node_exporter's time collector. Extra figures go stale by file age, which node_exporter reports.
-  Figures nothing else provides are small text files written by section 12's scripts: per firewall,
-  CARP, pf and unbound state; on the host, once per boot, release numbers, Secure Boot, lockdown,
-  LUKS header hash and crash records; at boot and daily, NVMe health and certificate expiry; every
-  minute, NTS state. NTS alerts allow five minutes to synchronise while an uplink is up. Collector
-  alerts allow five minutes for boot collection. Guest update timestamps go to the update journal
-  (`/var/lib/convergent/guests/updates`), not the metrics.
+  (instance state) every 30 seconds. Retention: 14 days. Only the seven Incus series the dashboards
+  query are kept, and the vmalert job keeps just its scrape health. Host node_exporter leaves out
+  the netstat, vmstat, diskstats, schedstat and softnet collectors. Time and synchronisation come
+  from node_exporter's time collector. Extra figures go stale by file age, which node_exporter
+  reports. Figures nothing else provides are small text files written by section 12's scripts: per
+  firewall, CARP, pf and unbound state; on the host, once per boot, release numbers, Secure Boot,
+  lockdown, LUKS header hash and crash records; at boot and daily, NVMe health and certificate
+  expiry; every minute, NTS state. NTS alerts allow five minutes to synchronise while an uplink is
+  up. Collector alerts allow five minutes for boot collection. Guest update timestamps go to the
+  update journal (`/var/lib/convergent/guests/updates`), not the metrics.
 - **Logs:** VictoriaLogs receives syslog over TLS from the host, firewalls and wan, including
   forwarded host audit records. Retention: seven days or 4 GiB, within a 6 GiB volume quota.
   Authentication, audit and firewall logging stay enabled. USBGuard uses LinuxAudit, so device
   decisions reach audit.log and the existing audit syslog forwarder. Local messages keep
-  authentication and selected security programs below warning level. Guest update summaries and
-  failures go to syslog. Slot bless records exhausted-newer-slot fallback. The minute status probe
-  logs observed firewall takeovers only when the last known coherent master changes.
+  authentication and selected security programs below warning level. Dashboards take each record's
+  host from the sending connection's address; app name and message stay the sender's claims. Guest
+  update summaries and failures go to syslog. Slot bless records exhausted-newer-slot fallback. The
+  minute status probe logs observed firewall takeovers only when the last known coherent master
+  changes.
 - **Alerts:** vmalert evaluates rules every 30 seconds, watching metrics and logs from every
   compartment. The status bar shows counts, or "unknown"
   when svc does not answer. Grafana shows details. Rules carried from Archer and adapted:
@@ -580,10 +596,11 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
   Dashboard checks: [BUILD, Checks](BUILD.md#checks). Security has one bounded event list;
   `sys security events` filters the two local host logs without svc (USAGE describes its bounds).
 - **Checker:** runs after every boot, update and daily. It compares the running system with the
-  accepted release (verity, pf ruleset hashes, Incus settings, writable `/etc` entries, autostart
-  and SUID inventories, radio VFIO binding, device ownership, CARP on both firewalls) and checks
-  host and internal guest state. Upstream connectivity is excluded; `check status` polls Wi-Fi
-  separately. Results feed the CheckerFailed and CheckerStale alerts.
+  accepted release (verity, pf ruleset hashes, Incus settings and the temporary browser's profile,
+  writable `/etc` entries, autostart and SUID inventories, radio VFIO binding, device ownership,
+  CARP on both firewalls) and checks host and internal guest state. Upstream connectivity is
+  excluded; `check status` polls Wi-Fi separately. Results feed the CheckerFailed and CheckerStale
+  alerts.
 
 ---
 
@@ -625,13 +642,13 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 - **Bluetooth:** `AutoEnable=false`; picker output must match a listed row. Power, pairing,
   validation and confirmation: [USAGE, Devices](USAGE.md#devices).
 - **Captive portals:** portal mode starts tmp with `--portal` and opens its two pf rules. It ends
-  when the browser closes, when turned off, or after 30 minutes. DNS goes anywhere but the firewalls
-  only in portal mode. The browser launcher owns activation under its session lock. It closes stale
-  rules on all three guests before any new opening; failure to close any side prevents opening. The
-  portal tool journals closure before remote changes, retries partial closures each minute and
-  records a reason for `sys portal status`. Cron and the browser session loop check expiry. Remote
-  mode checks use the minute status cache, refusing results stale for three minutes. An orphaned
-  session without a browser lock is closed after a one-minute startup allowance.
+  when the browser closes, when turned off, or after 30 minutes. DNS reaches the active uplink's
+  resolver only in portal mode (section 3.2). The browser launcher owns activation under its session
+  lock. It closes stale rules on all three guests before any new opening; failure to close any side
+  prevents opening. The portal tool journals closure before remote changes, retries partial closures
+  each minute and records a reason for `sys portal status`. Cron and the browser session loop check
+  expiry. Remote mode checks use the minute status cache, refusing results stale for three minutes.
+  An orphaned session without a browser lock is closed after a one-minute startup allowance.
 - *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on the
   upstream network for the def/tmp browsers), clipboard clearing.*)*
 
@@ -691,10 +708,11 @@ These are work counts from the code, not measured watts or battery minutes.
 | Change | Expected saving |
 |---|---|
 | `tools/bar`: cache an unchanged Sway layout name | About 24 helper launches/minute (awk and grep at five-second intervals), plus repeated XKB rules-list reads; a failed Sway query invalidates the cache |
-| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute; all but one chip-name read per sensor chip per frame; temperature, clock, lock-health and input polling unchanged |
+| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute; all but one chip-name read per sensor chip per frame; temperatures read at most every 5 s; clock, lock-health and input polling unchanged |
 | `tools/check status`: combine CARP and portal-table reads on each firewall; serialize wan sessions | Five SSH sessions/minute instead of seven; no concurrent connection creation to the same guest within this run; four fewer remote wc processes/minute; existing pinned keys and 60-second multiplexing remain |
 | `tools/facts`: parse each slot status in shell | Four awk processes removed per boot-status attempt; boot, daily and hourly checks unchanged |
 | `tools/power`: read sysfs with shell builtins; log only changes or failures | Up to four cat processes per CPU policy removed per AC event, plus supply/config reads; duplicate events write no power log to store or forward |
+| `rootfs/etc/conf.d/node_exporter` and the `svc` scrape config: five unused host collectors off; only the Incus series in use and vmalert scrape health kept | Less collector work per scrape and fewer stored series; scrape intervals unchanged (section 8) |
 
 Status probes still run every minute, with bounded requests and one worker per guest. Portal reads
 hold the existing action lock; a busy lock, failed query or inconsistent sides yields unknown.
