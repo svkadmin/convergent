@@ -16,6 +16,9 @@
 #   build/test --advisories                  offline gate fixtures; no root needed
 set -eu
 umask 077
+test_start=$(date +%s)
+cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
+cv_time start
 
 here=$(cd "$(dirname "$0")" && pwd)
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
@@ -535,6 +538,8 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 release=/var/lib/convergent/test-release
 state=/var/lib/convergent/guests
+. "$release/timing"
+cv_time update-test
 result=0
 # Each failed check names its line in this script.
 bad() { echo "CV-UPDATE-FAIL line $1"; result=1; }
@@ -572,6 +577,7 @@ fw_diag() {
 EOF
 	if [ "$mode" = guests-maint ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time maintenance-fixtures
 # Polling must keep transient failures out of stderr and syslog.
 (
     set -e
@@ -842,6 +848,7 @@ fw_unlocked() {
         exit(flock($lock, LOCK_EX|LOCK_NB) ? 0 : 1);
     '\'''
 }
+cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
 (
@@ -933,6 +940,7 @@ LOCAL
 )
 [ "$?" = 0 ] || { fw_diag; bad $LINENO; }
 done
+cv_time maintenance-reboot
 # Maintenance must survive a reboot and fw-seed, then release before replacement.
 (
     set -e
@@ -958,6 +966,7 @@ done
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
 )
 [ "$?" = 0 ] || { fw_diag; bad $LINENO; }
+cv_time dns-recovery
 # Use a local list so stopped-daemon recovery does not depend on a download.
 (
     set -e
@@ -984,6 +993,7 @@ done
     dns-push local
 )
 [ "$?" = 0 ] || bad $LINENO
+cv_time dns-uplink-return
 # Unbound started without an uplink (the second incident) answers within 90 s of the uplink's return.
 (
     set -e
@@ -998,6 +1008,7 @@ done
     done
 )
 [ "$?" = 0 ] || bad $LINENO
+cv_time dns-wan-return
 # wan away for two minutes (the laptop form): the forwarders are marked down well past infra-host-ttl;
 # DNS answers within 90 s of wan being healthy again.
 (
@@ -1021,6 +1032,7 @@ done
     done
 )
 [ "$?" = 0 ] || bad $LINENO
+cv_time handoff-interruptions
 # Kill while SSH is waiting, both before and after adding the handoff groups.
 for phase in delayed partial; do
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-handoff' || bad $LINENO
@@ -1076,6 +1088,7 @@ done
 EOF
 	fi
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time handoff-recovery
 # Recreate a killed handoff and its leftover probe routes before the normal update.
 touch "$state/fw.handoff" && sync || bad $LINENO
 timeout 30 ssh -F /etc/convergent/ssh_config fw1 'set -e
@@ -1090,6 +1103,7 @@ EOF
 before=$(ic config get svc volatile.base_image) || bad $LINENO
 service=$(ic exec svc -- sha256sum /etc/init.d/victoria-metrics) || bad $LINENO
 [ -n "$before" ] && [ -n "$service" ] || bad $LINENO
+cv_time certificate-renewal
 # Force renewal while keeping the CA and private keys.
 tls=$state/tls
 sha256sum "$tls/ca.crt" "$tls/"*.key >"$release/tls-pins"
@@ -1121,6 +1135,7 @@ jq -e --arg fp "$new_client" '.[] | select(.fingerprint == $fp and .type == "met
 sha256sum "$tls/"*.crt >"$release/tls-renewed"
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-renewed" || bad $LINENO
+cv_time firewall-update
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
@@ -1153,12 +1168,14 @@ for f in fw1 fw2; do
 	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || bad $LINENO
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
 done
+cv_time wan-update
 # wan must answer Incus's power button: a same-image replacement, no forced stop.
 sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-update-wan.log
 wan=$?
 echo CV-UPDATE wan "$wan"
 [ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; bad $LINENO; }
 cmp "$release/guests/wan/SHA256SUMS" /var/lib/convergent/release-guests/guests/wan/SHA256SUMS || bad $LINENO
+cv_time wan-forced-stop
 # The laptop's wan loss: the old image ignores the ACPI stop, the force ends in an unclean QEMU exit
 # (QMP quit timed out, SIGKILL) that boot.autorestart=true would answer within a second; the restarted
 # wan then failed the disk read and every rollback pass raced its own restart. wan must stay Stopped
@@ -1198,6 +1215,7 @@ starts=$(grep -c '^+ ic start wan$' /var/log/guests-update-wan-exit.log)
     ! grep -q 'restoring wan/' /var/log/guests-update-wan-exit.log ||
     { tail -n 15 /var/log/guests-update-wan-exit.log; bad $LINENO; }
 [ "$(ic config get wan boot.autorestart)" = '' ] && [ ! -e "$state/iwd.wan" ] || bad $LINENO
+cv_time wan-late-stop
 # The guest halts after Incus's wait ran out (a slow exit): the force meets a wan that is already
 # stopped and the update still goes through without a rollback.
 cat >"$release/guests-wan-slow" <<'FAULT'
@@ -1225,6 +1243,7 @@ echo CV-UPDATE wan-slow "$code"
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
 done
+cv_time svc-preparation
 # An interrupted preparation must leave neither snapshots nor a stopped original svc; a kill during
 # the rebuild itself leaves the mutator to finish and the next run to roll back.
 for fault in fail kill snapshot rebuild; do
@@ -1307,6 +1326,7 @@ FAULT
     incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
+cv_time svc-interruptions
 # Killed at each step of an update: the next apply rebuilds svc from its previous image exactly as
 # the first pass would have, re-seeds it, and leaves the journal and the state snapshots as before.
 # Markers in all three state volumes: what the candidate wrote is gone, what was there is back.
@@ -1339,6 +1359,7 @@ for step in journal rebuilt seeded rolledback; do
         test ! -e /var/lib/victoria-metrics/cv-after && test ! -e /var/lib/victoria-logs/cv-after && test ! -e /var/lib/grafana/cv-after' || bad $LINENO
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
+cv_time svc-seed-failure
 # A rollback whose seed check fails must keep the journal: the seed chain reports its failure.
 cat >"$release/guests-seed-fail" <<'FAULT'
 incus() {
@@ -1356,12 +1377,14 @@ rm -f "$release/rollback-phase"
 /usr/local/sbin/guests apply >/var/log/guests-update-seed-fail-resume.log 2>&1 || bad $LINENO
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-snapshot-refusal
 # A snapshot made by hand blocks a rebuild: refused before the guest is touched, with the command.
 ic snapshot create svc byhand || bad $LINENO
 /usr/local/sbin/guests update svc "$release/guests/svc" >/var/log/guests-update-snapshot.log 2>&1 && bad $LINENO
 grep -q 'byhand' /var/log/guests-update-snapshot.log && grep -q 'snapshot delete svc <name>' /var/log/guests-update-snapshot.log || bad $LINENO
 incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
 ic snapshot delete svc byhand || bad $LINENO
+cv_time svc-torn-rebuild
 # A power loss inside a rebuild, between dropping and recreating the root volume record: refused
 # with the exact repair, which then works (the record only; the disk is still there here).
 ic stop svc || bad $LINENO
@@ -1378,6 +1401,7 @@ ic rebuild "$before" svc || bad $LINENO
 /usr/local/sbin/guests apply >/var/log/guests-update-torn-resume.log 2>&1 || { tail -n 15 /var/log/guests-update-torn-resume.log; bad $LINENO; }
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-torn-restore
 # A snapshot restore cut by a power loss, either half: refused with the exact step; the step works.
 ic stop svc || bad $LINENO
 custom=/var/lib/incus/storage-pools/default/custom
@@ -1391,6 +1415,7 @@ grep -q "sudo btrfs subvolume delete $custom/default_svc-logs.incustmp; sys gues
 btrfs subvolume delete "$custom/default_svc-logs.incustmp" >/dev/null || bad $LINENO
 ic start svc || bad $LINENO
 timeout -k 1 120 sh -c 'until incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health 2>/dev/null; do sleep 2; done' || bad $LINENO
+cv_time svc-unhealthy-recovery
 # A recovery whose restored svc stays unhealthy keeps the journal; the next pass redoes the same
 # rebuild and gets through.
 sh "$release/guests-kill-rebuilt" update svc "$release/guests/svc" >/var/log/guests-update-unhealthy-kill.log 2>&1
@@ -1407,6 +1432,7 @@ GUEST_SVC_TIMEOUT=10 sh -x "$release/guests-unhealthy" apply 2>/var/log/guests-u
 sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-unhealthy-resume.log || { tail -n 15 /var/log/guests-update-unhealthy-resume.log; bad $LINENO; }
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-rebuild-failure
 # A rollback whose own rebuild fails keeps the journal; apply redoes it.
 cat >"$release/guests-no-rebuild" <<'FAULT'
 incus() {
@@ -1424,6 +1450,7 @@ sh -x "$release/guests-no-rebuild" update svc "$release/guests/svc" 2>/var/log/g
 /usr/local/sbin/guests apply >/var/log/guests-update-no-rebuild-resume.log 2>&1 || bad $LINENO
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-readonly
 # A read-only state directory: refused before anything is stopped; turned read-only mid-update
 # (Btrfs on error) the run fails short and apply after the remount finishes the rollback.
 mount --bind "$state" "$state" && mount -o remount,bind,ro "$state" || bad $LINENO
@@ -1441,6 +1468,7 @@ umount "$state" || bad $LINENO
 [ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
 for scratch in "$state"/work.??????; do [ ! -e "$scratch" ] || bad $LINENO; done
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-legacy-recovery
 # A pending journal from 0.1.2 (the laptop): a damaged export costs nothing; a good one is imported
 # under the hold, after the running candidate is deleted.
 legacy=guests-$(date -u +%Y%m%dT%H%M%S)-legacy
@@ -1466,6 +1494,7 @@ awk '/^\+ ic config set svc boot.autorestart=false user.convergent.autorestart=t
 [ ! -e "$state/pending" ] && [ ! -e "$state/backups/svc-$legacy.tar.gz" ] || bad $LINENO
 ic exec svc -- test -e /etc/cv-legacy || bad $LINENO
 ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+cv_time svc-broken-rollback
 # This svc never comes up: roll back after 150 s (also the restored svc's budget), not five minutes.
 broken=$(cat "$release/broken-svc/metadata.tar.gz" "$release/broken-svc/rootfs.tar.gz" | sha256sum | cut -d' ' -f1)
 GUEST_SVC_TIMEOUT=150 sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
@@ -1489,6 +1518,7 @@ ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LI
 ic image list --format json >"$release/images" || bad $LINENO
 jq -e --arg fp "$before" 'any(.[]; .fingerprint == $fp and any(.aliases[]; .name == "candidate-svc"))' "$release/images" >/dev/null || bad $LINENO
 jq -e --arg fp "$broken" 'any(.[]; .fingerprint == $fp and (.aliases | length) == 0)' "$release/images" >/dev/null || bad $LINENO
+cv_time dashboard-checks
 # The host's facts and checker now (cron skipped the checker during guest work), then two scrapes.
 /usr/local/sbin/facts boot >/dev/null 2>&1 || bad $LINENO
 /usr/local/sbin/check auto >/dev/null 2>&1 || :
@@ -1517,6 +1547,7 @@ timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt"
 booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 staged=/var/lib/convergent/guest-updates/$booted
 installed=/var/lib/convergent/release-guests/guests/svc
+cv_time svc-commit-recovery
 # Commit recovery must keep the candidate profile, even if pruning fails.
 for fault in committed pruning recording; do
     ic profile set svc user.convergent.commit-test old || bad $LINENO
@@ -1545,6 +1576,7 @@ for fault in committed pruning recording; do
     for journal in committed pending profiles.before; do [ ! -e "$state/$journal" ] || bad $LINENO; done
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
+cv_time svc-staged-apply
 # The first commit since the rollback pruned the broken image; the one in use stays.
 ic image list --format json >"$release/images" || bad $LINENO
 jq -e --arg fp "$broken" 'all(.[]; .fingerprint != $fp)' "$release/images" >/dev/null || bad $LINENO
@@ -1562,6 +1594,7 @@ cmp "$release/guests/svc/incus.yaml" "$installed/incus.yaml" || bad $LINENO
 status=$?
 echo CV-UPDATE status "$status"
 [ "$status" = 0 ] || bad $LINENO
+cv_time firewall-no-peer
 # A peer that cannot take over: the rebuild gives up after GUEST_BOOT_TIMEOUT and restarts fw1.
 awk '{print} $0 == "carp() {" {print "    [ \"$1\" != fw2 ] || return 1"}' /usr/local/sbin/guests >"$release/guests-no-peer"
 GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/guests-rebuild-no-peer.log
@@ -1580,6 +1613,7 @@ until pair_ok; do
     [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
     sleep 10
 done
+cv_time firewall-rebuild-interruptions
 # Killed before the handoff marker or after rebuilding: apply restores fw1 and releases its demotion.
 for step in journal rebuilt; do
     awk -v step="$step" '{print}
@@ -1621,6 +1655,7 @@ tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
 	fi
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time update-done
 sync
 echo CV-UPDATE-RESULT "$result"
 EOF
@@ -1665,10 +1700,15 @@ EOF
 }
 
 inject_guests() {
+	cv_time inject-guests
 	open_state rw
 	var="$state/var-$release"
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release/guests" "$var/spool/cron/crontabs"
+	printf 'test_start=%s\n' "$test_start" >"$var/lib/convergent/test-release/timing"
+	cat >>"$var/lib/convergent/test-release/timing" <<'EOF'
+cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
+EOF
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
 	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
@@ -1986,7 +2026,7 @@ exit "$result"
 EOF
 	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
 	cat >"$var/spool/cron/crontabs/root" <<'EOF'
-@reboot { while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; if [ "$result" = 0 ]; then sh /var/lib/convergent/test-release/uplink-test || { echo "CV-UPLINK failed"; result=1; }; sh /var/lib/convergent/test-release/smoke-test "$result" || result=1; fi; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
+@reboot { . /var/lib/convergent/test-release/timing; cv_time guest-services; while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & cv_time guests-init; sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; if [ "$result" = 0 ]; then cv_time uplink-test; sh /var/lib/convergent/test-release/uplink-test || { echo "CV-UPLINK failed"; result=1; }; cv_time smoke-test; sh /var/lib/convergent/test-release/smoke-test "$result" || result=1; fi; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; cv_time guests-ready; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
 EOF
 	chown 0:0 "$var/spool/cron/crontabs/root"
 	chmod 0600 "$var/spool/cron/crontabs/root"
@@ -2471,6 +2511,7 @@ run_vm() {
 	log="$BUILDER$work/console-$runs.log"
 	ln -sfn "console-$runs.log" "$BUILDER$work/console.log"
 	echo "test: boot $runs ($mode), console: $log"
+	cv_time "boot-$runs-start"
 	# chroot execs Python, so the cleanup trap can reap its QEMU child.
 	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
 		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" CVTEST_QEMU_ID="$qemu_id" \
@@ -2511,7 +2552,7 @@ qemu = subprocess.Popen([
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-seen, messages = b"", b""
+seen, messages, timing = b"", b"", b""
 sent = ready = quitting = powered_off = rebooted = False
 continued = False
 prompted = None
@@ -2567,6 +2608,12 @@ try:
                             rebooted |= event.get("data", {}).get("reason") == "guest-reset"
                 else:
                     log.write(chunk); log.flush()
+                    timing += chunk
+                    while b"\n" in timing:
+                        line, timing = timing.split(b"\n", 1)
+                        if re.fullmatch(rb"CV-TIME [a-z0-9-]+ -?[0-9]+\r?", line):
+                            print(line.decode().rstrip(), flush=True)
+                    timing = timing[-4096:]
                     seen = (seen + chunk)[-8192:]
                     if guest_test and result is None:
                         match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
@@ -2617,6 +2664,7 @@ EOF
 		die "QEMU driver failed; see $log"
 	fi
 	ended=$(cat "$BUILDER$work/ended-$runs")
+	cv_time "boot-$runs-end"
 }
 
 blessed() {
@@ -2704,6 +2752,7 @@ guests | guests-maint | guests-update | online)
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
+	cv_time guest-logs
 	guest_logs
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
 	[ "$ended" = "$mode-0" ] || die "$mode failed ($ended); see $log"
@@ -2745,4 +2794,5 @@ fallback | interrupt)
 	fi
 	;;
 esac
+cv_time done
 echo "test: $mode passed ($runs boots); disk, passphrase and consoles in $BUILDER$work"
