@@ -52,7 +52,7 @@ id=$(printf '%s\n' "$header" | cut -d' ' -f3)
 expires=${header##* }
 sed -n '2p' "$tmp/script" | grep -aEq '^# purpose: [ -~]{1,200}$' || die "invalid purpose"
 purpose=$(sed -n '2p' "$tmp/script")
-sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
+sed -n '3p' "$tmp/script" | grep -aEq '^# upload: https://[a-z0-9]{1,63}(\.eu)?\.r2\.cloudflarestorage\.com/[A-Za-z0-9._~%/-]+\?[A-Za-z0-9._~%=&-]+$' || die "invalid upload URL"
 upload=$(sed -n '3s/^# upload: //p' "$tmp/script")
 awk '
 	NR < 4 {next}

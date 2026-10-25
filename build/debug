@@ -60,7 +60,8 @@ send)
 	openssl pkey -in "$keys/debug.key" -pubout >"$tmp/key.pub"
 	openssl x509 -in "$keys/debug.crt" -pubkey -noout >"$tmp/cert.pub"
 	cmp -s "$tmp/key.pub" "$tmp/cert.pub" || die "debug recipient key and certificate differ"
-	export R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY
+	R2_HOST=${ep#https://}; R2_HOST=${R2_HOST%%/*}
+	export R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_HOST
 	python3 - "$id" "$now" >"$tmp/url" <<'PY'
 import datetime
 import hashlib
@@ -74,7 +75,10 @@ account, bucket, access, secret = (os.environ["R2_" + k] for k in
                                    ("ACCOUNT_ID", "BUCKET", "ACCESS_KEY_ID", "SECRET_ACCESS_KEY"))
 if not re.fullmatch(r"[a-z0-9]{1,63}", account) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", bucket):
     sys.exit("debug: invalid R2 account or bucket")
-host = account + ".r2.cloudflarestorage.com"
+# The endpoint's host: an EU-jurisdiction bucket answers only on <account>.eu.
+host = os.environ["R2_HOST"]
+if not re.fullmatch(re.escape(account) + r"(\.eu)?\.r2\.cloudflarestorage\.com", host):
+    sys.exit("debug: R2_ENDPOINT is not this account's R2 host")
 path = "/" + bucket + "/debug-out/" + sys.argv[1]
 stamp = datetime.datetime.fromtimestamp(int(sys.argv[2]), datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 day = stamp[:8]
