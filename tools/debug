@@ -88,6 +88,10 @@ mv "$tmp/output" "$state/$id.txt"
 chmod 0600 "$state/$id.txt"
 printf 'Local output: %s\n' "$state/$id.txt"
 [ "$rc" = 0 ] || printf 'Diagnostic stopped (exit %s).\n' "$rc"
+# Nothing leaves before the owner has had the chance to read it.
+printf 'Read it first with: sudo less %s\nSend it? [y/N] ' "$state/$id.txt" >/dev/tty
+IFS= read -r answer </dev/tty || die "input cancelled; local output kept"
+case $answer in y | Y) ;; *) echo "Not sent; local output kept."; exit 0 ;; esac
 { printf '%s\n' "$id"; cat "$state/$id.txt"; } >"$tmp/output"
 openssl pkeyutl -sign -inkey "$state/signing.key" -rawin -in "$tmp/output" -out "$tmp/output.sig" || die "output signing failed"
 cat "$tmp/output.sig" "$tmp/output" >"$tmp/signed"

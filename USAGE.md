@@ -426,8 +426,8 @@ has a time limit, so the run cannot hang.
 `sys debug` (also Logs → debug) downloads the developer's signed diagnostic, shows its purpose and
 expiry, and asks before running it as root. It refuses expired or already-run requests. Runs stop
 after five minutes; output is capped at 8 MiB, signed with the laptop's own key and sent encrypted to
-the developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`; the path is
-printed, so `sudo cat` shows what was sent. Only `CHANNEL=beta` builds carry it; stable builds never
+the developer after a second yes. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.txt`;
+the path is printed first, so `sudo less` shows it before anything is sent. Only `CHANNEL=beta` builds carry it; stable builds never
 do. A failed diagnostic reports its script exit status, even at the cap. Timeout reports 124 (137 if
 it needs a forced kill). `sudo debug key` prints the laptop's public key; pin it once on the builder
 as `/etc/convergent/keys/debug-laptop.pub`. Beta-only `build/debug send <script-file> <purpose>`
