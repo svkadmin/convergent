@@ -139,7 +139,8 @@ if [ "${1:-}:$#" = status:1 ]; then
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
-[ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || die 'cannot repair host network'
+net_ok=1
+[ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
 exec 9>/run/convergent/check.lock
 flock -n 9 || die 'another checker is running'
@@ -154,7 +155,7 @@ if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     interval=300
     grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
     boot=$(awk '$1 == "btime" {print $2}' /proc/stat)
-    if [ "$last" -ge "$boot" ] && [ "$(($(date +%s) - last))" -lt "$interval" ] &&
+    if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$(($(date +%s) - last))" -lt "$interval" ] &&
         [ ! /var/lib/convergent/guests/updates -nt "$state/last" ] &&
         [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ]; then exit 0; fi
 fi
@@ -163,6 +164,7 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
+[ "$net_ok" = 1 ] || bad 'host network repair failed (default route or sysctls)'
 
 # The manifest is kept explicitly; never learn an accepted baseline during a check.
 baseline=$state/accepted

@@ -995,7 +995,7 @@ cv_time dns-recovery
 [ "$?" = 0 ] || bad $LINENO
 cv_time dns-uplink-return
 fw_dns() {
-    timeout 10 ssh -F /etc/convergent/ssh_config "$1" "unbound-control flush_zone $2 >/dev/null && host -W 3 -t A $2 127.0.0.1" |
+    timeout 10 ssh -F /etc/convergent/ssh_config "$1" "unbound-control flush $2 >/dev/null && host -W 3 -t A $2 127.0.0.1" |
         grep -q 'has address'
 }
 # Unbound started without an uplink (the second incident) answers within 90 s of the uplink's return.
