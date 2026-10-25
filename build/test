@@ -222,7 +222,7 @@ if [ "${1:-}" = --install-options ]; then
 	if (install_size 32212254720 32768) 2>/dev/null; then die "accepted undersized physical disk"; fi
 	swap=state:1GiB
 	if (install_size 32212254720 12288) 2>/dev/null; then die "accepted undersized stick with swap"; fi
-	# lsblk fixtures: the boot disk, HDDs, removable and external devices cannot be auto targets.
+	# lsblk fixtures: the boot disk, HDDs, removable and external devices are never auto targets.
 	lsblk() { printf '%s\n' "$fixture"; }
 	bootdisks=/dev/sdb
 	fixture='/dev/sdb disk usb 0 1 1
@@ -1120,7 +1120,7 @@ cmp "$release/guests/wan/SHA256SUMS" /var/lib/convergent/release-guests/guests/w
 for p in /proc/[0-9]*; do
     ls -l "$p/fd" 2>/dev/null | grep -q 'guests.lock' && echo "CV-LOCK ${p#/proc/} $(tr '\0' ' ' <"$p/cmdline")"
 done
-# Interrupted backup preparation must leave neither snapshots nor a stopped original svc.
+# An interrupted backup must leave neither snapshots nor a stopped original svc.
 for fault in fail kill snapshot export; do
     for volume in svc-metrics svc-logs svc-grafana; do
         ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.before"
@@ -1199,7 +1199,7 @@ FAULT
     incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
-# This svc never comes up: 150 s before its rollback (also the restored svc's budget), not five minutes.
+# This svc never comes up: roll back after 150 s (also the restored svc's budget), not five minutes.
 GUEST_SVC_TIMEOUT=150 sh -x /usr/local/sbin/guests update svc "$release/broken-svc" 2>/var/log/guests-update-svc.log
 svc=$?
 echo CV-UPDATE svc "$svc"
@@ -1220,7 +1220,7 @@ ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LI
 /usr/local/sbin/facts boot >/dev/null 2>&1 || bad $LINENO
 /usr/local/sbin/check auto >/dev/null 2>&1 || :
 sleep 65
-# A just-replaced guest's facts can take another collector cycle; three tries, a minute apart.
+# A replaced guest's facts can take another collector cycle: three tries, a minute apart.
 dash=1
 for try in 1 2 3; do
     sh "$release/dashboard-check" "$release/dashboards" && { dash=0; break; }
@@ -2171,7 +2171,7 @@ qemu = subprocess.Popen([
     (["-no-reboot"] if goal == "bless" else []) +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
-    # Guest tests get an Internet uplink (QEMU user networking) that the test bridges into wan as eth1.
+    # Guest tests get a QEMU user-networking uplink, which the test bridges into wan as eth1.
     (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "online") else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     env={"PATH": os.environ["PATH"], "LC_ALL": "C"})

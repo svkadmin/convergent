@@ -1,6 +1,6 @@
-# Builder chroot mounts; caller sets BUILDER. Several builds and tests may share them: each
-# caller registers its PID with its start time (a reused PID is not a user), and only the last
-# one leaving tears the mounts down.
+# Builder chroot mounts (caller sets BUILDER), shared by builds and tests.
+# Each caller registers its PID and start time, since a reused PID is not a user;
+# the last to leave tears the mounts down.
 chroot_users=/run/convergent-builder.users
 chroot_started() { sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20; }
 

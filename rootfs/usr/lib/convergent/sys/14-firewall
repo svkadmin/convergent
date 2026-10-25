@@ -68,7 +68,7 @@ firewall_status() (
 	exit "$result"
 )
 firewall_release() {
-	# Removing our group also removes only our demotion, even after an uncertain SSH result.
+	# Removing our group removes only our demotion, even after an uncertain SSH result.
 	firewall_mutate "$master" '
 rm -f /etc/convergent/seeded/maintenance
 sync

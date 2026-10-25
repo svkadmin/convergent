@@ -51,7 +51,7 @@ done
 (set -C; echo \$\$ >/var/run/convergent-dns.lock/pid)
 trap '$unlock' 0
 trap 'exit 1' HUP INT TERM"
-# Preserve backups until both activations commit. A firewall rebuilt since has no .prev and nothing
+# Keep backups until both activations commit. A firewall rebuilt since has no .prev and nothing
 # to roll back: it runs its image's data until the next push.
 restore="cd $rdir && if [ -e blocklist.rpz.prev ]; then cp -p blocklist.rpz.prev blocklist.rpz &&
 cp -p local-owner.conf.prev local-owner.conf &&

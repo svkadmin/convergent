@@ -50,8 +50,8 @@ else
 	frag=$BUILDER/etc/kernel/config.d/50-convergent.config
 	install -D -m 0644 "$here/kernel.config" "$frag"
 	chroot "$BUILDER" $emerge --quiet-build=y --keep-going=y $sets
-	# A changed kernel fragment needs a rebuilt kernel: its package version does not change, and a
-	# cached binary would keep the old options. The stamp names the fragment the kernel was built with.
+	# A changed kernel fragment needs a rebuilt kernel: its version stays the same, and a
+	# cached binary would keep old options. The stamp records which fragment the kernel used.
 	stamp=$BUILDER/var/lib/convergent/kernel-fragment.sha256
 	want=$(sha256sum <"$frag" | cut -d' ' -f1)
 	if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then

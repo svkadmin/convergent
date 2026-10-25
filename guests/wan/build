@@ -29,7 +29,7 @@ case $WAN_COUNTRY in
 *) die "set WAN_COUNTRY to the two-letter regulatory country (for example from the environment)" ;;
 esac
 
-# Require matching internal ranges in script and filter config.
+# wan.conf and nftables.nft must name the same internal range.
 net=$(sed -n 's/^INTERNAL_NET=//p' "$here/rootfs/etc/wan/wan.conf")
 grep -q "^define internal    = $net\$" "$here/rootfs/etc/nftables.nft" ||
 	die "INTERNAL_NET in wan.conf and 'internal' in nftables.nft disagree"
@@ -45,7 +45,7 @@ cleanup() {
 	set +e
 	alpine_cleanup || return
 	[ -n "$loop" ] && losetup -d "$loop"
-	# Never remove a tree that still has something mounted in it.
+	# Keep the tree if anything is still mounted in it.
 	if grep -q " $work" /proc/mounts; then
 		echo "build: mounts remain under $work; left in place" >&2
 	else

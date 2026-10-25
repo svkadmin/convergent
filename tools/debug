@@ -1,5 +1,5 @@
 #!/bin/sh
-# debug: run one signed diagnostic after consent, then sign and encrypt its output.
+# debug: run one signed diagnostic after consent; sign and encrypt its output.
 # debug key: print the laptop's public signing key for trusted provisioning on the builder.
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -45,7 +45,7 @@ get --max-time 60 --max-filesize 1048576 -o "$tmp/script" "$url/debug/script" &&
 close_src || die "could not close the update source"
 verify "$tmp/script" || die "diagnostic is not signed with this image's key"
 
-# Fixed headers, never shell input. Nothing is read before signature verification.
+# Fixed headers, never shell input. Read nothing before signature verification.
 sed -n '1p' "$tmp/script" | grep -aEq '^# convergent-debug [0-9a-f]{32} [1-9][0-9]{0,11}$' || die "invalid diagnostic header"
 header=$(sed -n '1p' "$tmp/script")
 id=$(printf '%s\n' "$header" | cut -d' ' -f3)

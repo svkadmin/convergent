@@ -63,7 +63,7 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-# Verify sets with the pinned release key before serving them.
+# Verify sets with the pinned release key before serving.
 echo "build: fetching OpenBSD $ver"
 curl -fsS --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/openbsd-$v-base.pub"
 seen=$(sha256sum "$dl/key.pub" | awk '{print $1}')
@@ -89,7 +89,7 @@ chmod -R a+rX "$tftp"
 
 cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/BUILDINFO" "$dl/bsd" "$dl/bsd.mp" "$dl/base$v.tgz" "$www/sets/"
 
-# Fetch release packages and dependencies; pkg_add verifies signatures.
+# Fetch release packages and dependencies; pkg_add checks signatures.
 pkgbase=$OPENBSD_MIRROR/$ver/packages/amd64
 curl -fsS --proto =https --tlsv1.2 -o "$dl/pkg-index.txt" "$pkgbase/index.txt"
 pkgnames=
@@ -111,7 +111,7 @@ for p in $FW_PACKAGES; do
 	pkgnames="$pkgnames $f"
 done
 
-# 3. The site set: this tree, plus what is made fresh for this build.
+# 3. The site set: this tree, plus what this build makes fresh.
 site=$work/site
 cp -R "$here/site" "$site"
 find "$site" -type d -exec chmod 755 {} +
@@ -132,8 +132,8 @@ httppid=$!
 sleep 1
 kill -0 "$httppid" 2>/dev/null || die "cannot serve on 127.0.0.1:80 ($(tail -n 1 "$work/http.log"))"
 
-# Unattended install, then the patch boot; reboot ends QEMU. A node is redone from scratch
-# up to three times: the unpatched kernel has panicked mid-syspatch in nested test VMs.
+# Unattended install, then the patch boot; reboot ends QEMU. Redo a node from scratch
+# up to three times: the unpatched kernel panicked mid-syspatch in nested test VMs.
 run_qemu() {
 	limit=$1
 	shift
@@ -161,7 +161,7 @@ install_node() {
 		-device virtio-net-pci,netdev=n0 || { echo "build: $n: install failed or timed out; see $log" >&2; return 1; }
 	grep -q "CONVERGENT-INSTALL-SITE-OK $n" "$log" || { echo "build: $n: install.site did not finish; see $log" >&2; return 1; }
 
-	# Patch the real kernel with a build-only DHCP NIC before the offline smoke boot.
+	# Patch the real kernel (build-only DHCP NIC) before the offline smoke boot.
 	log=$out/$n.syspatch.log
 	echo "build: patching $n (console log: $log)"
 	run_qemu 900 -machine q35,accel=kvm -cpu host -smp 2 -m "$INSTALL_RAM" \

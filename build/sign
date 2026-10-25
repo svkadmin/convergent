@@ -24,7 +24,7 @@ for f in manifest guests.manifest; do
 	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' "$f" | sha256sum -c --quiet -) || die "the release does not match its $f"
 done
 # latest: what build/publish points the channel at; signed, so a mirror cannot pick the release.
-# It also names the guests.manifest (or none), which a mirror then cannot withhold or swap.
+# It also names guests.manifest (or none), so a mirror cannot withhold or swap it.
 guests=none
 [ ! -f "$dir/guests.manifest" ] || guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
 printf 'release %s\nsigned %s\nguests %s\n' "$release" "$(date -u +%s)" "$guests" >"$dir/latest"

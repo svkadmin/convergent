@@ -108,7 +108,7 @@ display_set() (
 		elif [ "$(cat "$work/decision")" = keep ]; then
 			[ -z "$timer" ] || kill "$timer" 2>/dev/null || :
 		fi
-		# If the timer claimed the rollback, let it finish before releasing the lock.
+		# If the timer claimed the rollback, wait for it before releasing the lock.
 		[ -z "$timer" ] || wait "$timer" 2>/dev/null || :
 		rm -rf "$work"
 	}
@@ -220,7 +220,7 @@ display_watch() (
 	noargs "$@"; sway; path "${XDG_RUNTIME_DIR:-}"
 	exec 8>"$XDG_RUNTIME_DIR/convergent-display-watch.lock"
 	flock -n 8 || exit 0
-	# Sway sends an initial tick after subscribing, closing the login/hotplug race.
+	# Sway's initial tick, sent after subscribing, closes the login/hotplug race.
 	swaymsg -m -r -t subscribe '["output","tick"]' | (
 		previous=
 		while IFS= read -r event; do

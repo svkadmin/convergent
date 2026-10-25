@@ -73,7 +73,7 @@ set_limit() {
 		return 1
 	fi
 	changed=1
-	# QoS recalculation is asynchronous; other requests may impose a lower cap.
+	# QoS recalculation is asynchronous; other requests may set a lower cap.
 	n=0
 	while :; do
 		current=
@@ -171,7 +171,7 @@ for p in "$cpu"/policy[0-9]*; do
 	[ ! -e "$p/energy_performance_preference" ] || policies=$((policies + 1))
 done
 [ -d "$cpu" ] || { echo 'power: no cpufreq in sysfs' >&2; rc=1; }
-# Publish only a successfully applied CPU profile, including manual overrides.
+# Publish only a successfully applied CPU profile, manual overrides included.
 profile=unknown
 [ "$rc" != 0 ] || [ "$policies" = 0 ] || profile=$src
 file=$(mktemp /run/.convergent-power.XXXXXX) || exit 1

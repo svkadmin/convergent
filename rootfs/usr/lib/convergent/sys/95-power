@@ -34,7 +34,7 @@ power_status() {
 		else echo '  Charge thresholds unsupported'; fi
 	done
 	[ "$battery" = 1 ] || echo 'No battery'
-	# Every sensor but the per-core ones (the package covers them); the bar's second number is the hottest.
+	# All sensors but the per-core ones (the package covers those); the bar's second number is the hottest.
 	# Dell's SMM driver repeats the labelled dell_ddv sensors without names.
 	ddv=; grep -qx dell_ddv /sys/class/hwmon/hwmon*/name 2>/dev/null && ddv=1
 	for f in /sys/class/hwmon/hwmon*/temp*_input; do

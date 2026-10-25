@@ -23,7 +23,7 @@ cleanup() {
 trap cleanup 0
 trap 'exit 0' HUP INT TERM
 
-# An explicit descriptor keeps stdin available to the background reader.
+# An explicit descriptor keeps stdin open for the background reader.
 exec 3<&0
 (
 	while IFS= read -r event; do
@@ -38,7 +38,7 @@ exec 3<&0
 reader=$!
 exec 3<&-
 
-# The first battery, if any, and the external supplies: a charge limit reports "Not charging" on mains.
+# First battery (if any) and external supplies: a charge limit reports "Not charging" on mains.
 bat= mains=
 for b in "$ps"/*; do
 	[ -r "$b/type" ] && read -r ty <"$b/type" || continue
@@ -47,7 +47,7 @@ for b in "$ps"/*; do
 	Mains | USB*) [ ! -r "$b/online" ] || mains="$mains $b/online" ;;
 	esac
 done
-# The booted release cannot change during the session.
+# The booted release cannot change mid-session.
 release='?'
 read -r cmdline </proc/cmdline
 for word in $cmdline; do
@@ -77,7 +77,7 @@ poll_inputs() {
 	timeout -k 1 2 ip -4 route show default 2>/dev/null |
 		awk '{for (i=1;i<NF;i++) if ($i == "dev") {print $(i+1); exit}}' >"$work/.route"
 	mv "$work/.route" "$work/route"
-	# The layout's code (SK, GB), looked up by the name sway reports in xkeyboard-config's list.
+	# Layout code (SK, GB), looked up by the name sway reports in xkeyboard-config's list.
 	layout='?'
 	if name=$(timeout -k 1 2 swaymsg -t get_inputs 2>/dev/null |
 		jq -er '[.[] | select(.type == "keyboard")][0].xkb_active_layout_name | select(type == "string")'); then
@@ -122,7 +122,7 @@ while :; do
 	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
 	memtime=$(stat -c %Y "$st/guestmem" 2>/dev/null) || memtime=0
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
-	# One formatter per frame; procfs/sysfs reads need no helper processes. UTF-8: the network
+	# One formatter per frame; procfs/sysfs reads need no helpers. UTF-8: the network
 	# name is cut by characters.
 	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v mains="$mains" -v now="$now" -v mtime="$mtime" \
 		-v memtime="$memtime" \

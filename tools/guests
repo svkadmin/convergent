@@ -31,7 +31,7 @@ svc_storage_check() (
         [ -z "$nested" ] || { fail "nested subvolumes in $path; remove them before starting svc"; return 1; }
     done
 )
-# Fresh connections only: a shared one could still reach a guest this tool just replaced.
+# Fresh connections only: a shared one could still reach a guest this tool replaced.
 rsh() { timeout 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" 9>&- 8>&- 7>&- 6>&- || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
 # Keep the locks until mutators finish, even if the updater is killed.
 locked() (
@@ -76,7 +76,7 @@ retry() {
 }
 running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running ]; }
 autorestart_hold() {
-    # Mark in the same update; imports and renames retain ownership of the override.
+    # Mark in the same update; imports and renames keep ownership of the override.
     ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
 }
 autorestart_clear() (
@@ -880,7 +880,7 @@ replace_root() {
     def|int) ;;
     *)
         seed_start "$guest"
-        # Nothing comes over from the old firewall; the host pushes its DNS data afterwards.
+        # Nothing comes over from the old firewall; the host pushes DNS data afterwards.
         case $guest in fw1|fw2) fw_check "$guest" release ;; esac
         ;;
     esac
@@ -1361,7 +1361,7 @@ mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
-# A killed seed writer may still have a guest disk mounted below its scratch directory.
+# A killed seed writer may leave a guest disk mounted below its scratch directory.
 for stale in "$state"/work.??????; do
     [ -d "$stale" ] && [ ! -L "$stale" ] || continue
     if mountpoint -q "$stale/root"; then umount "$stale/root" 9>&- || continue; fi

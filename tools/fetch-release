@@ -1,7 +1,7 @@
 #!/bin/sh
 # ARCHITECTURE 7.2
-# fetch-release: download the channel's newest signed release and write it to the other slot. Its
-# changed guests are staged for after the reboot, or applied now when the booted release is newest.
+# fetch-release: download the channel's newest signed release to the other slot. Its
+# changed guests wait for the reboot, or apply now if the booted release is newest.
 #   fetch-release [check]      check: only report whether a newer release exists
 #   fetch-release usb <dir>    stage a signed release from USB
 # Warn after 30 days until publication renews timestamps; future tolerance is 5 minutes.
@@ -90,7 +90,7 @@ download() {
 	mkdir -p "$(dirname "$dir/$f")"
 	if [ "$(have "$f")" != "$size" ]; then
 		echo "downloading $f"
-		# A dropped connection resumes on the next run; a refused or ignored range starts over.
+		# A dropped connection resumes next run; a refused or ignored range starts over.
 		if [ -n "$usb" ]; then
 			cp "$usb/$f" "$dir/$f" || die "cannot copy $f from USB"
 		else
@@ -135,7 +135,7 @@ expr "$highest" '>' "$booted" >/dev/null && floor=$highest || floor=$booted
 
 [ -n "$usb" ] || open_src "$host"
 
-# The work directory: root's, a real directory, nothing else in it but this release.
+# The work directory: root's, a real directory, holding only this release.
 private "$work"
 pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
 if [ -n "$usb" ]; then
@@ -151,7 +151,7 @@ fi
 read_pointer
 rm -rf "$pointer"
 uptodate="$current: release $booted (newest published: $latest, $signed_ago)"
-# Up to date, but the booted release's own guests can still be missing (a host-only update).
+# Up to date, but the booted release's own guests may still be missing (host-only update).
 sync=
 if ! expr "$latest" '>' "$floor" >/dev/null; then
 	[ "$latest" = "$booted" ] || { echo "$uptodate"; exit 0; }
@@ -315,7 +315,7 @@ for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
 	rm -rf "$_d"
 done
 if [ -n "$changed" ]; then
-	# The transport copies stay until here, so a failed run resumes without downloading again.
+	# Transport copies stay until here, so a failed run resumes without downloading again.
 	find "$dir/guests" -type f -name '*.zst' -delete
 	mv "$dir/guests" "$staged/$latest"
 	chmod 0700 "$staged/$latest"

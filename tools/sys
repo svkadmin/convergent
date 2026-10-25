@@ -198,7 +198,7 @@ status_preview() (
 	fi
 	cat "$states/$1"
 )
-# The status under its bold title, without the title it repeats ("Wi-Fi: x" under Wi-Fi).
+# Status under its bold title, without the repeated title ("Wi-Fi: x" under Wi-Fi).
 status_text() { awk -v t="$title" 'index($0, t ": ") == 1 {$0 = substr($0, length(t) + 3)} $0 != t' "$states/status-$area"; }
 dashboard() (
 	st=/run/convergent/status

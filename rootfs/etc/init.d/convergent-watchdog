@@ -5,7 +5,7 @@ description="Feeds the hardware watchdog until the boot is blessed"
 command=/bin/sh
 pidfile=/run/convergent-watchdog.pid
 
-# 20 feeds, 30 s apart: ten minutes from the start of this service.
+# 20 feeds, 30 s apart: ten minutes from this service's start.
 loop='
 s=
 trap "printf V >&3; kill \$s 2>/dev/null; exit 0" TERM

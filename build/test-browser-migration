@@ -18,7 +18,7 @@ for mode in normal interrupted detached renamed committed; do
 	done
 	for role in def int; do ic profile delete "browser-$role"; done
 	# New volumes came from guests init (or the preceding migration).
-	# Keep backups: the fourth mode also exercises pruning snapshots lost with these volumes.
+	# Keep backups: the fourth mode also tests pruning snapshots lost with these volumes.
 	for role in def int; do ic storage volume delete default "browser-$role-state"; done
 	for role in web admin; do
 		case $role in web) size=4GiB ;; admin) size=512MiB ;; esac

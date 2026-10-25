@@ -95,7 +95,7 @@ wifi_forget() {
 }
 wifi_test() {
 	noargs "$@"
-	# The host itself has no web access by design (pf); browsers do. So: the host's DNS, which goes
+	# The host has no web access by design (pf); browsers do. So: the host's DNS, which goes
 	# through the firewalls' DNS over TLS, then wan's own view of its uplink.
 	dns=0
 	if run timeout -k 1 10 getent hosts example.com; then echo 'DNS: ok'; else echo 'DNS: failed'; dns=1; fi

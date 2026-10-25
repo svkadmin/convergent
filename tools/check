@@ -28,7 +28,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     umask 022
     portal_locked=0
     flock -n 8 && portal_locked=1
-    # Parallel guests, sequential sessions within each guest: no cold ControlMaster race.
+    # Parallel guests, sequential sessions per guest: no cold ControlMaster race.
     (
         if instances=$(timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 2>/dev/null); then
             printf '%s\n' "$instances" | jq -er 'map(select(.status == "Running")) |
@@ -57,7 +57,7 @@ if [ "${1:-}:$#" = status:1 ]; then
         ) &
     done
     (
-        # Keep the former portal worker's 25-second budget across sequential WAN probes.
+        # Keep the old portal worker's 25-second budget across sequential WAN probes.
         read -r uptime rest </proc/uptime
         deadline=$((${uptime%.*} + 25))
         wan_probe() {
@@ -163,7 +163,7 @@ trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
 
-# The manifest is retained explicitly; never learn an accepted baseline during a check.
+# The manifest is kept explicitly; never learn an accepted baseline during a check.
 baseline=$state/accepted
 manifest=$baseline/manifest
 [ "${1:-}" != accept ] || manifest=$2/manifest
@@ -328,7 +328,7 @@ if [ -n "$radio" ]; then
     [ "$(find "/sys/bus/pci/devices/$radio/iommu_group/devices" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] || bad 'wan radio does not have a private IOMMU group'
 fi
 
-# These facts are also exported by facts boot; do not duplicate its metric series.
+# facts boot also exports these; do not duplicate its metric series.
 efi=/sys/firmware/efi/efivars
 guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
 sb=$(od -An -tu1 -j4 -N1 "$efi/SecureBoot-$guid" 2>>"$work/report" | tr -d ' \n')
@@ -346,7 +346,7 @@ jq -r '.[] | (.project // "default") as $p |
 jq -e 'all(.[]; .expanded_config["boot.autostart"] != "true" or .status == "Running")' \
     "$work/instances" >/dev/null || bad 'an autostart guest is stopped'
 
-# Match the exporter hash prefix exactly, while comparing the raw digest locally.
+# Match the exporter hash prefix exactly; compare the raw digest locally.
 for node in fw1 fw2; do
     for kind in pf rules; do
         expected=$(cat "$baseline/fw/$node.$kind.sha256" 2>/dev/null) || expected=

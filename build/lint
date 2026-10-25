@@ -29,7 +29,7 @@ if command -v shellcheck >/dev/null 2>&1; then
 	# POSIX sh is the target; init scripts use OpenRC's dialect.
 	for f in $scripts; do
 		case $(head -n 1 "$f") in *openrc-run*) continue ;; esac
-		# sys modules set title and actions for tools/sys, which sources them and calls their actions.
+		# sys modules set title and actions; tools/sys sources them and calls those actions.
 		e=; case $f in rootfs/usr/lib/convergent/sys/*) e=,SC2120 ;; esac
 		# Not followed: sourced config and helpers (1090, 2154), their variables (2034), a= b= lists (1007).
 		shellcheck -s sh -S warning -e "SC1007,SC1090,SC2034,SC2154$e" "$f" >/dev/null 2>&1 || bad "$f: shellcheck (run: shellcheck -s sh $f)"

@@ -1,7 +1,7 @@
 #!/bin/sh
 # image: assemble a release from the staging root (ARCHITECTURE section 6, steps 3 to 6):
 # the image root, the EROFS image with its dm-verity tree, the initramfs, and one UKI per slot.
-# Runs as root on the build host after build/packages. The UKIs are left unsigned; signing with
+# Runs as root on the build host after build/packages. The UKIs stay unsigned; signing with
 # the owner's offline key is the last step of a release (section 6, step 7).
 #   build/image [release]      release defaults to the UTC date and time
 set -eu
@@ -47,7 +47,7 @@ rm -rf "$root"
 cp -a "$staging" "$root"
 # Owned by root whatever the checkout's owner; modes kept.
 cp -R --preserve=mode,timestamps,links "$repo/rootfs/." "$root/"
-# A git archive tree is group-writable throughout; cronie then skips cron.d files, and /etc became 0775.
+# A git archive is group-writable throughout: cronie skips cron.d files, and /etc became 0775.
 (cd "$repo/rootfs" && find . ! -type l ! -perm -1000 -perm /022 -print0) | (cd "$root" && xargs -0r chmod go-w)
 ! find "$root/etc" "$root/usr/local" ! -type l ! -perm -1000 -perm /022 | grep . || die 'group- or world-writable files in the image (above)'
 rm -f "$root/etc/convergent/config.yaml"
@@ -81,11 +81,11 @@ sed -i "s/timeout 660 /timeout $((idle * 60 + 60)) /; s/timeout 600 /timeout $((
 if [ -n "$scale" ]; then
 	sed -i "/^include ~\/\.config\/sway\/config.d\/\*/i output * scale $scale" "$root/etc/sway/config.d/convergent"
 fi
-# The stock config's wallpaper is not installed (no wallpapers USE): its bg line would be a config error.
+# The stock wallpaper is not installed (no wallpapers USE), so its bg line would be a config error.
 sed -i '/^output \* bg /d' "$root/etc/sway/config"
 ! grep -q '^output \* bg ' "$root/etc/sway/config" || die 'the stock sway config still sets a wallpaper'
 # tty1 logs in through greetd (etc/greetd/config.toml); the other consoles keep agetty.
-# greetd's own messages go to syslog: on the console they draw over the greeter.
+# greetd's messages go to syslog: on the console they draw over the greeter.
 sed -i 's#^c1:12345:respawn:/sbin/agetty .* tty1 linux$#c1:12345:respawn:/usr/bin/greetd 2>\&1 | logger -t greetd#' "$root/etc/inittab"
 grep -qx 'c1:12345:respawn:/usr/bin/greetd 2>&1 | logger -t greetd' "$root/etc/inittab" || die 'tty1 does not run greetd'
 # Modes git does not keep.
@@ -115,7 +115,7 @@ kver=$(ls -d "$root"/usr/src/linux-* | sed 's|.*/linux-||')
 for m in "$root"/lib/modules/*; do [ "${m##*/}" = "$kver" ] || rm -rf "$m"; done
 [ "$(echo "$kver" | wc -l)" = 1 ] || die "expected one kernel in the image, found: $kver"
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
-# The kernel as it was really built: a cached package could predate build/kernel.config.
+# The kernel as actually built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
 for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y CONFIG_SWAP=y CONFIG_ZRAM=y \
 	CONFIG_BLK_DEV_NVME=y CONFIG_NVME_CORE=y CONFIG_VMD=y CONFIG_USB=y CONFIG_USB_PCI=y \
@@ -199,7 +199,7 @@ packages=$(
 	done
 )
 [ -n "$packages" ] || die "no image package inventory"
-# Super+d lists apps by their desktop entries: helpers that are not apps to pick go.
+# Super+d lists apps by desktop entry, so helpers that are not apps go.
 rm -f "$root"/usr/share/applications/footclient.desktop "$root"/usr/share/applications/foot-server.desktop \
 	"$root"/usr/share/applications/qemu.desktop
 rm -rf "$root"/usr/src "$root"/usr/include "$root"/usr/share/doc "$root"/usr/share/man \
@@ -218,9 +218,9 @@ for t in DMZ-Black DMZ-White; do cp -a "$BUILDER/usr/share/icons/$t" "$root/usr/
 # The compiler itself; gcc's package stays only for the C++ runtime libraries in $gccdir.
 find "$root/usr/bin" \( -name '*gcc*' -o -name '*g++*' -o -name 'c++' -o -name 'cc' -o -name 'cpp' \
 	-o -name 'x86_64-pc-linux-gnu-*' \) -delete
-# Unused parts of needed packages (measured on release 202610181918): the compiler's own files,
-# gcc runtimes nothing links, Incus' extra tools and foreign-OS agents, protoc, the SSH server (the
-# host runs none) and QEMU firmware for other architectures. The library check below backs this.
+# Unused parts of needed packages (measured on release 202610181918): compiler files,
+# gcc runtimes nothing links, Incus' extra tools and foreign-OS agents, protoc, the SSH server
+# (the host runs none), and QEMU firmware for other architectures. The library check below backs this.
 rm -rf "$root"/usr/x86_64-pc-linux-gnu/gcc-bin "$root"/usr/share/gcc-data "$gccdir/32" \
 	"$root"/usr/bin/incus-user "$root"/usr/bin/incus-benchmark "$root"/usr/bin/incus-migrate \
 	"$root"/usr/bin/incus-simplestreams "$root"/usr/bin/lxc-to-incus "$root"/usr/bin/lxd-to-incus \
@@ -246,7 +246,7 @@ grep -v '^#' "$root/usr/lib/convergent/etc-state" | while read -r entry; do
 	install -m 0644 /dev/null "$root/etc/$entry"
 done
 ln -sfn ../proc/self/mounts "$root/etc/mtab"   # as systemd-tmpfiles makes it
-# auditd loads audit.rules as it is; the fragments are put together here, as augenrules would.
+# auditd loads audit.rules as is; the fragments are joined here, as augenrules would.
 cat "$root"/etc/audit/rules.d/*.rules >"$root/etc/audit/audit.rules"
 chmod 0600 "$root/etc/audit/audit.rules"
 # USB decisions share auditd's local log and existing syslog forwarding.

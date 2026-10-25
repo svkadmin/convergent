@@ -10,7 +10,7 @@ while [ ! -e /dev/dri/card0 ] && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); don
 	die "state: more than one disk has a cv-state partition; detach the other"
 
 # Three passphrase attempts; failure powers off.
-# rd.debug traces every command: none with the passphrase.
+# rd.debug traces every command; no trace may hold the passphrase.
 { set +x; } 2>/dev/null
 tries=0
 while :; do

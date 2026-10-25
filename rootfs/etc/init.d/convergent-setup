@@ -35,7 +35,7 @@ start() {
 	ebegin "Creating the guests in the background; the bar shows SETUP until done"
 	mkdir -p "$st"
 	echo running >"$st/setup"
-	# After the release is marked good (30 min at most); a second try resumes where the first stopped.
+	# After the release is marked good (30 min at most); a retry resumes where the first stopped.
 	nohup sh -c '
 		n=0
 		until [ -e /run/openrc/started/convergent-bless ]; do

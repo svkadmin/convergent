@@ -183,7 +183,7 @@ revoke() {
 	case $line in *\ hash\ \"*\"*) ;; *) die 'not a device-specific rule; enrol individual devices first' ;; esac
 	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
 	ask 'Remove this allowance and reapply the remaining policy? This can disconnect input or storage.'
-	# A specific deny also defeats any overlapping allowance left in an older policy.
+	# A specific deny also defeats any overlapping allowance in an older policy.
 	usbguard append-rule -a 0 "block ${line#*: allow }" >/dev/null || die 'cannot block device'
 	usbguard remove-rule "$1" || die 'cannot remove rule'
 	rc-service usbguard restart || die 'rule removed; USBGuard restart failed'
@@ -191,7 +191,7 @@ revoke() {
 }
 
 camera_unload() {
-	# Sensor modules can hold the video core even after the controller has gone.
+	# Sensor modules can hold the video core after the controller is gone.
 	for holder in "/sys/module/$1/holders/"*; do
 		[ -e "$holder" ] || continue
 		camera_unload "${holder##*/}" || return 1
@@ -233,7 +233,7 @@ camera() {
 			done
 		done
 	else
-		# Block new loads before unloading; never force a module used by an application.
+		# Block new loads before unloading; never force a module an application uses.
 		failed=0
 		camera_unload videodev || failed=1
 		for m in uvcvideo intel_ipu6_isys intel_ipu6 ipu3_imgu ipu3_cio2 atomisp videodev; do

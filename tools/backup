@@ -45,7 +45,7 @@ exec 9>/run/convergent/backup.lock
 flock -n 9 || die 'another backup is running'
 exec 8>/run/convergent/guests.lock
 flock -n 8 || die 'a guest operation is running'
-# Browser sessions hold this shared; their state volumes are not exported live.
+# Browser sessions hold this shared; state volumes are not exported live.
 exec 6>/run/convergent/browser-update.lock
 flock -n 6 || die 'close the browsers first'
 base=$dest/convergent-backups
@@ -69,12 +69,12 @@ trap 'exit 1' HUP INT TERM
 rm -rf "$base"/.partial.??????
 work=$(mktemp -d "$base/.partial.XXXXXX")
 
-# Snapshot home on the same Btrfs filesystem; archive writable /etc separately.
+# Snapshot home on the same Btrfs; archive writable /etc separately.
 [ "$(findmnt -nro FSTYPE -T /home)" = btrfs ] &&
     [ "$(findmnt -nro UUID -T /home)" = "$(findmnt -nro UUID -T /var)" ] || die '/home and /var must share Btrfs'
 btrfs subvolume list -o /home >"$work/subvolumes" || die 'cannot inspect /home subvolumes'
 [ ! -s "$work/subvolumes" ] || die 'nested Btrfs subvolumes under /home are not backed up; refusing'
-# Keep snapshots outside release generations, including after a power loss.
+# Keep snapshots outside release generations, even after a power loss.
 state_root=/run/convergent/backup-state
 mkdir -p "$state_root"
 mountpoint -q "$state_root" && umount "$state_root"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 3.2; read-only uplink facts for the host (ssh wan diag): no command takes input.
-# wan itself never talks upstream (output chain), so reachability is tested from the firewalls.
+# wan never talks upstream (output chain), so the firewalls test reachability.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 echo "== addresses"; ip -4 -o addr | awk '{print $2, $4}'
 echo "== routes"; ip -4 route

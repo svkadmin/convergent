@@ -34,13 +34,13 @@ while read -r name repository version sha rest; do
     if alpine_apk search --exact --quiet "$name" | grep -q .; then
         alpine_apk add "$name"
     else
-        # Not in 3.24: the pinned signed edge build; dependencies from 3.24. Edge keeps only its
-        # newest build, so a moved edge stops here until the pin in packages is updated.
+        # Not in 3.24: fetch the pinned signed edge build; its dependencies come from 3.24.
+        # Edge keeps only its newest build, so a moved edge stops here until its pin is updated.
         [ -n "$version" ] && [ -n "$sha" ] || die "$name: no version and sha256 pin in packages"
         chroot "$mini" /sbin/apk --repositories-file /dev/null \
             --repository "$ALPINE_MIRROR/edge/$repository" \
             --no-cache fetch --output /apks "$name" || die "cannot fetch $name from edge"
-        # Fetch by name (a version constraint makes apk resolve dependencies edge alone lacks).
+        # Fetch by name; a version constraint makes apk resolve dependencies edge alone lacks.
         [ -f "$mini/apks/$name-$version.apk" ] || die "$name $version is no longer on edge; update its pin"
         [ "$(sha256sum <"$mini/apks/$name-$version.apk" | cut -d' ' -f1)" = "$sha" ] ||
             die "$name $version does not match its pinned sha256"

@@ -29,8 +29,8 @@ if [ "${1:-}" = retry ]; then
 	done
 fi
 
-# A wired uplink (USB NIC) has no hotplug handler here: bring it up once it appears, unless
-# its lease was refused; ifup is a no-op for an interface already up.
+# A wired uplink (USB NIC) has no hotplug handler: bring it up once it appears, unless
+# its lease was refused; ifup does nothing for an interface already up.
 for ifc in $UP_IFS; do
 	[ "$ifc" != "$WIFI_IF" ] || continue
 	if [ ! -e "/sys/class/net/$ifc" ]; then
@@ -39,7 +39,7 @@ for ifc in $UP_IFS; do
 		continue
 	fi
 	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
-	# A quick replug may occur between checks, leaving ifup's state but no address.
+	# A quick replug between checks can leave ifup's state but no address.
 	if ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 	fi

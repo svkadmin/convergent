@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 3.5, 4.1, 4.2, 9, 10, 12; install root:root 0755 as /usr/local/sbin/browser.
-# Narrow sudo is smaller than a certificate/project setup and grants no general Incus access.
+# Narrow sudo is smaller than a certificate/project setup; grants no general Incus access.
 set -eu
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH LC_ALL=C
@@ -41,7 +41,7 @@ case $display in /*) ;; *) display=$runtime/$display ;; esac
 [ -S "$display" ] && [ -S "$ipc" ] && [ -S "$runtime/pipewire-0" ] || die 'missing session sockets'
 cd /
 ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
-# Name, status and type only: a full list waits on each VM for state the agentless guests never give.
+# Name, status and type only: a full list waits on each VM for state agentless guests lack.
 instances_json() { incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
 owner() {
     set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs env -i \
@@ -76,7 +76,7 @@ portal_on() { /usr/local/sbin/portal status | grep -qx 'portal: on'; }
 wait_socket() {
     attempts=0
     until [ -S "$1" ] && [ ! -L "$1" ]; do
-        # The log goes with $run on exit: its last lines travel in the message.
+        # The log goes with $run on exit; its last lines go in the message.
         kill -0 "$2" 2>/dev/null || die "socket provider exited: $1: $(tail -n 2 "$3" 2>/dev/null | tr '\n' ' ')"
         attempts=$((attempts + 1))
         [ "$attempts" -lt 50 ] || die "socket timed out: $1"
@@ -153,12 +153,12 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
-# Only fixed, root-owned paths are touched by the privileged half.
+# The privileged half touches only fixed, root-owned paths.
 rm -rf -- "$run"
 install -d -o root -g "$gid" -m 0750 "$run"
 install -d -o root -g "$gid" -m 0730 "$run/sockets"
 install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
-# The container first: a first start creates it, which takes long, and the sockets below should not
+# The container first: a first start creates it slowly, and the sockets below should not
 # wait through that unused (a first browser once found its Wayland listener gone).
 instances=$(instances_json)
 if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
@@ -173,7 +173,7 @@ if [ -n "$portal_mode" ]; then
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    # The socket paths are this launcher's, not the profile's: profiles stay as installed until
+    # Socket paths are this launcher's, not the profile's: profiles stay as installed until
     # a browser image update, and older ones name other paths.
     # Fixed words ($name is def, int, tmp-portal or tmp-NN), split on purpose; "$@" is the URLs.
     sockets="-d wayland,source=$run/sockets/wayland-0 -d wayland,required=false -d pipewire,source=$run/sockets/pulse-0 -d pipewire,required=false"
@@ -247,11 +247,11 @@ if [ "$role" = int ]; then
     grafana=1; ic exec svc -- rc-service grafana start
 fi
 [ -z "$portal_mode" ] || portal_on || die 'portal mode ended during startup'
-# A dead proxy would show only as a confusing Chromium error ("Connection refused").
+# A dead proxy shows only as a confusing Chromium error ("Connection refused").
 for child in $children; do
     kill -0 "$child" 2>/dev/null || die "the Wayland or audio proxy exited before the browser started (logs: $run/*.log)"
 done
-# Drain guest output while retaining only a bounded tail for failure diagnostics.
+# Drain guest output, keeping only a bounded tail for failure diagnostics.
 mkfifo -m 600 "$run/output"
 tail -c 65536 9>&- 8>&- 7>&- 6>&- <"$run/output" >"$run/browser.log" &
 capture=$!

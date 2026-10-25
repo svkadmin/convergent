@@ -10,7 +10,7 @@ esp=
 tmp=
 mounted=
 
-# Warning level: /var/log/messages keeps warnings and up, and slot events are few.
+# Warning level: /var/log/messages keeps warnings and up; slot events are few.
 die() { logger -p user.err -t slot "$*" 2>/dev/null || :; echo "slot: $*" >&2; exit 1; }
 log() { logger -p user.warning -t slot "$*" 2>/dev/null || :; echo "slot: $*"; }
 usage() { echo "usage: slot bless | status | write <release-dir> | rescue-write <release-dir> [a|b|inactive] | rescue-next <a|b>" >&2; exit 2; }
@@ -20,7 +20,7 @@ usage() { echo "usage: slot bless | status | write <release-dir> | rescue-write 
 exec 9>/run/convergent-slot.lock
 flock -w 120 9 || die "another slot is running"
 
-# Whatever this run mounted is unmounted on the way out.
+# Unmount whatever this run mounted, on the way out.
 cleanup() {
 	for d in $mounted; do umount "$d" 2>/dev/null || :; done
 	[ -z "$esp" ] || rmdir "$esp" 2>/dev/null || :
@@ -83,7 +83,7 @@ healthy() {
 		log "services of the default runlevel are not running"
 		return 1
 	fi
-	# From the boot runlevel only the protections; its stock one-shots may differ per machine.
+	# From the boot runlevel only the protections; stock one-shots may differ per machine.
 	for svc in convergent-firewall usbguard auditd apparmor; do
 		rc-service -q "$svc" status || { log "$svc is not running"; return 1; }
 	done
@@ -192,7 +192,7 @@ status() {
 write() {
 	dir=$1
 	[ -f "$dir/manifest" ] || die "no manifest in $dir"
-	# Everything after the check is read from this private copy, never again from $dir.
+	# Everything after the check reads this private copy, never $dir again.
 	tmp=$(mktemp -d /run/slot-write.XXXXXX)
 	m=$tmp/manifest
 	cp "$dir/manifest" "$m" || die "cannot read the manifest"

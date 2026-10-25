@@ -56,7 +56,7 @@ send)
 	fi
 	[ -f "$keys/debug.key" ] && [ -f "$keys/debug.crt" ] || die "incomplete debug recipient in $keys"
 	chmod 0600 "$keys/debug.key"
-	# Check the reusable pair before publishing anything encrypted to it.
+	# Check the reusable key pair before encrypting anything to it.
 	openssl pkey -in "$keys/debug.key" -pubout >"$tmp/key.pub"
 	openssl x509 -in "$keys/debug.crt" -pubkey -noout >"$tmp/cert.pub"
 	cmp -s "$tmp/key.pub" "$tmp/cert.pub" || die "debug recipient key and certificate differ"

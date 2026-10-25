@@ -10,7 +10,7 @@ read_owned() {
 }
 
 wan=${1:?wan address required}
-# Probe from our own transit address: replies to the CARP address follow the role this probe decides.
+# Probe from our own transit address: CARP-address replies follow the role this probe decides.
 src=
 while [ -z "$src" ]; do
 	src=$(ifconfig | awk -v net="${wan%.*}." '/^[a-z]/ {carp = $1 ~ /^carp/} $1 == "inet" && !carp && index($2, net) == 1 {print $2; exit}')
@@ -30,7 +30,7 @@ while :; do
 		[ "$good" -ge 3 ] || good=$((good + 1))
 		[ "$good" -lt 3 ] || want=0
 	else
-		# One lost round can be a busy second; the second in a row demotes.
+		# One lost round may be a busy second; two in a row demote.
 		good=0 lost=$((lost + 1))
 		[ "$lost" -lt 2 ] || want=128
 	fi
@@ -46,6 +46,6 @@ while :; do
 		read_owned
 		logger -t wan-watch "wanwatch $op $step" || :
 	fi
-	# The round after a first loss follows at once.
+	# After a first loss, the next round runs at once.
 	[ "$good" -ne 0 ] || [ "$lost" = 1 ] || sleep 1
 done

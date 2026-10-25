@@ -38,7 +38,7 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 		/defer:/ { df = ($0 ~ /defer: on/) }
 		END { printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n", up, df }'
 
-	# pf: enabled, states against the limit, counters, and what is loaded.
+	# pf: enabled, states and limit, counters, and the loaded ruleset.
 	pfctl -si 2>/dev/null | awk '
 		/^Status:/ { printf "convergent_pf_enabled %d\n", ($2 == "Enabled") }
 		/current entries/ && !done { printf "convergent_pf_states %s\n", $3; done = 1 }

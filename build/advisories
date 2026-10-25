@@ -1,5 +1,5 @@
 #!/bin/sh
-# Published fixes for release inputs; --gate is required by publish.
+# Published fixes for release inputs; publish runs this with --gate.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -140,7 +140,7 @@ def glsa_scan(manifest, directory):
             require(affected is not None, 'missing affected element')
             if affected.get('type') == 'infrastructure':
                 continue
-            # A few old GLSAs name no package or range: they cannot match anything installed.
+            # Some old GLSAs name no package or range, so they match nothing installed.
             for node in affected.findall('package'):
                 name, arches = node.attrib['name'], node.attrib['arch']
                 require(re.fullmatch(r'\*|[-_a-z0-9 ]+', arches), 'invalid architecture list')
@@ -265,7 +265,7 @@ def targets(release, gate):
     selected = re.findall(r'^guest (\S+) [0-9a-f]{64}$', text, re.M)
     require(len(selected) == len(set(selected)) and
             all(g in ('fw', 'wan', 'svc', 'browser') for g in selected), 'invalid guest list')
-    # An inventory must be among the payloads verified by publish, not a local sidecar.
+    # The inventory must be a payload publish verifies, not a local sidecar.
     payloads = set(re.findall(r'^[0-9a-f]{64}  (guests/\S+)$', text, re.M))
     require(set(p.split('/')[1] for p in payloads) == set(selected), 'guest payload/list mismatch')
     for guest in selected:
@@ -493,7 +493,7 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
     def alpine_pin():
         match = re.fullmatch(r'alpine-minirootfs-(3\.[0-9]+\.[0-9]+)-x86_64\.tar\.gz', minirootfs)
         require(match and match[1].rsplit('.', 1)[0] == branch.lstrip('v'), 'invalid minirootfs pin/branch')
-        # Read the published YAML's scalar version fields; no YAML dependency on the host.
+        # Read the scalar version fields of the published YAML; no YAML library needed.
         versions = re.findall(r'^\s*version:\s*[\'\"]?(3\.[0-9]+\.[0-9]+)[\'\"]?\s*$',
                               source('latest-releases.yaml'), re.M)
         require(versions and all(v.rsplit('.', 1)[0] == branch.lstrip('v') for v in versions),
@@ -594,7 +594,7 @@ fetch() {
 python_run python3 - sources "$release" "$guests" "$mode" >"$work/sources" || die "invalid release inventories"
 while read -r name url; do fetch "$name" "$url"; done <"$work/sources"
 
-# Publish a complete GLSA generation; a failed sync must not replace the last fetch.
+# Publish a complete GLSA set; a failed sync must not replace the last fetch.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")
 if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$glsa"; then
 	previous=$(readlink "$cache/glsa" 2>/dev/null || true)
@@ -602,7 +602,7 @@ if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$gl
 	mv -Tf "$work/glsa-link" "$cache/glsa"
 	glsa=
 	case "$previous" in .glsa.*) case "$previous" in */*) ;; *) rm -rf "${cache:?}/$previous" ;; esac ;; esac
-	# Pure Portage matching needs no proc/dev mounts and never queries the builder's VDB.
+	# Portage matching needs no proc or dev mounts and never reads the builder's VDB.
 	if inside=$(mktemp -d "$BUILDER/tmp/advisories.XXXXXX") &&
 		cp -R "$cache/glsa/." "$inside/" &&
 		cp "$release/packages" "$inside/manifest" &&

@@ -1,8 +1,8 @@
 #!/bin/sh
 # publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
 # <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
-# free tier is 10 GB). Only the five host files go up, and guests.manifest with its signature and
-# the guest files it lists; the bucket is public.
+# free tier is 10 GB). Only the five host files, guests.manifest and its signature go up,
+# and the guest files it lists; the bucket is public.
 #   CHANNEL=beta build/publish <release-dir>      override the build.conf default
 set -eu
 export LC_ALL=C
@@ -65,7 +65,7 @@ s3() {
 exec 9>/run/convergent-publish.lock
 flock -n 9 || die "another publish is running"
 
-# The bucket as "size key" lines (a key may hold spaces); one page is plenty for what this keeps.
+# The bucket as "size key" lines (keys may hold spaces); one page covers what this keeps.
 list=$(s3 "$ep?list-type=2&max-keys=1000") || die "cannot list the bucket"
 case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket" ;; esac
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
