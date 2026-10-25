@@ -337,7 +337,7 @@ make_broken_svc() {
 test_guest_delivery() {
 	delivery=$BUILDER$work/delivery
 	mkdir -p "$delivery/build" "$delivery/keys" "$delivery/release"
-	cp "$here/guests" "$here/sign" "$here/build.conf" "$delivery/build/"
+	cp "$here/guests" "$here/sign" "$here/release-check" "$here/build.conf" "$delivery/build/"
 	chmod 0755 "$delivery/build/sign"
 	# Test signing uses its own key; the build host's channel key may be offline.
 	sed -i "s|^keys=.*|keys=$delivery/keys|" "$delivery/build/guests"
@@ -406,17 +406,17 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 unset CONVERGENT_UNSIGNED
 update=/var/lib/convergent/test-update
 r=0
-status=$(slot status) || r=1
+status=$(slot status) || { echo 'CV-UPDATE failed: slot status'; r=1; }
 echo "$status"
 if [ -f "$update/written" ]; then
-	printf '%s\n' "$status" | grep -qx "booted  $new  slot b" || r=1
-	printf '%s\n' "$status" | grep -qx "slot b  $new  good" || r=1
-	printf '%s\n' "$status" | grep -qx "good    $new" || r=1
+	printf '%s\n' "$status" | grep -qx "booted  $new  slot b" || { echo 'CV-UPDATE failed: booted new slot b'; r=1; }
+	printf '%s\n' "$status" | grep -qx "slot b  $new  good" || { echo 'CV-UPDATE failed: slot b good'; r=1; }
+	printf '%s\n' "$status" | grep -qx "good    $new" || { echo 'CV-UPDATE failed: good new release'; r=1; }
 	sync
 	echo CV-UPDATE-SIG-RESULT "$r"
 	exit "$r"
 fi
-printf '%s\n' "$status" | grep -qx "booted  $old  slot a" || r=1
+printf '%s\n' "$status" | grep -qx "booted  $old  slot a" || { echo 'CV-UPDATE failed: booted old slot a'; r=1; }
 refuse() {
 	if slot write "$update/$1" >"$update/refusal" 2>&1; then
 		cat "$update/refusal"
@@ -430,38 +430,11 @@ refuse() {
 refuse unsigned 'the release is not signed'
 refuse tampered 'the manifest signature does not verify'
 refuse wrongkey 'the manifest signature does not verify'
-sh -eu <<'CHECK' || r=1
-work=$(mktemp -d)
-trap 'rm -rf "$work"' 0
-sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' /usr/local/sbin/slot >"$work/finish"
-for fault in none sync1 sync2 esp state; do
-	if (
-		tmp=$work esp=$work/esp stm=$work/state linux=EFI/Linux new=123 inactive=b
-		mkdir -p "$esp/$linux" "$stm"
-		echo UKI >"$tmp/uki"
-		mounted="$esp $stm"
-		count=0
-		sync() { [ "$1" = -f ] && [ "$2" = "$esp" ] || exit 2; count=$((count + 1)); [ "$fault" != "sync$count" ]; }
-		umount() { echo "unmount $1"; [ "$1" != "$work/$fault" ]; }
-		die() { echo "$*"; exit 1; }
-		log() { echo "$*"; }
-		. "$work/finish"
-		[ -z "$mounted" ]
-	) >"$work/out"; then
-		[ "$fault" = none ]
-		[ "$(grep -c '^unmount ' "$work/out")" = 2 ]
-		grep -q 'release 123 is in slot b' "$work/out"
-	else
-		[ "$fault" != none ]
-		if grep -q 'release 123 is in slot b' "$work/out"; then exit 1; fi
-	fi
-done
-CHECK
 if slot write "$update/good"; then echo CV-SIG good written
 else echo CV-SIG good FAILED; r=1; fi
-status=$(slot status) || r=1
+status=$(slot status) || { echo 'CV-UPDATE failed: slot status after write'; r=1; }
 echo "$status"
-printf '%s\n' "$status" | grep -qxF "slot b  $new  +3" || r=1
+printf '%s\n' "$status" | grep -qxF "slot b  $new  +3" || { echo 'CV-UPDATE failed: slot b tries'; r=1; }
 if [ "$r" = 0 ]; then
 	touch "$update/written" && sync && reboot && exit 0
 fi
@@ -1649,7 +1622,34 @@ t getent passwd greetd
 t sh -c '[ "$(stat -c "%U:%G %a" /var/log/btmp)" = "root:utmp 600" ]'
 t sh -c '[ "$(sysctl -n kernel.panic)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops)" = 1 ]'
 t grep -q ' 2 restart_on_error restart_on_corruption"' /proc/cmdline
-t sh -c 'dmsetup table /dev/dm-0 | grep -Eq " verity .* 2 (restart_on_error restart_on_corruption|restart_on_corruption restart_on_error)$"'
+t sh -c 'dmsetup table vroot | grep -Eq " verity .* 2 (restart_on_error restart_on_corruption|restart_on_corruption restart_on_error)"'
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' /usr/local/sbin/slot >"$work/finish"
+for fault in none sync1 sync2 esp state; do
+	if (
+		tmp=$work esp=$work/esp stm=$work/state linux=EFI/Linux new=123 inactive=b
+		mkdir -p "$esp/$linux" "$stm"
+		echo UKI >"$tmp/uki"
+		mounted="$esp $stm"
+		count=0
+		sync() { [ "$1" = -f ] && [ "$2" = "$esp" ] || exit 2; count=$((count + 1)); [ "$fault" != "sync$count" ]; }
+		umount() { echo "unmount $1"; [ "$1" != "$work/$fault" ]; }
+		die() { echo "$*"; exit 1; }
+		log() { echo "$*"; }
+		. "$work/finish"
+		[ -z "$mounted" ]
+	) >"$work/out"; then
+		[ "$fault" = none ]
+		[ "$(grep -c '^unmount ' "$work/out")" = 2 ]
+		grep -q 'release 123 is in slot b' "$work/out"
+	else
+		[ "$fault" != none ]
+		if grep -q 'release 123 is in slot b' "$work/out"; then exit 1; fi
+	fi
+done
+CHECK
 for file in /etc/cron.d/convergent /etc/anacrontab /etc/cron.d/0hourly; do
 	[ "$file" != /etc/cron.d/0hourly ] || [ -f "$file" ] || continue
 	t grep -qx 'MAILTO=""' "$file"
