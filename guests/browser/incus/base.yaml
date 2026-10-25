@@ -20,6 +20,8 @@ config:
   security.idmap.isolated: "true"
   security.idmap.size: "65536"
   limits.cpu: "2"
+  # Below the default 10: a busy browser never delays the firewalls' CARP adverts.
+  limits.cpu.priority: "5"
   limits.memory: 2GiB
   limits.memory.swap: "false"
   limits.processes: "512"
