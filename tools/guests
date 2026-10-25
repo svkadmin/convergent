@@ -980,6 +980,7 @@ rebuild() {
         [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
         if ! carp "$peer" MASTER; then
             running "$1" || die "$peer must be MASTER on all six segments before rebuilding $1"
+            starting=$1
             stop_guest "$1"
             retry carp "$peer" MASTER || die "$peer did not take over all six segments"
         fi
@@ -1373,6 +1374,7 @@ if [ "$1" = status ]; then
     exit
 fi
 mkdir -p "$state" /run/convergent
+[ -w "$state" ] || die 'state disk lost or read-only: reboot'
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
