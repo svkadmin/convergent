@@ -1190,7 +1190,7 @@ code=$?
 echo CV-UPDATE wan-exit "$code"
 starts=$(grep -c '^+ ic start wan$' /var/log/guests-update-wan-exit.log)
 # The injected refusal plus a real one (the old QEMU letting go) still fits the three tries.
-[ "$code" = 0 ] && [ "$(grep -c 'forcing wan off' /var/log/guests-update-wan-exit.log)" = 1 ] &&
+[ "$code" = 0 ] && [ "$(grep -c '^guests: graceful stop failed;' /var/log/guests-update-wan-exit.log)" = 1 ] &&
     [ -e "$release/wan-start-refused" ] && [ "$starts" -ge 2 ] && [ "$starts" -le 3 ] &&
     ! grep -q 'restoring wan/' /var/log/guests-update-wan-exit.log ||
     { tail -n 15 /var/log/guests-update-wan-exit.log; bad $LINENO; }
@@ -1215,7 +1215,7 @@ cat /usr/local/sbin/guests >>"$release/guests-wan-slow"
 sh -x "$release/guests-wan-slow" update wan "$release/guests/wan" 2>/var/log/guests-update-wan-slow.log
 code=$?
 echo CV-UPDATE wan-slow "$code"
-[ "$code" = 0 ] && grep -q 'forcing wan off' /var/log/guests-update-wan-slow.log &&
+[ "$code" = 0 ] && grep -q '^guests: graceful stop failed;' /var/log/guests-update-wan-slow.log &&
     ! grep -q 'restoring wan/' /var/log/guests-update-wan-slow.log ||
     { tail -n 15 /var/log/guests-update-wan-slow.log; bad $LINENO; }
 # Who still holds the guests lock, if anyone.
@@ -1305,6 +1305,8 @@ FAULT
 done
 # Killed at each step of an update: the next apply rebuilds svc from its previous image exactly as
 # the first pass would have, re-seeds it, and leaves the journal and the state snapshots as before.
+# Markers in all three state volumes: what the candidate wrote is gone, what was there is back.
+ic exec svc -- sh -c 'touch /var/lib/victoria-metrics/cv-before /var/lib/victoria-logs/cv-before /var/lib/grafana/cv-before' || bad $LINENO
 for step in journal rebuilt seeded rolledback; do
     for volume in svc-metrics svc-logs svc-grafana; do
         ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.before"
@@ -1312,6 +1314,9 @@ for step in journal rebuilt seeded rolledback; do
     awk -v step="$step" '{print}
         step == "journal" && /^    mv "\$work\/pending" "\$state\/pending"$/ {print "    kill -KILL \"$$\""}
         step == "rebuilt" && /^    locked ic rebuild "\$2" "\$1" \|\| return$/ {print "    kill -KILL \"$$\""}
+        (step == "seeded" || step == "rolledback") && /^        seed_start "\$guest"$/ {
+            print "        ic exec svc -- sh -c \"rm -f /var/lib/victoria-metrics/cv-before /var/lib/victoria-logs/cv-before /var/lib/grafana/cv-before; touch /var/lib/victoria-metrics/cv-after /var/lib/victoria-logs/cv-after /var/lib/grafana/cv-after\""
+        }
         step == "seeded" && /^        seed_start "\$guest"$/ {print "        kill -KILL \"$$\""}
         step == "rolledback" && /^        seed_start "\$guest"$/ {print "        die \"injected failure after seeding\""}
         step == "rolledback" && /^            rebuild_root "\$guest" "\$image" \|\| return$/ {print "            kill -KILL \"$$\""}
@@ -1326,8 +1331,62 @@ for step in journal rebuilt seeded rolledback; do
         ic storage volume snapshot list default "$volume" --format csv -c n | sort >"$release/$volume.after"
         cmp "$release/$volume.before" "$release/$volume.after" || bad $LINENO
     done
+    ic exec svc -- sh -c 'test -e /var/lib/victoria-metrics/cv-before && test -e /var/lib/victoria-logs/cv-before && test -e /var/lib/grafana/cv-before &&
+        test ! -e /var/lib/victoria-metrics/cv-after && test ! -e /var/lib/victoria-logs/cv-after && test ! -e /var/lib/grafana/cv-after' || bad $LINENO
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
+# A rollback whose seed check fails must keep the journal: the seed chain reports its failure.
+cat >"$release/guests-seed-fail" <<'FAULT'
+incus() {
+    case "$*" in *' exec svc -- cat /var/lib/convergent/seeded')
+        [ ! -e /var/lib/convergent/test-release/rollback-phase ] || return 1 ;;
+    esac
+    command incus "$@"
+}
+FAULT
+awk '{print} /^        seed_start "\$guest"$/ {print "        touch /var/lib/convergent/test-release/rollback-phase; die \"injected failure after seeding\""}' /usr/local/sbin/guests >>"$release/guests-seed-fail"
+rm -f "$release/rollback-phase"
+GUEST_SVC_TIMEOUT=10 sh -x "$release/guests-seed-fail" update svc "$release/guests/svc" 2>/var/log/guests-update-seed-fail.log
+[ "$?" = 1 ] && [ -f "$state/pending" ] && grep -q 'pending journal retained' /var/log/guests-update-seed-fail.log || bad $LINENO
+rm -f "$release/rollback-phase"
+/usr/local/sbin/guests apply >/var/log/guests-update-seed-fail-resume.log 2>&1 || bad $LINENO
+[ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
+ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+# A snapshot made by hand blocks a rebuild: refused before the guest is touched, with the command.
+ic snapshot create svc byhand || bad $LINENO
+/usr/local/sbin/guests update svc "$release/guests/svc" >/var/log/guests-update-snapshot.log 2>&1 && bad $LINENO
+grep -q 'byhand' /var/log/guests-update-snapshot.log && grep -q 'snapshot delete svc <name>' /var/log/guests-update-snapshot.log || bad $LINENO
+incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
+ic snapshot delete svc byhand || bad $LINENO
+# A power loss inside a rebuild, between dropping and recreating the root volume record: refused
+# with the exact repair, which then works (the record only; the disk is still there here).
+ic stop svc || bad $LINENO
+sql() { incus --force-local admin sql global "$1"; }
+sql "DELETE FROM storage_volumes WHERE name = 'svc' AND type = 0 AND project_id = (SELECT id FROM projects WHERE name = 'default')" || bad $LINENO
+torn=guests-$(date -u +%Y%m%dT%H%M%S)-torn
+cp /var/lib/convergent/ssh/known_hosts "$state/known_hosts.before" || bad $LINENO
+echo "svc $torn $before" >"$state/pending" && sync || bad $LINENO
+/usr/local/sbin/guests apply >/var/log/guests-update-torn.log 2>&1 && bad $LINENO
+stmt=$(sed -n 's/.*sudo incus admin sql global "\([^"]*\)".*/\1/p' /var/log/guests-update-torn.log | head -n 1)
+[ -n "$stmt" ] && [ -f "$state/pending" ] && grep -q "rebuild $before svc; sys guests update" /var/log/guests-update-torn.log || bad $LINENO
+sql "$stmt" || bad $LINENO
+ic rebuild "$before" svc || bad $LINENO
+/usr/local/sbin/guests apply >/var/log/guests-update-torn-resume.log 2>&1 || { tail -n 15 /var/log/guests-update-torn-resume.log; bad $LINENO; }
+[ ! -e "$state/pending" ] && [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
+ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+# A snapshot restore cut by a power loss, either half: refused with the exact step; the step works.
+ic stop svc || bad $LINENO
+custom=/var/lib/incus/storage-pools/default/custom
+mv "$custom/default_svc-logs" "$custom/default_svc-logs.incustmp" || bad $LINENO
+/usr/local/sbin/guests update svc "$release/guests/svc" >/var/log/guests-update-tmpvol.log 2>&1 && bad $LINENO
+grep -q "sudo mv $custom/default_svc-logs.incustmp $custom/default_svc-logs; sys guests update" /var/log/guests-update-tmpvol.log || bad $LINENO
+mv "$custom/default_svc-logs.incustmp" "$custom/default_svc-logs" || bad $LINENO
+btrfs subvolume snapshot "$custom/default_svc-logs" "$custom/default_svc-logs.incustmp" >/dev/null || bad $LINENO
+/usr/local/sbin/guests update svc "$release/guests/svc" >/var/log/guests-update-tmpvol2.log 2>&1 && bad $LINENO
+grep -q "sudo btrfs subvolume delete $custom/default_svc-logs.incustmp; sys guests update" /var/log/guests-update-tmpvol2.log || bad $LINENO
+btrfs subvolume delete "$custom/default_svc-logs.incustmp" >/dev/null || bad $LINENO
+ic start svc || bad $LINENO
+timeout -k 1 120 sh -c 'until incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health 2>/dev/null; do sleep 2; done' || bad $LINENO
 # A recovery whose restored svc stays unhealthy keeps the journal; the next pass redoes the same
 # rebuild and gets through.
 sh "$release/guests-kill-rebuilt" update svc "$release/guests/svc" >/var/log/guests-update-unhealthy-kill.log 2>&1
@@ -1512,6 +1571,18 @@ pair_ok() {
             awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || return 1
     done
 }
+deadline=$(($(date +%s) + 1500))
+until pair_ok; do
+    [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+    sleep 10
+done
+# A firewall rebuild killed after its rebuild: apply (as at boot) rolls fw1 back to its old image.
+awk '{print} /^    locked ic rebuild "\$2" "\$1" \|\| return$/ {print "    kill -KILL \"$$\""}' /usr/local/sbin/guests >"$release/guests-rebuild-kill"
+sh "$release/guests-rebuild-kill" rebuild fw1 >/var/log/guests-rebuild-kill.log 2>&1
+[ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || bad $LINENO
+sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-kill-resume.log || { tail -n 15 /var/log/guests-rebuild-kill-resume.log; fw_diag; bad $LINENO; }
+grep -q '^+ ic rebuild [0-9a-f]* fw1$' /var/log/guests-rebuild-kill-resume.log || bad $LINENO
+[ ! -e "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
 deadline=$(($(date +%s) + 1500))
 until pair_ok; do
     [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
