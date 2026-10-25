@@ -42,9 +42,11 @@ read_pointer() {
 	age=$(( $(date +%s) - signed ))
 	[ "$age" -ge -300 ] || die 'latest is signed more than 5 minutes in the future; check the clock'
 	signed_ago="signed $((age / 86400)) days ago"
+	current='up to date'
 	if [ "$age" -gt 2592000 ]; then
-		echo 'fetch-release: warning: latest is older than 30 days; newer security updates may exist' >&2
-		signed_ago="$signed_ago; warning: latest is older than 30 days; newer security updates may exist"
+		current="signed metadata is stale ($((age / 86400)) days old)"
+		echo "fetch-release: warning: latest is older than 30 days; $current; newer security updates may exist" >&2
+		signed_ago="$current; warning: latest is older than 30 days; newer security updates may exist"
 	fi
 	if [ -n "$usb" ]; then
 		cp "$usb/manifest" "$usb/manifest.sig" "$pointer/" || die 'cannot read USB manifest'
@@ -148,7 +150,7 @@ else
 fi
 read_pointer
 rm -rf "$pointer"
-uptodate="up to date: release $booted (newest published: $latest, $signed_ago)"
+uptodate="$current: release $booted (newest published: $latest, $signed_ago)"
 # Up to date, but the booted release's own guests can still be missing (a host-only update).
 sync=
 if ! expr "$latest" '>' "$floor" >/dev/null; then
@@ -247,7 +249,7 @@ if [ -n "$sync" ] && [ -z "$changed" ]; then
 fi
 if [ "$mode" = check ]; then
 	if [ -n "$sync" ]; then
-		echo "release $booted is up to date, but its guests are not:$changed (sys update install fetches them; $signed_ago)"
+		echo "$uptodate; guests to update:$changed (sys update install fetches them)"
 	else
 		echo "release $available is available ($latest; booted: $booted; $signed_ago)"
 		[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
