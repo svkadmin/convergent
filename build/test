@@ -994,17 +994,25 @@ cv_time dns-recovery
 )
 [ "$?" = 0 ] || bad $LINENO
 cv_time dns-uplink-return
+fw_dns() {
+    timeout 10 ssh -F /etc/convergent/ssh_config "$1" "unbound-control flush_zone $2 >/dev/null && host -W 3 -t A $2 127.0.0.1" |
+        grep -q 'has address'
+}
 # Unbound started without an uplink (the second incident) answers within 90 s of the uplink's return.
 (
     set -e
+    trap 'ip link set cvuplink up' 0
+    trap 'exit 1' HUP INT TERM
     ip link set cvuplink down
     for f in fw1 fw2; do timeout 60 ssh -F /etc/convergent/ssh_config "$f" 'rcctl restart unbound'; done
-    timeout 15 getent hosts www.openbsd.org >/dev/null || :
+    for f in fw1 fw2; do fw_dns "$f" www.openbsd.org >/dev/null || :; done
     ip link set cvuplink up
     deadline=$(($(date +%s) + 90))
-    until timeout 10 getent hosts www.openbsd.org >/dev/null; do
-        [ "$(date +%s)" -lt "$deadline" ]
-        sleep 5
+    for f in fw1 fw2; do
+        until fw_dns "$f" www.openbsd.org >/dev/null; do
+            [ "$(date +%s)" -lt "$deadline" ]
+            sleep 5
+        done
     done
 )
 [ "$?" = 0 ] || bad $LINENO
@@ -1017,7 +1025,7 @@ cv_time dns-wan-return
     ic config set wan boot.autorestart=false
     trap 'ic config unset wan boot.autorestart' 0
     ic stop wan --force
-    for i in 1 2 3; do timeout 15 getent hosts www.kernel.org >/dev/null || :; done
+    for f in fw1 fw2; do fw_dns "$f" www.kernel.org >/dev/null || :; done
     sleep 120
     ic start wan
     deadline=$(($(date +%s) + 600))
@@ -1026,9 +1034,11 @@ cv_time dns-wan-return
         sleep 5
     done
     deadline=$(($(date +%s) + 90))
-    until timeout 10 getent hosts www.kernel.org >/dev/null; do
-        [ "$(date +%s)" -lt "$deadline" ]
-        sleep 5
+    for f in fw1 fw2; do
+        until fw_dns "$f" www.kernel.org >/dev/null; do
+            [ "$(date +%s)" -lt "$deadline" ]
+            sleep 5
+        done
     done
 )
 [ "$?" = 0 ] || bad $LINENO
@@ -1169,12 +1179,68 @@ for f in fw1 fw2; do
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
 done
 cv_time wan-update
+mkdir -p "$release/iwd"
+printf '[Security]\nPassphrase=convergent-test-only\n[Settings]\nAutoConnect=false\n' >"$release/iwd/CV-test.psk"
+printf '[Settings]\nAutoConnect=false\n' >"$release/iwd/=43562074657374.open"
+wan_wifi() (
+    set -e
+    exec 9>/run/convergent/guests.lock
+    flock -w 600 9
+    work=$(mktemp -d "$release/wan-wifi.XXXXXX")
+    pool=/var/lib/incus/storage-pools/default
+    loop= mounted=
+    die() { echo "CV-WIFI $*" >&2; exit 1; }
+    running() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Running ]; }
+    retry() {
+        n=0
+        until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done
+    }
+    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
+    trap 'code=$?; unmount_root || exit 1; rm -rf "$work";
+        running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
+    trap 'exit 1' HUP INT TERM
+    ic config set wan boot.autorestart=false
+    ic stop wan --timeout 60
+    [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]
+    if [ "$1" = seed ]; then
+        wan_mount
+        mkdir -p "$work/root/var/lib/iwd"
+        cp "$release/iwd/"* "$work/root/var/lib/iwd/"
+        chmod 600 "$work/root/var/lib/iwd/"*
+        unmount_root
+    else
+        wan_read
+        for file in "$release/iwd/"*; do cmp "$file" "$work/iwd/${file##*/}"; done
+    fi
+    ic start wan
+    deadline=$(($(date +%s) + 600))
+    until timeout 30 ssh -F /etc/convergent/ssh_config wan check >/dev/null 2>&1; do
+        [ "$(date +%s)" -lt "$deadline" ]
+        sleep 5
+    done
+)
+wan_wifi seed
+[ "$?" = 0 ] || bad $LINENO
 # wan must answer Incus's power button: a same-image replacement, no forced stop.
 sh -x /usr/local/sbin/guests update wan "$release/guests/wan" 2>/var/log/guests-update-wan.log
 wan=$?
 echo CV-UPDATE wan "$wan"
 [ "$wan" = 0 ] && ! grep -q 'forcing wan off' /var/log/guests-update-wan.log || { tail -n 15 /var/log/guests-update-wan.log; bad $LINENO; }
 cmp "$release/guests/wan/SHA256SUMS" /var/lib/convergent/release-guests/guests/wan/SHA256SUMS || bad $LINENO
+wan_wifi check
+[ "$?" = 0 ] || bad $LINENO
+cv_time wan-wifi-rollback
+wan_before=$(ic config get wan volatile.base_image) || bad $LINENO
+awk '{print} /^        seed_start "\$guest"$/ {
+    print "        die \"injected wan rollback\""; n++
+} END {exit n != 1}' /usr/local/sbin/guests >"$release/guests-wan-rollback" || bad $LINENO
+sh "$release/guests-wan-rollback" update wan "$release/guests/wan" >/var/log/guests-update-wan-rollback.log 2>&1
+[ "$?" = 1 ] && grep -q 'injected wan rollback' /var/log/guests-update-wan-rollback.log &&
+    grep -q 'restoring wan/' /var/log/guests-update-wan-rollback.log || bad $LINENO
+[ ! -e "$state/pending" ] && [ ! -e "$state/iwd.wan" ] &&
+    [ "$(ic config get wan volatile.base_image)" = "$wan_before" ] || bad $LINENO
+wan_wifi check
+[ "$?" = 0 ] || bad $LINENO
 cv_time wan-forced-stop
 # The laptop's wan loss: the old image ignores the ACPI stop, the force ends in an unclean QEMU exit
 # (QMP quit timed out, SIGKILL) that boot.autorestart=true would answer within a second; the restarted
@@ -1360,6 +1426,32 @@ for step in journal rebuilt seeded rolledback; do
     ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
 done
 cv_time svc-seed-failure
+for fault in create attach; do
+    printf 'seed_fault=%s\n' "$fault" >"$release/guests-seed-error"
+    cat >>"$release/guests-seed-error" <<'FAULT'
+truncate() {
+    case "$seed_fault:$*" in create:'-s 16M '*'seed.img')
+        echo 'injected seed creation failure' >&2; return 1 ;;
+    esac
+    command truncate "$@"
+}
+incus() {
+    case "$seed_fault:$*" in attach:*' config device add svc seed disk '*)
+        echo 'injected seed device-add failure' >&2; return 1 ;;
+    esac
+    command incus "$@"
+}
+FAULT
+    cat /usr/local/sbin/guests >>"$release/guests-seed-error"
+    sh "$release/guests-seed-error" update svc "$release/guests/svc" >"/var/log/guests-update-seed-$fault.log" 2>&1
+    [ "$?" = 1 ] && [ -s "$state/pending" ] || bad $LINENO
+    grep -q 'injected seed .* failure' "/var/log/guests-update-seed-$fault.log" &&
+        grep -q 'pending journal retained' "/var/log/guests-update-seed-$fault.log" || bad $LINENO
+    /usr/local/sbin/guests apply >"/var/log/guests-update-seed-$fault-resume.log" 2>&1 || bad $LINENO
+    [ ! -e "$state/pending" ] && [ ! -e "$state/seeds/svc.img" ] &&
+        [ "$(ic config get svc volatile.base_image)" = "$before" ] || bad $LINENO
+    ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || bad $LINENO
+done
 # A rollback whose seed check fails must keep the journal: the seed chain reports its failure.
 cat >"$release/guests-seed-fail" <<'FAULT'
 incus() {
@@ -1614,7 +1706,7 @@ until pair_ok; do
     sleep 10
 done
 cv_time firewall-rebuild-interruptions
-# Killed before the handoff marker or after rebuilding: apply restores fw1 and releases its demotion.
+# Kill before the handoff marker, after rebuilding, and after rollback hands back to fw1.
 for step in journal rebuilt; do
     awk -v step="$step" '{print}
         step == "journal" && /^    mv "\$work\/pending" "\$state\/pending"$/ {print "    kill -KILL \"$$\""}
@@ -1625,8 +1717,13 @@ for step in journal rebuilt; do
     [ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || bad $LINENO
     if [ "$step" = journal ]; then
         [ ! -e "$state/fw.handoff" ] || bad $LINENO
+        trap 'ic config unset fw1 boot.autorestart; ic config unset fw2 boot.autorestart' 0
+        trap 'exit 1' HUP INT TERM
         # A boot with the peer unavailable must leave the running target and journal alone.
+        ic config unset fw1 user.convergent.autorestart || bad $LINENO
+        ic config set fw1 boot.autorestart=false && ic config set fw2 boot.autorestart=false || bad $LINENO
         ic start fw1 && ic stop fw2 --force || bad $LINENO
+        [ "$(incus --force-local query /1.0/instances/fw2/state | jq -r .status)" = Stopped ] || bad $LINENO
         cp "$state/pending" "$release/rebuild-pending" || bad $LINENO
         sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-peer.log
         [ "$?" = 1 ] && cmp "$state/pending" "$release/rebuild-pending" || bad $LINENO
@@ -1634,6 +1731,7 @@ for step in journal rebuilt; do
         ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-peer.log || bad $LINENO
         incus --force-local query /1.0/instances/fw1/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
         ic stop fw1 --force && ic start fw2 || bad $LINENO
+        [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Stopped ] || bad $LINENO
         deadline=$(($(date +%s) + 1500))
         until timeout 30 ssh -F /etc/convergent/ssh_config fw2 ifconfig 2>/dev/null |
             awk '/carp: / {n++; if ($2 != "MASTER") bad=1} END {exit !(n == 6 && !bad)}'; do
@@ -1641,7 +1739,38 @@ for step in journal rebuilt; do
             sleep 2
         done
     fi
+    if [ "$step" = rebuilt ]; then
+        awk '{print}
+            /^        \[ "\$guest" != fw1 \] .*fw_release \|\| return; }$/ {
+                print "        kill -KILL \"$$\""; n++
+            }
+            END {exit n != 1}' /usr/local/sbin/guests >"$release/guests-release-kill" || bad $LINENO
+        sh "$release/guests-release-kill" apply >"/var/log/guests-rebuild-release-kill.log" 2>&1
+        [ "$?" = 137 ] && [ -s "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
+        deadline=$(($(date +%s) + 1500))
+        until pair_ok; do
+            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+            sleep 2
+        done
+        (
+            set -e
+            cp "$state/pending" "$release/rebuild-pending"
+            trap 'timeout 60 ssh -F /etc/convergent/ssh_config fw2 "rcctl start unbound"' 0
+            trap 'exit 1' HUP INT TERM
+            timeout 60 ssh -F /etc/convergent/ssh_config fw2 'rcctl stop unbound'
+            if sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-dns.log; then exit 1; fi
+            cmp "$state/pending" "$release/rebuild-pending"
+            grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-dns.log
+            ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-dns.log
+            [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Running ]
+        )
+        [ "$?" = 0 ] || bad $LINENO
+    fi
     sh -x /usr/local/sbin/guests apply 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
+    if [ "$step" = journal ]; then
+        ic config unset fw1 boot.autorestart && ic config unset fw2 boot.autorestart || bad $LINENO
+        trap - 0 HUP INT TERM
+    fi
     grep -q '^+ ic rebuild [0-9a-f]* fw1$' "/var/log/guests-rebuild-kill-$step-resume.log" || bad $LINENO
     [ ! -e "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
     deadline=$(($(date +%s) + 1500))
@@ -1690,9 +1819,9 @@ for g in fw wan svc browser; do
 done
 [ ! -e /var/lib/convergent/release-guests/guests/browser.stale ] || result=1
 [ -z "$(ls -A /var/lib/convergent/guest-updates 2>/dev/null)" ] || result=1
-line=$(timeout -k 5 120 fetch-release check 2>&1)
+line=$(timeout -k 5 120 fetch-release check 2>&1) || result=1
 echo "CV-ONLINE check: $line"
-printf '%s\n' "$line" | grep -q '^up to date:' || result=1
+printf '%s\n' "$line" | grep -Eq '^(up to date|signed metadata is stale \([0-9]+ days old\)): release ' || result=1
 /usr/local/sbin/guests status
 sync
 echo CV-ONLINE-RESULT "$result"
@@ -1996,8 +2125,8 @@ if [ ! -f /etc/convergent/update.conf ]; then
 	echo 'CV-FETCH skipped (no update.conf)'
 elif [ "$1" = 0 ]; then
 	if line=$(timeout -k 5 60 fetch-release check 2>&1); then
-		printf '%s\n' "$line" | grep -E 'is available|up to date' | sed 's/^/CV-FETCH /'
-		printf '%s\n' "$line" | grep -Eq 'is available|up to date' || { echo 'CV-FETCH failed: response'; result=1; }
+		printf '%s\n' "$line" | grep -E 'is available|^up to date:|^signed metadata is stale \([0-9]+ days old\): release ' | sed 's/^/CV-FETCH /'
+		printf '%s\n' "$line" | grep -Eq 'is available|^up to date:|^signed metadata is stale \([0-9]+ days old\): release ' || { echo 'CV-FETCH failed: response'; result=1; }
 	elif printf '%s\n' "$line" | grep -q 'no release is published on this channel yet'; then
 		# A channel before its first publication: the server answered, nothing signed to fetch.
 		echo 'CV-FETCH skipped (channel empty)'
