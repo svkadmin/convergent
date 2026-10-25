@@ -336,6 +336,20 @@ fi
 # 3. The initramfs. With --sysroot dracut takes its modules and every binary from the image root,
 #    so Convergent's module is put there for the run; afterwards dracut leaves the image, which
 #    never builds an initramfs itself.
+# Check the archive in its own root: absolute links and merged /usr must not resolve on the host.
+check_initramfs_shell() (
+	archive=$1
+	checkdir=$(bld mktemp -d /tmp/convergent-shell.XXXXXX) || exit 1
+	trap 'rm -rf "$BUILDER$checkdir"' 0
+	bld sh -c 'cd "$1" && lsinitrd --unpack "$2"' sh "$checkdir" "$archive" ||
+		die "cannot unpack $archive for the shell check"
+	bld chroot "$checkdir" /bin/sh -ec '
+		[ -L /bin/sh ]
+		case $(readlink -f /bin/sh) in /bin/dash | /usr/bin/dash) ;; *) exit 1 ;; esac
+		IFS= read -r interpreter </init
+		[ "$interpreter" = "#!/bin/sh" ]
+	' || die "$archive: /bin/sh must resolve to dash and /init must use /bin/sh"
+)
 cp -r "$repo/initramfs/90convergent" "$repo/initramfs/91convergent-rescue" "$root/usr/lib/dracut/modules.d/"
 chmod 0755 "$root/usr/lib/dracut/modules.d/90convergent"/*.sh "$root/usr/lib/dracut/modules.d/91convergent-rescue"/*.sh
 # The links to the kernel sources and build files point at nothing once /usr/src is gone.
@@ -389,17 +403,19 @@ drivers=$(printf '%s\n' $drivers $extra | sort -u)
 printf '%s\n' "$drivers" >"$out/initramfs.drivers"
 # Firmware is needed even when i915 is built in.
 i915_fw=$(find "$root/usr/lib/firmware/i915" -type f | sed "s|^$root||")
+# 10dash selects /bin/sh itself; omit bash so it cannot claim the link first.
+# Rescue uses the same dash interpreter, including its owner's interactive shell.
 bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
 	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" --drivers "$drivers" \
 	--fwdir /image-root/usr/lib/firmware --filesystems "btrfs erofs" \
 	--install "$i915_fw" \
-	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" \
+	--modules "base kernel-modules udev-rules rootfs-block dm crypt btrfs convergent" --omit bash \
 	"$rel/initramfs.img"
 # Rescue is inside the verity image; no new release files or manifest fields.
 profiles=$(bld mktemp -d /tmp/convergent-rescue.XXXXXX)
 bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sysroot /image-root \
 	--kver "$kver" --kmoddir "/image-root/lib/modules/$kver" \
-	--modules "base kernel-modules udev-rules dm crypt btrfs convergent convergent-rescue" --add-drivers "$drivers" \
+	--modules "base kernel-modules udev-rules dm crypt btrfs convergent convergent-rescue" --omit bash --add-drivers "$drivers" \
 	--fwdir /image-root/usr/lib/firmware --install "$i915_fw" \
 	"$profiles/initramfs.img"
 printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
@@ -414,6 +430,7 @@ bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "
 	--output /image-root/usr/lib/convergent/rescue.efi >/dev/null
 bld ukify inspect /image-root/usr/lib/convergent/rescue.efi >/dev/null || die "invalid rescue UKI"
 bld lsinitrd "$profiles/initramfs.img" >"$BUILDER$profiles/contents"
+check_initramfs_shell "$profiles/initramfs.img"
 for fw in $i915_fw; do
 	awk -v file="${fw#/}" '$NF == file {found=1} END {exit !found}' "$BUILDER$profiles/contents" || die "rescue initramfs lacks $fw"
 done
@@ -429,6 +446,7 @@ echo "image: rescue initramfs $(stat -c %s "$BUILDER$profiles/initramfs.img") by
 rm -rf "$BUILDER$profiles"
 profiles=
 bld lsinitrd "$rel/initramfs.img" >"$out/initramfs.list"
+check_initramfs_shell "$rel/initramfs.img"
 awk '$NF ~ /\/kernel\/.*\.ko(\..*)?$/ {sub(/^.*\/kernel\//, "kernel/", $NF); print $NF}' \
 	"$out/initramfs.list" | sort -u >"$out/initramfs.modules"
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \

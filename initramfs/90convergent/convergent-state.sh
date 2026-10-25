@@ -60,7 +60,7 @@ recovery=$(getarg convergent.recovery=) || recovery=
 mkdir -p "$state"
 mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
 	die "state: the state volume did not mount"
-grow_state || warn "state: could not grow the state volume; it keeps its size"
+( grow_state ) || warn "state: could not grow the state volume; it keeps its size"
 pass=''
 
 # A no-op at full size; finishes a grow that stopped after the partition or LUKS step.
