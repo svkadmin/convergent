@@ -494,6 +494,16 @@ TITLE=Recovery' --cmdline "@$profiles/cmdline" --os-release '' --output "$profil
 done
 
 # 6. The manifest: what the release is made of.
+{
+	echo "release $release"
+	echo "version $VERSION"
+	echo "kernel $kver"
+	echo "roothash $roothash"
+	sha256sum "$out/slot.img" "$out"/convergent-*.efi | sed "s|$out/||"
+	# Exact sizes: a download stops at them.
+	for f in "$out/slot.img" "$out"/convergent-*.efi; do echo "size ${f##*/} $(stat -c %s "$f")"; done
+} >"$out/manifest"
+# Build-host provenance; older installers reject new manifest fields.
 release_key=none
 if [ -f "$root/etc/convergent/release.pub" ]; then
 	public_key=$(openssl pkey -pubin -in "$root/etc/convergent/release.pub" -pubout) || die "invalid embedded release key"
@@ -503,17 +513,7 @@ update_channel=none
 if [ -f "$root/etc/convergent/update.conf" ]; then
 	update_channel=$(sed -n 's|^UPDATE_URL=https://.*/\([a-z0-9-][a-z0-9-]*\)$|\1|p' "$root/etc/convergent/update.conf")
 fi
-{
-	echo "release $release"
-	echo "release-key $release_key"
-	echo "update-channel ${update_channel:-none}"
-	echo "version $VERSION"
-	echo "kernel $kver"
-	echo "roothash $roothash"
-	sha256sum "$out/slot.img" "$out"/convergent-*.efi | sed "s|$out/||"
-	# Exact sizes: a download stops at them.
-	for f in "$out/slot.img" "$out"/convergent-*.efi; do echo "size ${f##*/} $(stat -c %s "$f")"; done
-} >"$out/manifest"
+printf 'release-key %s\nupdate-channel %s\n' "$release_key" "${update_channel:-none}" >"$out/provenance"
 # Signed separately: build host only, never published or hashed in the host manifest.
 printf '%s\n' "$packages" >"$out/packages"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$out"

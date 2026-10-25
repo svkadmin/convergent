@@ -273,10 +273,11 @@ openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
 A laptop trusts only the key its image was built with; without that key its next update comes
 from USB with `CONVERGENT_UNSIGNED=1`.
 
-The manifest records `release-key` (SHA-256 of the embedded public key's canonical PEM,
+The build-host `provenance` file records `release-key` (SHA-256 of the embedded public key's canonical PEM,
 including its final newline) and `update-channel` (from the embedded update URL), or `none`
 when absent. Signing and publication require both to match the selected channel, with only
-the one-way bridge below allowed. Older manifests without these fields need a rebuild.
+the one-way bridge below allowed. Releases without this file need a rebuild before signing or
+publication. It is not published or required by laptops; the host manifest format stays unchanged.
 Both steps also require exactly one checksum and accurate size for the slot image and each UKI.
 
 `build/publish <release-dir>` uploads to the public R2 bucket named in
