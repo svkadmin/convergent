@@ -344,6 +344,9 @@ test_guest_delivery() {
 	sed -i "s|/etc/convergent/keys/|$delivery/keys/|g" "$delivery/build/sign"
 	openssl genpkey -algorithm ed25519 -out "$delivery/keys/$CHANNEL.key"
 	openssl pkey -in "$delivery/keys/$CHANNEL.key" -pubout -out "$delivery/keys/$CHANNEL.pub"
+	# The release's provenance names the build key; this test signs with its own.
+	pk=$(openssl pkey -pubin -in "$delivery/keys/$CHANNEL.pub" -pubout)
+	printf 'release-key %s\nupdate-channel %s\n' "$(printf '%s\n' "$pk" | sha256sum | cut -d' ' -f1)" "$CHANNEL" >"$delivery/release/provenance"
 	for f in manifest slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
 		cp --reflink=auto "$BUILDER/releases/$release/$f" "$delivery/release/"
 	done
