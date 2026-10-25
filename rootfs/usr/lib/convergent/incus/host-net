@@ -31,6 +31,7 @@ vfio_bind() {
 }
 
 case ${1:-} in
+repair) ip -4 address show dev host 2>/dev/null | grep -q 'inet 100.80.1.10/28 ' || exit 0 ;;
 vfio) shift; vfio_bind "$@"; exit ;;
 nvidia)
 	set --
@@ -47,6 +48,11 @@ nvidia)
 	;;
 esac
 
-until ip -4 address show dev host 2>/dev/null | grep -q 'inet 100.80.1.10/28 '; do sleep 1; done
-sysctl -qw net.ipv4.conf.host.arp_ignore=0 net.ipv4.ip_forward=0
-ip route replace default via 100.80.1.1 dev host
+if [ "${1:-}" != repair ]; then
+	until ip -4 address show dev host 2>/dev/null | grep -q 'inet 100.80.1.10/28 '; do sleep 1; done
+fi
+for key in net.ipv4.conf.host.arp_ignore net.ipv4.ip_forward; do
+	[ "$(sysctl -n "$key")" = 0 ] || sysctl -qw "$key=0"
+done
+ip -4 route show default dev host | grep -Eq '^default via 100\.80\.1\.1 dev host( |$)' ||
+	ip route replace default via 100.80.1.1 dev host

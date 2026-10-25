@@ -139,6 +139,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
+[ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || die 'cannot repair host network'
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
 exec 9>/run/convergent/check.lock
 flock -n 9 || die 'another checker is running'

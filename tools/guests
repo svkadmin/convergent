@@ -132,7 +132,8 @@ rollback() {
             fw1:*-rebuild|fw2:*-rebuild)
                 case $guest in fw1) peer=fw2 ;; fw2) peer=fw1 ;; esac
                 # A healthy BACKUP peer takes over when the target stops.
-                running "$peer" && healthy "$peer" && { carp "$peer" MASTER || carp "$peer" BACKUP; } ||
+                running "$peer" && (image_dir=/var/lib/convergent/release-guests/guests/fw; fw_check "$peer") &&
+                    { carp "$peer" MASTER || carp "$peer" BACKUP; } ||
                     { fail "$peer must be healthy on all six segments; run sys firewall rebuild $guest"; return 1; }
                 ;;
             esac
