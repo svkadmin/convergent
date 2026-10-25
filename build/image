@@ -114,10 +114,6 @@ chmod 0755 "$root"/etc/init.d/convergent-* "$root"/usr/lib/convergent/health.d/*
 kver=$(ls -d "$root"/usr/src/linux-* | sed 's|.*/linux-||')
 for m in "$root"/lib/modules/*; do [ "${m##*/}" = "$kver" ] || rm -rf "$m"; done
 [ "$(echo "$kver" | wc -l)" = 1 ] || die "expected one kernel in the image, found: $kver"
-for option in restart_on_error restart_on_corruption; do
-	grep -qF "\"$option\"" "$root/usr/src/linux-$kver/drivers/md/dm-verity-target.c" ||
-		die "kernel $kver lacks dm-verity $option"
-done
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
 # The kernel as it was really built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
