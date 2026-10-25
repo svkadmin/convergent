@@ -132,6 +132,7 @@ done
 missing=$(syspatch -c)
 [ -z "$missing" ]
 patches=$(syspatch -l)   # the build checks the release's required errata (pins)
+pkg_add -u -I || exit $?
 # Finish KARL synchronously before recording the next boot's kernel.
 /usr/libexec/reorder_kernel
 kernel=$(sha256 -q /bsd)

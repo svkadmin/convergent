@@ -4,6 +4,7 @@
 # changed guests are staged for after the reboot, or applied now when the booted release is newest.
 #   fetch-release [check]      check: only report whether a newer release exists
 #   fetch-release usb <dir>    stage a signed release from USB
+# Warn after 30 days until publication renews timestamps; future tolerance is 5 minutes.
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
@@ -32,6 +33,25 @@ guest_path() {
 	case ${1##*/} in . | ..) return 1 ;; esac
 }
 bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" ]; }; }
+read_pointer() {
+	verify "$pointer/latest" || die "latest is not signed with this image's key"
+	latest=$(field release "" "$pointer/latest") && signed=$(field signed "" "$pointer/latest") &&
+		gsum=$(field guests "" "$pointer/latest") || die 'latest is malformed'
+	bytes "$latest" && bytes "$signed" || die 'latest is malformed'
+	case $gsum in none) ;; '' | *[!0-9a-f]*) die 'latest is malformed' ;; *) [ "${#gsum}" = 64 ] || die 'latest is malformed' ;; esac
+	age=$(( $(date +%s) - signed ))
+	[ "$age" -ge -300 ] || die 'latest is signed more than 5 minutes in the future; check the clock'
+	signed_ago="signed $((age / 86400)) days ago"
+	if [ "$age" -gt 2592000 ]; then
+		echo 'fetch-release: warning: latest is older than 30 days; newer security updates may exist' >&2
+		signed_ago="$signed_ago; warning: latest is older than 30 days; newer security updates may exist"
+	fi
+	if [ -n "$usb" ]; then
+		cp "$usb/manifest" "$usb/manifest.sig" "$pointer/" || die 'cannot read USB manifest'
+		verify "$pointer/manifest" || die 'the USB manifest signature does not verify'
+		[ "$(field release "" "$pointer/manifest")" = "$latest" ] || die 'USB manifest does not match latest'
+	fi
+}
 # The signed list a file comes from: guest files only from guests.manifest.
 mf() { case $1 in guests/*) echo "$gm" ;; *) echo "$dir/manifest" ;; esac; }
 # A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (build/guests: the same).
@@ -117,14 +137,7 @@ expr "$highest" '>' "$booted" >/dev/null && floor=$highest || floor=$booted
 private "$work"
 pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
 if [ -n "$usb" ]; then
-	cp "$usb/manifest" "$usb/manifest.sig" "$pointer/" || die 'cannot read USB manifest'
-	verify "$pointer/manifest" || die 'the USB manifest signature does not verify'
-	latest=$(field release "" "$pointer/manifest") || die 'invalid USB release'
-	num "$latest" || die 'invalid USB release'
-	rm -rf "$pointer"
-	gsum=none
-	[ ! -f "$usb/guests.manifest" ] || gsum=
-	signed_ago='signed USB release'
+	cp "$usb/latest" "$usb/latest.sig" "$pointer/" || die 'cannot read USB latest and signature'
 else
 	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest" 2>/dev/null) || {
 		rm -rf "$pointer"
@@ -132,17 +145,9 @@ else
 		die "cannot reach $host"
 	}
 	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot download latest.sig from $host"; }
-	verify "$pointer/latest" || { rm -rf "$pointer"; die "latest is not signed with this image's key"; }
-	latest=$(field release "" "$pointer/latest") && signed=$(field signed "" "$pointer/latest") || latest=
-	# Which guests.manifest the release has, or none; older releases' latest files do not say.
-	gsum=$(field guests "" "$pointer/latest") || gsum=
-	rm -rf "$pointer"
-	num "$latest" && num "$signed" || die "the update server's latest is malformed"
-	case $gsum in '' | none) ;; *[!0-9a-f]*) die "the update server's latest is malformed" ;; *) [ "${#gsum}" = 64 ] || die "the update server's latest is malformed" ;; esac
-	age=$(( ($(date +%s) - signed) / 86400 ))
-	signed_ago="signed $age days ago"
-	[ "$age" -ge 0 ] || signed_ago='signed in the future'
 fi
+read_pointer
+rm -rf "$pointer"
 uptodate="up to date: release $booted (newest published: $latest, $signed_ago)"
 # Up to date, but the booted release's own guests can still be missing (a host-only update).
 sync=
@@ -242,7 +247,7 @@ if [ -n "$sync" ] && [ -z "$changed" ]; then
 fi
 if [ "$mode" = check ]; then
 	if [ -n "$sync" ]; then
-		echo "release $booted is up to date, but its guests are not:$changed (sys update install fetches them)"
+		echo "release $booted is up to date, but its guests are not:$changed (sys update install fetches them; $signed_ago)"
 	else
 		echo "release $available is available ($latest; booted: $booted; $signed_ago)"
 		[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
