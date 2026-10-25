@@ -110,8 +110,8 @@ second word becomes an argument to that default: `sys backup /mnt/x proj` works;
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
 errors. `sys help` lists actions and aliases; `*` marks actions that ask for `yes` in the terminal (default No).
 
-`sys` (Super+m) looks like the Archer menu: the list left, the highlighted row's status and
-commands right, terminal colours with a blue highlight. Enter opens or runs, Esc goes back, typing
+`sys` (Super+m) has the menu left and a Gentoo system dashboard above the highlighted row's status and commands right.
+The dashboard refreshes on menu entry; narrow panes hide the logo. Enter opens or runs, Esc goes back, typing
 filters, Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
 Super+a runs one action by name.
 The Wi-Fi network picker uses the same keys: type to filter, Enter selects the highlighted
@@ -419,8 +419,8 @@ developer. A root-only plaintext copy stays at `/var/lib/convergent/debug/<id>.t
 is printed so you can read what was sent with `sudo cat`. Only `CHANNEL=beta` builds carry it;
 stable builds never do. A failed diagnostic reports its script exit status
 even when output reaches the cap; timeout reports 124 (137 if it needs a forced kill).
-Returned output is not authenticated: anyone holding the public request can upload a forgery.
-Compare it with the laptop's local copy at `/var/lib/convergent/debug/<id>.txt`.
+Beta-only `build/debug send <script-file> <purpose>` embeds a one-hour PUT URL for one random output key in the signed script; no URL entry is needed.
+`build/debug fetch [id]` decrypts and deletes output, rejecting corrupt results with "result replaced or corrupt; publish a new request"; the public certificate permits encrypted forgeries, so compare with the laptop's local copy.
 
 An oops triggers a kernel panic; the host reboots 10 seconds after a panic. At boot, `facts`
 copies EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/` (root, mode 0700),

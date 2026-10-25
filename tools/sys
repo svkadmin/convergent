@@ -200,8 +200,135 @@ status_preview() (
 )
 # The status under its bold title, without the title it repeats ("Wi-Fi: x" under Wi-Fi).
 status_text() { awk -v t="$title" 'index($0, t ": ") == 1 {$0 = substr($0, length(t) + 3)} $0 != t' "$states/status-$area"; }
+dashboard() (
+	st=/run/convergent/status
+	now=$(date +%s)
+	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
+	memtime=$(stat -c %Y "$st/guestmem" 2>/dev/null) || memtime=0
+	if [ -e /run/openrc/started/convergent-bless ]; then blessed=good; else blessed=trying; fi
+	# The cache has running guests, but no inventory total. Never prompt here.
+	guests=$(timeout -k 0.2 1 sudo -n /usr/local/sbin/guests status 2>/dev/null) || guests=unknown
+	disk=$(timeout -k 0.2 1 df -Pk /var 2>/dev/null) || disk=
+	SYS_DISK=$disk SYS_GUESTS=$guests awk -v st="$st" -v out="$states" -v now="$now" -v mtime="$mtime" -v memtime="$memtime" \
+		-v owner="$(id -un)" -v kernel="$(uname -r)" -v blessed="$blessed" '
+	function get(path, value) {
+		if ((getline value < path) <= 0) value=""
+		close(path)
+		gsub(/\t/, " ", value)
+		gsub(/[[:cntrl:]]/, "", value)
+		return value
+	}
+	function known(value) {return value == "" ? "?" : value}
+	function line(value) {
+		info[++ni]=value
+		if (length(value)>width) width=length(value)
+	}
+	function plain(s) {gsub(/[{][12][}]/, "", s); return s}
+	function paint(s) {gsub(/[{]1[}]/, "\033[35m", s); gsub(/[{]2[}]/, "\033[37m", s); return s "\033[0m"}
+	# Logo beside the info, padded by its visible width.
+	function emit(file, logo, rows,   r, w, s, lw) {
+		for (r=1;r<=rows;r++) if (length(plain(logo[r]))>lw) lw=length(plain(logo[r]))
+		for (r=1;r<=(rows>ni ? rows : ni);r++) {
+			s=(r<=rows ? logo[r] : "")
+			printf "%s%" (lw-length(plain(s))+2) "s%s\n", paint(s), "", info[r] > file
+		}
+		return lw+2+width
+	}
+	BEGIN {
+		# Gentoo logos from neofetch 7.1.0 (MIT, (c) 2015-2020 Dylan Araps); {1} purple, {2} white.
+		big[1]="{1}         -/oyddmdhs+:."
+		big[2]="{1}     -o{2}dNMMMMMMMMNNmhy+{1}-`"
+		big[3]="{1}   -y{2}NMMMMMMMMMMMNNNmmdhy{1}+-"
+		big[4]="{1} `o{2}mMMMMMMMMMMMMNmdmmmmddhhy{1}/`"
+		big[5]="{1} om{2}MMMMMMMMMMMN{1}hhyyyo{2}hmdddhhhd{1}o`"
+		big[6]="{1}.y{2}dMMMMMMMMMMd{1}hs++so/s{2}mdddhhhhdm{1}+`"
+		big[7]="{1} oy{2}hdmNMMMMMMMN{1}dyooy{2}dmddddhhhhyhN{1}d."
+		big[8]="{1}  :o{2}yhhdNNMMMMMMMNNNmmdddhhhhhyym{1}Mh"
+		big[9]="{1}    .:{2}+sydNMMMMMNNNmmmdddhhhhhhmM{1}my"
+		big[10]="{1}       /m{2}MMMMMMNNNmmmdddhhhhhmMNh{1}s:"
+		big[11]="{1}    `o{2}NMMMMMMMNNNmmmddddhhdmMNhs{1}+`"
+		big[12]="{1}  `s{2}NMMMMMMMMNNNmmmdddddmNMmhs{1}/."
+		big[13]="{1} /N{2}MMMMMMMMNNNNmmmdddmNMNdso{1}:`"
+		big[14]="{1}+M{2}MMMMMMNNNNNmmmmdmNMNdso{1}/-"
+		big[15]="{1}yM{2}MNNNNNNNmmmmmNNMmhs+/{1}-`"
+		big[16]="{1}/h{2}MMNNNNNNNNMNdhs++/{1}-`"
+		big[17]="{1}`/{2}ohdmmddhys+++/:{1}.`"
+		big[18]="{1}  `-//////:--."
+		small[1]="{1} _-----_"
+		small[2]="{1}(       \\"
+		small[3]="{1}\\    0   \\"
+		small[4]="{2} \\        )"
+		small[5]="{2} /      _/"
+		small[6]="{2}(     _-"
+		small[7]="{2}\\____-"
+		line(owner "@" known(get("/proc/sys/kernel/hostname")))
+		n=split(get("/proc/cmdline"), words, " ")
+		for (i=1;i<=n;i++) {
+			if (words[i] ~ /^convergent.release=/) {release=words[i]; sub(/^[^=]*=/, "", release)}
+			if (words[i] ~ /^dm-mod.waitfor=PARTLABEL=cv-slot-/) {slot=words[i]; sub(/^.*cv-slot-/, "", slot)}
+		}
+		version=get("/usr/lib/convergent/version")
+		line("Release: " known(version == "" ? release : version) " / " known(slot) " / " blessed)
+		line("Kernel: " kernel)
+		uptime=get("/proc/uptime")+0
+		line(sprintf("Uptime: %dd %02d:%02d",int(uptime/86400),int(uptime/3600)%24,int(uptime/60)%60))
+		while ((getline value < "/proc/cpuinfo") > 0) if (value ~ /^model name[ \t]*:/) {
+			sub(/^[^:]*:[ \t]*/, "", value); model=value; break
+		}
+		close("/proc/cpuinfo")
+		line("CPU: " known(model))
+		for (i=1;i<ARGC;i++) {
+			path=ARGV[i]; value=get(path)
+			if (path ~ /scaling_cur_freq$/ && value+0>freq) freq=value+0
+			if (path ~ /scaling_max_freq$/ && value+0>cap) cap=value+0
+			if (path ~ /\/type$/) {
+				sub(/type$/, "", path)
+				if (value == "Battery" && bat == "") bat=path
+				if (value ~ /^(Mains|USB)/ && get(path "online") == "1") ac=1
+			}
+		}
+		line("Max/cap: " (freq ? sprintf("%.2f",freq/1000000) : "?") "/" (cap ? sprintf("%.2f",cap/1000000) : "?") " GHz")
+		while ((getline value < "/proc/meminfo") > 0) {split(value,m," "); mem[m[1]]=m[2]}
+		close("/proc/meminfo")
+		held=get(st "/guestmem"); ram="?"
+		if (memtime>0 && now>=memtime && now-memtime<=180 && held ~ /^[0-9]+$/) {
+			used=mem["MemTotal:"]-mem["MemFree:"]-held
+			ram=sprintf("%.1f",(used>0 ? used : 0)/1048576)
+		}
+		line(sprintf("RAM: %s/%.1f GiB (host)",ram,mem["MemTotal:"]/1048576))
+		n=split(ENVIRON["SYS_DISK"], rows, "\n"); disk="?"
+		if (n>=2) {split(rows[n],m," "); if (m[2]+0>0) disk=sprintf("%.1f/%.1f GiB",m[3]/1048576,m[2]/1048576)}
+		line("State: " disk " (/var)")
+		n=split(get(st "/topology"), fields," ")
+		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
+		master="?"; count="?/?"
+		if (mtime>0 && now>=mtime && now-mtime<=180) {
+			if (topo["fw1"] == "master" && topo["fw2"] == "backup") master="fw1"
+			if (topo["fw2"] == "master" && topo["fw1"] == "backup") master="fw2"
+			if (split(get(st "/.running"),m," ") == 5 && m[5] ~ /^[0-9]+$/)
+				count=((m[1] == "true")+(m[2] == "true")+(m[3] == "true")+(m[4] == "true")+m[5]) "/?"
+		}
+		if (ENVIRON["SYS_GUESTS"] != "unknown") {
+			n=split(ENVIRON["SYS_GUESTS"],rows,"\n"); total=0; running=0
+			for (i=1;i<=n;i++) if (split(rows[i],m," ") == 2) {total++; if (m[2] == "running") running++}
+			count=running "/" total
+		}
+		line("Guests: " count " running; master: " master)
+		line("Wi-Fi: " known(get(st "/wifi")))
+		line("Power: " (bat == "" ? "AC" : (ac ? "AC; " : "") "BAT " known(get(bat "capacity")) "% " known(get(bat "status"))))
+		for (r=1;r<=ni;r++) print info[r] > (out "/header")
+		need_small=emit(out "/header-small", small, 7)
+		need_wide=emit(out "/header-wide", big, 18)
+		rule="------------------------------------------------"
+		print rule > (out "/header"); print rule > (out "/header-small"); print rule > (out "/header-wide")
+		print need_small, need_wide > (out "/header-cols")
+		exit
+	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_*_freq /sys/class/power_supply/*/type
+)
 # menu TITLE KEYS: terminal colours with a blue highlight; the list left, its status right.
 menu() {
+	SYS_HEADER=$states/header; export SYS_HEADER
+	dashboard
 	FZF_DEFAULT_OPTS= FZF_DEFAULT_OPTS_FILE= SHELL=/bin/sh fzf \
 		--layout reverse-list --no-sort --info hidden --no-separator --no-scrollbar \
 		--delimiter "$tab" --with-nth 2.. --print-query --prompt '/ ' \
@@ -209,7 +336,10 @@ menu() {
 		--border top --border-label " Convergent / $1 " --border-label-pos 3 \
 		--list-border sharp --list-label ' Menu ' --list-label-pos 2 --header "$2" \
 		--color 'bw,fg:-1,bg:-1,fg+:7:bold,bg+:4,hl:-1:underline,hl+:7:bold:underline,pointer:7:bold,label:-1:bold,header:-1:dim' \
-		--preview 'cat -- "$SYS_PREVIEW"/{1}' --preview-window right:55%:wrap:border-sharp \
+		--preview 'read -r small wide <"$SYS_HEADER-cols"; header=$SYS_HEADER
+			[ "${FZF_PREVIEW_COLUMNS:-0}" -lt "$small" ] || header=$SYS_HEADER-small
+			[ "${FZF_PREVIEW_COLUMNS:-0}" -lt "$wide" ] || header=$SYS_HEADER-wide
+			cat -- "$header" "$SYS_PREVIEW"/{1}' --preview-window right:55%:wrap:border-sharp \
 		--preview-label ' Status ' --preview-label-pos 2 \
 		--bind 'enter:accept-non-empty,esc:abort,ctrl-u:clear-query,alt-up:preview-up,alt-down:preview-down' \
 		--bind 'alt-enter:print-query' \
