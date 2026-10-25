@@ -565,7 +565,7 @@ EOF
 (
     set -e
     work=$(mktemp -d "$release/wait.XXXXXX")
-    eval "$(sed -n '/^fail()/p; /^retry() {/,/^}/p; /^stop_guest() {/,/^}/p' /usr/local/sbin/guests)"
+    eval "$(sed -n '/^fail()/p; /^stopped()/p; /^retry() {/,/^}/p; /^stop_guest() {/,/^}/p' /usr/local/sbin/guests)"
     polling= step=test boot_timeout=10
     logger() { printf '%s\n' "$*" >>"$work/logged"; }
     sleep() { :; }
