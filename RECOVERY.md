@@ -7,23 +7,23 @@ as the owner unless stated.
 
 Press an arrow key during the three-second boot menu to stop the timer. Pick the release and slot
 ending in `(Recovery)`, e.g. `Gentoo Linux <release> (slot a) (Recovery)`. Enter the LUKS passphrase
-(US layout); three wrong attempts power off. Recovery needs the same unlock as a normal boot, and the
-same verified release must be able to boot.
+(US layout); three wrong attempts power off. Recovery needs the same unlock as a normal boot, and
+the same verified release must be able to boot.
 
 The menu shows the release, slot and read-write data at `/run/cv-state`:
 
 1. Root shell. Verified root is `/sysroot`; encrypted data and writable `/etc` files are under
    `/run/cv-state`. `exit` returns to the menu.
-2. Reset owner password. Enter it twice. It changes the uid 1000 account. Use 12 to 256 bytes.
-   Uses SHA-512 crypt; a later `account password` in the running system uses yescrypt.
+2. Reset owner password. Enter it twice. It changes the uid 1000 account. Use 12 to 256 bytes. Uses
+   SHA-512 crypt; a later `account password` in the running system uses yescrypt.
 3. Continue booting. Normal health checks then mark this release good.
 4. Reboot.
 5. Power off.
 
-Booting recovery on an unblessed release uses one of its three tries, shared with normal boots. Rebooting or
-powering off from the menu does not mark it good. The watchdog arms only after you continue, so time
-in the menu does not reset the laptop. Recovery starts no network services. If the release cannot
-reach the passphrase prompt, try the other slot (recipe 3) or the rescue entry below.
+Booting recovery on an unblessed release uses one of its three tries, shared with normal boots.
+Rebooting or powering off from the menu does not mark it good. The watchdog arms only after you
+continue, so time in the menu does not reset the laptop. Recovery starts no network services. If the
+release cannot reach the passphrase prompt, try the other slot (recipe 3) or the rescue entry below.
 
 ## Standalone rescue entry
 
@@ -35,15 +35,15 @@ into a release.
 
 1. Root shell. Tools are those in the rescue initramfs; `/sysroot` is empty. `exit` returns.
 2. Reset owner password. Same reset and password rules as per-release Recovery, uid 1000.
-3. Write release from USB. Choose a USB partition and its release directory (FAT, exFAT, ext4 or Btrfs;
-   mounted read-only, without journal replay). Bring `manifest`, `manifest.sig`, `slot.img` and both
-   release UKIs. The signature must verify against the embedded release key, even with
+3. Write release from USB. Choose a USB partition and its release directory (FAT, exFAT, ext4 or
+   Btrfs; mounted read-only, without journal replay). Bring `manifest`, `manifest.sig`, `slot.img`
+   and both release UKIs. The signature must verify against the embedded release key, even with
    `CONVERGENT_UNSIGNED=1`. Choose `a` or `b`, or press Enter for the slot opposite the last good
    release (if uniquely identifiable). Confirm the printed release and slot with `yes`. This
-   deliberately allows reinstalling an older or identical signed release. It keeps `/var`
-   subvolumes and leaves `good` and `highest` unchanged. It uses `slot`'s checksum, size and readback
-   checks, and installs the chosen release UKI with three tries. Use option 4 to boot it next,
-   especially if it is older than the other slot. Normal updates still enforce anti-rollback.
+   deliberately allows reinstalling an older or identical signed release. It keeps `/var` subvolumes
+   and leaves `good` and `highest` unchanged. It uses `slot`'s checksum, size and readback checks,
+   and installs the chosen release UKI with three tries. Use option 4 to boot it next, especially if
+   it is older than the other slot. Normal updates still enforce anti-rollback.
 4. Choose next slot. Select `a` or `b`; this writes `LoaderEntryOneShot` for its normal profile. It
    can pick an exhausted entry without resetting its counter or marking it good.
 5. Copy logs to USB. Choose a writable USB partition. A new `convergent-logs-<time>.<suffix>`
@@ -54,17 +54,11 @@ into a release.
 6. Reboot.
 7. Power off.
 
-The installer adds rescue when the release has it. On upgrade, the first successful `slot bless`
-copies `/usr/lib/convergent/rescue.efi` from the verified slot to the fixed ESP name
-`EFI/Linux/convergent-rescue.efi`. It compares first, and stages, checks, syncs and renames only when
-different. A failed release cannot replace rescue. The ordinary default matches only numbered release
-entries. Rescue sorts after bootable releases (systemd-boot always puts exhausted entries last).
-Select rescue explicitly. An image built without a release key can unlock and repair state but
-cannot write releases here. If rescue cannot boot, read the state from another Linux (recipe 9).
+Rescue installation and replacement: [ARCHITECTURE 5.2](ARCHITECTURE.md#52-boot). Select rescue
+explicitly. An image built without a release key can unlock and repair state but cannot write
+releases here. If rescue cannot boot, read the state from another Linux (recipe 9).
 
-`build/test --rescue <release>` boots the shipped rescue UKI with both slots empty. It unlocks,
-checks the menu, selects power off, and checks that UKI names, content and blessing state are
-unchanged. USB writes, password reset, next-slot selection and log export need separate testing.
+Rescue test coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
 
 | # | Symptom |
 |---|---|
@@ -88,19 +82,20 @@ Three wrong tries power it off; nothing is lost. The passphrase uses the US layo
 it blind and press Enter. Keys pressed meanwhile show as empty `host login:` prompts; ignore them.
 Power on and type it again.
 
-The boot can also stop before the prompt, with `more than one disk has a cv-state partition; detach
-the other`. Power off, unplug the other Convergent disk, and boot again. A USB disk cannot reinstall
-over a laptop disk that holds Convergent, since the two cannot yet be told apart. Erase the old one
-first, with the firmware's disk wipe (Dell: F2, Maintenance, Data Wipe) or another system.
+The boot can also stop before the prompt, with
+`more than one disk has a cv-state partition; detach the other`. Power off, unplug the other
+Convergent disk, and boot again. A USB disk cannot reinstall over a laptop disk that holds
+Convergent, since the two cannot yet be told apart. Erase the old one first, with the firmware's
+disk wipe (Dell: F2, Maintenance, Data Wipe) or another system.
 
 Right after an update, each power-on uses one of the new release's three tries; three powered-off
 sessions bring the previous release back (recipe 2).
 
 ## 2. A new release does not boot or does not become good
 
-After `slot write`, the new release gets three boot tries. A boot not good within about 13 minutes of
-unlocking is reset by the hardware watchdog if the laptop has one (otherwise hold the power button). After the
-third try, the previous slot boots by itself, with its own `/var`.
+After `slot write`, the new release gets three boot tries. A boot not good within about 13 minutes
+of unlocking is reset by the hardware watchdog if the laptop has one (otherwise hold the power
+button). After the third try, the previous slot boots by itself, with its own `/var`.
 
 Once back, the failed release's log is in its own `/var`, not in the running one:
 
@@ -118,28 +113,29 @@ is fixed.
 
 At power-on, press an arrow key within the three-second menu to stop it. Each slot is an entry named
 `Gentoo Linux 0.1.0 (<release>, slot a)` or `slot b`. Older releases omit the semantic version.
-Releases before 2026-10-18 show only `Gentoo Linux`; the top one is the default. Pick the other slot.
-Works when: `sudo slot status` shows the other slot booted.
+Releases before 2026-10-18 show only `Gentoo Linux`; the top one is the default. Pick the other
+slot. Works when: `sudo slot status` shows the other slot booted.
 
 That slot's `/var` predates the update, so changes made since are not in it. Guests are not rolled
-back and stay as they are. Nothing stops this after a guest update yet. The next `slot write` must be
-newer than the highest release ever marked good.
+back and stay as they are. Nothing stops this after a guest update yet. The next `slot write` must
+be newer than the highest release ever marked good.
 
 ## 4. `guests init` or `guests update` stopped
 
 On a disk image, the first boot runs `guests init` automatically (bar: `SETUP`; log
 `/var/log/guests-setup.log`). Both print the failed step. Run `sys guests setup` (it uses
-`/var/lib/convergent/release-guests`), or `sudo guests init <dir>` with the same directory as before.
-Finished steps are skipped. `guests update` restores the old guest automatically if the new one fails
-its checks; run it again once the cause is fixed. Works when: `SETUP` is gone and fw1, fw2, wan and
-svc run.
+`/var/lib/convergent/release-guests`), or `sudo guests init <dir>` with the same directory as
+before. Finished steps are skipped. `guests update` restores the old guest automatically if the new
+one fails its checks; run it again once the cause is fixed. Works when: `SETUP` is gone and fw1,
+fw2, wan and svc run.
 
 ```sh
 sudo guests status                          # one line per guest and its state
 sudo tail -n 50 /var/log/incus/<guest>/console.log
 ```
 
-If a step fails twice the same way, photograph the last screen of output and leave the laptop as it is.
+If a step fails twice the same way, photograph the last screen of output and leave the laptop as it
+is.
 
 ## 5. No Wi-Fi
 
@@ -160,9 +156,9 @@ The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Wo
 
 ## 6. Wi-Fi works, no Internet
 
-The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not. The host itself cannot
-browse, by design: pf lets it resolve names through the firewalls and reach a short list of update
-servers. Browsers have Internet, so try one (`browser def`) to tell them apart.
+The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not. The host
+itself cannot browse, by design: pf lets it resolve names through the firewalls and reach a short
+list of update servers. Browsers have Internet, so try one (`browser def`) to tell them apart.
 
 ```sh
 sys wifi status        # connected, with an address
@@ -172,9 +168,9 @@ sys guests status              # fw1, fw2, wan, svc running
 sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MASTER here, BACKUP on fw2
 ```
 
-No address or default route in wan diag: check Wi-Fi (`sys wifi status`) and the upstream network.
-A captive portal (hotel, train) needs `sys portal on` first. fw1 cannot reach 9.9.9.9:853: fw1, wan
-or routing is down, or the upstream blocks DNS over TLS. Anything else: send the output.
+No address or default route in wan diag: check Wi-Fi (`sys wifi status`) and the upstream network. A
+captive portal (hotel, train) needs `sys portal on` first. fw1 cannot reach 9.9.9.9:853: fw1, wan or
+routing is down, or the upstream blocks DNS over TLS. Anything else: send the output.
 
 ## 7. A USB device does not work
 
@@ -232,12 +228,10 @@ sudo cryptsetup luksDump /dev/disk/by-partlabel/cv-state             # check
 
 ## 11. Start over
 
-Write the disk image again (README, Install). Everything on the disk is lost, `/home` included. A
-`backup` holds `/home`, the writable `/etc` files, the owner's containers and profiles, and custom
-filesystem/ISO volumes. VM instances, custom block volumes, system guest instances and credentials
-in `/var/lib/convergent` are excluded (see `EXCLUDED` in the backup). There is no restore tool.
-Finish automatic guest setup first. Mount the backup disk. Then, as root, select a generation and
-verify it before restoring anything:
+Write the disk image again (README, Install). Everything on the disk is lost, `/home` included.
+Backup contents and exclusions: [USAGE, Backups](USAGE.md#backups). There is no restore tool. Finish
+automatic guest setup first. Mount the backup disk. Then, as root, select a generation and verify it
+before restoring anything:
 
 ```sh
 set -e
@@ -245,9 +239,10 @@ backup=/mnt/backup/convergent-backups/backup-YYYYmmddTHHMMSSZ
 (cd "$backup" && sha256sum -c SHA256SUMS)
 ```
 
-Unpack `home.tar` and restore needed writable files from `etc.tar`, preserving numeric ownership, ACLs and xattrs for both. Recreate the pools and networks the owner's profiles reference. Restore profiles in the
-recreated owner project before importing containers (older backups lack `profiles.json`; reconstruct
-their profiles manually):
+Unpack `home.tar` and restore needed writable files from `etc.tar`, preserving numeric ownership,
+ACLs and xattrs for both. Recreate the pools and networks the owner's profiles reference. Restore
+profiles in the recreated owner project before importing containers (older backups lack
+`profiles.json`; reconstruct their profiles manually):
 
 ```sh
 project=owner                       # the original owner project name
@@ -263,9 +258,9 @@ rm /run/restore-profiles
 ```
 
 Restore custom volumes before importing the owner's containers. Use the project and pool of each
-archive's `projects/<project>/<pool>/` directory. Browser and svc data use project `default` and pool
-`default`. They need `incus storage volume import`, not `incus import` or manual unpacking. Close all
-browsers, stop svc, and run no guest setup or updates during the steps below:
+archive's `projects/<project>/<pool>/` directory. Browser and svc data use project `default` and
+pool `default`. They need `incus storage volume import`, not `incus import` or manual unpacking.
+Close all browsers, stop svc, and run no guest setup or updates during the steps below:
 
 ```sh
 project=default
@@ -274,10 +269,11 @@ ic stop svc --timeout 120
 ic list                           # def, int and svc must be STOPPED
 ```
 
-Repeat for each row, setting `volume`, `profile` and `device` from the table. Check the instance with
-`ic config show <guest>` (`--expanded` shows inherited devices). If its local `devices` override the
-profile, update that device too. Older backups may name the browser archives
-`browser-web-state.tar.gz` and `browser-admin-state.tar.gz`: use those for def and int, respectively.
+Repeat for each row, setting `volume`, `profile` and `device` from the table. Check the instance
+with `ic config show <guest>` (`--expanded` shows inherited devices). If its local `devices`
+override the profile, update that device too. Older backups may name the browser archives
+`browser-web-state.tar.gz` and `browser-admin-state.tar.gz`: use those for def and int,
+respectively.
 
 | volume | profile | device | guest |
 |---|---|---|---|
@@ -302,9 +298,9 @@ ic storage volume show "$pool" "$volume-before-restore"
 The temporary names must be unused. Renaming the old volume also redirects its attachments, so reset
 each listed consumer's profile or local device to the restored original name before restarting. Keep
 `*-before-restore` until the restored data works; its `used_by` must be empty after reattachment.
-Repeat for owner volumes with their own project, pool and consumers. If no volume exists yet, skip the
-old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify saved profiles,
-downloads and Grafana/history. Only then remove the unused old volumes with
+Repeat for owner volumes with their own project, pool and consumers. If no volume exists yet, skip
+the old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify saved
+profiles, downloads and Grafana/history. Only then remove the unused old volumes with
 `ic storage volume delete "$pool" <volume-before-restore>`.
 
 Finally, import the owner's containers. Then start them after checking their expanded devices:
@@ -320,9 +316,8 @@ done
 ## 12. An online update fails
 
 Start with `sys update check`: it names the newest version (or release ID for older manifests) and
-how old its signature is. New installs use `beta/`. The temporary `bleeding-edge/` bridge delivers
-0.1.0 to older laptops, which use `beta/` after reboot. `sys update install` stops with the reason;
-running it again resumes the download.
+how old its signature is. Channel migration: [BUILD, Sign and publish](BUILD.md#sign-and-publish).
+`sys update install` stops with the reason; running it again resumes the download.
 
 | Message | Do |
 |---|---|
@@ -338,15 +333,16 @@ good).
 ## 13. A kernel panic or CrashRecorded alert
 
 An oops now panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
-archives EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, accessible only to root.
-It verifies and syncs each copy before removing the firmware record. Older archives in
-`/var/lib/convergent/pstore` move to `crash` on the first run. The Security dashboard shows archived
-crash counts beside checker results; `CrashRecorded` reports unacknowledged records.
+archives built-in EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, accessible
+only to root (mode 0700). It verifies and syncs each copy before removing the firmware record. Older
+archives in `/var/lib/convergent/pstore` move to `crash` on the first run. The Security dashboard
+shows archived crash counts beside checker results; `CrashRecorded` reports unacknowledged records.
 
 `kernel.panic_on_oops=1` is KSPP hardening. For a repeatedly oopsing driver, run
 `sudo sysctl -w kernel.panic_on_oops=0` to disable that panic trigger until reboot. To keep the
 exception, set `0` in `rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release; the
-running root is read-only. If the reboot loop prevents that, boot the previous slot first (recipe 3).
+running root is read-only. If the reboot loop prevents that, boot the previous slot first (recipe
+3).
 
 ```sh
 sudo find /var/lib/convergent/crash -type f
@@ -355,6 +351,6 @@ sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
 
 Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory
 (`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`), then run `sudo facts boot` to refresh
-`cv_crash_records`. `CrashRecorded` clears when no archived files remain. Firmware must support EFI
+`cv_crash_records` (the archived file count). `CrashRecorded` clears when no archived files remain. Firmware must support EFI
 variable writes during a panic. An empty archive alone does not prove the last shutdown was clean.
 If the release keeps crashing, boot the other slot (recipe 3).
