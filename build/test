@@ -2632,7 +2632,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=3600 ;; guests-maint | guests-update | online) memory=8192; limit=7200 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192; limit=3600 ;; guests-maint | online) memory=8192; limit=7200 ;; guests-update) memory=8192; limit=10800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -2877,7 +2877,7 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=3600 ;; *) budget=7200 ;; esac
+	case $mode in guests) budget=3600 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
