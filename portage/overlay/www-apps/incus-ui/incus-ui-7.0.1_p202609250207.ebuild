@@ -1,4 +1,4 @@
-# W2: pinned prebuilt static assets; no Debian maintainer scripts or Node build.
+# Pinned prebuilt static assets; no Debian maintainer scripts or Node build.
 EAPI=8
 
 inherit unpacker

@@ -1,5 +1,5 @@
 #!/bin/sh
-# W2: run only on build/test's throwaway host, with int stopped and no owner UI credential.
+# Run only on build/test's throwaway host, with int stopped and no owner UI credential.
 set -eu
 if [ "${1:-}" = --offline ] && [ "$#" = 1 ]; then
     exec sh "$(dirname "$0")/test-incus-ui-offline"
@@ -95,7 +95,7 @@ ic config trust list --format json | jq -e 'any(.[]; .name == "browser-int-ui" a
 [ "$(api)" = 403 ]
 [ "$(api --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 200 ]
-# W2 audit: fixtures catch secret leakage; native events catch wire-format and log-level drift.
+# Audit: fixtures catch secret leakage; native events catch wire-format and log-level drift.
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"lifecycle","metadata":{"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}}'
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"logging","metadata":{"message":"Handling API request","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}}'
 ic profile create w2-audit-native

@@ -310,7 +310,7 @@ certificates_prepare() {
     jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
 }
-# W2: native events are projected to safe fields by the loopback syslog input.
+# Native events are projected to safe fields by the loopback syslog input.
 incus_ui_config() {
     ic config set core.https_address=100.80.1.10:8443 \
         logging.convergent.target.type=syslog logging.convergent.target.address=udp://127.0.0.1:1514 \
@@ -674,7 +674,7 @@ parallel_autostart() {
         ic config unset "$node" "$key" || return
     done <"$work/autostart"
 }
-# W3 Remmina volumes: the owner may resize share independently of image updates.
+# Remmina volumes: the owner may resize share independently of image updates.
 remmina_volumes() {
     volume_create remmina-state 512MiB
     if ic storage volume list default --format json | jq -e 'any(.[]; .name == "share" and .type == "custom")' >/dev/null; then
@@ -684,7 +684,7 @@ remmina_volumes() {
         ic storage volume create default share --type filesystem size=4GiB security.shifted=true
     fi
 }
-# End W3 Remmina volumes.
+# End Remmina volumes.
 volume_create() {
     if ic storage volume list default --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null; then
         ic query "/1.0/storage-pools/default/volumes/custom/$1" |
@@ -1322,7 +1322,7 @@ ifconfig -g handoff carpdemote 128'
         fi
         work_profiles
         ;;
-    # W3 Remmina: the shared volume deliberately never participates in app rollback.
+    # Remmina: the shared volume deliberately never participates in app rollback.
     remmina)
         remmina_volumes
         ic query '/1.0/instances?recursion=1&project=default' >"$work/remmina-instances"
@@ -1339,7 +1339,7 @@ ifconfig -g handoff carpdemote 128'
         fi
         rm -rf "$state/profiles.before"
         ;;
-    # End W3 Remmina.
+    # End Remmina.
     wan|svc)
         if [ "$1" = wan ]; then
             cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'WAN topology differs from host'
@@ -1453,7 +1453,7 @@ apply() {
     update_status running
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
-    # W2: reconcile even when no guest images or certificates are due.
+    # Reconcile even when no guest images or certificates are due.
     /usr/local/sbin/incus-ui --reconcile 9>&- 8>&- 7>&- 6>&-
     incus_ui_config
     booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')

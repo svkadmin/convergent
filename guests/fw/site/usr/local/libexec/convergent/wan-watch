@@ -38,7 +38,7 @@ while :; do
 		good=0 lost=$((lost + 1))
 		[ "$lost" -lt 2 ] || want=128
 	fi
-	# W4: reuse this round's probes; publish only once per minute.
+	# Reuse this round's probes; publish only once per minute.
 	now=$(date +%s)
 	if [ $((now - metrics_at)) -ge 60 ]; then
 		metrics=/var/node_exporter/textfile

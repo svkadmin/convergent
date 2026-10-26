@@ -134,7 +134,7 @@ for project in default "$owner"; do
                 continue ;;
             *) die "unknown content type for $project/$pool/$volume: $content" ;;
             esac
-            # W3: shared storage is never exported while any attached instance can write.
+            # Shared storage is never exported while any attached instance can write.
             if [ "$pool:$volume" = default:share ]; then
                 incus --force-local list --all-projects --fast --format json >"$work/share-users"
                 jq -e 'all(.[];

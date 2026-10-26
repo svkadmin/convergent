@@ -12,7 +12,7 @@ sh build/test-observability
 
 Output is deterministic UTF-8/LF. `build/lint` checks drift. `check.py` checks all page layouts,
 query references, absent NVMe, failed firewall commands, optional demotion groups and update journals.
-Its rule API fixtures need jq. The existing observability suite also covers the W4 parsers and
+Its rule API fixtures need jq. The existing observability suite also covers the network parsers and
 advisory gate; its current advisory fixture expects six findings after adding a fourth Alpine target,
 so that unrelated assertion fails on the unchanged baseline.
 

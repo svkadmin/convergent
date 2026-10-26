@@ -191,7 +191,7 @@ fact_certs() {
 		else bad "cannot read certificate: $certificate"; fi
 	done
 
-	# W2: the encrypted UI credential is optional and rotates through owner authentication.
+	# The encrypted UI credential is optional and rotates through owner authentication.
 	ui=/var/lib/convergent/guests/tls/incus-ui/client.crt
 	if [ -f "$ui" ]; then
 		e=$(openssl x509 -noout -enddate -in "$ui" 2>/dev/null) || { bad 'cannot read Incus UI certificate'; return; }

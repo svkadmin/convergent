@@ -5,10 +5,10 @@ needed. Others (`slot`, `fetch-release`, `guests`, `check`, `devices`, `backup`,
 `sudo` (password, 5-minute ticket).
 
 Contents: [Coming from Arch](#coming-from-arch) · [Keys](#keys) · [The sys tool](#the-sys-tool) ·
-[Browsers](#browsers) · [Wi-Fi](#wi-fi) · [Captive portals](#captive-portals) · [Devices](#devices)
+[Browsers](#browsers) · [Remote desktops](#remote-desktops) · [Wi-Fi](#wi-fi) · [Captive portals](#captive-portals) · [Devices](#devices)
 · [DNS](#dns-blocklist-and-own-records) · [Backups](#backups) ·
 [Health and alerts](#health-and-alerts) · [The bar](#the-bar) ·
-[Releases and guests](#releases-and-guests) · [Power and locking](#power-and-locking). When
+[Releases and guests](#releases-and-guests) · [Work VMs](#work-vms) · [Power and locking](#power-and-locking). When
 something breaks: [RECOVERY.md](RECOVERY.md).
 
 ## Install
@@ -60,7 +60,7 @@ swap needs a larger image.
 | Editing `/etc` | Read-only. Only accounts, `machine-id` and `/etc/usbguard/rules.conf` are kept; other changes come with a release |
 | `passwd` | `sys security password` (or `sudo account password [user]`). Plain `passwd` cannot replace `/etc/shadow`, a bind mount |
 | Your files | `/home` is on the encrypted state volume and survives updates |
-| `incus` | Guests use `guests`; owner's own Incus project not set up yet |
+| `incus` | `guests` manages infrastructure; Incus UI manages work guests in `owner` |
 | A network manager | Wi-Fi is in `sys wifi`; the radio lives in the `wan` VM |
 
 Firewalls run OpenBSD. Daily use needs no firewall login. To look:
@@ -78,7 +78,7 @@ Stock Sway, foot, mako and swaylock on a black background and bar. Owners can ov
 |---|---|
 | Super+m | `sys`: menu of areas and actions, in a terminal |
 | Super+a | one `sys` action by name, in its own terminal |
-| Super+d | an app by name: Browser_default, Browser_internal, Browser_temporary, Settings, Screenshot, Files, Notes, Foot |
+| Super+d | an app by name: Browser_default, Browser_internal, Browser_temporary, Incus management, Remote, Settings, Screenshot, Files, Notes, Foot |
 | Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
 | Super+Escape | lock the screen now |
@@ -126,7 +126,7 @@ does not join an unscanned name.
 | `portal` | `status`, `on`, `off` |
 | `wired` | `status`, `attach [VENDOR:PRODUCT SERIAL]` *, `remove` * |
 | `dns` | `list`, `add [NAME IPv4]` *, `remove [NAME]` *, `allow [DOMAIN]` *, `unallow [DOMAIN]` *, `push` |
-| `firewall` (`fw`) | `status`, `rebuild` *, `maintenance` *, `undo` * |
+| `firewall` (`fw`) | `status`, `rebuild` *, `maintenance` *, `undo` *, `capture INTERFACE-OR-SEGMENT SECONDS` |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair [MAC]`, `connect [MAC]`, `disconnect [MAC]`, `forget [MAC]` * (device picker without MAC) |
 | `usb` | `status`, `allow N\|ID` *, `enrol` *, `review`, `revoke RULE` * |
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `mic on\|off`, `micmute` |
@@ -135,7 +135,8 @@ does not join an unscanned name.
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save; options below) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to clipboard) |
-| `browser` (`br`) | `status`, `def`, `tmp`, `int` |
+| `browser` (`br`) | `status`, `def`, `tmp`, `int`, `incus` |
+| `remote` | `open`, `status`, `close` |
 | `security` (`sec`) | `status`, `alerts` (`sys alerts`), `events`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
@@ -225,6 +226,26 @@ With int closed, `sudo incus-ui rotate` replaces the 90-day credential and asks 
 passphrase. `sudo incus-ui revoke` immediately stops an unlocked int session and removes its
 trust and stored bundle; setup is then required again. Certificate administration uses normal
 sudo authentication; only the fixed session launcher is passwordless.
+Failures: [RECOVERY 15](RECOVERY.md#15-incus-ui-session-or-passphrase-failure).
+
+### Remote desktops
+
+Choose **Remote** or run `sys remote open`; `status` reports state and `close` stops the
+container and unlocked keyring. Each open needs a nonempty keyring password (twice on first use).
+Cancellation or a wrong password closes Remmina. Profiles and encrypted credentials survive
+updates; there is no plaintext fallback. Recovery: [recipe 16](RECOVERY.md#16-remmina-session-or-keyring-failure).
+
+Use numeric work addresses: SSH (TCP 22), RDP (TCP/UDP 3389), VNC (TCP 5900–5999) or ping;
+firewall nodes and gateways are excluded. Cage confines clipboard transfers to the remote
+session; host copy/paste and audio recording are unavailable, playback is allowed.
+
+For RDP file transfer, select `/share` as the shared folder. For direct sharing, use Incus UI
+to attach the existing filesystem volume `share` from pool `default` to each stopped VM that
+needs it. The VM must support and mount the filesystem share; it is not a shared block disk.
+The owner project needs `features.storage.volumes=false` to use default-project volumes;
+move existing private volumes before changing that namespace option. Match guest UID/GID 1000
+or grant suitable ACLs. Detach when finished. Resize the volume in Incus UI if needed;
+4 GiB is the creation default. Stop every attached instance throughout backup or restoration.
 
 ## Wi-Fi
 
@@ -345,9 +366,8 @@ sudo dns-push local    # push the stored blocklist with the current files
 
 ## Firewall maintenance
 
-`sys firewall status` (or `sys fw`) shows fw1 and fw2 CARP roles for transit, host, svc, web, admin
-and guests, PF state counts, Unbound status, and the last successful DNS push to both. Unreachable
-guests and pending DNS recovery are shown explicitly.
+`sys firewall status` (or `sys fw`) shows all registered CARP roles, PF state counts, Unbound
+and the last DNS push; unreachable guests and pending DNS recovery are explicit.
 
 `sys fw maintenance` checks the registry-defined MASTER/BACKUP pair, PF, pfsync with defer, Unbound and a
 local DNS answer before it asks to demote the master. It verifies that the peer owns all registered
@@ -378,9 +398,11 @@ sudo backup [<mountpoint> <owner-project>]
 `sys backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks
 `Mounted encrypted external disk:` and `Owner Incus project:`. It needs an external USB disk with
 LUKS, unlocked and mounted at a root-owned directory (not the laptop's own disk), and an Incus
-project for the owner's guests (not `default`; none is created yet). It writes
+project for the owner's guests (`owner`, created by setup; never `default`). It writes
 `convergent-backups/backup-<UTC>`: a snapshot of `/home`, the writable `/etc` files, exports of the
-owner's containers and profiles, and custom filesystem/ISO volumes of both projects. It reads the
+owner's containers and profiles, and custom filesystem/ISO volumes of both projects, including
+`remmina-state` and `share`. Close browsers and Remmina and stop every instance using `share`.
+Keep them stopped throughout the backup. It reads the
 backup back and keeps three. VM instances, custom block volumes, system guest instances and
 `/var/lib/convergent` are excluded (see `EXCLUDED` in the backup). Unmount and close
 the disk before unplugging. Restore steps: [RECOVERY 11](RECOVERY.md#11-start-over).
@@ -396,7 +418,7 @@ Inspect the named alerts rather than inferring faults from the counts. Timing:
 description, and the API's active-since time. Left-clicking the bar's alert counts opens the same
 list. An unavailable or invalid response reports an error, not an empty list.
 
-Open **Browser_internal** (`sys browser int`) for Overview, Network, Guests and Security. Overview
+Open **Browser_internal** (`sys browser int`) for Overview, Network, Guests, Host, Security and Monitoring. Overview
 shows the path, alerts, collector freshness, host and guests on the first screen. Other pages share
 its navigation. Guests has project and instance selectors. Current-state tables show one row per
 item; graphs show history. CARP role-change annotations stay off until toggled on. Log panels show
@@ -454,6 +476,28 @@ Crash records and panic recovery:
 
 Host cron and anacron have mail disabled; their jobs and logging still run.
 
+### Release and network evidence
+
+Grafana Security's **Release** section compares the booted and latest signed release IDs, selected
+package versions from their release inventories, and open advisories with fixed-in versions.
+The existing `fetch-release check` refreshes this evidence; no notification is added. Read the
+verification and scan/check ages first: missing, invalid or unavailable status means unknown,
+and ages over two days warn. Versions describe release contents, not live guests after a partial
+update. A pruned installed release may have no online status.
+
+Network shows every CARP segment from labels, parent-interface traffic, Unbound recursion mean
+and SERVFAIL rate, Wi-Fi signal/link bitrate/observed roams, and the existing firewall-to-WAN
+probe's RTT/loss. These probes do not measure Internet reachability. Blocked-source/destination/
+port rankings count sampled logged packets (five per second per firewall), not all PF drops.
+
+From the owner login, run `sys firewall capture <interface-or-segment> <seconds>`, for example
+`sys firewall capture vio4 15`. It asks for normal sudo authentication, selects the coherent
+MASTER pair, and saves a timestamped private pcap under `~/captures`. Segments resolve through
+the shared registry to their parent interface. Duration is 1–60 seconds; 1,536-byte snapshots
+and 32,000 packets cap the complete pcap below 50 MB. A failover during capture does not move the
+capture to the other node. Remove captures when no longer needed; they can contain payload bytes.
+Missing evidence: [RECOVERY 17](RECOVERY.md#17-missing-release-or-network-evidence).
+
 ## The bar
 
 Refreshed every five seconds; inputs every ten seconds and alerts every thirty seconds. Blocks are shown here separated by `|`; the bar draws its own separators:
@@ -474,6 +518,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 10 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) if svc cannot be read, including during SETUP until svc is up; every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
+| `RDP:on/off/?` | Remmina running/stopped/unknown; stale status is unknown | `sys remote status`, `sys remote close` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
@@ -500,13 +545,13 @@ selftest reports include both. The timestamp still controls slot ordering.
 sys update                           # release slots; `sys update check` asks whether a newer one is published
 sys guests status                     # one line per instance: name and state (guests status)
 sys guests update                     # apply pending downloaded guests now
-sudo guests update fw|wan|svc|browser|def|int <image-dir>
+sudo guests update fw|wan|svc|browser|def|int|remmina <image-dir>
 ```
 
 Online releases carry guests; only changed guests download with `sys update install`. After reboot
-and marking the host good, they apply in order: svc, wan, fw, browser. Nothing applies while a
-browser is open. The bar shows GUESTS while applying and GUESTS failed on failure. To retry a
-pending browser update, close browsers and run `sys guests update`. Updating `browser` also moves
+and marking the host good, they apply in order: svc, wan, fw, browser, Remmina; legacy browser
+migration runs first. Close browsers and Remmina before applying. The bar shows GUESTS while
+applying and GUESTS failed on failure; retry with `sys guests update`. Updating `browser` also moves
 the image for future tmp instances, including portal mode. If the booted release is already newest
 but its guests were not installed (host-only update), `sys update install` downloads and applies
 them at once. `def` or `int` normally replaces only that instance; a role migration updates both.
@@ -521,7 +566,7 @@ The first full browser update renames existing web/admin instances and state vol
 keeping bookmarks and logins. Close all browsers first. An interrupted migration resumes on the next
 browser update. The old role names are not command aliases.
 
-Guests can also update manually, on a slot already marked good, with every browser closed. Copy the
+Guests can also update manually, on a slot already marked good, with browsers and Remmina closed. Copy the
 new guest images to the laptop; `$g` is that directory. Backup and rollback design:
 [ARCHITECTURE 7.2](ARCHITECTURE.md#72-update).
 
@@ -529,10 +574,25 @@ new guest images to the laptop; `$g` is that directory. Backup and rollback desi
 sudo guests update fw  $g/fw      # fw2 first, then failover, then fw1
 sudo guests update wan $g/wan
 sudo guests update svc $g/svc
+sudo guests update remmina $g/remmina
 ```
 
-If you added a root crontab as a stopgap for the v8/v9 cron bug, remove it with `sudo crontab -r`
-after the first v10 boot. Otherwise those jobs run twice.
+### Work VMs
+
+Choose a NIC-only `work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn-a` or `work-dom-jhn-b`
+profile in the owner project (names follow the configured family names).
+Provide the VM's root disk and other resources separately. The owner project
+shares managed networks, while keeping its own profiles.
+
+Use DHCP, or assign .1–.48 with a /26 mask and gateway/DNS .62 in the selected prefix
+([address table](ARCHITECTURE.md#41-addressing)). Incus NIC
+settings alone do not configure an arbitrary guest OS. Members of one family
+can communicate across its two VLANs; the two families cannot communicate.
+Internet access is allowed; home-LAN access is closed until explicit canonical
+RFC1918 prefixes are baked into the release. System segments remain closed.
+
+Topology updates briefly stop both firewalls. A failed update restores both
+old images; work access remains closed while topology hashes differ.
 
 ## Power and locking
 
@@ -557,75 +617,3 @@ after the first v10 boot. Otherwise those jobs run twice.
   report unsupported, and other power controls keep working. `sys power status` shows the actual
   thresholds, thermal profile and available choices. The resource review and unimplemented tuning
   proposals are in ARCHITECTURE section 11.
-
-### Work VMs
-
-Build all images with the same `work_dev_*`, `work_jhn_*` and
-`home_lan_prefixes` settings from `config.example.yaml`. Choose a NIC-only
-`work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn-a` or `work-dom-jhn-b`
-profile in the owner project (names follow the configured family names).
-Provide the VM's root disk and other resources separately. The owner project
-shares managed networks, while keeping its own profiles.
-
-Use DHCP, or assign .1–.48 with a /26 mask and gateway/DNS .62. Incus NIC
-settings alone do not configure an arbitrary guest OS. Members of one family
-can communicate across its two VLANs; the two families cannot communicate.
-Internet access is allowed; home-LAN access is closed until explicit canonical
-RFC1918 prefixes are baked into the release. System segments remain closed.
-
-Topology updates briefly stop both firewalls. A failed update restores both
-old images; work access remains closed while topology hashes differ.
-
-### Remote desktops
-
-Choose **Remote**, or run **sys remote open**, **sys remote status**, or
-**sys remote close**. Close stops the whole container and its unlocked keyring.
-The bar shows RDP:on/off/?; ? includes stale status. Enter a nonempty
-keyring password on every opening; first use asks twice. Cancellation or an
-incorrect password leaves Remmina closed. Connection profiles and encrypted
-credentials survive updates. No plaintext fallback is offered.
-
-Use numeric addresses in the four work networks: SSH (TCP 22), RDP (TCP/UDP
-3389), VNC (TCP 5900–5999) and ping. Firewall nodes and gateways are excluded.
-The clipboard works between Remmina and the remote session, inside Cage;
-host copy/paste is deliberately unavailable. Audio playback is allowed,
-recording is not.
-
-For RDP drive redirection select /share in the connection's shared-folder
-setting. In Incus UI, select the individual stopped VM, **Configuration →
-Devices → Add disk**: pool default, existing filesystem volume share,
-mount path /share (and io.bus=virtiofs where supported). Do not add it to
-every VM's profile. The owner project must use the default custom-volume
-namespace (features.storage.volumes=false; set it with normal administrative
-authority before attaching). Changing that project option affects its volume
-namespace: move any existing private volumes first.
-
-Linux guests need virtiofs support and a mount using the disk device's mount
-tag; Windows needs a compatible virtiofs driver/service, or use RDP drive
-redirection instead. Match access to guest UID/GID 1000 or grant appropriate
-ACLs; do not make the volume world-writable. Detach through the same VM device
-editor when finished. This is a filesystem share, never a block disk mounted
-by several guests. Stop attached instances before backup and avoid starting
-them while it runs. To resize, set share's storage volume size in the UI;
-4 GiB is only the creation default.
-
-### Release and network evidence
-
-Grafana Security's **Release** section compares the booted and latest signed release IDs, selected
-package versions from their release inventories, and open advisories with fixed-in versions.
-The existing `fetch-release check` refreshes this evidence; no notification is added. Read the
-verification and scan/check ages first: missing, invalid or unavailable status means unknown,
-and ages over two days warn. Versions describe release contents, not live guests after a partial
-update. A pruned installed release may have no online status.
-
-Network shows every CARP segment from labels, parent-interface traffic, Unbound recursion mean
-and SERVFAIL rate, Wi-Fi signal/link bitrate/observed roams, and the existing firewall-to-WAN
-probe's RTT/loss. These probes do not measure Internet reachability. Blocked-source/destination/
-port rankings count sampled logged packets (five per second per firewall), not all PF drops.
-
-From the owner login, run `sys firewall capture <interface-or-segment> <seconds>`, for example
-`sys firewall capture vio4 15`. It asks for normal sudo authentication, selects the coherent
-MASTER pair, and saves a timestamped private pcap under `~/captures`. Segments resolve through
-the shared registry to their parent interface. Duration is 1–60 seconds; 1,536-byte snapshots
-and 32,000 packets cap the complete pcap below 50 MB. A failover during capture does not move the
-capture to the other node. Remove captures when no longer needed; they can contain payload bytes.
