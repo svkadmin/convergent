@@ -1,0 +1,50 @@
+#!/bin/sh
+# Exercise the production query helper and browser service selection without Incus.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+eval "$(sed -n '/^ic() {/,/^}/p' "$repo/tools/incus-ui")"
+timeout() { [ "$1 $2 $3" = '-k 1 30' ]; shift 3; "$@"; }
+incus() {
+    printf '%s\n' "$*" >>"$work/calls"
+    [ "$1" = --force-local ]; shift
+    case $1 in
+    query) [ "$#" = 2 ] && [ "$2" = '/1.0/instances?recursion=1&project=default' ] ;;
+    --project) [ "$2 $3 $4" = 'default stop int' ] ;;
+    *) return 1 ;;
+    esac
+}
+ic query '/1.0/instances?recursion=1&project=default'
+ic stop int
+[ "$(wc -l <"$work/calls")" = 2 ]
+sed -n '/^if \[ "$role" = int \] \&\& \[ -z "$incus_ui" \]; then/,/^fi/p' "$repo/tools/browser" >"$work/grafana"
+[ -s "$work/grafana" ]
+ic() { echo "$*" >>"$work/grafana-calls"; return 1; }
+role=int incus_ui=1
+. "$work/grafana"
+[ ! -e "$work/grafana-calls" ]
+ic() { echo "$*" >>"$work/grafana-calls"; }
+incus_ui=
+. "$work/grafana"
+grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
+# Delayed events must be awaited; a permanently missing event must hit the deadline.
+sed -n '/^audit_ready() {/,/^done$/p' "$here/test-incus-ui" |
+    sed "s|/var/log/messages|$work/messages|g; s/+ 60/+ 2/" >"$work/audit"
+[ -s "$work/audit" ]
+: >"$work/messages"
+fp=test-fingerprint
+(
+    sleep 1
+    printf '%s\n' 'incus-audit w2-audit-fixture w2-owner' 'incus-audit w2-audit-request w2-owner' \
+        'incus-audit profile-created w2-audit-native' 'incus-audit "event":"request" test-fingerprint' >"$work/messages"
+) &
+writer=$!
+. "$work/audit"
+wait "$writer"
+: >"$work/messages"
+if ( . "$work/audit" ) 2>"$work/error"; then exit 1; fi
+grep -q 'timed out' "$work/error"
+echo 'incus-ui: query, independent launch and bounded audit fixtures passed'

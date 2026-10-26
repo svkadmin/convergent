@@ -361,7 +361,7 @@ def gate_selftest():
         with contextlib.redirect_stdout(io.StringIO()):
             result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
         data = json.loads(status.read_text())
-        require(result == 0 and data['release'] == '42' and len(data['advisories']) == 6,
+        require(result == 0 and data['release'] == '42' and len(data['advisories']) == 8,
                 'signed status lost excepted or duplicate-feed findings')
         require(all(a['installed_version'] == '3.5.1-r2' and a['fixed_in'] == '3.5.1-r10'
                     and a['severity'] is None for a in data['advisories']), 'structured advisory versions')

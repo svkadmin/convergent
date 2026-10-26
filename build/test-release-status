@@ -1,0 +1,77 @@
+#!/bin/sh
+# Exercise release_metrics with real signatures and jq, substituting only paths and downloads.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+for dependency in jq openssl; do
+    command -v "$dependency" >/dev/null || { echo "test-release-status: requires $dependency" >&2; exit 1; }
+done
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+mkdir "$work/source" "$work/pointer"
+pointer=$work/pointer
+booted=42 latest=43 url=https://fixture.invalid
+key=$work/public
+openssl genpkey -algorithm ed25519 -out "$work/key"
+openssl genpkey -algorithm ed25519 -out "$work/wrong-key"
+openssl pkey -in "$work/key" -pubout -out "$key"
+eval "$(sed -n '/^verify()/p' "$repo/rootfs/usr/lib/convergent/update.sh")"
+private() { mkdir -p "$1"; chmod 700 "$1"; }
+date() { echo 2000; }
+get() {
+    [ "$1 $2 $3" = '--max-time 30 --max-filesize' ] || return 1
+    case $4 in 1048576|1024) ;; *) return 1 ;; esac
+    [ "$5" = -o ] && [ "$#" = 7 ] || return 1
+    path=${7#"$url/"}
+    cp "$work/source/$path" "$6"
+}
+sed -e "s|/var/lib/node_exporter|$work/metrics|g" \
+    -e "s|/var/lib/convergent/release-status|$work/cache|g" \
+    -e "s|/usr/lib/convergent/release-status.jq|$repo/rootfs/usr/lib/convergent/release-status.jq|g" \
+    "$repo/rootfs/usr/lib/convergent/release-status.sh" >"$work/metrics.sh"
+. "$work/metrics.sh"
+status() {
+    for release in 42 43; do
+        mkdir -p "$work/source/$release"
+        printf '{"release":"%s","generated":%s,"advisories":[{"target":"wan","package":"openssl","installed_version":"1","advisory":"CVE-test","severity":null,"fixed_in":"2"}],"packages":[{"target":"host","package":"kernel","version":"6"}]}\n' \
+            "$release" "$1" >"$work/source/$release/advisories.json"
+        openssl pkeyutl -sign -inkey "$2" -rawin -in "$work/source/$release/advisories.json" \
+            -out "$work/source/$release/advisories.json.sig"
+    done
+}
+status 1000 "$work/key"
+release_metrics 1
+for role in installed latest; do
+    grep -q "cv_release_status_verified{role=\"$role\".*} 1$" "$work/metrics/release.prom"
+    grep -q "cv_release_advisory_info{role=\"$role\"" "$work/metrics/release.prom"
+    grep -q "cv_release_package_info{role=\"$role\"" "$work/metrics/release.prom"
+done
+cp "$work/cache/42.json" "$work/accepted-42"
+cp "$work/cache/43.json" "$work/accepted-43"
+for fault in tampered wrong-key missing missing-signature replay; do
+    status 1001 "$work/key"
+    case $fault in
+    tampered) for release in 42 43; do printf ' ' >>"$work/source/$release/advisories.json"; done ;;
+    wrong-key) status 1001 "$work/wrong-key" ;;
+    missing) rm "$work/source/"*/advisories.json ;;
+    missing-signature) rm "$work/source/"*/advisories.json.sig ;;
+    replay) status 999 "$work/key" ;;
+    esac
+    release_metrics 1
+    for role in installed latest; do
+        grep -q "cv_release_status_verified{role=\"$role\".*} 0$" "$work/metrics/release.prom"
+    done
+    ! grep -q 'cv_release_advisory_info\|cv_release_package_info\|cv_release_status_generated_seconds' "$work/metrics/release.prom"
+    cmp "$work/cache/42.json" "$work/accepted-42"
+    cmp "$work/cache/43.json" "$work/accepted-43"
+    [ -z "$(find "$work/metrics" -name '.release.*' -print)" ]
+done
+status 1001 "$work/key"
+release_metrics 1
+grep -q 'cv_release_status_generated_seconds{role="installed",release="42"} 1001' "$work/metrics/release.prom"
+cmp "$work/cache/42.json" "$work/source/42/advisories.json"
+release_metrics 0
+grep -qx 'cv_release_check_success 0' "$work/metrics/release.prom"
+! grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"
+echo 'observability: real signed ingestion, cache, publication and replay fixtures passed'

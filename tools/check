@@ -297,12 +297,15 @@ incus --force-local list --all-projects --fast --format json >"$work/instances" 
 incus --force-local query '/1.0/profiles/browser-tmp?project=default' >"$work/browser-tmp.raw" 2>>"$work/report" || bad 'browser-tmp profile query failed'
 jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
     {config, devices}' "$work/browser-tmp.raw" >"$work/browser-tmp" || bad 'browser-tmp profile unreadable'
+incus --force-local query '/1.0/profiles/remmina?project=default' >"$work/remmina-profile.raw" 2>>"$work/report" || bad 'Remmina profile query failed'
+jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
+    {config, devices}' "$work/remmina-profile.raw" >"$work/remmina-profile" || bad 'Remmina profile unreadable'
 incus_limits() {
     jq -S 'map(if .name == "svc" and (.config["limits.memory"] == "350MiB" or .config["limits.memory"] == "768MiB")
         then .config["limits.memory"] = "350MiB" else . end) | sort_by(.name)' "$1"
 }
-jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|def|int)$")) |
-    {name, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
+jq -S 'map(select((.project // "default") == "default") | select(.name | test("^(fw1|fw2|wan|svc|def|int|remmina)$")) |
+    {name, profiles, config: (.expanded_config | with_entries(select(.key | startswith("volatile.") | not))),
     devices: .expanded_devices})' "$work/instances" >"$work/incus.raw" || bad 'Incus settings unreadable'
 incus_limits "$work/incus.raw" >"$work/incus" || bad 'Incus settings unreadable'
 jq -e 'all(.[] | select((.project // "default") == "default" and .name == "svc");
@@ -310,8 +313,8 @@ jq -e 'all(.[] | select((.project // "default") == "default" and .name == "svc")
     "$work/instances" >/dev/null || bad 'svc memory limit differs'
 
 if [ "${1:-}" = accept ]; then
-    jq -e 'any(.[]; .name == "def") and any(.[]; .name == "int")' "$work/incus" >/dev/null ||
-        die 'open and close both def and int browsers, then retry acceptance'
+    jq -e 'any(.[]; .name == "def") and any(.[]; .name == "int") and any(.[]; .name == "remmina" and .profiles == ["remmina"])' "$work/incus" >/dev/null ||
+        die 'open and close def, int and Remmina, then retry acceptance'
     [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'refusing acceptance: host verification failed'; }
     mkdir -p "$work/accepted/etc" "$work/accepted/fw" || die 'cannot prepare acceptance'
     cp "$manifest" "$work/accepted/manifest" || die 'cannot retain manifest'
@@ -324,7 +327,7 @@ if [ "${1:-}" = accept ]; then
         case $entry in ''|'#'*) continue ;; esac
         cp -a --parents "/etc/$entry" "$work/accepted/" || die "cannot accept /etc/$entry"
     done <"$list"
-    cp "$work/autostart" "$work/suid" "$work/incus" "$work/browser-tmp" "$work/accepted/" || die 'cannot retain inventories'
+    cp "$work/autostart" "$work/suid" "$work/incus" "$work/browser-tmp" "$work/remmina-profile" "$work/accepted/" || die 'cannot retain inventories'
     baseline=$work/accepted
 fi
 if [ "${1:-}" = accept-fw ]; then
@@ -346,7 +349,7 @@ while IFS= read -r entry; do
     [ -e "$baseline/etc/$entry" ] && [ -e "/etc/$entry" ] || bad "missing /etc/$entry or accepted copy"
     [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"
 done <"$list"
-for inventory in autostart suid incus browser-tmp; do
+for inventory in autostart suid incus browser-tmp remmina-profile; do
     accepted=$baseline/$inventory
     if [ "$inventory" = incus ]; then
         accepted=$work/incus.accepted

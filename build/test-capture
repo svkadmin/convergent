@@ -1,0 +1,93 @@
+#!/bin/sh
+# Run both capture wrappers with controlled transport and tcpdump.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' 0
+trap 'exit 1' HUP INT TERM
+mkdir "$fixture/run" "$fixture/guest"
+export fixture
+cat >"$fixture/mocks" <<'EOF'
+id() { echo 0; }
+flock() { :; }
+firewall_pair() { [ "$1" = fw1 ]; }
+ifconfig() { [ "$*" = vlan320 ]; }
+stat() {
+    if [ "$1 $2" = '-f %z' ]; then shift 2; command stat -c %s "$@"
+    else command stat "$@"; fi
+}
+timeout() {
+    echo "$*" >>"$fixture/timeouts"
+    if [ "$1" = -p ]; then
+        [ "$1 $2 $3 $4 $5 $6 $7" = '-p -s INT -k 1 60 tcpdump' ] || exit 91
+        shift 6
+    else
+        [ "$1 $2 $3 $4" = '-k 5 70 ssh' ] || exit 92
+        shift 3
+    fi
+    "$@"
+}
+tcpdump() {
+    [ "$#" = 9 ] && [ "$1 $2 $3 $4 $5 $6 $7 $8" = '-n -s 1536 -c 32000 -i vlan320 -w' ] || exit 93
+    case $9 in "$fixture/guest/"*/capture.pcap) ;; *) exit 93 ;; esac
+    [ $((24 + $5 * ($3 + 16))) -lt 50000000 ] || exit 94
+    echo tcpdump >>"$fixture/calls"
+    printf 'pcap\n' >"$9"
+    case $sample in
+    large) truncate -s 50000001 "$9" ;;
+    empty) : >"$9" ;;
+    timeout) return 130 ;;
+    error) return 1 ;;
+    interrupt) kill -TERM "$$"; return 1 ;;
+    esac
+}
+ssh() {
+    [ "$(ulimit -f)" = 97656 ] || exit 95
+    [ "$*" = '-F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n fw1 /usr/local/libexec/convergent/fw-capture vlan320 60' ] || exit 96
+    echo ssh >>"$fixture/calls"
+    case $sample in
+    transport-error) return 1 ;;
+    transport-interrupt) kill -TERM "$$"; return 1 ;;
+    transport-large) head -c 50000001 /dev/zero; return ;;
+    esac
+    sh "$fixture/remote" vlan320 60
+}
+EOF
+# Paths and OS-specific stat are adapted; limits, traps and publication stay unchanged.
+{
+    cat "$fixture/mocks"
+    sed "s|/var/run/fw-capture.|$fixture/guest/fw-capture.|g" "$repo/guests/fw/site/usr/local/libexec/convergent/fw-capture"
+} >"$fixture/remote"
+{
+    cat "$fixture/mocks"
+    sed -e '/^PATH=/d' -e "s|^\\. /usr/lib/convergent/sys/14-firewall|:|" \
+        -e "s|/run/convergent|$fixture/run|g" "$repo/tools/firewall-capture"
+} >"$fixture/local"
+for wrapper in local remote; do
+samples='valid timeout large empty error interrupt'
+[ "$wrapper" != local ] || samples="$samples transport-error transport-interrupt transport-large"
+for sample in $samples; do
+    export sample
+    : >"$fixture/calls"
+    : >"$fixture/timeouts"
+    rc=0
+    sh "$fixture/$wrapper" vlan320 60 >"$fixture/output" 2>"$fixture/error" || rc=$?
+    case $sample in
+    valid|timeout) [ "$rc" = 0 ] && [ "$(cat "$fixture/output")" = pcap ] ;;
+    *) [ "$rc" != 0 ] && [ ! -s "$fixture/output" ] ;;
+    esac || { cat "$fixture/error" >&2; echo "capture fixture failed: $wrapper/$sample" >&2; exit 1; }
+    [ "$wrapper" != local ] || grep -qx ssh "$fixture/calls"
+    case $sample in transport-*) ;; *) grep -qx tcpdump "$fixture/calls"; esac
+    [ "$wrapper" != local ] || grep -q '^-k 5 70 ssh ' "$fixture/timeouts"
+    case $sample in transport-*) ;; *) grep -q '^-p -s INT -k 1 60 tcpdump ' "$fixture/timeouts"; esac
+    [ -z "$(find "$fixture/run" "$fixture/guest" -mindepth 1 -type d -print)" ]
+done
+done
+for wrapper in local remote; do
+    for seconds in 0 61 -1 nope; do
+        if sh "$fixture/$wrapper" vlan320 "$seconds" >"$fixture/output" 2>/dev/null; then exit 1; fi
+        [ ! -s "$fixture/output" ]
+    done
+done
+echo 'observability: capture time, count, snaplen, size, failures and cleanup fixtures passed'
