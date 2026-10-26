@@ -26,7 +26,7 @@ root=$mini/target
 alpine_prepare
 
 alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc \
-    ifupdown-ng ca-certificates jq chromium=155.0.8059.84-r0 mesa-egl mesa-dri-gallium
+    ifupdown-ng ca-certificates jq chromium=155.0.8059.84-r0 mesa-egl mesa-dri-gallium libva intel-media-driver
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
 cp -R "$here/rootfs/." "$root/"
 for role in def tmp int; do
