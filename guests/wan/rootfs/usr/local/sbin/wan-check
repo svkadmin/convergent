@@ -96,6 +96,23 @@ portal=0
 	echo "convergent_wan_upstream_up $good"
 	echo "# TYPE convergent_wan_portal_mode gauge"
 	echo "convergent_wan_portal_mode $portal"
+	# W4: association changes observed at this cadence, without SSID/BSSID labels.
+	radio=$(timeout 5 iw dev "$WIFI_IF" link 2>/dev/null || :)
+	bssid=$(printf '%s\n' "$radio" | awk '$1 == "Connected" && $2 == "to" && $3 ~ /^[0-9a-f:]+$/ {print $3; exit}')
+	roams=$(cat "$d/wifi.roams" 2>/dev/null || echo 0)
+	case $roams in ''|*[!0-9]*) roams=0 ;; esac
+	last=$(cat "$d/wifi.bssid" 2>/dev/null || :)
+	connected=0
+	if [ -n "$bssid" ]; then
+		connected=1
+		[ -z "$last" ] || [ "$last" = "$bssid" ] || roams=$((roams + 1))
+		printf '%s\n' "$radio" | awk -f /usr/local/lib/wan-radio.awk
+	fi
+	printf '%s\n' "$bssid" >"$d/wifi.bssid"
+	printf '%s\n' "$roams" >"$d/wifi.roams"
+	echo "convergent_wifi_connected $connected"
+	echo "convergent_wifi_roams_total $roams"
+	echo "convergent_wifi_timestamp_seconds $(date +%s)"
 } > "$m/wan.prom.tmp"
 chmod 644 "$m/wan.prom.tmp"
 mv "$m/wan.prom.tmp" "$m/wan.prom"

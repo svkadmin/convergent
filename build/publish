@@ -90,7 +90,7 @@ keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0,
 if [ "$release" = "$latest" ]; then
 	# An advertised prefix must survive a failed retry unchanged.
 	want=$(for f in $files; do printf '%s/%s/%s\n' "$CHANNEL" "$release" "$f"; done | sort)
-	[ "$(keys_of "$release" | sort)" = "$want" ] || die "published file set differs; use a new release ID"
+	[ "$(keys_of "$release" | grep -Ev '/advisories\.json(\.sig)?$' | sort)" = "$want" ] || die "published file set differs; use a new release ID"
 	check=$(mktemp) || die "cannot create retry check"
 	trap 'rm -f "$check"' EXIT
 	trap 'exit 1' HUP INT TERM

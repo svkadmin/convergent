@@ -2,6 +2,7 @@
 from dashlib import (
     AMBER, BAD, GREEN, NEUTRAL, OK, RED, SCREEN_ROWS, SECURITY_EVENTS, Page,
     grid, ov, target, thresholds, vmap)
+from release import panels as release_panels
 
 
 def generate():
@@ -53,5 +54,5 @@ def generate():
     events = p.logs("Security · recent events", SECURITY_EVENTS, grid(0, 21, 24, 10),
                     "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. Successful/failed logins (including greetd/tuigreet and su), sudo password failures and commands, USBGuard decisions, AppArmor denials and complain-mode events (ALLOWED), CARP takeovers, guest updates/failures, host updates, bless and exhausted-slot fallback. Latest 50 records in the selected range; hostname is derived from the connection's remote_ip; app_name and message are sender claims. Routine audit and stack continuations excluded; all logs are in Explore.")
     events["options"]["dedupStrategy"] = "none"
-    p.footer(SCREEN_ROWS, "Continuous UKI/ESP hashes, live dm-verity verification, TPM attestation, per-key audit counters, AppArmor/USBGuard policy inventories, file integrity sweeps, guest security state and certificates other than incus-server are not collected. Boot, daily and audit facts retain their last sample until rewritten: read freshness alongside the verdicts.")
+    p.footer(release_panels(p, SCREEN_ROWS), "Continuous UKI/ESP hashes, live dm-verity verification, TPM attestation, per-key audit counters, AppArmor/USBGuard policy inventories, file integrity sweeps, guest security state and certificates other than incus-server are not collected. Boot, daily and audit facts retain their last sample until rewritten: read freshness alongside the verdicts.")
     return p.dashboard("cv-security", "Convergent · Security", "Measured boot facts, trust, checker and security logs.", refresh="5m")

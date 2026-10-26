@@ -1,0 +1,17 @@
+#!/bin/sh
+# Packet count and snaplen bound a complete pcap below 50 MB, including headers.
+set -eu
+export LC_ALL=C
+umask 077
+[ "$#" = 2 ] || exit 2
+case $1 in ''|*[!a-z0-9]*) exit 2 ;; esac
+case $2 in [1-9]|[1-5][0-9]|60) ;; *) exit 2 ;; esac
+ifconfig "$1" >/dev/null
+work=$(mktemp -d /var/run/fw-capture.XXXXXXXX)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+rc=0
+timeout -p -s INT -k 1 "$2" tcpdump -n -s 1536 -c 32000 -i "$1" -w "$work/capture.pcap" >&2 || rc=$?
+case $rc in 0|130) ;; *) exit "$rc" ;; esac
+[ -s "$work/capture.pcap" ] && [ "$(stat -f %z "$work/capture.pcap")" -le 50000000 ]
+cat "$work/capture.pcap"

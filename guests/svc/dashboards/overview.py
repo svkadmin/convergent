@@ -35,7 +35,7 @@ def path(page):
                    [("lowest role", n), ("highest role", n + "_max"), ("pf", n + "_pf")], 3 + i * 49, 45)
         Canvas.link(wan, box, sx=-0.5 if i == 0 else 0.5, colour_field=n)
         fws.append(box)
-    c.text(3, 94, 397, "Six CARP gateways · mixed roles need attention", size=13, align="center")
+    c.text(3, 94, 397, "CARP gateways · mixed roles need attention", size=13, align="center")
     field("host", 'max(up{job="node",node="host"})', mappings=UP)
     field("cpu", HOST_CPU.replace("$__rate_interval", "2m"), unit="percent", decimals=0)
     field("ram", HOST_RAM, unit="percent", decimals=0)
@@ -58,7 +58,7 @@ def path(page):
     p = page.add("canvas", "The network path", grid(0, 0, 7, SCREEN_ROWS),
                  "Source: node up, Incus CPU series, fw-facts CARP/pf and wan-check upstream lease. "
                  "This is a logical path, not host forwarding: each downstream segment uses a CARP gateway. "
-                 "Both roles agree when all six interfaces have the same role; Network shows each segment. "
+                 "Both roles agree when all reported interfaces have the same role; Network shows each segment. "
                  "UP on wan means an accepted lease, not a Wi-Fi association or an Internet probe.",
                  c.targets, {"noValue": "UNKNOWN"}, c.overrides,
                  {"inlineEditing": False, "showAdvancedTypes": True, "panZoom": False,
@@ -103,5 +103,5 @@ def generate():
     guests_table(p, grid(7, 17, 17, 7), compact=True)
     p.logs("Recent actionable logs", ACTIONABLE, grid(7, 24, 17, 7),
            "Source: VictoriaLogs TLS syslog from host, wan, fw1/fw2. Warnings/errors, AppArmor denials, USB blocks, faillock, sudo and firewall changes. Routine EXECVE and kernel stack continuation records excluded; all records remain in Explore.")
-    p.footer(SCREEN_ROWS, "Wi-Fi SSID, signal, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. The path is logical: the host does not forward traffic between segments.")
+    p.footer(SCREEN_ROWS, "Wi-Fi SSID, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. Radio and sampled pflog evidence are on Network. The path is logical: the host does not forward traffic between segments.")
     return p.dashboard("cv-overview", "Convergent · Overview", "The path, attention, host and guests on one screen.")

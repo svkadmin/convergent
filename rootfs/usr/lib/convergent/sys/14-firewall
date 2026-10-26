@@ -1,6 +1,7 @@
 title=Firewalls
 alias=fw
 actions='status	Show both firewalls and DNS push status	root
+capture	Capture MASTER traffic [interface-or-segment seconds]	root
 rebuild	Recreate a firewall from the installed release [fw1|fw2]	root confirm
 maintenance	Move all segments to the healthy peer	root
 undo	End maintenance demotion	root'
@@ -145,3 +146,20 @@ firewall_rebuild() {
 	case $answer in fw1|fw2) ;; *) die 'rebuild accepts fw1 or fw2' ;; esac
 	run sudo /usr/local/sbin/guests rebuild "$answer"
 }
+
+# W4: owner-side output keeps privileged writes out of the owner's directory.
+firewall_capture() (
+	[ "$#" = 2 ] || die 'usage: sys firewall capture <interface-or-segment> <seconds>'
+	if [ "$(id -u)" = 0 ]; then
+		[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die 'run sys firewall capture from the owner login'
+		exec sudo -u "$SUDO_USER" sys firewall capture "$@"
+	fi
+	umask 077
+	mkdir -p "$HOME/captures" || exit 1
+	file=$(mktemp "$HOME/captures/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX.pcap") || exit 1
+	trap 'rm -f "$file"' 0
+	trap 'exit 1' HUP INT TERM
+	run sudo /usr/local/sbin/firewall-capture "$1" "$2" >"$file" || exit 1
+	trap - 0
+	echo "$file"
+)

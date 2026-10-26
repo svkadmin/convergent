@@ -608,3 +608,24 @@ editor when finished. This is a filesystem share, never a block disk mounted
 by several guests. Stop attached instances before backup and avoid starting
 them while it runs. To resize, set share's storage volume size in the UI;
 4 GiB is only the creation default.
+
+### Release and network evidence
+
+Grafana Security's **Release** section compares the booted and latest signed release IDs, selected
+package versions from their release inventories, and open advisories with fixed-in versions.
+The existing `fetch-release check` refreshes this evidence; no notification is added. Read the
+verification and scan/check ages first: missing, invalid or unavailable status means unknown,
+and ages over two days warn. Versions describe release contents, not live guests after a partial
+update. A pruned installed release may have no online status.
+
+Network shows every CARP segment from labels, parent-interface traffic, Unbound recursion mean
+and SERVFAIL rate, Wi-Fi signal/link bitrate/observed roams, and the existing firewall-to-WAN
+probe's RTT/loss. These probes do not measure Internet reachability. Blocked-source/destination/
+port rankings count sampled logged packets (five per second per firewall), not all PF drops.
+
+From the owner login, run `sys firewall capture <interface-or-segment> <seconds>`, for example
+`sys firewall capture vio4 15`. It asks for normal sudo authentication, selects the coherent
+MASTER pair, and saves a timestamped private pcap under `~/captures`. Segments resolve through
+the shared registry to their parent interface. Duration is 1–60 seconds; 1,536-byte snapshots
+and 32,000 packets cap the complete pcap below 50 MB. A failover during capture does not move the
+capture to the other node. Remove captures when no longer needed; they can contain payload bytes.

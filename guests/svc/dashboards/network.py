@@ -1,6 +1,6 @@
-"""The six CARP segments, firewall evidence, DNS and physical interfaces."""
+"""Label-derived CARP segments, firewall evidence, DNS and physical interfaces."""
 from dashlib import (
-    AMBER, BAD, FW_CHANGES, SCREEN_ROWS, UP, Page, grid, ov, target, thresholds)
+    AMBER, BAD, FIREWALLS, FW_CHANGES, LOGS, UP, Page, grid, ov, target, thresholds)
 
 
 def generate():
@@ -14,10 +14,9 @@ def generate():
                 target('max(convergent_wan_portal_mode{node="wan"})', "portal mode")],
            grid(16, 0, 8, 2), "Source: wan-check. Lease present is not an Internet probe; overlap is latched until a safe lease; portal lasts at most 30 minutes.",
            overrides=[ov("WAN lease", mappings=UP), ov("overlap refused", thresholds=BAD), ov("portal mode", thresholds=BAD)])
-    for i, segment in enumerate(("transit", "host", "svc", "web", "admin", "guests")):
-        p.timeline("CARP · " + segment, [target('max by (node) (convergent_carp_state{interface="carp%d"})' % i, "{{node}}")],
-                   grid(i % 3 * 8, 2 + i // 3 * 5, 8, 5),
-                   "Source: fw-facts ifconfig CARP interface carp%d / VHID %d. Raw roles: INIT 0, BACKUP 1, MASTER 2; two rows, one per firewall. Gaps mean missing data." % (i, i + 1))
+    p.timeline("CARP · all segments", [target('max by (node,segment,interface) (convergent_carp_state)', "{{segment}} · {{interface}} · {{node}}")],
+               grid(0, 2, 24, 10),
+               "Source: fw-facts CARP labels; every observed segment/interface on both firewalls, with no fixed segment count. INIT 0, BACKUP 1, MASTER 2; gaps mean missing data. The expected-registry alert detects missing segments.")
     p.timeseries("pf · states against limit", [target('max by (node) (convergent_pf_states)', "states · {{node}}"),
                                                target('max by (node) (convergent_pf_state_limit)', "limit · {{node}}")],
                  grid(0, 12, 8, 6), "short", "Source: fw-facts pfctl -si and -sm; current state entries and configured ceiling.")
@@ -38,7 +37,7 @@ def generate():
                      [ov("default · " + n, unit="none", mappings=UP) for n in ("fw1", "fw2")])
     p.timeseries("WAN · traffic by interface", [target('8 * rate(node_network_receive_bytes_total{node="wan",device!="lo"}[$__rate_interval])', "in · {{device}}"),
                                                  target('8 * rate(node_network_transmit_bytes_total{node="wan",device!="lo"}[$__rate_interval])', "out · {{device}}")],
-                 grid(16, 18, 8, 5), "bps", "Source: wan node_exporter netdev. Includes internal and physical interfaces; no radio association, SSID or signal metric is collected.")
+                 grid(16, 18, 8, 5), "bps", "Source: wan node_exporter netdev. Includes internal and physical interfaces; radio evidence is below.")
     p.timeseries("Interfaces · errors and queue drops", [target('rate(node_network_receive_errs_total{device!="lo"}[$__rate_interval])', "RX error · {{node}} {{device}}"),
                                                           target('rate(node_network_transmit_errs_total{device!="lo"}[$__rate_interval])', "TX error · {{node}} {{device}}"),
                                                           target('rate(node_network_receive_drop_total{device!="lo"}[$__rate_interval])', "RX drop · {{node}} {{device}}"),
@@ -46,5 +45,32 @@ def generate():
                  grid(0, 23, 12, 8), "pps", "Source: node_exporter netdev on scraped nodes. Interface errors/drops are queue or link failures, not pf policy drops; platforms may expose only some counters.")
     p.logs("Firewall and CARP changes", FW_CHANGES, grid(12, 23, 12, 8),
            "Source: fw syslogd via TLS to VictoriaLogs; CARP role transitions, wan-watch and pfctl. The same role-transition filter is the disabled-by-default annotation.")
-    p.footer(SCREEN_ROWS, "pf passed/blocked packets by rule label (fw-facts exports diagnostic counters only); DNS latency, RPZ hits and per-client queries; host/WAN default next hops; Wi-Fi radio/SSID/signal/PMF; BFD. Resolver up means unbound-control responds, not an external DNS query.")
-    return p.dashboard("cv-network-path", "Convergent · Network", "Six CARP segments, pf, DNS, uplink and interface health.")
+    for direction, metric in (("in", "receive"), ("out", "transmit")):
+        p.timeseries("Segments · " + direction, [target('8 * rate(convergent_interface_%s_bytes_total[$__rate_interval]) * on(node,carpdev) group_left(segment,interface) (convergent_carp_state >= bool 0)' % metric,
+                                                      "{{segment}} · {{interface}} · {{node}}")],
+                     grid(0 if direction == "in" else 12, 31, 12, 7), "bps",
+                     "Source: OpenBSD netstat interface byte counters joined to CARP parent/segment labels. Physical/VLAN parent traffic includes CARP and broadcasts; this is interface traffic, not routed-only traffic. Both nodes remain visible across failover.")
+    p.timeseries("DNS · mean recursion latency", [target('convergent_unbound_recursion_seconds', "{{node}}")],
+                 grid(0, 38, 12, 6), "s", "Source: Unbound total.recursion.time.avg via stats_noreset. Cumulative mean for recursive/cache-miss work since reset, not per-client or cached-answer latency.")
+    p.timeseries("DNS · SERVFAIL rate", [target('rate(convergent_unbound_servfail_total[$__rate_interval])', "{{node}}")],
+                 grid(12, 38, 12, 6), "reqps", "Source: Unbound num.answer.rcode.SERVFAIL counter; rate across the selected interval.")
+    p.timeseries("Wi-Fi · signal", [target('convergent_wifi_signal_dbm', "signal", optional="No associated Wi-Fi radio in QEMU or while disconnected.")],
+                 grid(0, 44, 8, 6), "dBm", "Source: iw link at wan-check cadence. Missing while disconnected or unsupported; no SSID/BSSID is exported.", min_=-100, max_=0)
+    p.timeseries("Wi-Fi · link bitrate", [target('convergent_wifi_bitrate_bits_per_second', "{{direction}}", optional="Radio/driver may not report bitrate; absent in QEMU.")],
+                 grid(8, 44, 8, 6), "bps", "Source: iw link's reported TX/RX PHY bitrate when available; not payload throughput.")
+    p.timeseries("Wi-Fi · observed roams", [target('increase(convergent_wifi_roams_total[$__rate_interval])', "association changes")],
+                 grid(16, 44, 8, 6), "short", "BSSID changes between successive associated wan-check samples. Disconnect/reconnect and changes between samples are not counted; resets on WAN reboot.")
+    p.timeseries("WAN watch · RTT", [target('convergent_wan_watch_rtt_seconds', "{{node}}")],
+                 grid(0, 50, 12, 6), "s", "Source: existing three-ping firewall-to-WAN probe round, sampled once per minute. No extra probe. Missing when all packets are lost or resolver health skips probing; not Internet RTT.")
+    p.timeseries("WAN watch · packet loss", [target('convergent_wan_watch_loss_ratio', "{{node}}")],
+                 grid(12, 50, 12, 6), "percentunit", "Source: existing probe round, three packets; sampled loss is 0, 1/3, 2/3 or 1. Missing when resolver health skips the round.", max_=1)
+    blocked = (FIREWALLS + ' AND app_name:="pflog" AND _msg:~" block "'
+               ' | extract_regexp "(?P<src>(?:[0-9]{1,3}[.]){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+)(?:[.][0-9]+)? > (?P<dst>(?:[0-9]{1,3}[.]){3}[0-9]{1,3}|[0-9a-f]*:[0-9a-f:]+)(?:[.](?P<port>[0-9]+))?: "')
+    for i, (label, field) in enumerate((("sources", "src"), ("destinations", "dst"), ("destination ports", "port"))):
+        panel = p.add("table", "Blocked · top " + label, grid(i * 8, 56, 8, 8),
+                      "Source: sampled pflog headers in VictoriaLogs over the selected time range. At most five packets/second/firewall; these are sampled counts, not total blocks. Only logged rules appear; ports are numeric TCP/UDP endpoints when present.",
+                      [target(blocked + ' | filter ' + field + ':* | top 10 by (' + field + ')', ds=LOGS, queryType="instant")],
+                      options={"showHeader": True, "cellHeight": "sm"})
+        panel["datasource"] = LOGS
+    p.footer(64, "Complete pf verdict counts by rule, RPZ hit counts and per-client DNS queries, host/WAN default next hops, Wi-Fi SSID/security/PMF, BFD and Internet reachability are not collected. pflog is sampled; resolver up means unbound-control responds.")
+    return p.dashboard("cv-network-path", "Convergent · Network", "All CARP segments, pf, DNS, radio, uplink and interface health.")

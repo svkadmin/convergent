@@ -159,7 +159,10 @@ def glsa_scan(manifest, directory):
                                           + (f":{rule.get('slot')}" if rule.get('slot') else '')
                                           for rule in safe) or 'not published'
                         items.append((name, f'GLSA-{advisory.attrib["id"]}',
-                                      f'{name}:{package.slot} installed {package.version}; fixed {fixed}'))
+                                      f'{name}:{package.slot} installed {package.version}; fixed {fixed}',
+                                      dict(package=name, installed_version=package.version,
+                                           fixed_in=None if fixed == 'not published' else fixed,
+                                           severity=advisory.find('impact').get('type') if advisory.find('impact') is not None else None)))
         except Exception as error:
             errors.append(f'{file.name}: {error}')
     return items, errors
@@ -308,6 +311,8 @@ def gate_selftest():
             manifest += f'guest {guest} {"a" * 64}\n'
             manifest += ''.join(f'{"b" * 64}  guests/{guest}/{name}\n' for name in files)
         (work / 'guests.manifest').write_text(manifest)
+        (work / 'manifest').write_text('release 42\nversion 0.1.4\nkernel 6.18.9\n')
+        (work / 'packages').write_text('package app-containers/incus-7.0.1-r2 0\n')
         (guests / 'fw/openbsd.version').write_text('7.9\n')
         for machine in ('fw1', 'fw2'):
             (guests / f'fw/{machine}.syspatch').write_text('002_later\n')
@@ -348,6 +353,24 @@ def gate_selftest():
         exempt.write_text(exempt.read_text() + ''.join(
             f'{g} openssl CVE-2099-0002 Unused affected feature.\n' for g in ('wan', 'svc', 'browser', 'remmina')))
         require('EXCEPTED:' in check(0), 'exception audit output')
+        # W4: daily status retains excepted findings and never publishes a partial scan.
+        status = work / 'advisories.json'
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+        data = json.loads(status.read_text())
+        require(result == 0 and data['release'] == '42' and len(data['advisories']) == 6,
+                'signed status lost excepted or duplicate-feed findings')
+        require(all(a['installed_version'] == '3.5.1-r2' and a['fixed_in'] == '3.5.1-r10'
+                    and a['severity'] is None for a in data['advisories']), 'structured advisory versions')
+        require(any(p['package'] == 'app-containers/incus' and p['version'] == '7.0.1-r2'
+                    for p in data['packages']), 'key package inventory')
+        status.unlink()
+        (work / 'main-v3.24.json.failed').touch()
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+        require(result == 2 and not status.exists(), 'partial daily scan was publishable')
+        (work / 'main-v3.24.json.failed').unlink()
+        # End W4 status fixtures.
         secdb('invalid')
         check(2)  # Exceptions cannot waive a broken feed.
         secdb('3.5.1-r2')
@@ -385,8 +408,9 @@ def gate_selftest():
         require(targets(work, True) == [], 'host-only release')
 
 
-def report(work, release, guests, snapshot, branch, minirootfs, exception_file, gate=False):
+def report(work, release, guests, snapshot, branch, minirootfs, exception_file, gate=False, status=None):
     actions, unknown = [], []
+    findings = []
     allowed = exceptions(Path(exception_file))
     selected = targets(release, gate)
 
@@ -397,7 +421,13 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
             try:
                 for detail in check():
                     if isinstance(detail, (list, tuple)):
-                        package, advisory, detail = detail
+                        package, advisory, message, *metadata = detail
+                        detail = message
+                        if status:
+                            require(metadata, 'advisory lacks structured inventory')
+                            finding = dict(metadata[0], target=target, advisory=advisory)
+                            if finding not in findings:
+                                findings.append(finding)
                         reason = allowed.get((target, package, advisory))
                         if reason:
                             print(f'  EXCEPTED: {target} {package} {advisory}: {reason}')
@@ -454,7 +484,8 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
         require(all(re.fullmatch(r'[0-9]{3}_[a-zA-Z0-9_]+', item) for item in applied),
                 f'{machine}: invalid syspatch list')
         for missing in sorted(ids - applied):
-            yield ('base', f'OPENBSD-{openbsd}-{missing}', f'OpenBSD {openbsd}; missing fix {missing}')
+            yield ('base', f'OPENBSD-{openbsd}-{missing}', f'OpenBSD {openbsd}; missing fix {missing}',
+                   dict(package='base', installed_version=openbsd, fixed_in=missing, severity=None))
 
     def alpine(guest):
         guest_branch, packages = alpine_inventory(guests, guest)
@@ -477,7 +508,8 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
                         for name, version, origin in relevant:
                             if apk_cmp(version, fixed) < 0:
                                 for advisory in ids:
-                                    yield (origin, advisory, f'{name} installed {version}; fixed {fixed}')
+                                    yield (origin, advisory, f'{name} installed {version}; fixed {fixed}',
+                                           dict(package=name, installed_version=version, fixed_in=fixed, severity=None))
             except Exception as error:
                 errors.append(f'{repository}: {error}')
         require(not errors, '; '.join(errors))
@@ -513,6 +545,30 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
     if unknown:
         summary += '; UNKNOWN: ' + ', '.join(unknown)
     print('advisories: ' + summary)
+    if status:
+        if unknown:
+            return 2
+        manifest = (Path(release) / 'manifest').read_text()
+        ids = re.findall(r'^release ([0-9]+)$', manifest, re.M)
+        require(len(ids) == 1, 'invalid release id')
+        versions = []
+        for key in ('version', 'kernel'):
+            for version in re.findall(r'^' + key + r' (\S+)$', manifest, re.M):
+                versions.append(dict(target='host', package=key, version=version))
+        for line in (Path(release) / 'packages').read_text().splitlines():
+            match = re.fullmatch(r'package (\S+)-([0-9][^ ]*) \S+', line)
+            if match and match[1].split('/')[-1] in ('incus', 'openssl', 'systemd-utils', 'openrc'):
+                versions.append(dict(target='host', package=match[1], version=match[2]))
+        for guest in selected:
+            if guest == 'fw':
+                versions.append(dict(target='fw', package='OpenBSD', version=firewall_version(guests)))
+            else:
+                _, packages = alpine_inventory(guests, guest)
+                for name, version, _ in packages:
+                    if name in ('linux-lts', 'openssl', 'chromium', 'grafana', 'victoria-metrics', 'victoria-logs', 'remmina'):
+                        versions.append(dict(target=guest, package=name, version=version))
+        Path(status).write_text(json.dumps(dict(release=ids[0], generated=int(dt.datetime.now(dt.timezone.utc).timestamp()),
+                                               advisories=findings, packages=versions), sort_keys=True) + '\n')
     return 1 if actions else 2 if unknown else 0
 
 
@@ -527,11 +583,12 @@ elif mode == 'host':
         result = ([], [str(error)])
     print(json.dumps(result))
 elif mode == 'sources':
-    for name, url in sources(Path(args[1]), targets(args[0], args[2] == 'gate')).items():
+    for name, url in sources(Path(args[1]), targets(args[0], args[2] in ('gate', 'status'))).items():
         print(name, url)
 else:
     try:
-        sys.exit(report(Path(args[0]), args[1], Path(args[2]), *args[3:-1], gate=args[-1] == 'gate'))
+        sys.exit(report(Path(args[0]), args[1], Path(args[2]), *args[3:7], gate=args[7] in ('gate', 'status'),
+                        status=args[8] if args[7] == 'status' else None))
     except Exception as error:
         print(f'advisories: UNKNOWN: {error}', file=sys.stderr)
         sys.exit(2)
@@ -544,6 +601,13 @@ if [ "${1:-}" = --selftest ]; then
 	exit
 fi
 mode=report
+status=
+if [ "${1:-}" = --status ]; then
+	[ "$#" = 3 ] || die 'usage: build/advisories --status <output.json> <release-dir>'
+	mode=status
+	status=$2
+	shift 2
+fi
 if [ "${1:-}" = --gate ]; then
 	mode=gate
 	shift
@@ -562,7 +626,7 @@ if [ -z "$release" ]; then
 	done
 fi
 guests=${2:-$BUILDER/stick/guests}
-[ "$mode" != gate ] || guests=$release/guests
+[ "$mode" = report ] || guests=$release/guests
 [ -f "$release/manifest" ] || die "no release manifest"
 [ -s "$release/packages" ] || die "no package inventory in $release; rebuild the host image"
 openssl pkeyutl -verify -pubin -inkey "/etc/convergent/keys/$CHANNEL.pub" -rawin \
@@ -615,8 +679,8 @@ else
 	printf '%s\n' '[[], ["GLSA HTTPS fetch failed"]]' > "$work/host.json"
 fi
 branch=v${ALPINE_BRANCH#v}
-if [ "$mode" != gate ]; then
+if [ "$mode" = report ]; then
 	fetch kernel.json https://www.kernel.org/releases.json
 	fetch latest-releases.yaml "https://dl-cdn.alpinelinux.org/alpine/$branch/releases/x86_64/latest-releases.yaml"
 fi
-python_run python3 - report "$work" "$release" "$guests" "$SNAPSHOT_DATE" "$branch" "$MINIROOTFS" "$here/advisories.exceptions" "$mode"
+python_run python3 - report "$work" "$release" "$guests" "$SNAPSHOT_DATE" "$branch" "$MINIROOTFS" "$here/advisories.exceptions" "$mode" "$status"

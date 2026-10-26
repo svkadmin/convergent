@@ -939,3 +939,26 @@ The shifted filesystem volume share defaults to 4 GiB at /share. It is an
 explicit cross-domain file-transfer path, attached individually to owner VMs.
 Application updates snapshot/restore only remmina-state, never share.
 Backups refuse a share export while any attached instance is running.
+
+### 0.1.4 observability additions
+
+The build operator re-scans published channel releases daily with `build/advisories-publish`.
+Channel-signed per-release advisory JSON is mutable metadata beside the immutable payloads;
+failed scans never replace a complete result. The existing online update check verifies the
+installed/latest statuses, release binding, schema, future-clock bound and previously observed
+generation before atomically writing host node_exporter release/advisory/package metrics. svc
+uses its existing scrape; Security shows verification/freshness beside release comparisons.
+Missing data is unknown, including old releases pruned from R2. This path has no laptop notice.
+
+Firewalls forward pflog header samples through `pflog_stream` and the existing TLS syslog path,
+limited to five packets/second/node with suppression summaries. Local pflogd remains enabled.
+Network rankings therefore describe logged samples. Minute fw-facts adds parent-interface bytes
+and Unbound recursion mean; existing SERVFAIL counters supply the error rate. wan-check reads iw
+at its existing cadence without exporting SSID/BSSID labels; roams are observed association
+changes. wan-watch exports one existing probe round per minute without changing demotion logic.
+Dashboard CARP/traffic series derive segment membership from labels, with no fixed segment count.
+
+`sys firewall capture` uses the existing coherent-pair check and a shared guest lock; the remote
+tcpdump is time/count/snaplen bounded and the host bounds its transfer. Output is opened as the
+owner under `~/captures`, never by root inside the owner's directory. It stays on the selected
+MASTER for the capture's duration; there is no continuous capture upload.

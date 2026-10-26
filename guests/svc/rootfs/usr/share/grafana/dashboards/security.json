@@ -1445,12 +1445,683 @@
     },
     {
       "id": 12,
+      "type": "row",
+      "title": "Release",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Installed vs latest release",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 8,
+        "h": 5
+      },
+      "description": "Source: kernel command line and verified channel latest. These identify release inventories, not live guest/package state after partial updates.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (role,release) (cv_release_info)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "known",
+              "Value": "known"
+            },
+            "includeByName": {
+              "role": true,
+              "release": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "role": 0,
+              "release": 1,
+              "Value #A": 2
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Advisory evidence",
+      "gridPos": {
+        "x": 8,
+        "y": 32,
+        "w": 16,
+        "h": 5
+      },
+      "description": "Only channel-signed, schema-checked status is shown. Missing/invalid/fetch-failed status is unverified, never zero advisories. Scan/check ages warn after two days; cached signatures cannot prove the mirror has the newest scan. Advisory exceptions remain visible. No laptop notification.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(cv_release_check_success)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "latest check",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        },
+        {
+          "refId": "B",
+          "expr": "max by (role) (cv_release_status_verified)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "verified · {{role}}",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        },
+        {
+          "refId": "C",
+          "expr": "max by (role) (time() - cv_release_status_generated_seconds)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "scan age · {{role}}",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        },
+        {
+          "refId": "D",
+          "expr": "max(time() - cv_release_check_timestamp_seconds)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "check age",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        },
+        {
+          "refId": "E",
+          "expr": "max by (role) (cv_release_advisories)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "open · {{role}}",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "latest check"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "check age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 172800
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "verified · installed"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "open · installed"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "scan age · installed"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 172800
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "verified · latest"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "open · latest"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "scan age · latest"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#EDB873",
+                      "value": 172800
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Key package versions · release inventories",
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 24,
+        "h": 6
+      },
+      "description": "Source: signed status generated from retained host packages and signed guest inventories/manifests. Versions are release contents, not a live package audit. Missing packages/old status schemas leave a blank cell.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (target,package,installed) (label_replace(cv_release_package_info{role=\"installed\"}, \"installed\", \"$1\", \"version\", \"(.+)\"))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        },
+        {
+          "refId": "B",
+          "expr": "max by (target,package,latest) (label_replace(cv_release_package_info{role=\"latest\"}, \"latest\", \"$1\", \"version\", \"(.+)\"))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "installed present",
+              "Value #B": "latest present"
+            },
+            "includeByName": {
+              "target": true,
+              "package": true,
+              "installed": true,
+              "latest": true
+            },
+            "indexByName": {
+              "target": 0,
+              "package": 1,
+              "installed": 2,
+              "latest": 3,
+              "Value #A": 4,
+              "Value #B": 5
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Open advisories · installed and latest",
+      "gridPos": {
+        "x": 0,
+        "y": 43,
+        "w": 24,
+        "h": 9
+      },
+      "description": "Source: Gentoo GLSA, Alpine secdb and OpenBSD errata, re-scanned daily by the operator. fixed_in=none and severity=unknown mean upstream supplied no value. No rows means no findings only when both status verification and freshness above are healthy. Source coverage is the existing advisory gate, not every possible CVE feed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (role,release,target,package,installed_version,advisory,severity,fixed_in) (cv_release_advisory_info)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "cvOptional": "No verified online status yet, no findings, or package absent from this inventory; read evidence freshness."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "open",
+              "Value": "open"
+            },
+            "includeByName": {
+              "role": true,
+              "release": true,
+              "target": true,
+              "package": true,
+              "installed_version": true,
+              "advisory": true,
+              "severity": true,
+              "fixed_in": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "role": 0,
+              "release": 1,
+              "target": 2,
+              "package": 3,
+              "installed_version": 4,
+              "advisory": 5,
+              "severity": 6,
+              "fixed_in": 7,
+              "Value #A": 8
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 17,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 52,
         "w": 24,
         "h": 3
       },

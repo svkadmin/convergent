@@ -425,3 +425,21 @@ remmina-state/.local/share/keyrings while stopped to create a new one on
 next open. Re-enter remote credentials; do not replace it with an unencrypted
 keyring. Unmount/detach or stop every VM using share before restoring or
 backing up that volume independently.
+
+## 14. Missing release or network evidence
+
+Run `sudo fetch-release check` and inspect Security → Release verification and freshness. A
+missing/tampered status is unknown, not zero advisories; payload updates remain independent.
+On the builder, restore the retained release inventories and rerun `build/advisories-publish`
+with the channel signing key. Failed upstream feeds leave the previous status in R2; a pruned
+installed release has no status. Check clocks before investigating future/replayed metadata.
+
+For absent blocked-packet samples, check `rcctl check pflog_stream` on each firewall, the existing
+TLS syslog path to svc, and whether the relevant PF rule logs. `rcctl restart pflog_stream`
+restarts sampling; suppression summaries mean the sample cap was reached. Missing radio metrics
+can mean disconnected or unsupported hardware. WAN RTT/loss is firewall-to-WAN only.
+
+Use `sys firewall capture <interface-or-segment> <seconds>` from the owner login for a bounded
+pcap in `~/captures`; it refuses an incoherent MASTER/BACKUP pair. Interrupted remote captures
+stop within 60 seconds and temporary files are removed on normal exit. After a firewall crash,
+remove abandoned `/var/run/fw-capture.*` directories there; they are never durable archives.

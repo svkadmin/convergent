@@ -30,6 +30,10 @@ if [ "${1:-}" = --remmina-unit ] && [ "$#" = 1 ]; then
     exec sh "$here/test-remmina-unit"
 fi
 # End W3 Remmina.
+
+# W4 observability: offline parsers, status and dashboard fixtures.
+if [ "${1:-}" = --observability ] && [ "$#" = 1 ]; then exec sh "$here/test-observability"; fi
+# End W4 observability.
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(
 	die() { echo "test: $*" >&2; exit 1; }

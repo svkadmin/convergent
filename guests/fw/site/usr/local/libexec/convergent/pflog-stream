@@ -1,0 +1,25 @@
+#!/bin/sh
+# Forward bounded header samples; pflogd remains the local packet archive.
+set -eu
+export LC_ALL=C
+umask 077
+work=$(mktemp -d /var/run/pflog-stream.XXXXXXXX)
+pids=
+cleanup() {
+	trap - 0
+	trap '' HUP INT TERM
+	[ -z "$pids" ] || kill $pids 2>/dev/null || :
+	wait || :
+	rm -rf "$work"
+}
+trap cleanup 0
+trap 'exit 0' HUP INT TERM
+mkfifo "$work/packets" "$work/lines"
+logger -p local0.info -t pflog <"$work/lines" &
+pids="$pids $!"
+awk -f /usr/local/libexec/convergent/pflog-rate.awk <"$work/packets" >"$work/lines" &
+pids="$pids $!"
+tcpdump -l -n -e -ttt -s 160 -i pflog0 >"$work/packets" &
+capture=$!
+pids="$pids $capture"
+wait "$capture"
