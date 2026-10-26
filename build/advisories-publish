@@ -55,6 +55,11 @@ while read -r release has_guests; do
 		for f in guests.manifest guests.manifest.sig; do s3 -o "$work/$f" "$ep/$CHANNEL/$release/$f"; done
 		verify "$work/guests.manifest" && cmp -s "$dir/guests.manifest" "$work/guests.manifest" || die "$release: guest manifest mismatch"
 		(cd "$dir" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die "$release: guest payload mismatch"
+		if [ -f "$dir/remmina.manifest" ]; then
+			for f in remmina.manifest remmina.manifest.sig; do s3 -o "$work/$f" "$ep/$CHANNEL/$release/$f"; done
+			verify "$work/remmina.manifest" && cmp -s "$dir/remmina.manifest" "$work/remmina.manifest" || die "$release: Remmina manifest mismatch"
+			(cd "$dir" && grep -E '^[0-9a-f]{64}  ' remmina.manifest | sha256sum -c --quiet -) || die "$release: Remmina payload mismatch"
+		fi
 	else
 		[ ! -e "$dir/guests.manifest" ] && [ ! -e "$dir/guests" ] || die "$release: published guest inventory is missing"
 	fi

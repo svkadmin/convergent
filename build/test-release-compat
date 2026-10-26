@@ -1,0 +1,91 @@
+#!/bin/sh
+# The unmodified v0.1.3-rc1 fetcher's parsers must accept the published base bundle.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-release-compat: $*" >&2; exit 1; }
+if [ "$#" = 1 ]; then
+    bundle=$1
+else
+    mkdir -p "$work/build" "$work/source" "$work/bundle"
+    cp "$here/build.conf" "$work/build/"
+    sed '/^\[ "$(id -u)" = 0 \]/d; s|^keys=.*|keys=/nonexistent|' "$here/guests" >"$work/build/guests"
+    echo 'release 42' >"$work/bundle/manifest"
+    for g in fw wan svc browser remmina; do
+        mkdir -p "$work/source/$g"
+        echo "$g payload" >"$work/source/$g/rootfs.tar.gz"
+        (cd "$work/source/$g" && sha256sum rootfs.tar.gz >SHA256SUMS)
+        case $g in
+        svc|remmina) echo 'config: {}' >"$work/source/$g/incus.yaml" ;;
+        browser) mkdir "$work/source/browser/incus"; echo 'config: {}' >"$work/source/browser/incus/base.yaml" ;;
+        esac
+    done
+    sh "$work/build/guests" "$work/bundle" "$work/source"
+    bundle=$work/bundle
+fi
+# Run the publisher's production manifest path loop on the same bundle.
+awk '/^for manifest in guests.manifest remmina.manifest/ {copy=1} copy {print} copy && /^done$/ {exit}' "$here/publish" >"$work/publish-paths"
+(dir=$bundle; release=$(awk '$1 == "release" {print $2}' "$bundle/manifest"); manifests=manifest; files=; . "$work/publish-paths")
+old=$here/fixtures/fetch-release-0.1.3
+awk '/^guest_files=\$\(awk / {copy=1} copy {print} copy && /invalid guest path in guests.manifest/ {exit}' "$old" >"$work/paths"
+awk '/^awk .*\$1 == "guest"/ {copy=1} copy {print} copy && /invalid guest identity in guests.manifest/ {exit}' "$old" >"$work/identities"
+[ -s "$work/paths" ] && [ -s "$work/identities" ]
+dir=$work
+gm=$bundle/guests.manifest
+. "$work/paths"
+. "$work/identities"
+[ "$(wc -l <"$dir/guest-ids")" = 4 ]
+! grep -q remmina "$gm"
+grep -q '^guest remmina ' "$bundle/remmina.manifest"
+cp "$gm" "$work/incompatible"
+cat "$bundle/remmina.manifest" >>"$work/incompatible"
+if (gm=$work/incompatible; . "$work/paths") 2>/dev/null; then die 'old path parser accepted Remmina'; fi
+if (gm=$work/incompatible; . "$work/identities") 2>/dev/null; then die 'old identity parser accepted Remmina'; fi
+# Exercise the new sidecar reader with real signatures, including rejection paths.
+awk '/^# The old fetcher ignores/ {copy=1} copy && /^files=/ {exit} copy {print}' "$repo/tools/fetch-release" |
+    sed 's|\[ -e /var/lib/convergent/guests/initialized \]|true|' >"$work/sidecar"
+awk '/^field\(\)/ {print}' "$repo/tools/fetch-release" >"$work/field"
+. "$work/field"
+openssl genpkey -algorithm ed25519 -out "$work/key" 2>/dev/null
+openssl pkey -in "$work/key" -pubout -out "$work/pub" 2>/dev/null
+verify() { openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$1" -sigfile "$1.sig" >/dev/null 2>&1; }
+mkdir "$work/usb" "$work/download"
+cp "$bundle/remmina.manifest" "$work/usb/"
+latest=$(field release '' "$bundle/manifest")
+for fault in none tampered wrong-release missing; do
+    cp "$bundle/remmina.manifest" "$work/usb/remmina.manifest"
+    if [ "$fault" = wrong-release ]; then sed 's/^release .*/release 0/' "$bundle/remmina.manifest" >"$work/usb/remmina.manifest"; fi
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$work/usb/remmina.manifest" -out "$work/usb/remmina.manifest.sig"
+    rsum=$(sha256sum <"$work/usb/remmina.manifest" | cut -d' ' -f1)
+    case $fault in tampered) echo bad >>"$work/usb/remmina.manifest" ;; missing) rm "$work/usb/remmina.manifest" ;; esac
+    if (dir=$work/download; gm=$bundle/guests.manifest; usb=$work/usb; . "$work/sidecar") 2>"$work/error"; then
+        [ "$fault" = none ] || die "accepted $fault sidecar"
+    else
+        [ "$fault" != none ] || { cat "$work/error"; exit 1; }
+    fi
+done
+# The installed guest updater rechecks the sidecar before consuming staged Remmina.
+awk '/^    if \[ -f "\$staged\/remmina.manifest" \]/ {copy=1} copy && /^    kinds=/ {exit} copy {print}' "$repo/tools/guests" |
+    sed "s|/etc/convergent/release.pub|$work/pub|" >"$work/staged-check"
+mkdir "$work/staged"
+cp -R "$bundle/guests/remmina" "$work/staged/"
+cp "$bundle/remmina.manifest" "$work/staged/"
+openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$work/staged/remmina.manifest" -out "$work/staged/remmina.manifest.sig"
+(staged=$work/staged; booted=$latest; . "$work/staged-check")
+echo changed >>"$work/staged/remmina/SHA256SUMS"
+if (staged=$work/staged; booted=$latest; . "$work/staged-check") 2>/dev/null; then die 'accepted changed staged identity'; fi
+awk '/^read_pointer\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$old" >"$work/old-pointer"
+awk '/^num\(\)|^bytes\(\)/ {print}' "$old" >>"$work/old-pointer"
+mkdir "$work/pointer"
+if [ -f "$bundle/latest" ]; then cp "$bundle/latest" "$work/pointer/latest"
+else
+    printf 'release %s\nsigned %s\nguests %s\nremmina %s\n' "$latest" "$(date +%s)" \
+        "$(sha256sum <"$bundle/guests.manifest" | cut -d' ' -f1)" \
+        "$(sha256sum <"$bundle/remmina.manifest" | cut -d' ' -f1)" >"$work/pointer/latest"
+fi
+openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$work/pointer/latest" -out "$work/pointer/latest.sig"
+(pointer=$work/pointer; usb=; . "$work/old-pointer"; read_pointer)
+echo 'test-release-compat: old parsers accept base bundle and latest; signed sidecar and rejection fixtures passed'

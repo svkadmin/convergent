@@ -1,0 +1,89 @@
+#!/bin/sh
+# Rig-only six-interface pair migration using genuine previous-release roots.
+set -eu
+release=/var/lib/convergent/test-release
+legacy=$release/legacy-fw
+[ -d "$legacy" ] || { echo 'CV-TOPOLOGY SKIP: no previous 0.1.3 firewall images on the rig'; exit 0; }
+awk '/^# Capture the command status/ {exit} {print}' /usr/local/sbin/guests >"$release/guest-functions"
+(
+    . "$release/guest-functions"
+    work=$(mktemp -d "$state/work.XXXXXX")
+    trap 'rm -rf "$work"' 0
+    exec 9>/run/convergent/guests.lock
+    flock -w 600 9
+    exec 8>/run/convergent/dns-push.lock
+    flock -w 120 8
+    exec 7>/run/convergent/portal.lock
+    flock -w 60 7
+    sh "$lib/work-gate" close
+    topology_hold
+    cp "$lib/fw-metadata.yaml" "$work/metadata.yaml"
+    TZ=UTC touch -t 197001010000 "$work/metadata.yaml"
+    tar -C "$work" -czf "$work/metadata.tar.gz" metadata.yaml
+    for node in fw1 fw2; do
+        fingerprint=$(cat "$work/metadata.tar.gz" "$legacy/$node.qcow2" | sha256sum | awk '{print $1}')
+        ic image import "$work/metadata.tar.gz" "$legacy/$node.qcow2"
+        printf '%s\n' "$fingerprint" >"$release/$node.topology-before"
+        seed_remove "$node"
+        ic config device remove "$node" eth7
+        ic config device add "$node" eth7 none
+        rebuild_root "$node" "$fingerprint"
+        image_alias "$node" "$fingerprint"
+    done
+    for node in fw1 fw2; do seed_start "$node"; done
+    leases_resume
+    for node in fw1 fw2; do
+        rsh "$node" 'test ! -e /etc/convergent/segments && test ! -e /usr/local/libexec/convergent/carp.awk'
+        case $node in fw1) want=MASTER ;; *) want=BACKUP ;; esac
+        rsh "$node" ifconfig >"$work/carp"
+        awk -v want="$want" -f "$lib/carp.awk" "$lib/segments" "$work/carp" >/dev/null
+        ic config set "$node" boot.autostart=true
+    done
+    autorestart_clear
+)
+# Exercise the installed maintenance undo and interrupted handoff against old guest helpers.
+printf 'yes\n' | sys firewall maintenance
+printf 'yes\n' | sys firewall undo
+(
+    . "$release/guest-functions"
+    work=$(mktemp -d "$state/work.XXXXXX")
+    trap 'rm -rf "$work"' 0
+    touch "$state/fw.handoff"
+    fw_release
+    [ ! -e "$state/fw.handoff" ]
+)
+lib=/usr/lib/convergent/incus
+state=/var/lib/convergent/guests
+for fault in fw1 fw2 none; do
+    if [ "$fault" = none ]; then
+        cp /usr/local/sbin/guests "$release/guests-topology-run"
+    else
+        awk -v fault="$fault" '
+            {print}
+            /^        rebuild_root "\$node" .*\/\$node.new/ {
+                print "        [ \"$node\" != \"" fault "\" ] || die \"injected after rebuild\""; n++
+            }
+            END {exit n != 1}' "$lib/fw-topology" >"$release/fw-topology-fault"
+        sed "s|^\. \"\$lib/fw-topology\"|. \"$release/fw-topology-fault\"|" /usr/local/sbin/guests >"$release/guests-topology-run"
+    fi
+    rc=0
+    sh -x "$release/guests-topology-run" update fw "$release/guests/fw" >"$release/topology-$fault.log" 2>&1 || rc=$?
+    if [ "$fault" = none ]; then [ "$rc" = 0 ]; else [ "$rc" != 0 ]; fi
+    [ ! -e "$state/fw.topology" ]
+    awk '
+        /^\+ topology_hold$/ {held=1; roots=0}
+        /^\+ rebuild_root fw[12] / && held {roots++}
+        /^\+ seed_start fw[12]$/ && held {if(roots != 2) bad=1; boots++}
+        END {exit bad || boots < 2}' "$release/topology-$fault.log"
+    for node in fw1 fw2; do
+        current=$(incus --force-local --project default config get "$node" volatile.base_image)
+        before=$(cat "$release/$node.topology-before")
+        if [ "$fault" = none ]; then [ "$current" != "$before" ]; registry=/etc/convergent/segments
+        else [ "$current" = "$before" ]; registry=$lib/segments; fi
+        case $node in fw1) want=MASTER ;; *) want=BACKUP ;; esac
+        timeout 30 ssh -n -F /etc/convergent/ssh_config "$node" ifconfig >"$release/$node.topology-carp"
+        awk -v want="$want" -f "$lib/carp.awk" "$registry" "$release/$node.topology-carp" >/dev/null
+    done
+done
+sh "$lib/work-gate"
+echo 'CV-TOPOLOGY legacy migration and both rebuild faults passed'

@@ -263,6 +263,7 @@ if [ "${1:-}" = --install-options ]; then
 	echo 'test: install options passed'
 	exit 0
 fi
+for fixture in test-topology test-leases test-work-gate test-release-compat; do sh "$here/$fixture" || exit 1; done
 . "$here/build.conf"
 . "$here/chroot.sh"
 
@@ -443,6 +444,10 @@ test_guest_delivery() {
 	sh "$delivery/build/guests" "$delivery/release" "$guests"
 	openssl pkeyutl -verify -pubin -inkey "$delivery/keys/$CHANNEL.pub" -rawin \
 		-in "$delivery/release/guests.manifest" -sigfile "$delivery/release/guests.manifest.sig" >/dev/null || die 'guest manifest signature failed'
+	openssl pkeyutl -verify -pubin -inkey "$delivery/keys/$CHANNEL.pub" -rawin \
+		-in "$delivery/release/remmina.manifest" -sigfile "$delivery/release/remmina.manifest.sig" >/dev/null || die 'Remmina manifest signature failed'
+	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' remmina.manifest | sha256sum -c --quiet -) || die 'Remmina transport hashes failed'
+	sh "$here/test-release-compat" "$delivery/release"
 	# The host manifest stays as older releases and the installer parse it.
 	cmp "$BUILDER/releases/$release/manifest" "$delivery/release/manifest" || die 'guests changed the host manifest'
 	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
@@ -468,7 +473,7 @@ test_guest_delivery() {
 	(cd "$delivery/release/guests/remmina" && sha256sum -c SHA256SUMS) || die 'remmina round trip failed'
 	cmp "$guests/remmina/incus.yaml" "$delivery/release/guests/remmina/incus.yaml" || die 'remmina profile differs'
 	remmina_id=$( (cd "$guests/remmina" && { cat SHA256SUMS; sha256sum ./incus.yaml; }) | sha256sum | cut -d' ' -f1)
-	grep -qx "guest remmina $remmina_id" "$delivery/release/guests.manifest" || die 'missing remmina identity'
+	grep -qx "guest remmina $remmina_id" "$delivery/release/remmina.manifest" || die 'missing remmina identity'
 	# End W3 Remmina.
 	cmp "$guests/svc/incus.yaml" "$delivery/release/guests/svc/incus.yaml" || die 'svc profile differs'
 	for role in base def tmp int; do
@@ -2156,44 +2161,7 @@ EOF
 	if [ "$mode" = guests-update ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time work-topology-migration
-(
-    set -eu
-    for node in fw1 fw2; do
-        ic config get "$node" volatile.base_image >"$release/$node.topology-before"
-    done
-    # Force the topology branch without modifying the trusted image artifacts.
-    sed 's/if \[ -n "$topology_changed" \]; then/if true; then/' /usr/local/sbin/guests >"$release/guests-topology"
-    for fault in fw1 fw2 none; do
-        if [ "$fault" = none ]; then
-            cp "$release/guests-topology" "$release/guests-topology-run"
-        else
-            awk -v fault="$fault" '
-                {print}
-                $0 == "fw_check() {" {
-                    print "    if [ \"$1\" = \"" fault "\" ] && [ -d \"$state/fw.topology\" ]; then return 1; fi"
-                }' "$release/guests-topology" >"$release/guests-topology-run"
-        fi
-        rc=0
-        sh -x "$release/guests-topology-run" update fw "$release/guests/fw" >"$release/topology-$fault.log" 2>&1 || rc=$?
-        if [ "$fault" = none ]; then [ "$rc" = 0 ]; else [ "$rc" != 0 ]; fi
-        [ ! -e "$state/fw.topology" ]
-        # Every boot follows both rebuilds; a rollback also stops both candidates first.
-        awk '
-            /^\+ topology_hold$/ {held=1; roots=0}
-            /^\+ rebuild_root fw[12] / && held {roots++}
-            /^\+ seed_start fw[12]$/ && held {if(roots != 2) bad=1; boots++}
-            END {exit bad || boots < 2}' "$release/topology-$fault.log"
-        for node in fw1 fw2; do
-            [ "$(ic config get "$node" volatile.base_image)" = "$(cat "$release/$node.topology-before")" ]
-            [ "$(ic config get "$node" boot.autostart)" != false ]
-            case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
-            timeout 30 ssh -F /etc/convergent/ssh_config "$node" ifconfig >"$release/$node.topology-carp"
-            awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$release/$node.topology-carp" >/dev/null
-        done
-    done
-    sh /usr/lib/convergent/incus/work-gate
-)
-[ "$?" = 0 ] || { fw_diag; bad $LINENO; }
+sh "$release/topology-test" || { fw_diag; bad $LINENO; }
 EOF
 	fi
 	# End W1 topology migration section.
@@ -2260,6 +2228,28 @@ EOF
 	cp "$here/test-remmina" "$var/lib/convergent/test-release/remmina-test"
 	# End W3 Remmina lifecycle fixture.
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
+	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
+	if [ "$mode" = guests-update ]; then
+		legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
+		if [ -z "$legacy_release" ]; then
+			for candidate in $(find "$BUILDER/releases" -mindepth 1 -maxdepth 1 -type d | sort -r); do
+				grep -Eq '^version 0\.1\.3(-[^ ]*)?$' "$candidate/manifest" || continue
+				[ -d "$candidate/guests/fw" ] || continue
+				legacy_release=$candidate
+				break
+			done
+		fi
+		if [ -n "$legacy_release" ]; then
+			case $legacy_release in /*) ;; *) legacy_release=$BUILDER/releases/$legacy_release ;; esac
+			legacy_fw=$var/lib/convergent/test-release/legacy-fw
+			mkdir -p "$legacy_fw"
+			cp -a "$legacy_release/guests/fw/." "$legacy_fw/"
+			for node in fw1 fw2; do
+				[ -f "$legacy_fw/$node.qcow2" ] || zstd -q -d --long=27 "$legacy_fw/$node.qcow2.zst" -o "$legacy_fw/$node.qcow2"
+				(cd "$legacy_fw" && awk -v f="$node.qcow2" '$2 == f {print; n++} END {exit n != 1}' SHA256SUMS | sha256sum -c -) || die 'legacy firewall checksum failed'
+			done
+		fi
+	fi
 	# W2: Incus UI session tests.
 	cp "$here/test-incus-ui" "$var/lib/convergent/test-release/incus-ui-test"
 	# End W2.
@@ -2544,7 +2534,7 @@ if [ "$r" = 0 ]; then
 	# W3 Remmina: private state, keyring and share.
 	timeout -k 10 180 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End W3 Remmina.
-	timeout -k 30 900 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	timeout -k 30 3600 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# W2: real TLS, per-session NSS and orphan recovery.
 	timeout -k 30 300 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End W2.

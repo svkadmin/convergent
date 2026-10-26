@@ -25,15 +25,18 @@ files="slot.img convergent-$release-a.efi convergent-$release-b.efi manifest.sig
 [ -f "$pub" ] || die "no public key $pub"
 . "$here/release-check"
 manifests=manifest
-if [ -f "$dir/guests.manifest" ]; then
-	manifests="manifest guests.manifest"
-	grep -qx "release $release" "$dir/guests.manifest" || die "guests.manifest is not for release $release"
-	guest_files=$(awk '$2 ~ /^guests\// {
-		if ($2 !~ /^guests\/((fw|wan|svc|browser|remmina)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+for manifest in guests.manifest remmina.manifest; do
+	[ -f "$dir/$manifest" ] || continue
+	manifests="$manifests $manifest"
+	grep -qx "release $release" "$dir/$manifest" || die "$manifest is not for release $release"
+	case $manifest in guests.manifest) kinds='fw|wan|svc|browser' ;; *) kinds=remmina ;; esac
+	guest_files=$(awk -v kinds="$kinds" '$2 ~ /^guests\// {
+		if (kinds == "remmina" && $2 !~ /^guests\/remmina\//) exit 1
+		if ($2 !~ ("^guests/((" kinds ")/[A-Za-z0-9._-]+|browser/incus/[A-Za-z0-9._-]+\\.yaml)$") || $2 ~ /\/\.\.?$/) exit 1
 		if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
-	}' "$dir/guests.manifest") || die 'invalid guest path in guests.manifest'
-	files="$files guests.manifest.sig guests.manifest $guest_files"
-fi
+	}' "$dir/$manifest") || die "invalid guest path in $manifest"
+	files="$files $manifest.sig $manifest $guest_files"
+done
 for f in $files latest latest.sig; do
 	[ -f "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "missing $dir/$f"
 done
@@ -48,6 +51,11 @@ guests=none
 [ ! -f "$dir/guests.manifest" ] || guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
 awk -v guests="$guests" '$1 == "guests" {n++; if (NF != 2 || $2 != guests) bad=1}
 	END {exit bad || n != 1}' "$dir/latest" || die "latest does not match the guest bundle"
+
+remmina=none
+[ ! -f "$dir/remmina.manifest" ] || remmina=$(sha256sum <"$dir/remmina.manifest" | cut -d' ' -f1)
+awk -v remmina="$remmina" '$1 == "remmina" {n++; if (NF != 2 || $2 != remmina) bad=1}
+	END {exit bad || (n != 1 && !(n == 0 && remmina == "none"))}' "$dir/latest" || die 'latest does not match Remmina'
 
 # Fresh advisory data, before any bucket mutation (including pruning).
 "$here/advisories" --gate "$dir" || die "advisory gate failed"

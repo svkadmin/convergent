@@ -18,16 +18,18 @@ ident() { (cd "$1" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o 
 dir=$1
 src=$2
 [ -f "$dir/manifest" ] || die "no manifest in $dir"
-[ ! -e "$dir/guests.manifest" ] || die "guests.manifest already exists"
+[ ! -e "$dir/guests.manifest" ] && [ ! -e "$dir/remmina.manifest" ] || die "guest manifest already exists"
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 [ ! -e "$dir/guests" ] && [ ! -L "$dir/guests" ] || die "guests already exists in $dir"
 # Complete or absent: a failure removes what this run made.
 finished=
-trap '[ -n "$finished" ] || rm -rf "$dir/guests" "$dir/guests.manifest.new" "$dir/guests.manifest" "$dir/guests.manifest.sig"' 0
+trap '[ -n "$finished" ] || rm -rf "$dir/guests" "$dir/guests.manifest.new" "$dir/guests.manifest" "$dir/guests.manifest.sig" "$dir/remmina.manifest.new" "$dir/remmina.manifest" "$dir/remmina.manifest.sig"' 0
 echo "release $release" >"$dir/guests.manifest.new"
 for g in fw wan svc browser remmina; do
 	[ -d "$src/$g" ] || continue
+	manifest=$dir/guests.manifest.new
+	if [ "$g" = remmina ]; then manifest=$dir/remmina.manifest.new; echo "release $release" >"$manifest"; fi
 	[ ! -L "$src/$g" ] || die "$g is a symlink"
 	files=$(awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
 		{ sub(/^\*/, "", $2); if ($2 !~ /^[A-Za-z0-9._-]+$/ || $2 == "." || $2 == ".." || seen[$2]++) exit 1; print $2 }' "$src/$g/SHA256SUMS") || die "invalid $g/SHA256SUMS"
@@ -48,21 +50,22 @@ for g in fw wan svc browser remmina; do
 		cp "$src/$g/$f" "$dir/guests/$g/$f"
 	done
 	(cd "$dir/guests/$g" && sha256sum -c SHA256SUMS) || die "$g checksum mismatch"
-	echo "guest $g $(ident "$dir/guests/$g")" >>"$dir/guests.manifest.new"
+	echo "guest $g $(ident "$dir/guests/$g")" >>"$manifest"
 	for f in SHA256SUMS $files; do
 		path=guests/$g/$f
 		case $f in
 		*.qcow2)
-			echo "unpacked $path $(stat -c %s "$dir/$path")" >>"$dir/guests.manifest.new"
+			echo "unpacked $path $(stat -c %s "$dir/$path")" >>"$manifest"
 			zstd -q -T0 -10 --long=27 "$dir/$path" -o "$dir/$path.zst"
 			rm "$dir/$path"
 			path=$path.zst
 			;;
 		esac
-		printf '%s  %s\n' "$(sha256sum <"$dir/$path" | cut -d' ' -f1)" "$path" >>"$dir/guests.manifest.new"
-		echo "size $path $(stat -c %s "$dir/$path")" >>"$dir/guests.manifest.new"
+		printf '%s  %s\n' "$(sha256sum <"$dir/$path" | cut -d' ' -f1)" "$path" >>"$manifest"
+		echo "size $path $(stat -c %s "$dir/$path")" >>"$manifest"
 	done
 done
 mv "$dir/guests.manifest.new" "$dir/guests.manifest"
+[ ! -f "$dir/remmina.manifest.new" ] || mv "$dir/remmina.manifest.new" "$dir/remmina.manifest"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$dir"
 finished=1

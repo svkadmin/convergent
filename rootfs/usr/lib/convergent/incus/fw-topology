@@ -1,6 +1,7 @@
 #!/bin/sh
 # Sourced by guests: a topology change is one durable, coordinated Design C rebuild.
 topology_hold() {
+    leases_hold || return
     for node in fw1 fw2; do
         ic config set "$node" boot.autostart=false boot.autorestart=false || return
     done
@@ -11,13 +12,25 @@ topology_hold() {
 }
 topology_autostart() {
     for node in fw1 fw2; do
-        ic config unset "$node" user.convergent.autorestart || return
+        topology_unset "$node" user.convergent.autorestart || return
         for key in boot.autostart boot.autorestart; do
             value=$(jq -r --arg k "$key" '.config[$k] // "unset"' "$state/fw.topology/$node.json") || return
-            if [ "$value" = unset ]; then ic config unset "$node" "$key" || return
+            if [ "$value" = unset ]; then topology_unset "$node" "$key" || return
             else ic config set "$node" "$key=$value" || return; fi
         done
     done
+}
+topology_unset() {
+    ic query "/1.0/instances/$1" >"$work/unset.json" || return
+    present=$(jq -r --arg k "$2" '.config | has($k)' "$work/unset.json") || return
+    if [ "$present" = true ]; then
+        ic config unset "$1" "$2" || return
+    fi
+}
+topology_retire() {
+    rm -rf "$state/fw.topology.retired" || return
+    mv "$state/fw.topology" "$state/fw.topology.retired" && sync || return
+    rm -rf "$state/fw.topology.retired"
 }
 topology_finish() {
     for node in fw1 fw2; do
@@ -26,9 +39,10 @@ topology_finish() {
         image_alias "$node" "$(cat "$state/fw.topology/$node.new")" || return
     done
     retry pair fw1 fw2 || return
+    work_profiles || return
     topology_autostart || return
     printf '%s firewall topology committed\n' "$(date -u +%FT%TZ)" >>"$state/updates" || return
-    rm -rf "$state/fw.topology" && sync
+    topology_retire
 }
 topology_restore_config() {
     jq '.config["boot.autostart"]="false" | .config["boot.autorestart"]="false"' \
@@ -52,13 +66,14 @@ topology_recover() {
         topology_restore_config "$node" || return
     done
     for node in fw1 fw2; do seed_start "$node" || return; done
+    leases_resume || return
     for node in fw1 fw2; do
         case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
         retry topology_old_role "$node" "$want" || return
     done
     topology_autostart || return
     printf '%s firewall topology rolled back (both roots)\n' "$(date -u +%FT%TZ)" >>"$state/updates" || return
-    rm -rf "$state/fw.topology" && sync
+    topology_retire
 }
 topology_old_role() {
     rsh "$1" ifconfig >"$work/carp" || return
@@ -138,11 +153,11 @@ topology_update() {
     touch "$state/dns.stale"
     sync
     for node in fw1 fw2; do seed_start "$node"; done
+    leases_resume
     for node in fw1 fw2; do fw_check "$node" release; done
     retry pair fw1 fw2
     soak fw1 fw2
     touch "$state/fw.topology/committed"
     sync
     topology_finish
-    work_profiles
 }

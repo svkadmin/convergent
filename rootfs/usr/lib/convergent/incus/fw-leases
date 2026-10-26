@@ -1,0 +1,57 @@
+#!/bin/sh
+# Quiesce both allocators while checkpointing and seeding a replacement.
+leases_hold() {
+    [ ! -f "$state/leases/quiesced" ] || return 0
+    mkdir -p "$state/leases" || return
+    touch "$state/leases/held" && sync || return
+    lease_sources=0
+    for lease_node in fw1 fw2; do
+        running "$lease_node" || continue
+        if rsh "$lease_node" 'set -e
+if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
+    rcctl disable dhcpd
+    if rcctl check dhcpd >/dev/null 2>&1; then rcctl stop dhcpd; fi
+    sync
+    cat /var/db/dhcpd.leases
+fi' >"$work/leases.$lease_node"; then
+            mv "$work/leases.$lease_node" "$state/leases/$lease_node" && sync || return
+            lease_sources=$((lease_sources + 1))
+        else
+            [ "${rebuilding:-}" = "$lease_node" ] || return 1
+        fi
+    done
+    [ "$lease_sources" != 0 ] || [ -f "$state/leases/saved" ] || return 1
+    for lease_node in fw1 fw2 saved; do
+        [ -f "$state/leases/$lease_node" ] || : >"$state/leases/$lease_node" || return
+    done
+    awk -f "$lib/leases.awk" "$state/leases/fw1" "$state/leases/fw2" "$state/leases/saved" >"$work/leases.saved" || return
+    mv "$work/leases.saved" "$state/leases/saved" && sync || return
+    for lease_node in fw1 fw2; do
+        running "$lease_node" || continue
+        if ! rsh "$lease_node" 'set -e
+if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
+    umask 077
+    cat >/var/db/dhcpd.leases.new
+    mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
+    sync
+fi' <"$state/leases/saved"; then
+            [ "${rebuilding:-}" = "$lease_node" ] || return 1
+        fi
+    done
+    touch "$state/leases/quiesced" && sync
+}
+leases_resume() {
+    [ -f "$state/leases/held" ] || return 0
+    rm -f "$state/leases/quiesced" && sync || return
+    lease_waiting=
+    for lease_node in fw1 fw2; do
+        running "$lease_node" || { lease_waiting=1; continue; }
+        rsh "$lease_node" 'set -e
+if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
+    rcctl enable dhcpd
+    rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd
+fi' || return
+    done
+    [ -z "$lease_waiting" ] || return 0
+    rm -f "$state/leases/held" && sync
+}
