@@ -4,7 +4,7 @@
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 echo "== addresses"; ip -4 -o addr | awk '{print $2, $4}'
 echo "== routes"; ip -4 route
-# W2: fixed management-endpoint probe; never accept a destination from SSH input.
+# Fixed management-endpoint probe; never accept a destination from SSH input.
 ui_result=0
 timeout 5 openssl s_client -connect 100.80.1.10:8443 -brief </dev/null >/dev/null 2>&1 || ui_result=$?
 case $ui_result in
@@ -12,7 +12,7 @@ case $ui_result in
     1|124|143) echo 'incus-ui-8443: deny' ;;
     *) echo 'incus-ui-8443: error' ;;
 esac
-# End W2.
+# End Incus UI checks.
 echo "== forwarding"; cat /proc/sys/net/ipv4/ip_forward
 echo "== nat"; nft list chain inet wan postrouting 2>&1 | grep -E 'masquerade|counter'
 echo "== upstream dns"; cat /run/wan/resolv.* 2>/dev/null || echo none

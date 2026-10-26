@@ -141,15 +141,15 @@ if [ "${1:-}:$#" = status:1 ]; then
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
-# W3 Remmina: a killed supervisor must not leave an unlocked orphan running.
+# Remmina: a killed supervisor must not leave an unlocked orphan running.
 if [ "${1:-}" = auto ]; then
     timeout -k 1 30 /usr/local/sbin/remote reap || logger -t remote 'orphan cleanup deferred or failed'
 fi
-# End W3 Remmina.
+# End Remmina.
 net_ok=1
 [ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
-# W2: run before the daily scan throttle; cleanup takes the int session lock.
+# Run before the daily scan throttle; cleanup takes the int session lock.
 if [ "${1:-}" = auto ]; then
     /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
 fi
@@ -189,7 +189,7 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
-# W2: the management endpoint must never widen or replace the metrics listener.
+# The management endpoint must never widen or replace the metrics listener.
 [ "$(incus --force-local config get core.https_address)" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
 [ "$(incus --force-local config get core.metrics_address)" = 100.80.1.10:8444 ] || bad 'Incus metrics listener differs'
 /usr/local/sbin/incus-ui --audit 9>&- 8>&- 7>&- || bad 'Incus trust differs from metrics and unlocked int session'

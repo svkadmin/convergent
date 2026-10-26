@@ -49,7 +49,7 @@ build/packages          # compile or fetch the image's packages (--pretend to pr
 build/image             # the release, named by UTC time: YYYYMMDDHHMM
 ```
 
-Bump `VERSION` in `build/build.conf` each release, using semantic versions (`0.1.0` for this
+Bump `VERSION` in `build/build.conf` each release, using semantic versions (`0.1.4` for this
 release; `major.minor.patch`, optionally `-rcN`). `/usr/lib/convergent/version`, per-slot
 `CONVERGENT_VERSION`, boot titles, signed manifest and owner status carry it. The timestamp release
 ID still names artifacts, orders the boot menu (`IMAGE_VERSION`) and drives A/B updates and rollback
@@ -60,11 +60,12 @@ directory, `$g`:
 
 ```sh
 g=/var/lib/convergent/out/guests
-mkdir -p $g/fw $g/wan $g/svc $g/browser/incus
+mkdir -p $g/fw $g/wan $g/svc $g/browser/incus $g/remmina
 guests/fw/build $g/fw                              # OpenBSD 7.9 with its errata
 WAN_COUNTRY=SK guests/wan/build $g/wan             # Wi-Fi regulatory country
 guests/svc/build && cp guests/svc/out/* guests/svc/incus.yaml $g/svc/
 guests/browser/build && cp guests/browser/out/* $g/browser/ && cp guests/browser/incus/*.yaml $g/browser/incus/
+sh guests/remmina/build && cp guests/remmina/out/* $g/remmina/
 build/guests <release-dir> $g                     # add guests for online delivery; re-sign when the key is present
 build/stick <release> $g <out.img> [size]          # disk image; size: 30G by default
 zstd -T0 <out.img>                                 # compress it for the copy
@@ -74,6 +75,19 @@ zstd -T0 <out.img>                                 # compress it for the copy
 The owner login comes from `CONVERGENT_INSTALL_OWNER`, else `owner_login` in the config, else it is
 asked. It runs the real installer on a loop device and prints the image's SHA-256. A disk image
 holds the owner's account: never publish one.
+
+Use the same `CONVERGENT_CONFIG` for host, firewall, WAN and svc builds. `build/networks`
+renders the registry, topology hash, work NIC profiles, DHCP/DNS and packet rules; firewall and
+WAN checksums include the topology hash. The host kernel needs VLAN and bridge nftables support.
+
+The host overlay installs pinned Zabbly Incus UI assets into `/usr/share/incus-ui` without
+running Debian scripts or a Node build. Browser `nss-tools` supports session certificate import;
+WAN supplies the fixed management-endpoint diagnostic. Keep these images together.
+
+Remmina builds on native x86_64 Linux as root. It patches the pinned 1.4.43 executable for
+Secret Service-only password storage, retains Alpine's plugins and removes build dependencies.
+Its image contains the package inventory, executable hash and patch; the advisory gate scans it.
+Online delivery uses signed `remmina.manifest`, separately bound by `latest`.
 
 ### Firewall images
 
@@ -113,8 +127,8 @@ checksum and an accurate size for the slot image and each UKI.
 `build/publish <release-dir>` uploads to the public Cloudflare R2 bucket named in
 `/etc/convergent/r2-<channel>.env` (mode 600): `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID` and
 `R2_SECRET_ACCESS_KEY` of a token limited to the bucket, `R2_BUCKET`, `R2_PUBLIC_URL`, and
-`R2_ENDPOINT` for an EU bucket. Only the five host files, `guests.manifest` and the guest files it
-lists go up, with a valid signature only, to `<channel>/<release>/`. The signed `<channel>/latest`
+`R2_ENDPOINT` for an EU bucket. Host payloads, guest/Remmina manifests and their listed payloads
+go up with valid signatures to `<channel>/<release>/`. The signed `<channel>/latest`
 then points at it (`build/sign` writes it). Manifest sizes bound each download. A mirror cannot
 forge the pointer, but it can hold back newer releases by replaying an older signed one;
 `fetch-release` reports stale signatures ([README, Update](README.md#update)). Two releases per
@@ -155,7 +169,7 @@ host fetches advisories; Portage matching runs in the builder chroot. The gate n
 
 Host package versions and slots are recorded before trimming, in the build-host-only `packages`
 sidecar. `build/sign` signs it as `packages.sig` with the channel key, and the advisory scanner
-verifies it before use. Neither file is published or put in the host manifest. Svc and browser
+verifies it before use. Neither file is published or put in the host manifest. Svc, browser and Remmina
 inventories come from their rootfs archives. WAN's `wan.manifest`, and the firewalls'
 `openbsd.version` and per-node patch lists, travel in their checksummed, signed guest payloads.
 Older releases without these inventories must be rebuilt. Only guests shipped in the release are
@@ -163,11 +177,24 @@ gated. Kernel and pin freshness stay in the separate weekly report.
 
 For a reviewed advisory that does not apply, add a line to `build/advisories.exceptions`:
 `target package advisory reason`. The reason must be concrete and fill the rest of the line. Targets
-are `host`, `wan`, `svc`, `browser`, `fw1`, `fw2`. Package is Gentoo `category/name`, Alpine source
+are `host`, `wan`, `svc`, `browser`, `remmina`, `fw1`, `fw2`. Package is Gentoo `category/name`, Alpine source
 package (origin), or `base` for OpenBSD. IDs are `GLSA-YYYYMM-NN`, the secdb ID (usually a CVE), or,
 for example, `OPENBSD-7.9-001_xserver`. Use one entry per target and advisory, including absent
 OpenBSD sets such as X. No wildcards, and no exception for unreadable data. The gate output lists
 accepted exceptions and reasons. Run `build/test --advisories` for the offline regression fixtures.
+
+### Daily advisory status
+
+Run `CHANNEL=beta sh build/advisories-publish` after publication and daily as root on the builder.
+It needs the channel keys and R2 environment file, including access to the stable signing key
+when scanning stable. Keep retained release directories, signed `packages` inventories and guest
+payloads until R2 prunes them; scans check these against published manifests, not builder packages.
+
+The command signs and uploads `advisories.json` and its signature beside each release. Status
+records release, generation time, package versions and advisories, including exceptions.
+Failed/incomplete scans leave the previous result unchanged and return failure. These mutable
+sidecars are excluded from identical-release comparisons. Coverage is GLSA, Alpine secdb and
+OpenBSD errata; laptops show verification/freshness in Grafana without sending notifications.
 
 ## Test in QEMU
 
@@ -230,97 +257,15 @@ directory is not `$g`). It reads upstream fixes and names what to rebuild (`host
 Gentoo packages come from its signed build-host inventory. Exit 1: something to rebuild (UNKNOWN
 lines may appear too). Exit 2: only UNKNOWN; a source was not read.
 
-### Work topology qualification
+Offline feature checks (also run by `build/lint`; require `python3`, `jq` and OpenSSL):
 
-Use the same `CONVERGENT_CONFIG` for host, fw, wan and svc builds.
-`build/networks` emits the registry, topology hash, work NIC profiles, DHCP/DNS
-and packet policy into staging trees; fw and wan publish the topology hash in
-SHA256SUMS. The host build requires VLAN and bridge nftables kernel support.
+| Command | Coverage |
+|---|---|
+| `sh build/test --networks` | Work configuration and rendering |
+| `sh build/test-topology` | Firewall pair journal replay |
+| `sh build/test --remmina-unit` | Keyring handling and artifact paths |
+| `sh build/test --observability` | Status ingestion, capture, parsers and dashboards |
+| `sh build/test-incus-ui --offline` | UI credential and session fixtures |
 
-Run `sh build/test --networks` and `sh build/test-topology` for offline
-schema/rendering, CARP corruption and pair journal replay fixtures. On the rig,
-run `build/test --guests`, `--guests-maint` and `--guests-update`: the PF
-matrix checks all work VLANs, synchronized DHCP pools/options, both CARP masters,
-family isolation, internet and configured home access; update tests inject
-failures after each replacement and check both-root rollback ordering.
-Repeat the home-LAN matrix with an empty list and with 10.0.2.0/24 (the rig LAN).
-Also qualify a real 0.1.3→0.1.4 pair migration and power loss at each journal
-boundary; verify tagged/native/stacked traffic, IP/ARP/CARP spoofing and IPv6
-with VLAN offload both enabled and disabled on the laptop.
-### Incus UI
-
-The overlay pins Zabbly's prebuilt `incus-ui-canonical_7.0.1-debian12-202609250207_amd64.deb` from the
-lts-7.0 repository (matching Incus 7.0.1). Its Manifest digests were taken after verifying Zabbly's
-key (4EFC 5906 96CB 15B8 7C73 A3AD 82CC 8797 C838 DCFD), the signed InRelease, the Packages index
-and the .deb SHA256. Repeat that chain when moving the pin; never bypass digest checks. Only
-`/opt/incus/ui` is installed into `/usr/share/incus-ui`; no Debian maintainer scripts, Node or Yarn run.
-
-Rebuild host, browser (nss-tools) and wan (fixed management-endpoint diagnostic) images. Run `build/test --guests`,
-`--guests-maint` and `--guests-update`. Delimited W2 sections run the 8443 PF matrix and
-`build/test-incus-ui`: server verification, absent/wrong/revoked client identities, wrong/cancelled
-unlock, NSS permissions, repeated sessions, close/orphan/reboot cleanup and interrupted rotation.
-The audit tests require native lifecycle/request delivery (without global daemon debug) and reject
-query/command leakage. The builder checks syslog-ng syntax; the rig must verify its wire format
-and forwarding/buffering through a svc outage before release.
-The PF matrix probes the actual agentless WAN VM through its fixed SSH diagnostic, plus a
-separate transit source. Qualify offline assets, Chromium certificate selection, console/WebSockets,
-all projects, network/profile/storage management and VM device editing against Incus 7.0.1.
-Also verify a pre-existing disallowed 8443 connection is cut by reloading host nftables, Sway
-session/terminal death, and revocation during a live console. These require the rig or laptop.
-
-### Remmina image and qualification (0.1.4)
-
-On the native Linux builder run **sudo sh guests/remmina/build**; stage
-guests/remmina/out/* as `<guests-dir>/remmina/`. The image uses Alpine 3.24
-Remmina 1.4.43-r0 and its bundled protocol plugins. It rebuilds the executable
-from the SHA512-pinned upstream tarball with Alpine's pinned DSO patch and
-secret-service-only.patch; build dependencies are removed. Cache/mirror those
-two pinned source inputs for offline rebuilds. No Chromium is installed.
-build/guests, build/publish, fetch-release and build/stick carry/check
-the Remmina image, profile and inventory through the signed guest manifest.
-The advisory gate includes Remmina's Alpine package database.
-
-Merge W1 before building firewalls: W3 deliberately references, but never
-defines, the work_nets and work_infra tables. Run **build/test --guests**,
-**--guests-maint**, **--guests-update** with the Remmina artifacts present.
-The offline command **sh build/test --remmina-unit** checks cancellation, empty/wrong passwords, locked/unavailable service, plaintext refusal and artifact paths. The new delimited sections exercise work TCP bounds, responding UDP, ICMP,
-DNS/system/home/public denial, share mounting, encrypted keyring persistence
-and failed/successful image replacement without share rollback.
-Run the PF matrix with each firewall as master and again after live handoff.
-
-On the laptop, qualify Remote under Sway: type into RDP/VNC/SSH, play audio,
-and confirm microphone/monitor capture fails. Copy distinct host/remote
-sentinels in both directions: only Remmina-to-remote transfer may work; host
-clipboard must remain unchanged (also test primary selection). Cancel the
-keyring prompt, submit empty/wrong passwords, then unlock/save/reopen.
-Kill Secret Service after unlock and save a new connection: no local password
-may appear in its profile; restart must either retrieve the encrypted secret
-or ask again. Check launcher TERM/KILL cleanup, UI share attach/detach and RDP
-redirection against representative Linux/Windows guests. These GUI/protocol
-checks require the rig/laptop and are release qualification gates.
-
-### Daily published-release advisory status
-
-Run `CHANNEL=beta sh build/advisories-publish` after publishing and daily from the operator's root
-cron, for example `17 4 * * * CHANNEL=beta sh /srv/convergent/build/advisories-publish >>/var/log/convergent-advisories.log 2>&1`.
-It lists the channel in R2, checks retained manifests against the signed published copies, and
-reuses `build/advisories` against each retained release's signed package/guest inventory. Keep
-those release directories under the builder, including `packages`, its signature and guest
-payloads, until R2 prunes them. The builder's installed packages are never the scan target.
-
-The command needs the channel private/public keys and existing R2 environment file, including
-for stable; an offline stable key must be made available for the signing session. It uploads
-`advisories.json` and `advisories.json.sig` beside each release, using the same signature scheme
-as latest. Status contains release ID, generation epoch, advisory records (target, package,
-installed version, advisory/CVE, nullable severity/fixed-in) and selected manifest package versions.
-Excepted findings stay visible. A failed/incomplete scan leaves the previous status unchanged and
-returns failure. These mutable sidecars are excluded from identical-release publish comparisons.
-No laptop notification is sent. Signed status is not a claim of coverage beyond GLSA, Alpine secdb
-and OpenBSD errata.
-
-`build/test --observability` runs offline status, parser and dashboard fixtures; install `jq` to
-run its schema/replay cases too. On the rig, run the guest/update dashboard query checks, inject
-logged blocks and inspect the top-source/destination/port tables, and test capture on either
-MASTER, timeout, byte ceiling and interruption. R2 credentials/key access, missing/tampered/stale
-status and a full daily publish/check cycle need the builder/rig. Wi-Fi signal/bitrate and roaming
-need the laptop radio.
+`--guests`, `--guests-maint` and `--guests-update` exercise live PF/session/lifecycle checks;
+see their test scripts for assertions and hardware-only limits.

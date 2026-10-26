@@ -356,7 +356,7 @@ def gate_selftest():
         exempt.write_text(exempt.read_text() + ''.join(
             f'{g} openssl CVE-2099-0002 Unused affected feature.\n' for g in ('wan', 'svc', 'browser', 'remmina')))
         require('EXCEPTED:' in check(0), 'exception audit output')
-        # W4: daily status retains excepted findings and never publishes a partial scan.
+        # Daily status retains excepted findings and never publishes a partial scan.
         status = work / 'advisories.json'
         with contextlib.redirect_stdout(io.StringIO()):
             result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
@@ -373,7 +373,7 @@ def gate_selftest():
             result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
         require(result == 2 and not status.exists(), 'partial daily scan was publishable')
         (work / 'main-v3.24.json.failed').unlink()
-        # End W4 status fixtures.
+        # End advisory status fixtures.
         secdb('invalid')
         check(2)  # Exceptions cannot waive a broken feed.
         secdb('3.5.1-r2')

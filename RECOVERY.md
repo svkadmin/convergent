@@ -74,7 +74,11 @@ Rescue test coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
 | 10 | [Second passphrase and header backup](#10-second-passphrase-and-header-backup) |
 | 11 | [Start over](#11-start-over) |
 | 12 | [An online update fails](#12-an-online-update-fails) |
-| 13 | [Incus state torn by a power loss](#13-incus-state-torn-by-a-power-loss) |
+| 13 | [A kernel panic or CrashRecorded alert](#13-a-kernel-panic-or-crashrecorded-alert) |
+| 14 | [Incus state torn by a power loss](#14-incus-state-torn-by-a-power-loss) |
+| 15 | [Incus UI session or passphrase failure](#15-incus-ui-session-or-passphrase-failure) |
+| 16 | [Remmina session or keyring failure](#16-remmina-session-or-keyring-failure) |
+| 17 | [Missing release or network evidence](#17-missing-release-or-network-evidence) |
 
 ## 1. Wrong passphrase, the laptop powers off
 
@@ -137,6 +141,16 @@ sudo tail -n 50 /var/log/incus/<guest>/console.log
 
 If a step fails twice the same way, photograph the last screen of output and leave the laptop as it
 is.
+
+### Interrupted work-topology migration
+
+Finish handoff/maintenance before upgrading the host. `/var/lib/convergent/guests/fw.topology`
+retains both old images/configurations and holds both firewalls stopped during replacement.
+Never start a partial pair manually, delete the journal, prune its images or clear its holds.
+Rerun `sudo guests apply` or the original `sudo guests update fw <image-dir>`: uncommitted work
+restores both old roots before either starts; committed work finishes startup. Failed recovery
+retains the journal and holds for retry. Inspect `guests status`, the update log and both consoles.
+`check auto` reopens work access once topology validation passes. Replacement preserves DHCP leases.
 
 ## 5. No Wi-Fi
 
@@ -252,6 +266,8 @@ profiles in the recreated owner project before importing containers (older backu
 project=owner                       # the original owner project name
 ic() { incus --force-local --project "$project" "$@"; }
 ic project create "$project"        # skip if it already exists
+# If the backed-up project used default-project volumes, set this before restoring profiles:
+# ic project set "$project" features.storage.volumes=false
 jq -r '.[].name' "$backup/projects/$project/profiles.json" > /run/restore-profiles
 while IFS= read -r name; do
     ic profile show "$name" >/dev/null 2>&1 || ic profile create "$name"
@@ -262,18 +278,19 @@ rm /run/restore-profiles
 ```
 
 Restore custom volumes before importing the owner's containers. Use the project and pool of each
-archive's `projects/<project>/<pool>/` directory. Browser and svc data use project `default` and
-pool `default`. They need `incus storage volume import`, not `incus import` or manual unpacking.
-Close all browsers, stop svc, and run no guest setup or updates during the steps below:
+archive's `projects/<project>/<pool>/` directory. Browser, svc, `remmina-state` and `share` use
+project `default`, pool `default`; restore them with `incus storage volume import`.
+Close browsers and Remmina (`sys remote close`), stop svc and every instance attached to `share`
+in any project, and run no guest setup, updates or launches during restoration:
 
 ```sh
 project=default
 pool=default
 ic stop svc --timeout 120
-ic list                           # def, int and svc must be STOPPED
+incus --force-local list --all-projects  # all volume consumers must be STOPPED
 ```
 
-Repeat for each row, setting `volume`, `profile` and `device` from the table. Check the instance
+Repeat for each volume, setting `volume`, `profile` and `device` from the table. Check the instance
 with `ic config show <guest>` (`--expanded` shows inherited devices). If its local `devices`
 override the profile, update that device too. Older backups may name the browser archives
 `browser-web-state.tar.gz` and `browser-admin-state.tar.gz`: use those for def and int,
@@ -286,6 +303,8 @@ respectively.
 | svc-metrics | svc | metrics | svc |
 | svc-logs | svc | logs | svc |
 | svc-grafana | svc | grafana | svc |
+| remmina-state | remmina | state | remmina (if created) |
+| share | remmina | share | remmina; also reset every owner attachment separately |
 
 ```sh
 volume=svc-metrics; profile=svc; device=metrics
@@ -300,11 +319,14 @@ ic storage volume show "$pool" "$volume-before-restore"
 ```
 
 The temporary names must be unused. Renaming the old volume also redirects its attachments, so reset
-each listed consumer's profile or local device to the restored original name before restarting. Keep
-`*-before-restore` until the restored data works; its `used_by` must be empty after reattachment.
+every consumer's profile or local device to the restored name before restarting. For `share`,
+use `--project owner` for owner devices/profiles, retaining its default volume namespace
+(`features.storage.volumes=false`; [share setup](USAGE.md#remote-desktops)). The old volume's
+`used_by` identifies attachments and must be empty after reattachment. Keep it until data is verified.
 Repeat for owner volumes with their own project, pool and consumers. If no volume exists yet, skip
 the old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify saved
-profiles, downloads and Grafana/history. Only then remove the unused old volumes with
+profiles, downloads and Grafana/history. Open Remmina to check its keyring and `/share`, then
+verify owner share attachments before restarting those instances. Then remove unused old volumes with
 `ic storage volume delete "$pool" <volume-before-restore>`.
 
 Finally, import the owner's containers. Then start them after checking their expanded devices:
@@ -360,7 +382,7 @@ Keep a copy before acknowledging a crash. Remove only its reviewed timestamp dir
 variable writes during a panic. An empty archive alone does not prove the last shutdown was clean.
 If the release keeps crashing, boot the other slot (recipe 3).
 
-## 13. Incus state torn by a power loss
+## 14. Incus state torn by a power loss
 
 Incus does two of the guest tool's steps in halves that a power loss can separate. `guests` then
 refuses every command (the bar shows the failed update; `/var/log/guests-update.log` has the
@@ -374,24 +396,7 @@ message with the exact commands) rather than fail later with the guest down. Two
   restore (well under a second). Volume missing: `sudo mv` the copy back. Volume present: the
   restore completed, `sudo btrfs subvolume delete` the copy. Then `sys guests update`.
 
-### Interrupted work-topology migration
-
-Finish old-release handoff/maintenance journals before upgrading the host.
-A topology change uses `/var/lib/convergent/guests/fw.topology`, which retains
-both old image fingerprints and instance configurations. Both firewalls have
-autostart/restart held while their roots are being replaced; a partially
-rebuilt pair must never be started manually. Rerun `sudo guests apply` (or the
-original `guests update fw <image-dir>`) to replay recovery. Uncommitted work
-restores both old images before either starts; committed work finishes startup.
-If rollback itself fails, the journal and holds remain for the next retry.
-
-Do not delete this journal, prune its old images or clear its boot holds.
-Inspect `guests status`, the update log and both consoles. Work access stays
-closed until the topology hashes in the host, fw1, fw2 and wan agree; ordinary
-`check auto` reopens it after convergence. DHCP clients may need to renew after
-a pair rebuild because lease files are intentionally not restored.
-
-## 14. Incus UI session or passphrase failure
+## 15. Incus UI session or passphrase failure
 
 Close int, then run `sudo incus-ui cleanup` to retry orphan cleanup; `check auto` also retries
 each minute and boot cleanup runs before the greeter. Cleanup stops int before discarding its
@@ -407,28 +412,19 @@ interrupted rotation restores the previous complete directory if the new one was
 Check `/var/log/messages` for `incus-ui` events and the `incus-ui` certificate-expiry metric.
 The trusted local Unix-socket CLI remains available if the web interface is unusable.
 
-### Remmina
+## 16. Remmina session or keyring failure
 
-Close with **sys remote close** before an update, backup or recovery. If a
-launcher was killed, the minute checker stops its orphan; sys remote close also stops it immediately. The next open removes
-stale runtime sockets. Never copy an unlocked keyring into a browser.
+Run `sys remote close`; the minute checker also stops orphans. The next open removes stale sockets.
+Resume an interrupted update with `sys guests update`. Manual rollback uses a retained `guests-*`
+snapshot of `remmina-state` while Remmina is stopped; leave `share` alone because it may hold newer work.
 
-`guests update remmina <image-dir>` uses the normal image rollback journal
-and snapshots remmina-state. Resume an interrupted operation with
-**sys guests update**. For a manual restore, stop Remmina and restore a retained
-guests-* snapshot of remmina-state; do not restore share with it.
-The shared volume may contain newer work from other VMs.
+A lost keyring password cannot be recovered. Keep an offline copy, then move the stopped volume's
+`.local/share/keyrings` directory aside. Next open creates a new encrypted keyring; re-enter remote
+credentials. Stop every instance using `share` before restoring or backing it up (recipe 11).
 
-A lost keyring password cannot be recovered. Preserve the old encrypted
-keyring offline, then move its directory out of
-remmina-state/.local/share/keyrings while stopped to create a new one on
-next open. Re-enter remote credentials; do not replace it with an unencrypted
-keyring. Unmount/detach or stop every VM using share before restoring or
-backing up that volume independently.
+## 17. Missing release or network evidence
 
-## 14. Missing release or network evidence
-
-Run `sudo fetch-release check` and inspect Security → Release verification and freshness. A
+Run `sudo fetch-release check` and inspect Security → Release → Advisory evidence. A
 missing/tampered status is unknown, not zero advisories; payload updates remain independent.
 On the builder, restore the retained release inventories and rerun `build/advisories-publish`
 with the channel signing key. Failed upstream feeds leave the previous status in R2; a pruned

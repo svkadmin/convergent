@@ -156,7 +156,7 @@ firewall_rebuild() {
 	run sudo /usr/local/sbin/guests rebuild "$answer"
 }
 
-# W4: owner-side output keeps privileged writes out of the owner's directory.
+# Owner-side output keeps privileged writes out of the owner's directory.
 firewall_capture() (
 	[ "$#" = 2 ] || die 'usage: sys firewall capture <interface-or-segment> <seconds>'
 	if [ "$(id -u)" = 0 ]; then

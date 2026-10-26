@@ -135,7 +135,7 @@ trap 'exit 1' HUP INT TERM
 booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 highest=$(slot status | awk '$1 == "highest" { print $2 }') || highest=
 num "$booted" || die "the kernel command line names no release"
-# W4: invalidate old advisory evidence before attempting this online check.
+# Invalidate old advisory evidence before attempting this online check.
 if [ "$mode" = check ] && [ -z "$usb" ]; then
 	. /usr/lib/convergent/release-status.sh
 	release_metrics 0 || die 'cannot write release metrics'
@@ -159,7 +159,7 @@ else
 	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot download latest.sig from $host"; }
 fi
 read_pointer
-# W4: status failure is observability-only; it never blocks a release update.
+# Status failure is observability-only; it never blocks a release update.
 if [ "$mode" = check ] && [ -z "$usb" ]; then release_metrics 1 || die 'cannot write release metrics'; fi
 rm -rf "$pointer"
 uptodate="$current: release $booted (newest published: $latest, $signed_ago)"

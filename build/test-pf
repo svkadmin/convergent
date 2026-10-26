@@ -19,7 +19,7 @@ cleanup() {
 	trap '' HUP INT TERM
 	set +e
 	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart; } || r=1
-	# W1: restore the preferred master if a work probe fails during maintenance.
+	# Restore the preferred master if a work probe fails during maintenance.
 	[ -z "${w1_maintenance:-}" ] || printf 'yes\n' | sys firewall undo || r=1
 	# portal retries a node it could not reach; one retry here, as cron would.
 	portal off || { sleep 30; portal off; } || r=1
@@ -91,7 +91,7 @@ portal off
 for role in def tmp int; do start "pf-$role" "$role"; done
 start pf-portal tmp
 
-# W2: live Incus listener; source restrictions also cover host loopback.
+# Live Incus listener; source restrictions also cover host loopback.
 probe allow pf-int 100.80.1.10 8443
 for source in pf-def pf-tmp pf-portal svc host; do probe deny "$source" 100.80.1.10 8443; done
 probe deny host 127.0.0.1 8443
@@ -118,7 +118,7 @@ for spec in 'pf-ui-guests guests 100.80.8.10/22 100.80.8.1' 'pf-ui-wan transit 1
     probe deny "$name" 100.80.1.10 8443
     ic exec "$name" -- sh -c 'ip neigh show "$1" | grep -q "lladdr .* \(REACHABLE\|STALE\|DELAY\)"' sh "$gateway"
 done
-# End W2.
+# End Incus UI checks.
 
 # A LAN server on the emulated uplink, outside the host's internal networks.
 ic init candidate-browser pf-lan -p browser-base -c security.protection.delete=false -c limits.memory=256MiB
@@ -193,7 +193,7 @@ for mode in off on off; do
 	for source in pf-def pf-tmp pf-int svc; do probe deny "$source" 10.0.2.100 80; done
 done
 exec 8>&-
-# W1 work-network matrix: each probe crosses the production trunks and PF.
+# Work-network matrix: each probe crosses the production trunks and PF.
 sh /usr/lib/convergent/incus/work-gate
 incus --force-local --project default image copy candidate-browser local: --target-project owner --alias pf-browser
 work_image=1
@@ -345,10 +345,10 @@ done 3<"$work_rows"
 printf 'yes\n' | sys firewall undo
 w1_maintenance=
 rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
-# End W1 work-network matrix.
+# End work-network matrix.
 
 
-# W3 Remmina work-network matrix; W1 owns the VLANs and PF tables.
+# Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
 ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
 created="pf-remmina $created"
 ic start pf-remmina
@@ -422,5 +422,5 @@ printf 'yes\n' | sys firewall undo
 w1_maintenance=
 rm -f /run/convergent/pf-remote-fw1 /run/convergent/pf-remote-fw2
 echo "CV-REMOTE network result=$result"
-# End W3 Remmina.
+# End Remmina.
 exit "$result"
