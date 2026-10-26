@@ -94,11 +94,13 @@ if [ "${1:-}:$#" = status:1 ]; then
             printf '%s\n' "$portal" | awk '$1 == "on" || $1 == "off" {print $1}' >"$status/.portal-wan"
         fi
     ) &
-    # What the guests hold, which the bar leaves out of the host's use: container cgroups, and VM
-    # processes outside them.
+    # What the guests hold, which the bar leaves out of the host's use: container cgroups without
+    # their reclaimable file cache (the bar counts MemAvailable), and VM processes outside them.
     kib=0
     for f in /sys/fs/cgroup/lxc.payload.*/memory.current; do
-        [ -r "$f" ] && read -r bytes <"$f" && kib=$((kib + bytes / 1024))
+        [ -r "$f" ] && read -r bytes <"$f" || continue
+        file=$(awk '$1 == "file" {print $2; exit}' "${f%/*}/memory.stat" 2>/dev/null) || file=0
+        kib=$((kib + (bytes - ${file:-0}) / 1024))
     done
     for pid in $(pgrep -x qemu-system-x86 2>/dev/null); do
         grep -q lxc.payload "/proc/$pid/cgroup" 2>/dev/null && continue

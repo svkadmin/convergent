@@ -201,8 +201,8 @@ while :; do
 		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
 		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
 		close("/proc/meminfo")
-		# Include cache before subtracting guest cgroups and VM processes.
-		used=mem["MemTotal:"]-mem["MemFree:"]; held=get(st "/guestmem")
+		# Reclaimable cache is not use; VM memory (shmem) stays in, then the guests are subtracted.
+		used=mem["MemTotal:"]-mem["MemAvailable:"]; held=get(st "/guestmem")
 		ram="?"
 		if (memtime>0 && now>=memtime && now-memtime<=180 && held ~ /^[0-9]+$/)
 			ram=sprintf("%.1f",(used>held+0 ? used-held : 0)/1048576)
