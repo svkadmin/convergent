@@ -66,7 +66,7 @@ wan is the exception (section 4.1).
 | Area | Design |
 |---|---|
 | Base | Gentoo, hardened profile, OpenRC, glibc |
-| Kernel | Gentoo distribution kernel, hardened, plus Convergent fragment: confidentiality lockdown; modules signed with a key that exists only during the build; no kexec or hibernation; DM, DM_INIT, DM_VERITY, EROFS and storage drivers built in; FireWire, X.25, TIPC, RDS, CAN left out; unused protocols and filesystems never loaded (`modprobe.d`; out of build *(planned)*); setuid, setgid, file capabilities stripped except sudo, su, passwd, unix_chkpwd, D-Bus helper; command-line hardening (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); no Wi-Fi driver, so host cannot take radio back |
+| Kernel | Gentoo distribution kernel, hardened, plus Convergent fragment: confidentiality lockdown; modules signed with a key that exists only during the build; no kexec, suspend or hibernation; DM, DM_INIT, DM_VERITY, EROFS and storage drivers built in; FireWire, X.25, TIPC, RDS, CAN left out; unused protocols and filesystems never loaded (`modprobe.d`; out of build *(planned)*); setuid, setgid, file capabilities stripped except sudo, su, passwd, unix_chkpwd, D-Bus helper; command-line hardening (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); no Wi-Fi driver, so host cannot take radio back |
 | Kernel settings | One sysctl file from Archer: ptrace, perf, BPF and kernel-pointer restrictions; dmesg restricted; protected links and FIFOs; TIOCSTI and line-discipline loading off; no redirects or source routing; martians logged; reverse-path filtering; no core dumps |
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; NVIDIA functions bound to vfio-pci before any driver probes them and kept powered down; Wi-Fi function must sit alone in its IOMMU group, no ACS override |
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
@@ -86,6 +86,8 @@ wan is the exception (section 4.1).
 | Time | chrony, NTS from three sources, two must agree; starts without waiting for network; serves NTP to firewalls |
 | Listening on the host | chrony (UDP 123, firewalls only), node_exporter (TCP 9100, svc only), Incus metrics (TCP 8444, TLS with client certificate, svc only). Nothing else |
 
+Incus starts with `INCUS_SKIP_INSTANCE_TYPES=true`, so it never downloads instance-type definitions.
+
 ### 3.2 wan (VM)
 
 Alpine, LTS kernel. Owns Wi-Fi card by VFIO passthrough, joins networks with iwd, takes upstream
@@ -100,7 +102,9 @@ address by DHCP, performs the system's only NAT.
 - **Wired uplink:** `sys wired attach` calls `devices wired attach`. The Incus `usb` device uses
   vendorid, productid, serial and required=false. Guest-operation lock serializes assignment with
   guest updates. wan's image has Realtek NIC firmware; after removal or addressless replug, it
-  clears stale ifup state before retrying DHCP. Identity checks, hotplug and routing:
+  clears stale ifup state before retrying DHCP. Interface identity and carrier-change counters also
+  force fresh DHCP after a cable move, including a loss/regain between minute checks. Identity
+  checks, hotplug and routing:
   [USAGE, Devices](USAGE.md#devices).
 - **Egress:** own traffic limited to DHCP and NAT; starts nothing inward except syslog to svc.
 - **Management:** no Incus agent or guest API; SSH from host only, on transit address, with
@@ -611,7 +615,8 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 
 [USAGE.md](USAGE.md) covers daily use. Design points:
 
-- **Status bar:** [USAGE, The bar](USAGE.md#the-bar).
+- **Status bar:** [USAGE, The bar](USAGE.md#the-bar). Probe deadlines and cache expiry use monotonic
+  uptime; cached alert and input results become unknown after 180 seconds.
 - **Displays:** profile keys hash sorted make/model/serial triples. A Sway output/tick subscriber
   maps identities to current connectors; layout-only events do not reapply profiles. A separate
   rollback worker and exit traps restore the previous layout unless the owner confirms. A session
@@ -652,6 +657,8 @@ IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
   each minute and records a reason for `sys portal status`. Cron and the browser session loop check
   expiry. Remote mode checks use the minute status cache, refusing results stale for three minutes.
   An orphaned session without a browser lock is closed after a one-minute startup allowance.
+  Each expiry refresh also closes all three sides if wan reports no usable portal resolver or
+  cannot be reached.
 - *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on the
   upstream network for the def/tmp browsers), clipboard clearing.*)*
 

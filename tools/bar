@@ -103,16 +103,18 @@ printf '{"version":1,"click_events":true}\n[\n'
 next_alerts=0 next_inputs=0 comma=
 while :; do
 	stamp=$(date '+%s %a %m/%d %H:%M:%S')
-	now=${stamp%% *}
+	wall=${stamp%% *}
+	read -r uptime rest </proc/uptime
+	now=${uptime%.*}
 	if [ "$now" -ge "$next_alerts" ]; then
 		if [ -z "$alerts_pid" ] || ! kill -0 "$alerts_pid" 2>/dev/null; then
-			poll_alerts & alerts_pid=$!
+			{ poll_alerts && echo "$now" >"$work/alerts-at"; } & alerts_pid=$!
 			next_alerts=$((now + 30))
 		fi
 	fi
 	if [ "$now" -ge "$next_inputs" ]; then
 		if [ -z "$inputs_pid" ] || ! kill -0 "$inputs_pid" 2>/dev/null; then
-			poll_inputs & inputs_pid=$!
+			{ poll_inputs && echo "$now" >"$work/inputs-at"; } & inputs_pid=$!
 			next_inputs=$((now + 5))
 		fi
 	fi
@@ -125,7 +127,7 @@ while :; do
 	# One formatter per frame; procfs/sysfs reads need no helpers. UTF-8: the network
 	# name is cut by characters.
 	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v mains="$mains" -v now="$now" -v mtime="$mtime" \
-		-v memtime="$memtime" \
+		-v memtime="$memtime" -v wall="$wall" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
 		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
 		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" -v rel="$release" '
@@ -143,6 +145,10 @@ while :; do
 			else out=out c
 		}
 		return out "\""
+	}
+	function cached(name, stamp, at) {
+		at=get(work "/" stamp "-at")
+		return at ~ /^[0-9]+$/ && now>=at && now-at<=180 ? get(work "/" name) : ""
 	}
 	function block(text, color, name, markup) {
 		printf "%s{\"full_text\":%s", sep, json(text)
@@ -204,11 +210,11 @@ while :; do
 		# Include cache before subtracting guest cgroups and VM processes.
 		used=mem["MemTotal:"]-mem["MemFree:"]; held=get(st "/guestmem")
 		ram="?"
-		if (memtime>0 && now>=memtime && now-memtime<=180 && held ~ /^[0-9]+$/)
+		if (memtime>0 && wall>=memtime && wall-memtime<=180 && held ~ /^[0-9]+$/)
 			ram=sprintf("%.1f",(used>held+0 ? used-held : 0)/1048576)
 		block(sprintf("RAM %s/%.0fG SWP %.1f/%.0fG",ram,
 			mem["MemTotal:"]/1048576,(mem["SwapTotal:"]-mem["SwapFree:"])/1048576,mem["SwapTotal:"]/1048576), "")
-		iface=get(work "/route"); tx=""; rx=""; rate="NET tx - rx - Mb/s"
+		iface=cached("route", "inputs"); tx=""; rx=""; rate="NET tx - rx - Mb/s"
 		if (iface ~ /^[[:alnum:]_.:-]+$/) {
 			tx=get("/sys/class/net/" iface "/statistics/tx_bytes")
 			rx=get("/sys/class/net/" iface "/statistics/rx_bytes")
@@ -226,7 +232,7 @@ while :; do
 			if (m[2] == "/var" && m[3] == "btrfs" && m[4] ~ /(^|,)ro(,|$)/) state_ro=1
 		}
 		close("/proc/mounts")
-		fresh=mtime>0 && now-mtime<=180 && !state_ro
+		fresh=mtime>0 && wall>=mtime && wall-mtime<=180 && !state_ro
 		n=split(get(st "/topology"), fields," ")
 		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
 		browsers=topo["browsers"] ~ /^[0-9]+$/ ? topo["browsers"] : "?"
@@ -242,11 +248,11 @@ while :; do
 			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : ""), grey, "", 1)
 		block("rel " rel " " bl,bl == "good" ? grey : red)
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
-		mic=get(work "/mic")
+		mic=cached("mic", "inputs")
 		if (mic == "on") block("MIC", orange); else if (mic != "off") block("MIC?", grey)
 		# Firing alerts: critical, warning, info.
 		if (state_ro) block("state disk lost or read-only: reboot", red)
-		else if (split(get(work "/alerts"),count," ") == 3)
+		else if (split(cached("alerts", "alerts"),count," ") == 3)
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
 		else block("? ? ?", grey, "alerts")
 		portal=get(st "/portal")
@@ -260,7 +266,7 @@ while :; do
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
 		guests=get(st "/guests-update")
 		if (guests == "running") block("GUESTS", orange); else if (guests == "failed") block("GUESTS failed", red)
-		layout=get(work "/layout"); block(layout == "" ? "?" : layout, "")
+		layout=cached("layout", "inputs"); block(layout == "" ? "?" : layout, "")
 		days=int(uptime[1]/86400)
 		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")
 		block(clock, "")

@@ -181,6 +181,11 @@ expire() {
 		off 'timeout'
 	elif [ $(( $(date +%s) - t )) -ge 60 ] && ! browser_active; then
 		off 'interrupted session: browser no longer running'
+	else
+		case $(status_side wan 2>/dev/null) in
+		on\ *) ;;
+		*) off 'wan portal resolver lost or unreachable' ;;
+		esac
 	fi
 	return 0
 }

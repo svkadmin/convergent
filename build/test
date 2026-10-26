@@ -812,6 +812,98 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	images_prune
 	[ "$(tail -n 1 "$work/deleted")" = initial ]
 )
+# A kill after import, before alias assignment, leaves a collectable fingerprint.
+(
+	state=$work/import-state
+	image_dir=$work/import-image
+	mkdir "$state" "$image_dir"
+	echo metadata >"$image_dir/metadata.tar.gz"
+	echo rootfs >"$image_dir/rootfs.tar.gz"
+	sed -n '/^import_image() {/,/^}/p; /^images_prune() {/,/^}/p' /usr/local/sbin/guests >"$work/import-functions"
+	cat >>"$work/import-functions" <<'IMPORT'
+verify_image() { :; }
+sync() { :; }
+image_alias() { touch "$state/aliased"; }
+ic() {
+	case "$*" in
+	'image list --format json')
+		if [ -e "$state/imported" ]; then
+			printf '[{"fingerprint":"%s","aliases":[]}]\n' "$(cat "$state/imported")"
+		else echo '[]'; fi ;;
+	'image import '*)
+		grep -qx "$fingerprint" "$state/images.superseded" || exit 1
+		echo "$fingerprint" >"$state/imported"
+		kill -KILL "$$" ;;
+	'query /1.0/instances?recursion=1&project=default') echo '[]' ;;
+	'image delete '*)
+		[ "$3" = "$(cat "$state/imported")" ] || exit 1
+		mv "$state/imported" "$state/deleted" ;;
+	*) exit 1 ;;
+	esac
+}
+IMPORT
+	code=0
+	sh -eu -c 'work=$1 state=$2 image_dir=$3; . "$work/import-functions"; import_image svc' sh "$work" "$state" "$image_dir" || code=$?
+	[ "$code" = 137 ] && [ -s "$state/imported" ] && [ ! -e "$state/aliased" ] || exit 1
+	cmp "$state/imported" "$state/images.superseded"
+	. "$work/import-functions"
+	images_prune
+	[ -s "$state/deleted" ] && [ ! -e "$state/imported" ] && [ ! -e "$state/images.superseded" ]
+)
+# Accepted temporary-browser config and devices must both remain unchanged.
+(
+	mkdir "$work/accepted"
+	baseline=$work/accepted
+	bad() { echo "$*" >>"$work/report"; ok=0; }
+	die() { echo "$*" >&2; exit 1; }
+	incus() { cat "$work/profile"; }
+	incus_limits() { cat "$1"; }
+	sed -n '/^incus --force-local query .*profiles\/browser-tmp/,/^incus_limits() {/ { /^incus_limits() {/d; p; }' /usr/local/sbin/check >"$work/profile-read"
+	sed -n '/^    cp "\$work\/autostart"/p' /usr/local/sbin/check >"$work/profile-accept"
+	sed -n '/^for inventory in /,/^done$/p' /usr/local/sbin/check >"$work/profile-check"
+	for inventory in autostart suid incus; do echo '[]' >"$work/$inventory"; done
+	echo '{"config":{"limits.memory":"2GiB"},"devices":{"eth0":{"security.ipv4_filtering":"true"}}}' >"$work/profile"
+	ok=1
+	. "$work/profile-read"
+	. "$work/profile-accept"
+	cp "$work/profile" "$work/profile.before"
+	for fault in none config devices restored; do
+		case $fault in
+		config) jq '.config["limits.memory"]="4GiB"' "$work/profile.before" >"$work/profile" ;;
+		devices) jq '.devices.eth0["security.ipv4_filtering"]="false"' "$work/profile.before" >"$work/profile" ;;
+		restored) cp "$work/profile.before" "$work/profile" ;;
+		esac
+		ok=1
+		: >"$work/report"
+		. "$work/profile-read"
+		. "$work/profile-check"
+		case $fault in
+		none|restored) [ "$ok" = 1 ] ;;
+		*) [ "$ok" = 0 ]; grep -qx 'browser-tmp inventory changed or missing' "$work/report" ;;
+		esac
+	done
+)
+# Exercise both real prompts; declining upload must keep output entirely local.
+(
+	state=$work/debug-state tmp=$work/debug-run
+	mkdir "$state" "$tmp"
+	id=0123456789abcdef0123456789abcdef expires=$(($(date +%s) + 300))
+	echo 'echo diagnostic-output' >"$tmp/script"
+	printf 'y\nn\n' >"$work/answers"
+	sed -n '/^printf .*Run as root/,$p' /usr/local/sbin/debug |
+		sed 's|>/dev/tty|>\&4|g; s|</dev/tty|<\&3|g' >"$work/debug-prompts"
+	die() { echo "$*" >&2; exit 1; }
+	for fn in open_src close_src get openssl; do
+		eval "$fn() { touch \"\$state/sent\"; return 1; }"
+	done
+	(. "$work/debug-prompts") 3<"$work/answers" 4>"$work/prompts" >"$work/debug-out"
+	grep -q 'Run as root?' "$work/prompts"
+	grep -q 'Send it?' "$work/prompts"
+	grep -qx 'Not sent; local output kept.' "$work/debug-out"
+	grep -qx "$id" "$state/ran"
+	grep -qx diagnostic-output "$state/$id.txt"
+	[ ! -e "$state/sent" ]
+)
 # Reuse and fresh downloads share identity, path and checksum validation.
 eval "$(sed -n '/^field()/p; /^ident()/p; /^guest_path() {/,/^}/p; /^guest_valid() (/,/^)/p; /^staged_current() (/,/^)/p' /usr/local/sbin/fetch-release)"
 dir=$work staged=$work/staged latest=1 changed=browser gm=$work/manifest
@@ -842,6 +934,76 @@ for sample in valid compressed corrupt unsigned traversal malformed identity; do
 	fi
 done
 CHECK
+cv_time rebinding-filter
+# A separate upstream serves local-data; the filtering resolver must treat it as remote.
+for f in fw1 fw2; do
+	timeout 30 ssh -F /etc/convergent/ssh_config "$f" sh -eu <<'REBIND' || bad $LINENO
+work=$(mktemp -d)
+up= down=
+cleanup() {
+	code=$?
+	trap - 0
+	[ "$code" = 0 ] || cat "$work/"*.log
+	for pid in $up $down; do kill "$pid" 2>/dev/null || :; done
+	for pid in $up $down; do wait "$pid" 2>/dev/null || :; done
+	rm -rf "$work"
+	exit "$code"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+cat >"$work/common" <<CONF
+server:
+	interface: 127.0.0.1
+	do-ip6: no
+	chroot: ""
+	username: ""
+	directory: "$work"
+	pidfile: ""
+	use-syslog: no
+	module-config: "iterator"
+	do-not-query-localhost: no
+remote-control:
+	control-enable: no
+CONF
+cat "$work/common" >"$work/up.conf"
+cat >>"$work/up.conf" <<'CONF'
+server:
+	port: 1054
+	local-zone: "rebind.example.net." static
+	local-data: "public.rebind.example.net. 60 IN A 93.184.216.34"
+	local-data: "public.rebind.example.net. 60 IN AAAA 2001:4860:4860::8888"
+	local-data: "loop.rebind.example.net. 60 IN A 127.42.0.7"
+	local-data: "mapped.rebind.example.net. 60 IN AAAA ::ffff:93.184.216.34"
+CONF
+cat "$work/common" >"$work/down.conf"
+printf 'server:\n\tport: 1053\n' >>"$work/down.conf"
+awk '$1 == "private-address:" {print}' /var/unbound/etc/unbound.conf >>"$work/down.conf"
+cat >>"$work/down.conf" <<'CONF'
+forward-zone:
+	name: "rebind.example.net."
+	forward-addr: 127.0.0.1@1054
+CONF
+unbound-checkconf "$work/up.conf"
+unbound-checkconf "$work/down.conf"
+unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
+unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
+query() { dig @127.0.0.1 -p "$1" "$2.rebind.example.net." "$3" +time=1 +tries=1 +short; }
+n=0
+until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
+	[ "$n" -lt 5 ]; n=$((n + 1)); sleep 1
+done
+[ "$(query 1053 public AAAA)" = 2001:4860:4860::8888 ]
+[ "$(query 1054 loop A)" = 127.42.0.7 ]
+query 1054 mapped AAAA | grep -q '^::ffff:'
+for record in 'loop A' 'mapped AAAA'; do
+	set -- $record
+	dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer"
+	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer"
+	grep -q 'ANSWER: 0,' "$work/answer"
+done
+[ "$(query 1053 public A)" = 93.184.216.34 ]
+REBIND
+done
 fw_unlocked() {
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
         sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_NOFOLLOW) or exit 2;
