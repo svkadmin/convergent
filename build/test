@@ -1768,7 +1768,8 @@ for step in journal rebuilt; do
     fi
     sh -x /usr/local/sbin/guests apply 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
     if [ "$step" = journal ]; then
-        ic config unset fw1 boot.autorestart && ic config unset fw2 boot.autorestart || bad $LINENO
+        # The rollback's own hold may already have cleared fw1's key.
+        for f in fw1 fw2; do [ -z "$(ic config get "$f" boot.autorestart)" ] || ic config unset "$f" boot.autorestart || bad $LINENO; done
         trap - 0 HUP INT TERM
     fi
     grep -q '^+ ic rebuild [0-9a-f]* fw1$' "/var/log/guests-rebuild-kill-$step-resume.log" || bad $LINENO

@@ -103,6 +103,7 @@ for page in network-path security; do
     : >"$work/identity"
     if ! curl -qsS --fail-with-body --output "$work/identity" --noproxy '*' --max-time 10 -G \
         --data-urlencode "query=NOT * | union rows($rows) | filter $expr" \
+        --data-urlencode start=1h --data-urlencode end=now \
         --data-urlencode limit=20 "$base/select/logsql/query"; then
         echo "dashboards: LogsQL error: log identity: $page"
         cat "$work/identity"
