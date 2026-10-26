@@ -84,7 +84,7 @@ wan is the exception (section 4.1).
 | Logs | syslog-ng over TLS to svc; bounded local buffer for when svc is down |
 | Crashes | `/var/lib/convergent/crash/<timestamp>/`; EFI pstore collection and panic recovery: [RECOVERY 13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert) |
 | Time | chrony, NTS from three sources, two must agree; starts without waiting for network; serves NTP to firewalls |
-| Listening on the host | chrony (UDP 123, firewalls only), node_exporter (TCP 9100, svc only), Incus metrics (TCP 8444, TLS with client certificate, svc only). Nothing else |
+| Listening on the host | chrony (UDP 123, firewalls only), node_exporter (TCP 9100, svc only), Incus metrics (TCP 8444, TLS with metrics certificate, svc only), Incus UI/API (TCP 8443, session client certificate, int only) |
 
 Incus starts with `INCUS_SKIP_INSTANCE_TYPES=true`, so it never downloads instance-type definitions.
 
@@ -182,7 +182,7 @@ Chromium runs in unprivileged Incus containers built from one browser image:
 
 - **def:** default browser on `web`, persistent profile volume.
 - **tmp:** ephemeral container on `web`, gone when closed; `--portal` selects captive portal mode.
-- **int:** persistent container on `admin`, only browser that reaches Grafana.
+- **int:** persistent container on `admin`, only browser that reaches Grafana and the Incus UI/API.
 
 Each container gets: GPU render node (except tmp in portal mode); Wayland socket from Sway's
 security context (no screen capture, input injection, other Wayland sockets, Sway IPC or X11); own
@@ -197,6 +197,25 @@ extensions and search.
 Chromium policies are part of image: DNS-over-HTTPS off (gateway resolves); telemetry, studies and
 captive-portal probes off; each mode labelled in window title, so owner always knows which browser
 is in front. Links opened from other programs go to `tmp` by default *(planned)*.
+
+The Incus UI at `https://100.80.1.10:8443/ui/` has full host-equivalent administration:
+all projects, infrastructure, networks, profiles, storage and devices. PF admits only int;
+host nftables drops other TCP 8443 traffic before loopback and established accepts. Metrics
+remain on 8444 with their separate identity. `INCUS_UI` selects pinned Zabbly static assets.
+
+`tools/incus-ui` issues a 90-day clientAuth leaf under normal owner sudo authentication.
+Only an AES-256 encrypted PKCS#12 and public certificate persist in root-only guest TLS state.
+Every UI session prompts in a host terminal. After fingerprint verification, import runs as
+UID 1000 into a fresh tmpfs NSS database mounted at both Chromium NSS locations; persistent
+NSS databases are masked even for plain int sessions. Trust is unrestricted and added only
+after import. Closing the complete int session stops its container, removes trust and removes
+session material. `check auto` and boot reconciliation close orphans under the session lock.
+Setup/rotation use atomic directory replacement with interrupted-rotation recovery. Grafana-only
+launches receive no private key. Unlock/setup/revoke events use the existing buffered syslog path;
+native Incus lifecycle/request events enter loopback UDP 1514 and are reduced to identity,
+protocol, action/resource or method/path, with queries removed before local/TLS forwarding.
+Bodies, commands and tokens are discarded. These logs cannot resist an administrator who
+controls svc; HTTP result codes are not a complete audit. Global daemon debug stays disabled.
 
 ### 3.6 User guests *(planned)*
 

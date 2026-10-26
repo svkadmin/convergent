@@ -12,6 +12,9 @@ depend() {
 
 start() {
 	rm -f /run/convergent/guests-stopping
+	if [ -e /var/lib/convergent/guests/initialized ]; then
+		/usr/local/sbin/incus-ui cleanup || return 1
+	fi
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
 	if [ -e /var/lib/convergent/guests/initialized ]; then

@@ -1,0 +1,176 @@
+#!/bin/sh
+# W2: fixed session operations are called by browser; certificate administration requires owner sudo.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH LC_ALL=C
+umask 077
+die() { echo "incus-ui: $*" >&2; exit 1; }
+if [ "${1:-}:$#" = open:1 ]; then
+    [ "$(id -u)" != 0 ] || die 'open as the owner in Sway'
+    exec /usr/local/sbin/browser int https://100.80.1.10:8443/ui/
+fi
+[ "$(id -u)" = 0 ] || die 'use sudo incus-ui setup|rotate|revoke; use incus-ui open without sudo'
+case ${1:-}:$# in setup:1|rotate:1|revoke:1|cleanup:1|--reconcile:1|--unlock:1|--import:1|--close:1|--audit:1) ;;
+    *) die 'usage: incus-ui setup|rotate|revoke|open|cleanup' ;; esac
+action=$1
+tls=/var/lib/convergent/guests/tls
+state=$tls/incus-ui
+run=/run/convergent/incus-ui
+scratch= tty_state=
+ic() { timeout -k 1 30 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
+finish() {
+    result=$?
+    trap - 0
+    trap '' HUP INT TERM
+    set +e
+    [ -z "$tty_state" ] || stty "$tty_state" </dev/tty
+    [ -z "$scratch" ] || rm -rf -- "$scratch"
+    exit "$result"
+}
+trap finish 0
+trap 'exit 1' HUP INT TERM
+install -d -m 0755 /run/convergent
+install -d -m 0711 /run/convergent/browser
+case $action in
+    setup|rotate|revoke|cleanup)
+        exec 9>/run/convergent/guests.lock
+        flock -s -n 9 || die 'guest operation in progress'
+        exec 6>/run/convergent/browser-update.lock
+        flock -s -n 6 || die 'browser update in progress' ;;
+esac
+case $action in
+    setup|rotate|cleanup|--reconcile)
+        exec 8>/run/convergent/browser/int.lock
+        if ! flock -n 8; then
+            case $action in cleanup|--reconcile) exit 0 ;; esac
+            die 'close the int session first'
+        fi ;;
+esac
+exec 7>/run/convergent/incus-ui.lock
+flock -w 30 7 || die 'another UI operation is running'
+fingerprint() {
+    digest=$(openssl x509 -in "$1" -noout -fingerprint -sha256) || return
+    printf '%s\n' "$digest" | cut -d= -f2 | tr -d ':' | tr A-F a-f
+}
+close_session() {
+    stopped=1
+    trust=$(ic config trust list --format json) || return
+    expected=
+    if [ -s "$state/client.crt" ]; then expected=$(fingerprint "$state/client.crt") || return; fi
+    fps=$(printf '%s\n' "$trust" | jq -r --arg fp "$expected" \
+        '.[] | select(.name == "browser-int-ui" or .fingerprint == $fp) | .fingerprint') || return
+    if [ -d "$run" ] || [ -n "$fps" ]; then
+        mkdir -p "$run"
+        if instances=$(ic query '/1.0/instances?recursion=1&project=default'); then
+            if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
+                ic stop int --force || stopped=0
+            fi
+        else stopped=0; fi
+    fi
+    for fp in $fps; do ic config trust remove "$fp" || return; done
+    [ "$stopped" = 1 ] || return 1
+    rm -rf -- "$run" || return
+    # A killed unlock/setup can leave secrets in /run; the UI action lock excludes live writers.
+    for stale in /run/convergent/incus-ui-unlock.?????? /run/convergent/incus-ui-setup.??????; do
+        [ ! -d "$stale" ] || rm -rf -- "$stale" || return
+    done
+    [ -z "$fps" ] || logger -t incus-ui 'session trust removed'
+}
+recover() {
+    if [ ! -d "$state" ] && [ -d "$state.previous" ]; then mv "$state.previous" "$state"; fi
+    rm -rf -- "$state.next" "$state.previous"
+}
+prompt() {
+    tty_state=$(stty -g </dev/tty) || die 'a host terminal is required'
+    printf '%s' "$1" >/dev/tty
+    stty -echo </dev/tty
+    IFS= read -r password </dev/tty || die 'passphrase cancelled'
+    stty "$tty_state" </dev/tty
+    tty_state=
+    printf '\n' >/dev/tty
+    [ -n "$password" ] || die 'empty passphrase refused'
+    printf '%s\n' "$password" >"$scratch/password"
+    unset password
+}
+case $action in
+    --audit)
+        metrics=$(fingerprint "$tls/incus-client.crt")
+        expected=
+        [ ! -f "$run/client.crt" ] || expected=$(fingerprint "$run/client.crt")
+        trusted=false
+        [ ! -f "$run/trusted" ] || trusted=true
+        ic config trust list --format json | jq -e --arg ui "$expected" --arg metrics "$metrics" --argjson trusted "$trusted" '
+            all(.[];
+                (.fingerprint == $metrics and .type == "metrics") or
+                ($ui != "" and .fingerprint == $ui and .name == "browser-int-ui" and
+                 .type == "client" and .restricted == false and (.projects | length) == 0)) and
+            (if $trusted then any(.[]; .fingerprint == $ui) else true end)' >/dev/null ||
+            die 'unexpected Incus trust; inspect config trust list'
+        ;;
+    cleanup|--reconcile|--close|revoke)
+        close_session
+        recover
+        if [ "$action" = revoke ]; then
+            rm -rf -- "$state"
+            logger -t incus-ui 'credential revoked; setup required'
+        fi ;;
+    setup|rotate)
+        close_session
+        recover
+        [ -s "$tls/ca.key" ] && [ -s "$tls/ca.crt" ] || die 'run guests init first'
+        [ "$action" != setup ] || [ ! -e "$state" ] || die 'already configured; use rotate'
+        scratch=$(mktemp -d /run/convergent/incus-ui-setup.XXXXXX)
+        prompt 'New Incus UI passphrase: '
+        mv "$scratch/password" "$scratch/first"
+        prompt 'Repeat passphrase: '
+        cmp -s "$scratch/first" "$scratch/password" || die 'passphrases differ'
+        openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout "$scratch/key" -out "$scratch/request" -subj '/CN=browser-int-ui'
+        printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' >"$scratch/extensions"
+        openssl x509 -req -in "$scratch/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
+            -set_serial "0x$(openssl rand -hex 16)" -days 90 -extfile "$scratch/extensions" -out "$scratch/client.crt"
+        openssl verify -purpose sslclient -CAfile "$tls/ca.crt" "$scratch/client.crt"
+        openssl pkcs12 -export -inkey "$scratch/key" -in "$scratch/client.crt" -name browser-int-ui \
+            -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg SHA256 -iter 600000 \
+            -passout "file:$scratch/password" -out "$scratch/client.p12"
+        mkdir -m 700 "$state.next"
+        install -m 600 "$scratch/client.crt" "$scratch/client.p12" "$state.next/"
+        sync
+        [ ! -d "$state" ] || mv "$state" "$state.previous"
+        mv "$state.next" "$state"
+        sync
+        rm -rf -- "$state.previous"
+        logger -t incus-ui "credential $action; locked"
+        echo 'incus-ui: configured; incus-ui open prompts on every session' ;;
+    --unlock)
+        close_session
+        recover
+        [ -s "$state/client.p12" ] || die 'run sudo incus-ui setup first'
+        openssl x509 -in "$state/client.crt" -checkend 0 -noout || die 'certificate expired; run sudo incus-ui rotate'
+        scratch=$(mktemp -d /run/convergent/incus-ui-unlock.XXXXXX)
+        prompt 'Incus UI passphrase: '
+        openssl pkcs12 -in "$state/client.p12" -passin "file:$scratch/password" -nodes -out "$scratch/client.pem" || die 'cannot unlock certificate'
+        [ "$(fingerprint "$scratch/client.pem")" = "$(fingerprint "$state/client.crt")" ] || die 'certificate fingerprint mismatch'
+        openssl verify -purpose sslclient -CAfile "$tls/ca.crt" "$state/client.crt"
+        mkdir -m 700 "$run"
+        openssl pkcs12 -export -in "$scratch/client.pem" -name browser-int-ui -passout pass: -out "$run/import.p12"
+        cp "$state/client.crt" "$run/client.crt"
+        cp "$tls/ca.crt" "$run/ca.crt" ;;
+    --import)
+        [ -s "$run/import.p12" ] || die 'session was not unlocked'
+        ic exec int -- sh -eu -c 'test -f /run/incus-ui-ready; test -d /run/incus-ui/nssdb'
+        ic exec int --user 1000 --group 1000 -- sh -eu -c \
+            'umask 077; cat >/run/incus-ui/import.p12' <"$run/import.p12"
+        ic exec int --user 1000 --group 1000 -- sh -eu -c \
+            'umask 077; cat >/run/incus-ui/ca.crt' <"$run/ca.crt"
+        ic exec int --user 1000 --group 1000 -- sh -eu -c '
+            trap "rm -f /run/incus-ui/import.p12 /run/incus-ui/ca.crt" 0
+            certutil -A -d sql:/run/incus-ui/nssdb -n convergent-ca -t C,, -i /run/incus-ui/ca.crt
+            pk12util -i /run/incus-ui/import.p12 -d sql:/run/incus-ui/nssdb -W "" -K ""
+            chmod 600 /run/incus-ui/nssdb/*
+        '
+        rm "$run/import.p12" "$run/ca.crt"
+        ic config trust add-certificate "$run/client.crt" --type client --name browser-int-ui
+        touch "$run/trusted"
+        logger -t incus-ui 'unlocked full-administration session in int' ;;
+esac

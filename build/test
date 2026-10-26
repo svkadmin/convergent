@@ -2187,6 +2187,9 @@ cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
 EOF
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
+	# W2: Incus UI session tests.
+	cp "$here/test-incus-ui" "$var/lib/convergent/test-release/incus-ui-test"
+	# End W2.
 	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
 	cp -r "$here/fixtures/browser-legacy" "$var/lib/convergent/test-release/"
 	if [ "$mode" = guests-maint ] || [ "$mode" = guests-update ]; then
@@ -2466,6 +2469,9 @@ case $r in
 esac
 if [ "$r" = 0 ]; then
 	timeout -k 30 900 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	# W2: real TLS, per-session NSS and orphan recovery.
+	timeout -k 30 300 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
+	# End W2.
 	timeout -k 30 900 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
 fi
 if [ ! -f /etc/convergent/update.conf ]; then

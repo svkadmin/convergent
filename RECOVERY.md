@@ -373,3 +373,19 @@ message with the exact commands) rather than fail later with the guest down. Two
 - A state volume with a `.incustmp` copy beside it or instead of it: the loss hit a snapshot
   restore (well under a second). Volume missing: `sudo mv` the copy back. Volume present: the
   restore completed, `sudo btrfs subvolume delete` the copy. Then `sys guests update`.
+
+## 14. Incus UI session or passphrase failure
+
+Close int, then run `sudo incus-ui cleanup` to retry orphan cleanup; `check auto` also retries
+each minute and boot cleanup runs before the greeter. Cleanup stops int before discarding its
+session journal; trust is revoked even if stopping fails, and the journal remains for retry.
+If a launcher still holds the session lock, close its terminal or use `sudo incus-ui revoke`
+to stop an unlocked session and invalidate its credential. Existing WebSockets require stopping
+int, not just removing the certificate. Never import the private key into persistent NSS state.
+
+Forgotten passphrase or expired certificate: with int closed, `sudo incus-ui rotate` creates a
+new encrypted bundle. After restoring state from backup, revoke and set up a fresh credential
+before opening int. Boot cleanup removes stale named UI trust even without a runtime journal;
+interrupted rotation restores the previous complete directory if the new one was not installed.
+Check `/var/log/messages` for `incus-ui` events and the `incus-ui` certificate-expiry metric.
+The trusted local Unix-socket CLI remains available if the web interface is unusable.
