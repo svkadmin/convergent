@@ -1,7 +1,10 @@
 #!/bin/sh
 # Throwaway build/test guest host only; never run on owner state.
 set -eu
-ic() { incus --force-local --project default "$@" 8>&-; }
+ic() {
+    if [ "$1" = query ]; then incus --force-local "$@" 8>&-
+    else incus --force-local --project default "$@" 8>&-; fi
+}
 [ -d /var/lib/convergent/test-release ] || { echo 'test-remmina: requires disposable test host' >&2; exit 1; }
 mkdir -p /run/convergent/browser
 exec 8>/run/convergent/browser/remmina.lock
@@ -31,7 +34,7 @@ ic exec remmina -- sh -eu -c '
     test ! -s /etc/resolv.conf
     mountpoint -q /share
     mountpoint -q /home/remmina
-    command -v cage
+    ! command -v cage
     command -v remmina
     command -v gnome-keyring-daemon
     command -v secret-tool
@@ -76,16 +79,31 @@ if [ "$mode" = update ]; then
     mv "$work/sums" "$work/broken/SHA256SUMS"
     before=$(ic config get remmina volatile.base_image)
     share_before=$(ic storage volume snapshot list default share --format csv -c n)
-    if /usr/local/sbin/guests update remmina "$work/broken" >"$work/update.log" 2>&1; then
+    cat >"$work/mutate" <<'EOF'
+    if [ "$guest" = remmina ]; then
+        printf 'state-new\n' >"$pool/custom/default_remmina-state/.cv-state"
+        printf 'share-new\n' >"$pool/custom/default_share/.cv-share"
+        echo CV-REMOTE-MUTATED >&2
+    fi
+EOF
+    sed '/for volume in $(volumes "$guest"); do locked ic storage volume snapshot create /r '"$work/mutate" \
+        /usr/local/sbin/guests >"$work/updater"
+    sh -n "$work/updater"
+    if sh "$work/updater" update remmina "$work/broken" >"$work/update.log" 2>&1; then
         cat "$work/update.log"; echo 'CV-REMOTE corrupt image accepted'; exit 1
     fi
+    grep -q CV-REMOTE-MUTATED "$work/update.log"
     grep -q 'restoring remmina/' "$work/update.log"
     test "$(ic config get remmina volatile.base_image)" = "$before"
     test ! -e /var/lib/convergent/guests/pending
+    ic start remmina
+    timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
+    ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share-new /share/.cv-share'
+    ic stop remmina --force
     /usr/local/sbin/guests update remmina "$source"
     test "$(ic storage volume snapshot list default share --format csv -c n)" = "$share_before"
     ic start remmina
     timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
     keyring read
-    ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share /share/.cv-share'
+    ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share-new /share/.cv-share'
 fi

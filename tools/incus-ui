@@ -17,7 +17,10 @@ tls=/var/lib/convergent/guests/tls
 state=$tls/incus-ui
 run=/run/convergent/incus-ui
 scratch= tty_state=
-ic() { timeout -k 1 30 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
+ic() {
+    if [ "$1" = query ]; then timeout -k 1 30 incus --force-local "$@" 9>&- 8>&- 7>&- 6>&-
+    else timeout -k 1 30 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; fi
+}
 finish() {
     result=$?
     trap - 0

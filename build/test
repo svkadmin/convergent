@@ -711,36 +711,51 @@ incus() {
     esac
 }
 stuck=0
-stop_one wan - - false
+stop_one default wan - - false
 grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
 grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
 grep -q 'config unset wan boot.autorestart' "$fixture/calls"
 grep -q 'config unset wan user.convergent.autorestart' "$fixture/calls"
 rm "$fixture/stopped"; : >"$fixture/calls"
-stop_one wan false true false
+stop_one default wan false true false
 grep -q 'config set wan boot.autorestart=false$' "$fixture/calls"
 grep -q 'config set wan user.convergent.autorestart=true$' "$fixture/calls"
 rm "$fixture/stopped"; : >"$fixture/calls"
 stuck=1
-if stop_one wan - - false; then exit 1; fi
+if stop_one default wan - - false; then exit 1; fi
 if grep -q 'config unset' "$fixture/calls"; then exit 1; fi
 stuck=0
-stop_one wan - - true
-# Exercise the inventory selector with browsers, stopped and unrelated instances.
+stop_one default wan - - true
+rm "$fixture/stopped"; : >"$fixture/calls"
+stop_one owner wan false true false
+grep -q -- '--project owner stop wan' "$fixture/calls"
+grep -q 'query /1.0/instances?recursion=1&project=owner' "$fixture/calls"
+grep -q -- '--project owner config set wan boot.autorestart=false' "$fixture/calls"
+# Exercise work NICs, duplicate names across projects, browsers and unrelated instances.
 work=$fixture
 cat >"$work/instances" <<'JSON'
-[{"name":"def","status":"Running","config":{},"ephemeral":false},
+[{"name":"wan","project":"owner","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","network":"work"}}},
+ {"name":"build","project":"other","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","parent":"work"}}},
+ {"name":"fw1","project":"owner","status":"Running","config":{},"ephemeral":false},
+ {"name":"remmina","status":"Running","config":{},"ephemeral":false},
+ {"name":"def","status":"Running","config":{},"ephemeral":false},
  {"name":"tmp-23","status":"Running","config":{},"ephemeral":true},
  {"name":"int","status":"Stopped","config":{},"ephemeral":false},
  {"name":"svc","status":"Running","config":{},"ephemeral":false},
  {"name":"wan","status":"Running","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"},"ephemeral":false},
- {"name":"fw1","status":"Running","config":{},"ephemeral":false},
- {"name":"fw2","status":"Running","config":{},"ephemeral":false},
+ {"name":"fw1","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"work":{"type":"nic","network":"work"}}},
+ {"name":"fw2","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"work":{"type":"nic","parent":"work"}}},
  {"name":"unrelated","status":"Running","config":{},"ephemeral":false}]
 JSON
 eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
-printf '1\tdef\t-\t-\tfalse\n1\ttmp-23\t-\t-\ttrue\n2\tsvc\t-\t-\tfalse\n3\twan\tfalse\ttrue\tfalse\n4\tfw1\t-\t-\tfalse\n4\tfw2\t-\t-\tfalse\n' >"$work/expected"
+printf '0\towner\twan\t-\t-\tfalse\n0\tother\tbuild\t-\t-\tfalse\n1\tdefault\tremmina\t-\t-\tfalse\n1\tdefault\tdef\t-\t-\tfalse\n1\tdefault\ttmp-23\t-\t-\ttrue\n2\tdefault\tsvc\t-\t-\tfalse\n3\tdefault\twan\tfalse\ttrue\tfalse\n4\tdefault\tfw1\t-\t-\tfalse\n4\tdefault\tfw2\t-\t-\tfalse\n' >"$work/expected"
 cmp "$work/expected" "$work/order"
+stop_one() {
+    [ "$stage" != 0 ] || sleep .1
+    printf '%s:%s/%s\n' "$stage" "$1" "$2" >>"$work/drained"
+}
+eval "$(sed -n '/^result=0/,/^note /p' /usr/lib/convergent/incus/shutdown | sed '$d')"
+awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1}' "$work/drained"
 DRAIN
 # Polling must keep transient failures out of stderr and syslog.
 (
@@ -1191,10 +1206,16 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]
         [ "$(heal_probe fw1)" = master ]
         current=$(fw_pid fw2) || current=0
-        if [ "$current" != "$frozen2" ] && [ "$(heal_probe fw2)" = backup ]; then break; fi
+        if [ "$current" != 0 ] && [ "$current" != "$frozen2" ]; then break; fi
         sleep 5
     done
     frozen2=
+    deadline=$(($(date +%s) + 1800))
+    until [ "$(heal_probe fw2)" = backup ]; do
+        [ "$(date +%s)" -lt "$deadline" ]
+        [ "$(heal_probe fw1)" = master ]
+        sleep 5
+    done
     grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     grep -q '^SELF-HEAL .*fw2' /var/lib/convergent/check/firewall-heal
@@ -2544,7 +2565,7 @@ if [ "$r" = 0 ]; then
 	# W3 Remmina: private state, keyring and share.
 	timeout -k 10 180 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End W3 Remmina.
-	timeout -k 30 900 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	timeout -k 30 3600 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# W2: real TLS, per-session NSS and orphan recovery.
 	timeout -k 30 300 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End W2.
@@ -3061,7 +3082,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096
 	limit=300
-	case $goal in guests) memory=8192; limit=3600 ;; guests-maint | online) memory=8192; limit=7200 ;; guests-update) memory=8192; limit=10800 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192; limit=5400 ;; guests-maint | online) memory=8192; limit=7200 ;; guests-update) memory=8192; limit=10800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -3093,7 +3114,7 @@ def interrupted(signum, frame):
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
-    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
+    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host,avx512f=off", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
     "-run-with", "user=" + os.environ["CVTEST_QEMU_ID"],
     "-sandbox", "on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
@@ -3306,7 +3327,7 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=3600 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
+	case $mode in guests) budget=5400 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0

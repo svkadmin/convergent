@@ -43,7 +43,6 @@ for text, code in [('dom-dev-a carp6 vlan320 7\n', 0), ('carp6 7 vlan320 dom-dev
     assert result.returncode == code
     if code == 0:
         assert result.stdout.strip() == 'vlan320'
-assert 24 + 32000 * (1536 + 16) < 50000000
 listing = (repo / 'build/advisories-publish').read_text().split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
 xml = work / 'list.xml'
 xml.write_text('<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated>'
@@ -97,4 +96,6 @@ if command -v jq >/dev/null 2>&1; then
 else
 	echo 'observability: SKIP jq fixtures (jq is unavailable)' >&2
 fi
+sh "$here/test-release-status"
+sh "$here/test-capture"
 python3 -I "$repo/guests/svc/dashboards/build.py" --check

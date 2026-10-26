@@ -8,6 +8,16 @@ cd "${here%/build}" || exit 1
 fail=0
 bad() { echo "lint: $*"; fail=1; }
 sh build/test --install-options || bad 'install options selftest failed'
+offline_start=$(date +%s)
+for dependency in python3 jq openssl; do
+    command -v "$dependency" >/dev/null 2>&1 || bad "offline preflight requires $dependency"
+done
+sh build/test --networks || bad 'networks selftest failed'
+sh build/test-topology || bad 'topology selftest failed'
+sh build/test --remmina-unit || bad 'Remmina selftest failed'
+sh build/test --observability || bad 'observability selftest failed'
+sh build/test-incus-ui --offline || bad 'Incus UI selftest failed'
+echo "lint: offline preflight took $(($(date +%s) - offline_start))s"
 if command -v python3 >/dev/null 2>&1; then
 	python3 -I guests/svc/dashboards/build.py --check || bad 'dashboard JSON drift'
 else

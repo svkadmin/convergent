@@ -1,10 +1,16 @@
 #!/bin/sh
 # W2: run only on build/test's throwaway host, with int stopped and no owner UI credential.
 set -eu
+if [ "${1:-}" = --offline ] && [ "$#" = 1 ]; then
+    exec sh "$(dirname "$0")/test-incus-ui-offline"
+fi
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
-ic() { incus --force-local --project default "$@" 8>&-; }
+ic() {
+    if [ "$1" = query ]; then incus --force-local "$@" 8>&-
+    else incus --force-local --project default "$@" 8>&-; fi
+}
 tls=/var/lib/convergent/guests/tls
 state=$tls/incus-ui
 run=/run/convergent/incus-ui
@@ -18,7 +24,7 @@ cleanup() {
     set +e
     ic profile delete w2-audit-native >/dev/null 2>&1 || :
     /usr/local/sbin/incus-ui --close 8>&- || r=1
-    if [ "$(ic query /1.0/instances/int/state | jq -r .status)" != Stopped ]; then ic stop int --force || r=1; fi
+    if [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" != Stopped ]; then ic stop int --force || r=1; fi
     if [ -n "$created" ]; then
         ic delete int --force || r=1
     elif [ -s "$work/int.yaml" ]; then
@@ -33,14 +39,14 @@ trap 'exit 1' HUP INT TERM
 exec 8>/run/convergent/browser/int.lock
 flock -n 8
 if ic query '/1.0/instances?recursion=1&project=default' | jq -e 'any(.[]; .name == "int")' >/dev/null; then
-    [ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+    [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
     ic config show int >"$work/int.yaml"
 else
     ic init candidate-browser int -p browser-base -p browser-int -c security.protection.delete=false
     created=1
 fi
 for dev in render wayland pipewire; do
-    if ic query /1.0/instances/int | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
+    if ic query '/1.0/instances/int?project=default' | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
         ic config device remove int "$dev"
     fi
 done
@@ -69,7 +75,7 @@ sh "$work/helper" --unlock
 start_int() {
     ic start int
     timeout 60 sh -c 'until incus --force-local exec int -- test -f /run/browser-ready; do sleep 1; done' 8>&-
-    pid=$(ic query /1.0/instances/int/state | jq -er .pid)
+    pid=$(ic query '/1.0/instances/int/state?project=default' | jq -er .pid)
 }
 api() {
     nsenter -t "$pid" -n curl -qsS --noproxy '*' --connect-timeout 3 --max-time 10 \
@@ -94,12 +100,18 @@ logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"lifecycle","metadata":{"ac
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"logging","metadata":{"message":"Handling API request","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}}'
 ic profile create w2-audit-native
 ic profile delete w2-audit-native
-sleep 2
-grep 'incus-audit.*w2-audit-fixture' /var/log/messages | grep -q w2-owner
-grep 'incus-audit.*w2-audit-request' /var/log/messages | grep -q w2-owner
-grep 'incus-audit.*profile-created' /var/log/messages | grep -q w2-audit-native
 fp=$(openssl x509 -in "$work/client.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr A-F a-f)
-grep 'incus-audit.*"event":"request"' /var/log/messages | grep -q "$fp"
+audit_ready() {
+    grep 'incus-audit.*w2-audit-fixture' /var/log/messages | grep -q w2-owner &&
+    grep 'incus-audit.*w2-audit-request' /var/log/messages | grep -q w2-owner &&
+    grep 'incus-audit.*profile-created' /var/log/messages | grep -q w2-audit-native &&
+    grep 'incus-audit.*"event":"request"' /var/log/messages | grep -q "$fp"
+}
+deadline=$(($(date +%s) + 60))
+until audit_ready; do
+    [ "$(date +%s)" -lt "$deadline" ] || { echo 'Incus audit events timed out' >&2; exit 1; }
+    sleep 1
+done
 if grep 'incus-audit' /var/log/messages | grep -q W2_AUDIT_SECRET; then exit 1; fi
 # Native UI and API use the same validated server identity, with no Internet exception.
 nsenter -t "$pid" -n curl -qfsS --noproxy '*' --max-time 10 --cacert "$tls/ca.crt" \
@@ -111,7 +123,7 @@ ic config trust remove "$fp"
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 403 ]
 ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
 /usr/local/sbin/incus-ui --close 8>&-
-[ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+[ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
 [ ! -e "$run" ]
 ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
 start_int
@@ -124,7 +136,7 @@ start_int
 /usr/local/sbin/incus-ui --import 8>&-
 exec 8>&-
 /usr/local/sbin/incus-ui cleanup
-[ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+[ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
 [ ! -e "$run" ]
 ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
 # Simulate a reboot (no /run journal) and an interrupted credential-directory rotation.

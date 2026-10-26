@@ -13,5 +13,5 @@ trap 'exit 1' HUP INT TERM
 rc=0
 timeout -p -s INT -k 1 "$2" tcpdump -n -s 1536 -c 32000 -i "$1" -w "$work/capture.pcap" >&2 || rc=$?
 case $rc in 0|130) ;; *) exit "$rc" ;; esac
-[ -s "$work/capture.pcap" ] && [ "$(stat -f %z "$work/capture.pcap")" -le 50000000 ]
+[ -s "$work/capture.pcap" ] && [ "$(stat -f %z "$work/capture.pcap")" -le 50000000 ] || exit 1
 cat "$work/capture.pcap"

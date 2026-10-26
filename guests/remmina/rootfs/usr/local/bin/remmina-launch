@@ -7,5 +7,5 @@ cd /home/remmina
 exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/remmina USER=remmina LOGNAME=remmina \
     LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
     PULSE_SERVER=unix:/mnt/browser/pipewire-0 GDK_BACKEND=wayland GTK_USE_PORTAL=0 NO_AT_BRIDGE=1 \
-    DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent WLR_BACKENDS=wayland WLR_RENDERER=pixman \
-    cage -- dbus-run-session -- /usr/local/bin/remmina-session
+    DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent \
+    dbus-run-session -- /usr/local/bin/remmina-session

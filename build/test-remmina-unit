@@ -88,3 +88,51 @@ if command -v jq >/dev/null 2>&1; then
 else
     echo 'CV-REMOTE unit SKIP jq (not installed)'
 fi
+
+# Exercise the launcher's host/inner socket selection and command boundary.
+sed -n '/^wayland_socket=/,/^# The container first:/p' "$here/../tools/browser" | sed '$d' >"$work/sockets"
+sed -n '/^background=yes owner way-secure /,/^# Only the Pulse socket /p' "$here/../tools/browser" | sed '$d' >"$work/providers"
+install() { for path do :; done; mkdir -p "$path"; }
+owner() { printf '%s\n' "$*" >>"$run/providers"; }
+wait_socket() { wait "$2"; printf '%s\n' "$1" >>"$run/waits"; }
+for role in remmina def; do
+    run=$work/launch-$role name=$role uid=1000 gid=1000 children=
+    mkdir -p "$run/sockets" "$run/state"
+    . "$work/sockets"
+    . "$work/providers"
+    device() { printf '%s\n' "$*" >"$run/device"; }
+    eval "$(sed -n '/^device wayland /p' "$here/../tools/browser")"
+    grep -Fxq "wayland source=$wayland_socket required=true" "$run/device"
+    if [ "$role" = remmina ]; then
+        [ "$wayland_socket" = "$run/cage/wayland-0" ]
+        [ "$outer_socket" = "$run/state/wayland-host" ]
+        grep -Fxq "env XDG_RUNTIME_DIR=$run/cage WAYLAND_DISPLAY=$outer_socket WLR_BACKENDS=wayland WLR_RENDERER=pixman prlimit --fsize=1048576:1048576 cage" "$run/providers"
+        [ "$(wc -l <"$run/waits")" = 2 ]
+    else
+        [ "$wayland_socket" = "$run/sockets/wayland-0" ] && [ "$outer_socket" = "$wayland_socket" ]
+        [ "$(wc -l <"$run/providers")" = 1 ]
+    fi
+done
+grep -qx '    source: /run/convergent/browser/remmina/cage/wayland-0' "$here/../guests/remmina/incus.yaml"
+! grep -q 'cage\|WLR_BACKENDS' "$here/../guests/remmina/rootfs/usr/local/bin/remmina-launch"
+echo 'CV-REMOTE unit host Cage socket boundary ok'
+
+if command -v jq >/dev/null 2>&1; then
+    sed -n '/^jq -S .map(select/,/Incus settings unreadable/p' "$here/../tools/check" >"$work/inventory"
+    [ -s "$work/inventory" ]
+    bad() { echo "$*" >&2; exit 1; }
+    cat >"$work/instances" <<'EOF'
+[{"name":"remmina","project":"default","status":"Stopped","profiles":["remmina"],
+  "expanded_config":{"security.privileged":"false","volatile.test":"ignored"},
+  "expanded_devices":{"wayland":{"source":"/run/convergent/browser/remmina/cage/wayland-0"},
+                      "share":{"source":"share"},"eth0":{"security.ipv4_filtering":"true"}}},
+ {"name":"remmina","project":"owner","profiles":["other"],"expanded_config":{},"expanded_devices":{}}]
+EOF
+    . "$work/inventory"
+    jq -e 'length == 1 and .[0].name == "remmina" and .[0].profiles == ["remmina"] and
+        .[0].config == {"security.privileged":"false"} and
+        .[0].devices.eth0["security.ipv4_filtering"] == "true" and
+        .[0].devices.wayland.source == "/run/convergent/browser/remmina/cage/wayland-0" and
+        .[0].devices.share.source == "share"' "$work/incus.raw" >/dev/null
+    echo 'CV-REMOTE unit checker inventory ok'
+fi
