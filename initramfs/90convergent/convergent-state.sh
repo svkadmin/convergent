@@ -105,7 +105,7 @@ mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var
 	mount -t btrfs -o "subvol=home,$opts" /dev/mapper/cv-state "$NEWROOT/home" &&
 	mkdir -p "$NEWROOT/var/lib/incus-pool" &&
 	mount -t btrfs -o "subvol=pool,noatime,nodev" /dev/mapper/cv-state "$NEWROOT/var/lib/incus-pool" &&
-	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec tmpfs "$NEWROOT/tmp" ||
+	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec,size=8G tmpfs "$NEWROOT/tmp" ||
 	die "state: could not mount the writable places"
 if [ -d "$state/swap" ]; then
 	mkdir -p "$NEWROOT/var/lib/convergent/swap" &&

@@ -63,6 +63,7 @@ poll_alerts() {
         jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
         select(.[0].data.alerts | type == "array") |
         select(.[1].data.groups | type == "array") |
+        select([.[1].data.groups[].rules[]] | length > 0) |
         select(all(.[1].data.groups[].rules[]; .health == "ok")) |
         [.[0].data.alerts[] | select(.state == "firing") | .labels.severity] |
         "\(map(select(. == "critical")) | length) \(map(select(. == "warning")) | length) \(map(select(. != "critical" and . != "warning")) | length)"') ||
@@ -176,7 +177,8 @@ while :; do
 		split(get("/proc/stat"), cpu, " ")
 		total=0; for (i=2;i<=8;i++) total+=cpu[i]
 		idle=cpu[5]+cpu[6]; busy="-"
-		if (prev[1] != "" && total>prev[1]) busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
+		if (prev[1] != "" && total>prev[1] && idle>=prev[2] && idle-prev[2]<=total-prev[1])
+			busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
 		lo=""; hi=""; package=prev[8]; hottest=prev[9]
 		# Temperature reads can wake idle cores.
 		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=5
@@ -229,9 +231,13 @@ while :; do
 		close(work "/previous")
 		while ((getline line < "/proc/mounts") > 0) {
 			split(line,m," ")
-			if (m[2] == "/var" && m[3] == "btrfs" && m[4] ~ /(^|,)ro(,|$)/) state_ro=1
+			if (m[2] == "/var" && m[3] == "btrfs") {
+				state_found=1
+				if (m[4] ~ /(^|,)ro(,|$)/) state_ro=1
+			}
 		}
 		close("/proc/mounts")
+		if (!state_found) state_ro=1
 		fresh=mtime>0 && wall>=mtime && wall-mtime<=180 && !state_ro
 		n=split(get(st "/topology"), fields," ")
 		for (i=1;i<=n;i++) {split(fields[i],pair,"="); topo[pair[1]]=pair[2]}
@@ -273,7 +279,12 @@ while :; do
 		ac=0; n=split(mains, m, " "); for (i=1; i<=n; i++) if (get(m[i]) == "1") ac=1
 		if (bat == "") block("AC", "")
 		else {
-			cap=get(bat "/capacity"); bs=get(bat "/status"); color=""; level=(cap == "" ? "-" : cap) "%"
+			if (refresh) {
+				cap=get(bat "/capacity"); bs=get(bat "/status")
+				print cap > (work "/battery-capacity"); close(work "/battery-capacity")
+				print bs > (work "/battery-status"); close(work "/battery-status")
+			} else {cap=get(work "/battery-capacity"); bs=get(work "/battery-status")}
+			color=""; level=(cap == "" ? "-" : cap) "%"
 			if (bs == "Charging") text="BAT " level " +"
 			else if (bs == "Discharging") {
 				text="BAT " level " -"

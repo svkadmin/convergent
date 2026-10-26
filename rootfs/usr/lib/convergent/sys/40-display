@@ -19,11 +19,11 @@ display_bright() {
 		[ -w "$d/brightness" ] || continue
 		max=$(cat "$d/max_brightness") && now=$(cat "$d/brightness") || return
 		case $answer in
-		[+-]*) value=$(( now + ${answer%%[0-9]*}1 * ${answer#?} * max / 100 )) ;;
+		[+-]*) value=$(( now + ${answer%%[0-9]*}1 * ((${answer#?} * max + 99) / 100) )) ;;
 		*) value=$(( answer * max / 100 )) ;;
 		esac
 		# Never fully dark: the panel would look dead.
-		[ "$value" -ge $(( max / 20 )) ] || value=$(( max / 20 ))
+		[ "$value" -ge $(( (max + 19) / 20 )) ] || value=$(( (max + 19) / 20 ))
 		[ "$value" -le "$max" ] || value=$max
 		echo "$value" >"$d/brightness" && echo "brightness $(( value * 100 / max ))%"
 		return

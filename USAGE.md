@@ -150,12 +150,12 @@ or checking health. Not built into `sys`: owner guest management and printing.
 Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys display save`. Save
 once docked and once undocked. Profiles key on the connected make/model/serial set, including
 disabled panels; connector names and order can change. Profiles apply at login and on any set
-change. Unrecognised sets enable connected screens at preferred modes (laptop panel scale 1.3, external scale 1),
+change. Unrecognised sets enable connected screens at preferred modes (`display_scale` if configured,
+otherwise laptop panel scale 1.3, external scale 1),
 unless an older `~/.config/sway/config.d/outputs` file applies, which stays in charge until the
 first save. Identical identities cannot be saved, so `save` refuses them. `reset` clears only the
 current set's profile, not the live layout. Profiles live as JSON in `~/.config/convergent/displays/`;
-saving retires the old outputs file. The `display_scale` build setting still sets the initial Sway
-scale before the profile hook runs.
+saving retires the old outputs file. Saved profiles take precedence over `display_scale`.
 
 Touchpad: `sys touchpad set` prompts, or takes an option and value
 (`sys touchpad set pointer_accel 0.3`). Settings are validated, apply live to all touchpads and save to
@@ -205,7 +205,7 @@ fails, a line at the top gives the reason. Full output: `$XDG_RUNTIME_DIR/browse
 
 A second def or int start raises the open window. Portal mode refuses one; normal tmp runs many at
 once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no
-sync, no password manager, no telemetry. Int and tmp in portal mode allow no extensions. The int
+sync, no password manager, no telemetry. Int and both tmp modes allow no extensions. The int
 browser starts Grafana in svc and stops it on close. Log in as `owner`; password:
 `sudo cat /var/lib/convergent/guests/tls/admin-password`. A handler that sends links from other
 programs to `tmp` is not built.

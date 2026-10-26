@@ -80,6 +80,7 @@ sed -i "s/timeout 660 /timeout $((idle * 60 + 60)) /; s/timeout 600 /timeout $((
 	"$root/etc/sway/config.d/convergent"
 if [ -n "$scale" ]; then
 	sed -i "/^include ~\/\.config\/sway\/config.d\/\*/i output * scale $scale" "$root/etc/sway/config.d/convergent"
+	sed -i "s/scale=1\.3 /scale=$scale /; s/scale=1 /scale=$scale /" "$root/usr/lib/convergent/sys/40-display"
 fi
 # The stock wallpaper is not installed (no wallpapers USE), so its bg line would be a config error.
 sed -i '/^output \* bg /d' "$root/etc/sway/config"
@@ -99,6 +100,7 @@ for file in etc/cron.d/convergent etc/anacrontab etc/cron.d/0hourly; do
 	[ "$(grep -c '^[[:space:]]*MAILTO[[:space:]]*=' "$root/$file")" = 1 ] &&
 		grep -qx 'MAILTO=""' "$root/$file" || die "$file does not disable mail"
 done
+printf '%s\n' '@monthly 15 convergent-scrub btrfs scrub limit -a -l 200M /var && btrfs scrub start /var' >>"$root/etc/anacrontab"
 # The tools of ARCHITECTURE section 12.
 install -D -m 0755 -t "$root/usr/local/sbin" "$repo"/tools/*
 # The browser's pulse proxy as a real file: AppArmor attaches by resolved path, and
@@ -402,7 +404,7 @@ bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sy
 	--modules "base kernel-modules udev-rules dm crypt btrfs convergent convergent-rescue" --add-drivers "$drivers" \
 	--fwdir /image-root/usr/lib/firmware --install "$i915_fw" \
 	"$profiles/initramfs.img"
-printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
+printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality audit=1 audit_backlog_limit=8192" \
 	" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off quiet" \
 	" vfio-pci.ids=$VFIO_IDS" >"$BUILDER$profiles/cmdline"
 # Boot menu titles such as "SLOT A | Gentoo 0.1.0 - 6.18.57"; IMAGE_VERSION (the release id) orders them.
@@ -466,7 +468,7 @@ for slot in a b; do
 	part="PARTLABEL=cv-slot-$slot"
 	table="vroot,,,ro,0 $((blocks * 8)) verity 1 $part $part 4096 4096 $blocks $blocks sha256 $roothash $salt 2 restart_on_error restart_on_corruption"
 	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
-		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality" \
+		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality audit=1 audit_backlog_limit=8192" \
 		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off iTCO_wdt.heartbeat=180 quiet" \
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on

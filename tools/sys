@@ -105,7 +105,7 @@ save_config() (
 	echo 'Saved: applies now and at every login.'
 )
 
-areas=
+areas= names='|'
 for module in "$dir"/[0-9][0-9]-*; do
 	[ -f "$module" ] || continue
 	area=${module##*/}; area=${area#*-}
@@ -116,7 +116,8 @@ for module in "$dir"/[0-9][0-9]-*; do
 	case $alias in *[!a-z]*) die "invalid alias: $area" ;; esac
 	# Names and aliases are one namespace.
 	for n in $area $alias; do
-		printf '%s' "$areas" | awk -F '	' -v n="$n" '$1 == n || $3 == n { f = 1 } END { exit !f }' && die "name used twice: $n"
+		case $names in *"|$n|"*) die "name used twice: $n" ;; esac
+		names="$names$n|"
 	done
 	areas="${areas}${area}${tab}${title}${tab}${alias}
 "
