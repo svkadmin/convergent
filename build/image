@@ -60,6 +60,9 @@ aliases=host
 printf '127.0.0.1\tlocalhost %s\n::1\tlocalhost\n' "$aliases" >"$root/etc/hosts"
 find "$root/usr/share/keymaps" -name "$keymap.map*" | grep -q . || die "console_keymap $keymap is not an installed keymap"
 printf 'keymap="%s"\n' "$keymap" >"$root/etc/conf.d/keymaps"
+# The kernel picks a 16x32 font on high-resolution panels; the greeter runs on tty1.
+[ -f "$root/usr/share/consolefonts/ter-v24n.psf.gz" ] || die "missing console font ter-v24n"
+printf 'consolefont="ter-v24n"\n' >"$root/etc/conf.d/consolefont"
 printf '%s\n' "$cap" >"$root/usr/lib/convergent/cpu-cap-khz"
 rm -f "$root/usr/lib/convergent/state-max-gib"
 # Host-only updates still carry the browser rename profiles.
@@ -258,7 +261,7 @@ printf '\nAuditBackend=LinuxAudit\n' >>"$root/etc/usbguard/usbguard-daemon.conf"
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"
 rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
-for s in boot/keymaps boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
+for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
 	default/cronie default/acpid default/dbus default/bluetooth default/seatd default/node_exporter default/lxcfs default/incus \
 	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net default/convergent-swap; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
