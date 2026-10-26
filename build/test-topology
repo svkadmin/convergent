@@ -1,0 +1,113 @@
+#!/bin/sh
+# W1 pair journal replay model: production recovery, simulated Incus/SSH boundaries.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' 0
+trap 'exit 1' HUP INT TERM
+state=$scratch/state work=$scratch/work
+mkdir -p "$state" "$work"
+lib=$repo/rootfs/usr/lib/convergent/incus
+. "$lib/fw-topology"
+sh "$here/networks" registry "$scratch/new"
+old_registry=$lib/segments
+new_registry=$scratch/new/etc/convergent/segments
+log=$scratch/events
+running() { [ "$(cat "$scratch/$1.status")" = running ]; }
+stopped() { ! running "$1"; }
+locked() { "$@"; }
+retry() { "$@"; }
+healthy() { running "$1"; }
+start_guest() { seed_start "$1"; }
+seed_remove() { echo "unseed $1" >>"$log"; }
+image_alias() { echo "alias $1 $2" >>"$log"; }
+fail() { echo "$*" >&2; return 1; }
+sh() {
+    if [ "$1" = "$lib/work-gate" ]; then echo 'gate closed' >>"$log"
+    else command sh "$@"; fi
+}
+ic() {
+    case $1:$2 in
+    config:set) echo "hold $3" >>"$log"; touch "$scratch/$3.held" ;;
+    stop:*) echo "stop $2" >>"$log"; echo stopped >"$scratch/$2.status" ;;
+    *) echo "unexpected ic $*" >&2; return 1 ;;
+    esac
+}
+rebuild_root() {
+    stopped fw1 && stopped fw2
+    [ -f "$scratch/fw1.held" ] && [ -f "$scratch/fw2.held" ]
+    echo "rebuild $1 $2" >>"$log"
+    [ "${fault:-}" != "$1" ] || return 1
+    printf '%s\n' "$2" >"$scratch/$1.image"
+}
+seed_start() {
+    # No boot, including after a replay, may expose different generations.
+    cmp "$scratch/fw1.image" "$scratch/fw2.image"
+    echo "boot $1" >>"$log"
+    echo running >"$scratch/$1.status"
+}
+rsh() {
+    running "$1"
+    case $(cat "$scratch/$1.image") in old) registry=$old_registry ;; new) registry=$new_registry ;; *) return 1 ;; esac
+    case $1 in fw1) role=MASTER ;; fw2) role=BACKUP ;; esac
+    awk -v role="$role" '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: " role " carpdev " $3 " vhid " $2}' "$registry"
+}
+pair() {
+    rsh fw1 ifconfig >"$work/live1"
+    rsh fw2 ifconfig >"$work/live2"
+    awk -v want=MASTER -f "$lib/carp.awk" "$new_registry" "$work/live1" >/dev/null &&
+        awk -v want=BACKUP -f "$lib/carp.awk" "$new_registry" "$work/live2" >/dev/null
+}
+topology_restore_config() { echo "restore-config $1" >>"$log"; }
+topology_autostart() {
+    running fw1 && running fw2
+    cmp "$scratch/fw1.image" "$scratch/fw2.image"
+    echo 'release holds' >>"$log"
+    rm "$scratch/fw1.held" "$scratch/fw2.held"
+}
+journal() {
+    mkdir -p "$state/fw.topology"
+    cp "$old_registry" "$state/fw.topology/segments.old"
+    for f in fw1 fw2; do
+        echo old >"$state/fw.topology/$f.old"
+        echo new >"$state/fw.topology/$f.new"
+        touch "$scratch/$f.held"
+        echo stopped >"$scratch/$f.status"
+    done
+    : >"$log"
+}
+for phase in before-rebuild one-new both-new first-boot both-booted rollback-interrupted committed; do
+    journal
+    echo old >"$scratch/fw1.image"; echo old >"$scratch/fw2.image"
+    case $phase in
+    one-new) echo new >"$scratch/fw1.image" ;;
+    both-new|first-boot|both-booted|rollback-interrupted|committed)
+        echo new >"$scratch/fw1.image"; echo new >"$scratch/fw2.image" ;;
+    esac
+    case $phase in first-boot|both-booted|committed) echo running >"$scratch/fw1.status" ;; esac
+    case $phase in both-booted|committed) echo running >"$scratch/fw2.status" ;; esac
+    fault=
+    if [ "$phase" = rollback-interrupted ]; then
+        fault=fw2
+        if topology_recover; then echo 'accepted failed rollback' >&2; exit 1; fi
+        [ -d "$state/fw.topology" ]
+        stopped fw1 && stopped fw2
+        [ -f "$scratch/fw1.held" ] && [ -f "$scratch/fw2.held" ]
+        fault=
+        : >"$log"
+    fi
+    if [ "$phase" = committed ]; then touch "$state/fw.topology/committed"; fi
+    topology_recover
+    [ ! -e "$state/fw.topology" ]
+    if [ "$phase" = committed ]; then
+        [ "$(cat "$scratch/fw1.image")" = new ]
+        ! grep -q '^rebuild ' "$log"
+    else
+        [ "$(cat "$scratch/fw1.image")" = old ]
+        awk '/^rebuild / {n++} /^boot / {if(n!=2) bad=1} END {exit bad || n!=2}' "$log"
+    fi
+    running fw1 && running fw2
+    [ ! -e "$scratch/fw1.held" ] && [ ! -e "$scratch/fw2.held" ]
+done
+echo 'test-topology: rollback/replay and commit fixtures passed'

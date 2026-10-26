@@ -26,10 +26,7 @@ done
 templates="
 	/etc/pf.conf /etc/rc.d/wan_watch /etc/ntpd.conf /etc/syslog.conf /etc/sysctl.conf
 	/etc/rc.conf.local /etc/mygate /etc/resolv.conf /etc/ssh/sshd_config
-	/etc/hostname.vio0 /etc/hostname.vio1 /etc/hostname.vio2 /etc/hostname.vio3
-	/etc/hostname.vio4 /etc/hostname.vio5 /etc/hostname.vio6
-	/etc/hostname.carp0 /etc/hostname.carp1 /etc/hostname.carp2 /etc/hostname.carp3
-	/etc/hostname.carp4 /etc/hostname.carp5 /etc/hostname.pfsync0
+	/etc/hostname.* /etc/dhcpd.conf /etc/convergent/dhcpd.flags
 	/var/unbound/etc/unbound.conf /var/unbound/etc/local-names.conf
 "
 for f in $templates; do
@@ -64,7 +61,7 @@ chmod 700 /root/.ssh
 ln -sf /etc/convergent/seeded/management.pub /root/.ssh/authorized_keys
 ln -sf /etc/convergent/seeded/syslog-ca.crt /etc/ssl/convergent-ca.pem
 ln -s /etc/convergent/seeded/seed-id /var/db/convergent-seeded
-rcctl disable unbound wan_watch sshd
+rcctl disable unbound wan_watch sshd dhcpd
 rcctl set syslogd flags ''
 
 # pkg_add verifies packages from the build host.
@@ -89,6 +86,7 @@ rm -f /etc/ssh/ssh_host_*
 unbound-anchor -a /var/unbound/db/root.key || [ -s /var/unbound/db/root.key ] || die "no DNSSEC root anchor"
 chown _unbound /var/unbound/db/root.key
 unbound-checkconf /var/unbound/etc/unbound.conf >/dev/null || die "unbound-checkconf failed"
+dhcpd -n -c /etc/dhcpd.conf || die "dhcpd.conf does not parse"
 sh -n /usr/local/libexec/convergent/fw-facts || die "fw-facts does not parse"
 sh -n /usr/local/libexec/convergent/wan-watch || die "wan-watch does not parse"
 sh -n /etc/rc.d/wan_watch || die "wan_watch does not parse"

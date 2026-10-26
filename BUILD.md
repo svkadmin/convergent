@@ -229,3 +229,21 @@ directory is not `$g`). It reads upstream fixes and names what to rebuild (`host
 `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the release.
 Gentoo packages come from its signed build-host inventory. Exit 1: something to rebuild (UNKNOWN
 lines may appear too). Exit 2: only UNKNOWN; a source was not read.
+
+### Work topology qualification
+
+Use the same `CONVERGENT_CONFIG` for host, fw, wan and svc builds.
+`build/networks` emits the registry, topology hash, work NIC profiles, DHCP/DNS
+and packet policy into staging trees; fw and wan publish the topology hash in
+SHA256SUMS. The host build requires VLAN and bridge nftables kernel support.
+
+Run `sh build/test --networks` and `sh build/test-topology` for offline
+schema/rendering, CARP corruption and pair journal replay fixtures. On the rig,
+run `build/test --guests`, `--guests-maint` and `--guests-update`: the PF
+matrix checks all work VLANs, synchronized DHCP pools/options, both CARP masters,
+family isolation, internet and configured home access; update tests inject
+failures after each replacement and check both-root rollback ordering.
+Repeat the home-LAN matrix with an empty list and with 10.0.2.0/24 (the rig LAN).
+Also qualify a real 0.1.3→0.1.4 pair migration and power loss at each journal
+boundary; verify tagged/native/stacked traffic, IP/ARP/CARP spoofing and IPv6
+with VLAN offload both enabled and disabled on the laptop.

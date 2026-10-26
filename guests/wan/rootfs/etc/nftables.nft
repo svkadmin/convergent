@@ -14,6 +14,8 @@ define fw_addrs    = { 100.80.0.1, 100.80.0.2, 100.80.0.3 }
 define private     = { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }
 
 table inet wan {
+	set work_nets { type ipv4_addr; flags interval; elements = { @WORK_NETS@ }; }
+	set home_lan { type ipv4_addr; flags interval; auto-merge; elements = { @HOME_LAN@ }; }
 	# Portal DNS destination map; empty means off.
 	map portal_dns {
 		type ipv4_addr : ipv4_addr
@@ -48,6 +50,7 @@ table inet wan {
 		iifname $transit ct status dnat ip daddr != @portal_ns drop
 		iifname $upstream oifname $transit ct state established,related accept
 		iifname $transit oifname $upstream ip saddr $internal ip daddr != $internal ip daddr != $private accept
+		iifname $transit oifname $upstream ip saddr @work_nets ip daddr @home_lan accept
 		iifname $transit oifname $upstream ip saddr @portal_src ip daddr $private accept
 	}
 

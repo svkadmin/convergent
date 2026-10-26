@@ -11,19 +11,8 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 	echo "convergent_fw_facts_timestamp_seconds $(date +%s)"
 
 	# CARP: 2 master, 1 backup, 0 init.
-	ifconfig | awk '
-		/^[a-z]+[0-9]+: / { ifn = $1; sub(/:$/, "", ifn) }
-		/^[ \t]+carp: / && ifn ~ /^carp/ {
-			s = ($2 == "MASTER") ? 2 : (($2 == "BACKUP") ? 1 : 0)
-			v = d = a = ""
-			for (i = 3; i < NF; i++) {
-				if ($i == "vhid") v = $(i + 1)
-				if ($i == "carpdev") d = $(i + 1)
-				if ($i == "advskew") a = $(i + 1)
-			}
-			printf "convergent_carp_state{interface=\"%s\",carpdev=\"%s\",vhid=\"%s\"} %d\n", ifn, d, v, s
-			printf "convergent_carp_advskew{interface=\"%s\"} %d\n", ifn, a
-		}'
+	echo "convergent_carp_expected $(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)"
+	ifconfig | awk -v mode=metrics -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments -
 	echo "convergent_carp_preempt $(sysctl -n net.inet.carp.preempt)"
 	if rcctl check wan_watch >/dev/null 2>&1; then up=1; else up=0; fi
 	echo "convergent_wan_watch_up $up"

@@ -68,6 +68,7 @@ cp -R "${plugin_json%/plugin.json}/." "$plugin/"
 [ -s "$plugin/MANIFEST.txt" ] || die "plugin signature manifest missing"
 
 cp -R "$here/rootfs/." "$root/"
+sh "$here/../../build/networks" svc "$root"
 chmod 755 "$root/etc/init.d/"* "$root/usr/local/sbin/"*
 chroot "$root" /bin/sh -eu <<'SETUP'
 for account in vmmetrics vmlogs vmalert vmauth grafana; do

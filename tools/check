@@ -49,9 +49,8 @@ if [ "${1:-}:$#" = status:1 ]; then
                     else echo "portal unknown"; fi'
             fi
             if carp=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" "$cmd" 9>&- 8>&- 2>/dev/null); then
-                # All six carp interfaces must agree; anything mixed is degraded.
-                printf '%s\n' "$carp" | awk '/carp: / {n++; if ($2 == "MASTER") m++; else if ($2 == "BACKUP") b++}
-                    END {print n == 6 && m == 6 ? "master" : n == 6 && b == 6 ? "backup" : n ? "degraded" : "down"}' >"$status/.$node"
+                # All registered CARP interfaces must agree.
+                printf '%s\n' "$carp" | awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >"$status/.$node" || echo degraded >"$status/.$node"
                 printf '%s\n' "$carp" | awk '$1 == "portal" {print $2}' >"$status/.portal-$node"
             else echo down >"$status/.$node"; fi
         ) &
@@ -127,7 +126,7 @@ if [ "${1:-}:$#" = status:1 ]; then
             previous=$(cat "$status/firewall-master" 2>/dev/null) || previous=
             case $previous in fw1|fw2)
                 [ "$previous" = "$master" ] ||
-                    logger -t sys-firewall "observed takeover: $previous -> $master (all six segments)" 2>/dev/null || : ;;
+                    logger -t sys-firewall "observed takeover: $previous -> $master (all registered segments)" 2>/dev/null || : ;;
             esac
             printf '%s\n' "$master" >"$status/firewall-master"
         fi
@@ -149,6 +148,7 @@ if [ "${1:-}" = auto ]; then (
     flock -n 7 || exit 0
     . /usr/lib/convergent/incus/firewall-heal
     firewall_heal >"$state/.firewall-heal" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$state/.firewall-heal"
+    sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$state/.firewall-heal"
     mv "$state/.firewall-heal" "$state/firewall-heal" || die 'cannot publish self-heal report'
     if [ -f "$state/last" ]; then
         sed '/^SELF-HEAL /d' "$state/last" >"$state/.last"
@@ -380,13 +380,9 @@ for node in fw1 fw2; do
     rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed; recovery: sys firewall rebuild $node"
     rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
-awk '/^carp[0-9]+:/ {iface=$1} /carp: / {n++; if ($2 == "MASTER") m++; else if ($2 != "BACKUP") bad=1
-    for (i=3;i<NF;i++) if ($i == "vhid") {key=iface ":" $(i+1); count[key]++; if ($2 == "MASTER") masters[key]++}}
-    END {for (key in count) {pairs++; if (count[key] != 2 || masters[key] != 1) bad=1}
-    exit !(n == 12 && m == 6 && pairs == 6 && !bad)}' "$work/fw1" "$work/fw2" || bad 'CARP interfaces/VHIDs lack exactly one master each'
-for node in fw1 fw2; do
-    awk '/carp: / {if (!s) s=$2; if (s != $2) bad=1; n++} END {exit !(n == 6 && !bad)}' "$work/$node" || bad "$node has mixed or incomplete CARP state"
-done
+role1=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw1") || bad 'fw1 CARP membership or state invalid'
+role2=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw2") || bad 'fw2 CARP membership or state invalid'
+case $role1:$role2 in master:backup|backup:master) ;; *) bad 'CARP pair lacks coherent complementary roles' ;; esac
 
 if [ "$ok" = 1 ] && [ "$baseline" = "$work/accepted" ]; then
     rm -rf "$state/previous" && { [ ! -e "$state/accepted" ] || mv "$state/accepted" "$state/previous"; } &&

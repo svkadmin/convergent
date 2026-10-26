@@ -34,7 +34,11 @@ ssh-keygen -lf "$seed/management.pub" >/dev/null
 openssl x509 -in "$seed/syslog-ca.crt" -noout >/dev/null
 for file in seed-id management.pub syslog-ca.crt; do install -m 600 "$seed/$file" "$stage/$file"; done
 [ ! -f "$seed/demote" ] || touch "$stage/demote"
-for file in /etc/convergent/carp/hostname.carp*; do
+interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)
+set -- /etc/convergent/carp/hostname.carp*
+[ "$#" = "$(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)" ]
+for iface in $interfaces; do
+    file=/etc/convergent/carp/hostname.$iface
     {
         echo 'group upgrade'
         [ "${file##*/}" != hostname.carp0 ] || echo '!test ! -f /etc/convergent/seeded/demote || ifconfig -g upgrade carpdemote 128'
@@ -45,13 +49,14 @@ for file in /etc/convergent/carp/hostname.carp*; do
     if grep -q '@' "$stage/${file##*/}"; then exit 1; fi
 done
 set -- "$stage"/hostname.carp*
-[ "$#" = 6 ]
-rcctl enable unbound wan_watch sshd
+[ "$#" = "$(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)" ]
+rcctl enable unbound wan_watch sshd dhcpd
+rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
 rcctl set syslogd flags -h -C /etc/ssl/convergent-ca.pem
 sync
 mv "$stage" /etc/convergent/seeded
 sync
-sh /etc/netstart carp0 carp1 carp2 carp3 carp4 carp5
+sh /etc/netstart $interfaces
 rcctl restart syslogd
-rcctl start unbound wan_watch sshd
+rcctl start unbound wan_watch sshd dhcpd
 announce

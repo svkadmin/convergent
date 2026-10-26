@@ -101,6 +101,8 @@ grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's d
 
 # Overlay and fill placeholders; set checkout-independent modes below.
 tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner -cf - . | tar -C "$target" -xf -
+sh "$here/../../build/networks" wan "$target"
+cp "$target/etc/convergent/topology.sha256" "$out/"
 sed -i "s|@ROOT_UUID@|$uuid|g; s|@WAN_COUNTRY@|$WAN_COUNTRY|g" "$target/boot/grub/grub.cfg" "$target/etc/fstab"
 if grep -rIl '@[A-Z_][A-Z_]*@' "$target/boot/grub" "$target/etc/fstab" "$target/etc/wan" \
 	"$target/etc/ssh" "$target/etc/network" "$target/etc/syslog-ng/syslog-ng.conf"; then
@@ -187,5 +189,5 @@ tar -C "$work/meta" -cJf "$out/wan-metadata.tar.xz" metadata.yaml
 	echo "metadata_sha256=$(sha256sum "$out/wan-metadata.tar.xz" | awk '{ print $1 }')"
 	sed 's/^/package=/' "$work/packages"
 } > "$out/wan.manifest"
-(cd "$out" && sha256sum wan.qcow2 wan-metadata.tar.xz wan.manifest >SHA256SUMS)
+(cd "$out" && sha256sum wan.qcow2 wan-metadata.tar.xz wan.manifest topology.sha256 >SHA256SUMS)
 echo "build: wrote $out"

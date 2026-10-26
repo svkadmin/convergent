@@ -1,0 +1,148 @@
+#!/bin/sh
+# Sourced by guests: a topology change is one durable, coordinated Design C rebuild.
+topology_hold() {
+    for node in fw1 fw2; do
+        ic config set "$node" boot.autostart=false boot.autorestart=false || return
+    done
+    for node in fw1 fw2; do
+        if running "$node"; then locked ic stop "$node" --force || return; fi
+        stopped "$node" || return
+    done
+}
+topology_autostart() {
+    for node in fw1 fw2; do
+        ic config unset "$node" user.convergent.autorestart || return
+        for key in boot.autostart boot.autorestart; do
+            value=$(jq -r --arg k "$key" '.config[$k] // "unset"' "$state/fw.topology/$node.json") || return
+            if [ "$value" = unset ]; then ic config unset "$node" "$key" || return
+            else ic config set "$node" "$key=$value" || return; fi
+        done
+    done
+}
+topology_finish() {
+    for node in fw1 fw2; do
+        running "$node" || start_guest "$node" || return
+        retry healthy "$node" || return
+        image_alias "$node" "$(cat "$state/fw.topology/$node.new")" || return
+    done
+    retry pair fw1 fw2 || return
+    topology_autostart || return
+    printf '%s firewall topology committed\n' "$(date -u +%FT%TZ)" >>"$state/updates" || return
+    rm -rf "$state/fw.topology" && sync
+}
+topology_restore_config() {
+    jq '.config["boot.autostart"]="false" | .config["boot.autorestart"]="false"' \
+        "$state/fw.topology/$1.json" >"$work/restore.json" || return
+    ic config edit "$1" <"$work/restore.json"
+}
+topology_recover() {
+    [ -d "$state/fw.topology" ] || return 0
+    if [ -f "$state/fw.topology/committed" ]; then topology_finish; return; fi
+    step=topology-rollback
+    sh "$lib/work-gate" close || return
+    topology_hold || return
+    # Rebuild both old roots before either is allowed to boot.
+    for node in fw1 fw2; do
+        seed_remove "$node" || return
+        old=$(cat "$state/fw.topology/$node.old") || return
+        rebuild_root "$node" "$old" || return
+        image_alias "$node" "$old" || return
+    done
+    for node in fw1 fw2; do
+        topology_restore_config "$node" || return
+    done
+    for node in fw1 fw2; do seed_start "$node" || return; done
+    for node in fw1 fw2; do
+        case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+        retry topology_old_role "$node" "$want" || return
+    done
+    topology_autostart || return
+    printf '%s firewall topology rolled back (both roots)\n' "$(date -u +%FT%TZ)" >>"$state/updates" || return
+    rm -rf "$state/fw.topology" && sync
+}
+topology_old_role() {
+    rsh "$1" ifconfig >"$work/carp" || return
+    awk -v want="$2" -f "$lib/carp.awk" "$state/fw.topology/segments.old" "$work/carp" >/dev/null
+}
+work_network() {
+    ic network list --format json >"$work/networks" || return
+    if ! jq -e 'any(.[]; .name == "work")' "$work/networks" >/dev/null; then
+        ic network create work --type bridge ipv4.address=none ipv6.address=none \
+            ipv4.dhcp=false ipv6.dhcp=false ipv4.nat=false ipv6.nat=false \
+            ipv4.routing=false ipv6.routing=false ipv4.firewall=false ipv6.firewall=false \
+            dns.mode=none raw.dnsmasq=port=0 || return
+    fi
+    [ "$(cat /sys/class/net/work/bridge/vlan_filtering)" = 1 ] || { fail 'work bridge lacks VLAN filtering'; return 1; }
+    [ -z "$(ip -o addr show dev work)" ] || { fail 'work bridge must have no host address'; return 1; }
+}
+work_trunks() {
+    work_network || return
+    for node in fw1 fw2; do
+        ic query "/1.0/instances/$node" >"$work/instance" || return
+        if jq -e '.devices.eth7' "$work/instance" >/dev/null; then
+            ic config device remove "$node" eth7 || return
+        fi
+        ic config device add "$node" eth7 nic network=work vlan=none vlan.tagged=320,330,360,370 \
+            host_name="${node}work" security.mac_filtering=false security.port_isolation=false || return
+    done
+}
+work_profiles() {
+    ic project list --format json >"$work/projects" || return
+    if ! jq -e 'any(.[]; .name == "owner")' "$work/projects" >/dev/null; then
+        ic project create owner -c features.networks=false -c features.profiles=true || return
+    fi
+    incus --force-local project set owner features.networks=false 9>&- 8>&- 7>&- 6>&- || return
+    for file in "$lib"/work/*.yaml; do
+        name=${file##*/}; name=${name%.yaml}
+        incus --force-local --project owner profile list --format json 9>&- 8>&- 7>&- 6>&- >"$work/profiles" || return
+        if ! jq -e --arg n "$name" 'any(.[]; .name == $n)' "$work/profiles" >/dev/null; then
+            incus --force-local --project owner profile create "$name" 9>&- 8>&- 7>&- 6>&- || return
+        fi
+        incus --force-local --project owner profile edit "$name" <"$file" 9>&- 8>&- 7>&- 6>&- || return
+    done
+}
+topology_update() {
+    step=topology-prepare
+    cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'firewall topology differs from booted host'
+    mkdir "$work/topology"
+    for node in fw1 fw2; do
+        import_only=1
+        import_image "$node"
+        import_only=
+        printf '%s\n' "$fingerprint" >"$work/topology/$node.new"
+        old=$(ic config get "$node" volatile.base_image)
+        [ -n "$old" ] && ic query "/1.0/images/$old" >/dev/null || die "$node rollback image is missing"
+        printf '%s\n' "$old" >"$work/topology/$node.old"
+        ic query "/1.0/instances/$node" >"$work/instance"
+        jq -e '{architecture,config,devices,profiles,description,ephemeral}' "$work/instance" >"$work/topology/$node.json"
+        ic query "/1.0/instances/$node/snapshots?recursion=1" | \
+            jq -e 'all(.[]; .name | split("/")[-1] | startswith("guests-"))' >/dev/null || die "$node has owner snapshots"
+        rsh "$node" 'if test -f /etc/convergent/segments; then cat /etc/convergent/segments; fi' >"$work/segments.$node"
+        [ -s "$work/segments.$node" ] || cp "$lib/segments" "$work/segments.$node"
+        rsh "$node" ifconfig >"$work/carp"
+        case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+        awk -v want="$want" -f "$lib/carp.awk" "$work/segments.$node" "$work/carp" >/dev/null || die 'old pair membership is unhealthy'
+    done
+    cmp "$work/segments.fw1" "$work/segments.fw2" || die 'old pair has mixed topology'
+    cp "$work/segments.fw1" "$work/topology/segments.old"
+    sync
+    mv "$work/topology" "$state/fw.topology"
+    sync
+    sh "$lib/work-gate" close
+    topology_hold
+    work_trunks
+    for node in fw1 fw2; do
+        seed_remove "$node"
+        rebuild_root "$node" "$(cat "$state/fw.topology/$node.new")"
+    done
+    touch "$state/dns.stale"
+    sync
+    for node in fw1 fw2; do seed_start "$node"; done
+    for node in fw1 fw2; do fw_check "$node" release; done
+    retry pair fw1 fw2
+    soak fw1 fw2
+    touch "$state/fw.topology/committed"
+    sync
+    topology_finish
+    work_profiles
+}

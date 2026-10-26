@@ -27,8 +27,24 @@ table bridge host-l2
 delete table bridge host-l2
 
 table bridge host-l2 {
+	chain work_gate { drop; }
+	set work_infra { type ipv4_addr; elements = { @WORK_INFRA@ }; }
 	chain forward {
 		type filter hook forward priority filter; policy accept;
+		ibrname "work" iifname != { "fw1work", "fw2work" } jump work_gate
+		obrname "work" oifname != { "fw1work", "fw2work" } jump work_gate
 		ether type ip6 drop
+		ether type vlan vlan type ip6 drop
+		ether type 8021ad drop
+		ibrname "work" ether type vlan vlan type vlan drop
+		ibrname "work" ether type vlan vlan type 8021ad drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ip saddr @work_infra drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } arp saddr ip @work_infra drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ip protocol 112 drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } udp sport 67 drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip ip saddr @work_infra drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type arp arp saddr ip @work_infra drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip ip protocol 112 drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip udp sport 67 drop
 	}
 }

@@ -47,6 +47,7 @@ rm -rf "$root"
 cp -a "$staging" "$root"
 # Owned by root whatever the checkout's owner; modes kept.
 cp -R --preserve=mode,timestamps,links "$repo/rootfs/." "$root/"
+sh "$here/networks" host "$root"
 # A git archive is group-writable throughout: cronie skips cron.d files, and /etc became 0775.
 (cd "$repo/rootfs" && find . ! -type l ! -perm -1000 -perm /022 -print0) | (cd "$root" && xargs -0r chmod go-w)
 ! find "$root/etc" "$root/usr/local" ! -type l ! -perm -1000 -perm /022 | grep . || die 'group- or world-writable files in the image (above)'
@@ -119,7 +120,9 @@ for m in "$root"/lib/modules/*; do [ "${m##*/}" = "$kver" ] || rm -rf "$m"; done
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
 # The kernel as actually built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
-for want in CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y CONFIG_SWAP=y CONFIG_ZRAM=y \
+for want in CONFIG_VLAN_8021Q=y CONFIG_BRIDGE=y CONFIG_BRIDGE_VLAN_FILTERING=y \
+	CONFIG_NF_TABLES=y CONFIG_NF_TABLES_BRIDGE=y CONFIG_NFT_BRIDGE_META=y \
+	CONFIG_DM_INIT=y CONFIG_DM_VERITY=y CONFIG_EROFS_FS=y CONFIG_MODULE_SIG_FORCE=y CONFIG_SWAP=y CONFIG_ZRAM=y \
 	CONFIG_BLK_DEV_NVME=y CONFIG_NVME_CORE=y CONFIG_VMD=y CONFIG_USB=y CONFIG_USB_PCI=y \
 	CONFIG_USB_XHCI_HCD=y CONFIG_USB_XHCI_PCI=y CONFIG_USB_STORAGE=y CONFIG_USB_UAS=y \
 	CONFIG_SCSI=y CONFIG_BLK_DEV_SD=y \

@@ -335,8 +335,8 @@ sudo dns-push local    # push the stored blocklist with the current files
 and guests, PF state counts, Unbound status, and the last successful DNS push to both. Unreachable
 guests and pending DNS recovery are shown explicitly.
 
-`sys fw maintenance` checks the six-segment MASTER/BACKUP pair, PF, pfsync with defer, Unbound and a
-local DNS answer before it asks to demote the master. It verifies that the peer owns all six
+`sys fw maintenance` checks the registry-defined MASTER/BACKUP pair, PF, pfsync with defer, Unbound and a
+local DNS answer before it asks to demote the master. It verifies that the peer owns all registered
 segments. A failed handover is undone; an interrupted action keeps its recovery information.
 
 After maintenance, run `sys fw undo`. Both firewalls must be healthy; normal fw1-master / fw2-backup
@@ -349,7 +349,7 @@ recreates the file. Reboot firewalls still using the old symlink lock before usi
 
 `sys firewall rebuild fw1|fw2` (root command: `guests rebuild fw1|fw2`) recreates a broken firewall
 from the installed guest release and laptop seed. The peer must be healthy. Rebuild stops the target
-if needed, then waits for the peer to be MASTER on all six segments. Finish guest updates and
+if needed, then waits for the peer to be MASTER on all registered segments. Finish guest updates and
 handoffs first. Maintenance may name the target; run `sys fw undo` after rebuilding it. Rebuild
 waits for guest checks and DNS pushes; browsers may stay open. It checks the replacement, restores
 fw1 MASTER / fw2 BACKUP, and pushes stored DNS data. After an interruption, repeat the same command
@@ -543,3 +543,21 @@ after the first v10 boot. Otherwise those jobs run twice.
   report unsupported, and other power controls keep working. `sys power status` shows the actual
   thresholds, thermal profile and available choices. The resource review and unimplemented tuning
   proposals are in ARCHITECTURE section 11.
+
+### Work VMs
+
+Build all images with the same `work_dev_*`, `work_jhn_*` and
+`home_lan_prefixes` settings from `config.example.yaml`. Choose a NIC-only
+`work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn-a` or `work-dom-jhn-b`
+profile in the owner project (names follow the configured family names).
+Provide the VM's root disk and other resources separately. The owner project
+shares managed networks, while keeping its own profiles.
+
+Use DHCP, or assign .1–.48 with a /26 mask and gateway/DNS .62. Incus NIC
+settings alone do not configure an arbitrary guest OS. Members of one family
+can communicate across its two VLANs; the two families cannot communicate.
+Internet access is allowed; home-LAN access is closed until explicit canonical
+RFC1918 prefixes are baked into the release. System segments remain closed.
+
+Topology updates briefly stop both firewalls. A failed update restores both
+old images; work access remains closed while topology hashes differ.
