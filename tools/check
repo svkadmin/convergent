@@ -143,6 +143,10 @@ case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|
 net_ok=1
 [ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
+# W2: run before the daily scan throttle; cleanup takes the int session lock.
+if [ "${1:-}" = auto ]; then
+    /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
+fi
 if [ "${1:-}" = auto ]; then (
     exec 7>/run/convergent/firewall-heal.lock
     flock -n 7 || exit 0
@@ -179,6 +183,10 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
+# W2: the management endpoint must never widen or replace the metrics listener.
+[ "$(incus --force-local config get core.https_address)" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
+[ "$(incus --force-local config get core.metrics_address)" = 100.80.1.10:8444 ] || bad 'Incus metrics listener differs'
+/usr/local/sbin/incus-ui --audit 9>&- 8>&- 7>&- || bad 'Incus trust differs from metrics and unlocked int session'
 [ ! -f "$state/firewall-heal" ] || cat "$state/firewall-heal" >>"$work/report"
 [ "$net_ok" = 1 ] || bad 'host network repair failed (default route or sysctls)'
 

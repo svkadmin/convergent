@@ -13,8 +13,12 @@ role=$(cat /run/browser-role)
 case $role in def|tmp|int) ;; *) die "invalid role" ;; esac
 case $role in
     int)
-        [ "$#" = 0 ] || die "int accepts no URL arguments"
-        set -- http://100.80.2.10:3000/ ;;
+        [ "$#" -le 1 ] || die "int accepts one URL"
+        case ${1:-http://100.80.2.10:3000/} in
+            http://100.80.2.10:3000/|https://100.80.1.10:8443/ui/) ;;
+            *) die "int only opens Grafana or Incus" ;;
+        esac
+        [ "$#" != 0 ] || set -- http://100.80.2.10:3000/ ;;
     *)
         for url do
             case $url in http://*|https://*) ;; *) die "expected HTTP(S) URL" ;; esac

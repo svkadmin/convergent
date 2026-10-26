@@ -179,6 +179,14 @@ fact_certs() {
 	case $e in notAfter=?*) e=${e#notAfter=} ;; *) bad "no expiry in $cert"; return ;; esac
 	s=$(date -d "$e" +%s 2>/dev/null) || s=
 	if [ -n "$s" ]; then m "cv_certificate_not_after_seconds{certificate=\"incus-server\"} $s"; else bad "cannot read the certificate $cert"; fi
+	# W2: the encrypted UI credential is optional and rotates through owner authentication.
+	ui=/var/lib/convergent/guests/tls/incus-ui/client.crt
+	if [ -f "$ui" ]; then
+		e=$(openssl x509 -noout -enddate -in "$ui" 2>/dev/null) || { bad 'cannot read Incus UI certificate'; return; }
+		case $e in notAfter=?*) e=${e#notAfter=} ;; *) bad 'no expiry in Incus UI certificate'; return ;; esac
+		s=$(date -d "$e" +%s 2>/dev/null) || { bad 'cannot read Incus UI expiry'; return; }
+		m "cv_certificate_not_after_seconds{certificate=\"incus-ui\"} $s"
+	fi
 }
 
 # Audit records the kernel dropped this boot (queue full): any is an alert.

@@ -247,3 +247,26 @@ Repeat the home-LAN matrix with an empty list and with 10.0.2.0/24 (the rig LAN)
 Also qualify a real 0.1.3→0.1.4 pair migration and power loss at each journal
 boundary; verify tagged/native/stacked traffic, IP/ARP/CARP spoofing and IPv6
 with VLAN offload both enabled and disabled on the laptop.
+
+### Incus UI (W2)
+
+The overlay pins Zabbly's prebuilt `incus-ui-canonical_7.5.1-debian12-202610211642_amd64.deb`;
+the LTS index was inaccessible during implementation, so a matching 7.0.1 artifact could not
+be confirmed. The exact URL is in the ebuild and Manifest placeholder. On the build host,
+authenticate Zabbly's InRelease and Packages SHA256, then generate the Portage Manifest's size,
+BLAKE2B and SHA512 with `ebuild <ebuild-path> manifest`. Keep a verified distfile mirror. The
+placeholder is a release blocker: do not bypass digest checks. Only `/opt/incus/ui` is installed
+into `/usr/share/incus-ui`; no Debian maintainer scripts, Node or Yarn run.
+
+Rebuild host, browser (nss-tools) and wan (fixed management-endpoint diagnostic) images. Run `build/test --guests`,
+`--guests-maint` and `--guests-update`. Delimited W2 sections run the 8443 PF matrix and
+`build/test-incus-ui`: server verification, absent/wrong/revoked client identities, wrong/cancelled
+unlock, NSS permissions, repeated sessions, close/orphan/reboot cleanup and interrupted rotation.
+The audit tests require native lifecycle/request delivery (without global daemon debug) and reject
+query/command leakage. The builder checks syslog-ng syntax; the rig must verify its wire format
+and forwarding/buffering through a svc outage before release.
+The PF matrix probes the actual agentless WAN VM through its fixed SSH diagnostic, plus a
+separate transit source. Qualify offline assets, Chromium certificate selection, console/WebSockets,
+all projects, network/profile/storage management and VM device editing against Incus 7.0.1.
+Also verify a pre-existing disallowed 8443 connection is cut by reloading host nftables, Sway
+session/terminal death, and revocation during a live console. These require the rig or laptop.

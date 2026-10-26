@@ -1,0 +1,138 @@
+#!/bin/sh
+# W2: run only on build/test's throwaway host, with int stopped and no owner UI credential.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+ic() { incus --force-local --project default "$@" 8>&-; }
+tls=/var/lib/convergent/guests/tls
+state=$tls/incus-ui
+run=/run/convergent/incus-ui
+[ ! -e "$state" ] && [ ! -e "$state.previous" ] && [ ! -e "$state.next" ]
+work=$(mktemp -d /run/convergent/ui-test.XXXXXX)
+created=
+cleanup() {
+    r=$?
+    trap - 0
+    trap '' HUP INT TERM
+    set +e
+    ic profile delete w2-audit-native >/dev/null 2>&1 || :
+    /usr/local/sbin/incus-ui --close 8>&- || r=1
+    if [ "$(ic query /1.0/instances/int/state | jq -r .status)" != Stopped ]; then ic stop int --force || r=1; fi
+    if [ -n "$created" ]; then
+        ic delete int --force || r=1
+    elif [ -s "$work/int.yaml" ]; then
+        ic config edit int <"$work/int.yaml" || r=1
+    fi
+    rm -rf -- "$state" "$state.previous" "$state.next" "$work"
+    echo "CV-INCUS-UI-RESULT $r"
+    exit "$r"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+exec 8>/run/convergent/browser/int.lock
+flock -n 8
+if ic query '/1.0/instances?recursion=1&project=default' | jq -e 'any(.[]; .name == "int")' >/dev/null; then
+    [ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+    ic config show int >"$work/int.yaml"
+else
+    ic init candidate-browser int -p browser-base -p browser-int -c security.protection.delete=false
+    created=1
+fi
+for dev in render wayland pipewire; do
+    if ic query /1.0/instances/int | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
+        ic config device remove int "$dev"
+    fi
+done
+ic config device add int render none
+for dev in wayland pipewire; do ic config device override int "$dev" required=false; done
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+    -keyout "$work/key" -out "$work/request" -subj /CN=ui-test
+printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' >"$work/extensions"
+openssl x509 -req -in "$work/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
+    -set_serial "0x$(openssl rand -hex 16)" -days 1 -extfile "$work/extensions" -out "$work/client.crt"
+mkdir -m 700 "$state"
+cp "$work/client.crt" "$state/client.crt"
+printf 'fixture passphrase\n' >"$work/password"
+openssl pkcs12 -export -inkey "$work/key" -in "$work/client.crt" -name browser-int-ui \
+    -passout "file:$work/password" -out "$state/client.p12"
+# Replace only the interactive prompt in a test copy; the installed command has no password bypass.
+sed "s|prompt 'Incus UI passphrase: '|cp '$work/password' \"\$scratch/password\"|" \
+    /usr/local/sbin/incus-ui >"$work/helper"
+printf 'wrong passphrase\n' >"$work/password"
+if sh "$work/helper" --unlock; then exit 1; fi
+[ ! -e "$run" ]
+if setsid -w /usr/local/sbin/incus-ui --unlock </dev/null; then exit 1; fi
+[ ! -e "$run" ]
+printf 'fixture passphrase\n' >"$work/password"
+sh "$work/helper" --unlock
+start_int() {
+    ic start int
+    timeout 60 sh -c 'until incus --force-local exec int -- test -f /run/browser-ready; do sleep 1; done' 8>&-
+    pid=$(ic query /1.0/instances/int/state | jq -er .pid)
+}
+api() {
+    nsenter -t "$pid" -n curl -qsS --noproxy '*' --connect-timeout 3 --max-time 10 \
+        --cacert "$tls/ca.crt" -o "$work/reply" -w '%{http_code}' "$@" https://100.80.1.10:8443/1.0/instances
+}
+start_int
+ic exec int -- sh -eu -c '
+    test "$(stat -c %d:%i /home/browser/.pki/nssdb)" = "$(stat -c %d:%i /home/browser/.local/share/pki/nssdb)"
+    test "$(stat -f -c %T /run/incus-ui)" = tmpfs
+    test "$(stat -c %u:%a /run/incus-ui/nssdb)" = 1000:700
+'
+/usr/local/sbin/incus-ui --import 8>&-
+[ ! -e "$run/import.p12" ]
+ic exec int -- test ! -e /run/incus-ui/import.p12
+ic exec int --user 1000 --group 1000 -- certutil -K -d sql:/home/browser/.pki/nssdb -f /dev/null | grep -q browser-int-ui
+ic config trust list --format json | jq -e 'any(.[]; .name == "browser-int-ui" and .type == "client" and .restricted == false and (.projects | length) == 0)'
+[ "$(api)" = 403 ]
+[ "$(api --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
+[ "$(api --cert "$work/client.crt" --key "$work/key")" = 200 ]
+# W2 audit: fixtures catch secret leakage; native events catch wire-format and log-level drift.
+logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"lifecycle","metadata":{"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}}'
+logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"logging","metadata":{"message":"Handling API request","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}}'
+ic profile create w2-audit-native
+ic profile delete w2-audit-native
+sleep 2
+grep 'incus-audit.*w2-audit-fixture' /var/log/messages | grep -q w2-owner
+grep 'incus-audit.*w2-audit-request' /var/log/messages | grep -q w2-owner
+grep 'incus-audit.*profile-created' /var/log/messages | grep -q w2-audit-native
+fp=$(openssl x509 -in "$work/client.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr A-F a-f)
+grep 'incus-audit.*"event":"request"' /var/log/messages | grep -q "$fp"
+if grep 'incus-audit' /var/log/messages | grep -q W2_AUDIT_SECRET; then exit 1; fi
+# Native UI and API use the same validated server identity, with no Internet exception.
+nsenter -t "$pid" -n curl -qfsS --noproxy '*' --max-time 10 --cacert "$tls/ca.crt" \
+    https://100.80.1.10:8443/ui/ >"$work/index"
+grep -qi '<html' "$work/index"
+/usr/local/sbin/incus-ui cleanup 8>&-
+[ -d "$run" ]
+ic config trust remove "$fp"
+[ "$(api --cert "$work/client.crt" --key "$work/key")" = 403 ]
+ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
+/usr/local/sbin/incus-ui --close 8>&-
+[ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+[ ! -e "$run" ]
+ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
+start_int
+if ic exec int --user 1000 --group 1000 -- certutil -K -d sql:/home/browser/.pki/nssdb -f /dev/null 2>&1 | grep -q browser-int-ui; then exit 1; fi
+ic stop int --force
+# A second session must unlock again; then emulate launcher death by releasing its lock.
+if /usr/local/sbin/incus-ui --import 8>&-; then exit 1; fi
+sh "$work/helper" --unlock
+start_int
+/usr/local/sbin/incus-ui --import 8>&-
+exec 8>&-
+/usr/local/sbin/incus-ui cleanup
+[ "$(ic query /1.0/instances/int/state | jq -r .status)" = Stopped ]
+[ ! -e "$run" ]
+ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
+# Simulate a reboot (no /run journal) and an interrupted credential-directory rotation.
+ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
+mv "$state" "$state.previous"
+mkdir "$state.next"
+cp "$work/client.crt" "$state.next/client.crt"
+/usr/local/sbin/incus-ui --reconcile
+cmp "$state/client.crt" "$work/client.crt"
+[ ! -e "$state.previous" ] && [ ! -e "$state.next" ]
+ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'

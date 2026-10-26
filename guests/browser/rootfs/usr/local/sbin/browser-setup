@@ -23,7 +23,7 @@ case $role in
     int) address=100.80.4.10; prefix=28; gateway=100.80.4.1; resolver=$gateway ;;
     *) die "BROWSER_ROLE must be def, tmp or int" ;;
 esac
-rm -f /run/browser-ready /run/browser-portal
+rm -f /run/browser-ready /run/browser-portal /run/incus-ui-ready
 mode=normal
 if [ "${BROWSER_PORTAL:-0}" = 1 ]; then
     mode=portal
@@ -48,5 +48,26 @@ for path in /home/browser/profile /home/browser/Downloads "$downloads"; do
         chown 1000:1000 "$path"
     fi
 done
+# W2: mask both persistent Chromium NSS locations for every int session.
+if [ "$role" = int ]; then
+    for path in /home/browser/.pki /home/browser/.pki/nssdb /home/browser/.local \
+        /home/browser/.local/share /home/browser/.local/share/pki /home/browser/.local/share/pki/nssdb; do
+        [ ! -L "$path" ] && { [ ! -e "$path" ] || [ -d "$path" ]; } || die "invalid NSS directory: $path"
+        mkdir -p "$path"
+        chown 1000:1000 "$path"
+        chmod 700 "$path"
+    done
+    mkdir -p /run/incus-ui
+    mount -t tmpfs -o size=16m,mode=0700,nosuid,nodev,noexec tmpfs /run/incus-ui
+    chown 1000:1000 /run/incus-ui
+    mkdir -m 700 /run/incus-ui/nssdb
+    chown 1000:1000 /run/incus-ui/nssdb
+    certutil -N -d sql:/run/incus-ui/nssdb --empty-password
+    chown 1000:1000 /run/incus-ui/nssdb/*
+    chmod 600 /run/incus-ui/nssdb/*
+    mount -o bind /run/incus-ui/nssdb /home/browser/.pki/nssdb
+    mount -o bind /run/incus-ui/nssdb /home/browser/.local/share/pki/nssdb
+    touch /run/incus-ui-ready
+fi
 printf '%s\n' "$role" >/run/browser-role
 touch /run/browser-ready

@@ -201,7 +201,7 @@ fails, a line at the top gives the reason. Full output: `$XDG_RUNTIME_DIR/browse
 | def | everyday browsing | profile and downloads kept in a 4 GiB volume |
 | tmp | anything untrusted; several at once | container deleted on close; history, cookies and cache cleared |
 | tmp --portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; owns portal mode |
-| int | Grafana only (`http://100.80.2.10:3000/`) | profile kept in a 512 MiB volume |
+| int | Grafana; Incus after a session unlock | profile kept in a 512 MiB volume; UI key lives only in session memory |
 
 A second def or int start raises the open window. Portal mode refuses one; normal tmp runs many at
 once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no
@@ -211,6 +211,20 @@ browser starts Grafana in svc and stops it on close. Log in as `owner`; password
 programs to `tmp` is not built.
 
 Network addresses and portal isolation: [ARCHITECTURE 3.5](ARCHITECTURE.md#35-browsers).
+
+### Incus management
+
+With int closed, run `sudo incus-ui setup` once and choose a strong passphrase. Open **Incus
+management** from the desktop or `sys browser incus` (`incus-ui open` in a host terminal).
+Each session prompts again, then opens `https://100.80.1.10:8443/ui/` in Browser_internal.
+This certificate manages everything, including the host's infrastructure. Close the entire int
+browser session to lock it; closing only the Incus tab is insufficient. A plain `browser int`
+opens Grafana without the administration key. Keep the launcher terminal open for the session.
+
+With int closed, `sudo incus-ui rotate` replaces the 90-day credential and asks for a new
+passphrase. `sudo incus-ui revoke` immediately stops an unlocked int session and removes its
+trust and stored bundle; setup is then required again. Certificate administration uses normal
+sudo authentication; only the fixed session launcher is passwordless.
 
 ## Wi-Fi
 

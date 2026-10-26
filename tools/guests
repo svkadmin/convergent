@@ -306,6 +306,13 @@ certificates_prepare() {
     jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
 }
+# W2: native events are projected to safe fields by the loopback syslog input.
+incus_ui_config() {
+    ic config set core.https_address=100.80.1.10:8443 \
+        logging.convergent.target.type=syslog logging.convergent.target.address=udp://127.0.0.1:1514 \
+        logging.convergent.target.facility=local0 logging.convergent.types=lifecycle,logging \
+        logging.convergent.logging.level=debug
+}
 certificates_apply() (
     certificates_due || return 0
     certificates_prepare
@@ -1135,6 +1142,7 @@ init() {
     ic config trust list --format json | jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
     ic config set core.metrics_address=100.80.1.10:8444
+    incus_ui_config
     ic config set core.metrics_authentication=true
     profile svc "$release/guests/svc/incus.yaml"
     image_dir=$release/guests/browser
@@ -1386,6 +1394,9 @@ apply() {
     update_status running
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
+    # W2: reconcile even when no guest images or certificates are due.
+    /usr/local/sbin/incus-ui --reconcile 9>&- 8>&- 7>&- 6>&-
+    incus_ui_config
     booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
     staged=/var/lib/convergent/guest-updates

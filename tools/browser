@@ -1,6 +1,6 @@
 #!/bin/sh
 # ARCHITECTURE 3.5, 4.1, 4.2, 9, 10, 12; install root:root 0755 as /usr/local/sbin/browser.
-# Narrow sudo is smaller than a certificate/project setup; grants no general Incus access.
+# Narrow sudo validates fixed browser sessions; Incus administration also requires a passphrase.
 set -eu
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH LC_ALL=C
@@ -32,8 +32,14 @@ if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=1; shift; fi
 [ -z "$portal_mode" ] || [ $# = 1 ] || set -- http://neverssl.com/
 for url do case $url in http://?*|https://?*) ;; *) die 'URL must be HTTP(S)' ;; esac; done
 case $role in
-    int) [ $# = 0 ] || [ "$1" = http://100.80.2.10:3000/ ] || die 'int only opens Grafana'; set -- ;;
+    int)
+        case ${1:-http://100.80.2.10:3000/} in
+            http://100.80.2.10:3000/|https://100.80.1.10:8443/ui/) ;;
+            *) die 'int only opens Grafana or Incus' ;;
+        esac ;;
 esac
+incus_ui=
+[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || incus_ui=1
 uid=$SUDO_UID
 gid=$(id -g "$uid")
 runtime=/run/user/$uid
@@ -131,6 +137,9 @@ cleanup() {
     if [ -n "$active" ]; then
         stop_container || result=1
     fi
+    if [ "$role" = int ]; then
+        /usr/local/sbin/incus-ui --close 9>&- 8>&- 7>&- 6>&- || result=1
+    fi
     if [ -n "$grafana" ]; then
         if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory=350MiB || result=1; else result=1; fi
     fi
@@ -153,6 +162,17 @@ cleanup() {
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
+
+if [ "$role" = int ]; then
+    /usr/local/sbin/incus-ui --close 9>&- 8>&- 7>&- 6>&-
+    if [ -n "$incus_ui" ]; then
+        instances=$(instances_json)
+        if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
+            die 'stop int before unlocking an Incus session'
+        fi
+        /usr/local/sbin/incus-ui --unlock 9>&- 8>&- 7>&- 6>&-
+    fi
+fi
 
 # The privileged half touches only fixed, root-owned paths.
 rm -rf -- "$run"
@@ -243,6 +263,9 @@ until ic exec "$name" -- test -f /run/browser-ready; do
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
 done
+if [ -n "$incus_ui" ]; then
+    /usr/local/sbin/incus-ui --import 9>&- 8>&- 7>&- 6>&-
+fi
 if [ "$role" = int ]; then
     ic config set svc limits.memory=768MiB
     grafana=1; ic exec svc -- rc-service grafana start
