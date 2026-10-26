@@ -19,11 +19,12 @@ trap 'exit 1' HUP INT TERM
 alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
 root=$mini/target
 alpine_prepare
-alpine_apk --initdb add $(cat "$here/packages")
+packages=$(cat "$here/packages")
+alpine_apk --initdb add $packages
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die 'not Alpine 3.24' ;; esac
 # Rebuild the pinned Alpine executable with the Secret-Service-only policy; retain its matching plugins.
 alpine_apk add --virtual .remmina-build build-base cmake samurai patch gettext-dev \
-    avahi-ui-dev curl-dev freerdp-dev fuse3-dev gnutls-dev gtk+3.0-dev json-glib-dev \
+    avahi-ui-dev curl-dev freerdp freerdp-dev fuse3-dev gnutls-dev gtk+3.0-dev json-glib-dev \
     libayatana-appindicator-dev libgcrypt-dev libjpeg-turbo-dev libsecret-dev libsodium-dev \
     libssh-dev libvncserver-dev libxkbfile-dev openssl-dev pcre2-dev python3-dev vte3-dev zlib-dev
 curl -fsSL --proto '=https' --proto-redir '=https' \
