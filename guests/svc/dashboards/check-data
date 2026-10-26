@@ -80,27 +80,36 @@ while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
     expr=$(printf '%s' "$expr" | base64 -d)
     endpoint=query; [ "$kind" != stats ] || endpoint=stats_query
     read -r status <&3 || status=1
+    : >"$work/result"
     if { [ "$status" != 0 ] || [ ! -f "$work/l$logs" ]; } &&
-        ! curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
+        ! curl -qsS --fail-with-body --output "$work/result" --noproxy '*' --max-time 10 -G --data-urlencode "query=$expr" \
         --data-urlencode start=1h --data-urlencode end=now --data-urlencode limit=1 \
-        "$base/select/logsql/$endpoint" >"$work/result"; then
+        "$base/select/logsql/$endpoint"; then
         echo "dashboards: LogsQL error: $dashboard / $panel: $expr"
+        cat "$work/result"
         fail=1
     fi
 done <"$work/logs" 3<"$work/status"
 # Exercise forged identities without storing test events.
+# Use one documented union rows({...}) pipe per event (VictoriaLogs >= 1.49.0).
 nodes='{"100.80.1.10":"host","100.80.2.2":"fw1","100.80.2.3":"fw2","100.80.0.10":"wan"}'
 rows=$(jq -nr --argjson nodes "$nodes" '[($nodes | keys[], "100.80.3.10") as $ip |
     {remote_ip:$ip, hostname:"fw1", app_name:"kernel", _msg:"carp0: BACKUP -> MASTER", _stream:"{hostname=\"fw1\"}"},
     {remote_ip:$ip, hostname:"host", app_name:"sudo", _msg:"COMMAND=/bin/true", _stream:"{hostname=\"host\"}"}]
-    | map(tojson) | join(",")')
+    | map(tojson) | join(") | union rows(")')
 for page in network-path security; do
     expected=2; [ "$page" != security ] || expected=6
     expr=$(jq -r '.panels[] | select(.type == "logs") | .targets[].expr' "$dir/$page.json")
-    if ! curl -qfsS --noproxy '*' --max-time 10 -G \
+    : >"$work/identity"
+    if ! curl -qsS --fail-with-body --output "$work/identity" --noproxy '*' --max-time 10 -G \
         --data-urlencode "query=NOT * | union rows($rows) | filter $expr" \
-        --data-urlencode limit=20 "$base/select/logsql/query" >"$work/identity" ||
-        ! jq -se --argjson nodes "$nodes" --argjson expected "$expected" '
+        --data-urlencode limit=20 "$base/select/logsql/query"; then
+        echo "dashboards: LogsQL error: log identity: $page"
+        cat "$work/identity"
+        fail=1
+        continue
+    fi
+    if ! jq -se --argjson nodes "$nodes" --argjson expected "$expected" '
             length == $expected and all(.[];
                 $nodes[.remote_ip] as $node | .hostname == $node and
                 (._stream | contains("hostname=\"" + $node + "\"")))' "$work/identity" >/dev/null; then
