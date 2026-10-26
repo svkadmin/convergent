@@ -629,15 +629,15 @@ init_done() { touch "$state/init/$1" && sync; }
 parallel_autostart() {
     ic profile list --format json >"$work/profiles"
     jq -r '.[] | select(.name == "fw" or .name == "wan" or .name == "svc") |
-        select(.config["boot.autostart.priority"] != null or .config["boot.autostart.delay"] != null) | .name' "$work/profiles" >"$work/autostart"
-    while read -r p; do
-        ic profile unset "$p" boot.autostart.priority boot.autostart.delay
+        .name as $n | .config | keys[] | select(. == "boot.autostart.priority" or . == "boot.autostart.delay") | "\($n) \(.)"' "$work/profiles" >"$work/autostart"
+    while read -r p key; do
+        ic profile unset "$p" "$key" || return
     done <"$work/autostart"
     ic query '/1.0/instances?recursion=1&project=default' >"$work/instances"
     jq -r '.[] | select(.name == "fw1" or .name == "fw2" or .name == "wan" or .name == "svc") |
-        select(.config["boot.autostart.priority"] != null or .config["boot.autostart.delay"] != null) | .name' "$work/instances" >"$work/autostart"
-    while read -r node; do
-        ic config unset "$node" boot.autostart.priority boot.autostart.delay
+        .name as $n | .config | keys[] | select(. == "boot.autostart.priority" or . == "boot.autostart.delay") | "\($n) \(.)"' "$work/instances" >"$work/autostart"
+    while read -r node key; do
+        ic config unset "$node" "$key" || return
     done <"$work/autostart"
 }
 volume_create() {
