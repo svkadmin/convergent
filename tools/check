@@ -35,7 +35,7 @@ if [ "${1:-}:$#" = status:1 ]; then
                 [any(.[]; .name == "wan"), any(.[]; .name == "fw1"),
                  any(.[]; .name == "fw2"), any(.[]; .name == "svc"),
                  ([.[] | select(.type == "container") | select(.name |
-                    test("^(def|int|tmp-(portal|[0-9]+))$"))] | length)] | @tsv' \
+                    test("^(def|int|tmp-(portal|[0-9]+))$"))] | length), any(.[]; .name == "remmina")] | @tsv' \
                 >"$status/.running" || rm -f "$status/.running"
         else rm -f "$status/.running"; fi
     ) &
@@ -113,7 +113,7 @@ if [ "${1:-}:$#" = status:1 ]; then
         "$status/.portal-fw1" "$status/.portal-fw2" "$status/.portal-wan" >"$status/.portal"
     # A failed inventory must age out, rather than publish false down states.
     if [ -s "$status/.running" ]; then
-        read -r wan fw1 fw2 svc browsers <"$status/.running"
+        read -r wan fw1 fw2 svc browsers remote <"$status/.running"
         if [ "$wan" = true ]; then
             read -r wan uplink <"$status/.wan"
         else wan=down uplink=-; fi
@@ -131,7 +131,8 @@ if [ "${1:-}:$#" = status:1 ]; then
             printf '%s\n' "$master" >"$status/firewall-master"
         fi
         if [ "$svc" = true ]; then svc=up; else svc=down; fi
-        printf 'uplink=%s wan=%s fw1=%s fw2=%s svc=%s browsers=%s\n' "$uplink" "$wan" "$fw1" "$fw2" "$svc" "$browsers" >"$status/.topology"
+        if [ "$remote" = true ]; then remote=on; else remote=off; fi
+        printf 'uplink=%s wan=%s fw1=%s fw2=%s svc=%s browsers=%s remote=%s\n' "$uplink" "$wan" "$fw1" "$fw2" "$svc" "$browsers" "$remote" >"$status/.topology"
         chmod 644 "$status/.topology" && mv "$status/.topology" "$status/topology" || exit 1
     fi
     chmod 644 "$status/.wifi" "$status/.portal" "$status/.guestmem" &&
@@ -140,6 +141,11 @@ if [ "${1:-}:$#" = status:1 ]; then
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
+# W3 Remmina: a killed supervisor must not leave an unlocked orphan running.
+if [ "${1:-}" = auto ]; then
+    timeout -k 1 30 /usr/local/sbin/remote reap || logger -t remote 'orphan cleanup deferred or failed'
+fi
+# End W3 Remmina.
 net_ok=1
 [ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'

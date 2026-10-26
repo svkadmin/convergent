@@ -99,6 +99,7 @@ autorestart_clear() (
 volumes() {
     case $1 in
     svc) echo 'svc-metrics svc-logs svc-grafana' ;;
+    remmina) echo remmina-state ;;
     def|int|web|admin) echo "browser-$1-state" ;; # old pending journals
     esac
 }
@@ -159,7 +160,7 @@ rollback() {
         done
         cp "$state/known_hosts.before" "$keys/known_hosts" || return
         case $guest in
-        def|int|web|admin) ;;
+        def|int|web|admin|remmina) ;;
         *)
             if [ -n "$image" ]; then
                 seed_start "$guest" || return
@@ -659,6 +660,17 @@ parallel_autostart() {
         ic config unset "$node" "$key" || return
     done <"$work/autostart"
 }
+# W3 Remmina volumes: the owner may resize share independently of image updates.
+remmina_volumes() {
+    volume_create remmina-state 512MiB
+    if ic storage volume list default --format json | jq -e 'any(.[]; .name == "share" and .type == "custom")' >/dev/null; then
+        ic query /1.0/storage-pools/default/volumes/custom/share |
+            jq -e '.content_type == "filesystem" and .config["security.shifted"] == "true"' >/dev/null || die 'share must be a shifted filesystem volume'
+    else
+        ic storage volume create default share --type filesystem size=4GiB security.shifted=true
+    fi
+}
+# End W3 Remmina volumes.
 volume_create() {
     if ic storage volume list default --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null; then
         ic query "/1.0/storage-pools/default/volumes/custom/$1" |
@@ -960,6 +972,10 @@ rebuild_root() {
         [ ! -d "$state/iwd.wan" ] || cp -a "$state/iwd.wan/." "$work/root/var/lib/iwd/" || return
         unmount_root || return
         ;;
+    remmina)
+        ic file pull "$1/usr/local/bin/remmina-launch" "$work/remmina-launch" || return
+        sh -n "$work/remmina-launch" 9>&- 8>&- 7>&- 6>&- || return
+        ;;
     def|int)
         ic file pull "$1/usr/local/bin/browser-launch" "$work/browser-launch" || return
         sh -n "$work/browser-launch" 9>&- 8>&- 7>&- 6>&- || return
@@ -972,7 +988,7 @@ replace_root() {
     case $guest in fw1|fw2) touch "$state/dns.stale"; sync ;; esac
     rebuild_root "$guest" "candidate-$guest"
     case $guest in
-    def|int) ;;
+    def|int|remmina) ;;
     *)
         seed_start "$guest"
         # Nothing comes over from the old firewall; the host pushes DNS data afterwards.
@@ -997,7 +1013,7 @@ commit_update() {
     sync && mv "$work/updates" "$state/updates" && sync || return
     # A replay after a power loss finds the proven guest stopped: it belongs running.
     while read -r guest snap image; do
-        case $guest in def|int|web|admin) ;; *) running "$guest" || start_guest "$guest" || return; retry healthy "$guest" || return ;; esac
+        case $guest in def|int|web|admin|remmina) ;; *) running "$guest" || start_guest "$guest" || return; retry healthy "$guest" || return ;; esac
     done <"$work/committed"
     rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
@@ -1094,7 +1110,7 @@ init() {
     retry ic query /1.0 >/dev/null
     autorestart_clear
     release=$(cd "$1" && pwd)
-    for kind in fw wan svc browser; do
+    for kind in fw wan svc browser remmina; do
         image_dir=$release/guests/$kind
         verify_image "$kind"
     done
@@ -1153,6 +1169,10 @@ init() {
     volume_create svc-grafana 512MiB
     volume_create browser-def-state 4GiB
     volume_create browser-int-state 512MiB
+    remmina_volumes
+    profile remmina "$release/guests/remmina/incus.yaml"
+    image_dir=$release/guests/remmina
+    import_image remmina
     image_dir=$release/guests/browser
     import_image browser
     if [ -d "$state/browser.rename" ]; then
@@ -1207,7 +1227,7 @@ update() {
     logger -t guests "update $1 started: $2" 2>/dev/null || :
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
-    case $1 in fw|wan|svc|browser|def|int) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;; esac
+    case $1 in fw|wan|svc|browser|def|int|remmina) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;; esac
     # Recovery also changes browser objects; take the session lock before touching journals.
     recovering=
     exec 6>/run/convergent/browser-update.lock
@@ -1282,6 +1302,24 @@ ifconfig -g handoff carpdemote 128'
         commit_update
         fi
         ;;
+    # W3 Remmina: the shared volume deliberately never participates in app rollback.
+    remmina)
+        remmina_volumes
+        ic query '/1.0/instances?recursion=1&project=default' >"$work/remmina-instances"
+        if jq -e 'any(.[]; .name == "remmina")' "$work/remmina-instances" >/dev/null; then
+            jq -e '.[] | select(.name == "remmina") | .type == "container" and .profiles == ["remmina"] and .status == "Stopped"' "$work/remmina-instances" >/dev/null ||
+                die 'close Remmina before updating; its fixed profile is required'
+            profiles_save remmina
+            profile remmina "$image_dir/incus.yaml"
+            replace remmina
+            commit_update
+        else
+            profile remmina "$image_dir/incus.yaml"
+            import_image remmina
+        fi
+        rm -rf "$state/profiles.before"
+        ;;
+    # End W3 Remmina.
     wan|svc)
         if [ "$1" = wan ]; then
             cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'WAN topology differs from host'
@@ -1340,7 +1378,7 @@ ifconfig -g handoff carpdemote 128'
         recovering=
         exec 6>&-
         ;;
-    *) die 'update accepts fw (the pair), wan, svc, browser, def or int' ;;
+    *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;;
     esac
     parallel_autostart
     record_installed "$1" "$2"
@@ -1447,8 +1485,8 @@ apply() {
     [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     [ -z "$(find "$staged" -type l -print)" ] || die "$staged contains symlinks"
-    kinds='svc wan fw browser'
-    if [ -d "$state/browser.rename" ] || browser_legacy; then kinds='browser svc wan fw'; fi
+    kinds='svc wan fw browser remmina'
+    if [ -d "$state/browser.rename" ] || browser_legacy; then kinds='browser svc wan fw remmina'; fi
     for kind in $kinds; do
         [ -d "$staged/$kind" ] || continue
         echo "guests: applying $kind from release $booted"
@@ -1505,7 +1543,7 @@ work=$(mktemp -d "$state/work.XXXXXX")
 storage_check() {
     ic query '/1.0/instances?recursion=1&project=default' >"$work/instances"
     ic storage volume list default --format json >"$work/volumes"
-    jq -r --slurpfile v "$work/volumes" '.[] | select(.name | test("^(fw1|fw2|wan|svc|def|int)$")) |
+    jq -r --slurpfile v "$work/volumes" '.[] | select(.name | test("^(fw1|fw2|wan|svc|def|int|remmina)$")) |
         select(. as $i | any($v[0][]; .type == $i.type and .name == $i.name) | not) | "\(.name) \(.type)"' "$work/instances" >"$work/orphans"
     while read -r name type; do
         # Inside a rebuild, between dropping and recreating the root volume record (milliseconds).
@@ -1514,7 +1552,7 @@ storage_check() {
         image=$(awk -v g="$name" '$1 == g {print $3; exit}' "$state/pending" 2>/dev/null) || image=
         die "$name has no storage record (a rebuild cut by a power loss); put it back, rebuild, then recover: sudo incus admin sql global \"INSERT INTO storage_volumes (storage_pool_id, node_id, type, name, description, project_id, content_type, creation_date) VALUES ((SELECT id FROM storage_pools WHERE name = 'default'), (SELECT id FROM nodes), $codes, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))\"; sudo incus --force-local --project default rebuild ${image:-<image>} $name; sys guests update"
     done <"$work/orphans"
-    for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state; do
+    for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state; do
         # Inside a snapshot restore, between moving the volume aside and replacing it (under a second).
         tmp=$pool/custom/default_$volume.incustmp
         [ -e "$tmp" ] || continue

@@ -219,7 +219,7 @@ def exceptions(path):
         if not line.strip() or line.lstrip().startswith('#'):
             continue
         fields = line.split(None, 3)
-        require(len(fields) == 4 and fields[0] in ('host', 'wan', 'svc', 'browser', 'fw1', 'fw2'),
+        require(len(fields) == 4 and fields[0] in ('host', 'wan', 'svc', 'browser', 'remmina', 'fw1', 'fw2'),
                 f'invalid exception (target package advisory reason): {line}')
         key = tuple(fields[:3])
         require(key not in result and not any('*' in part for part in key), f'invalid/duplicate exception: {line}')
@@ -256,7 +256,7 @@ def firewall_version(guests):
 
 def targets(release, gate):
     if not gate:
-        return ['fw', 'wan', 'svc', 'browser']
+        return ['fw', 'wan', 'svc', 'browser', 'remmina']
     manifest = Path(release) / 'guests.manifest'
     if not manifest.exists():
         require(not (Path(release) / 'guests').exists(), 'guests without guests.manifest')
@@ -264,7 +264,7 @@ def targets(release, gate):
     text = manifest.read_text()
     selected = re.findall(r'^guest (\S+) [0-9a-f]{64}$', text, re.M)
     require(len(selected) == len(set(selected)) and
-            all(g in ('fw', 'wan', 'svc', 'browser') for g in selected), 'invalid guest list')
+            all(g in ('fw', 'wan', 'svc', 'browser', 'remmina') for g in selected), 'invalid guest list')
     # The inventory must be a payload publish verifies, not a local sidecar.
     payloads = set(re.findall(r'^[0-9a-f]{64}  (guests/\S+)$', text, re.M))
     require(set(p.split('/')[1] for p in payloads) == set(selected), 'guest payload/list mismatch')
@@ -272,7 +272,7 @@ def targets(release, gate):
         needed = {'fw': ['fw1.syspatch', 'fw2.syspatch', 'openbsd.version',
                          'fw1.qcow2.zst', 'fw2.qcow2.zst'],
                   'wan': ['wan.manifest', 'wan.qcow2.zst'],
-                  'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz']}[guest]
+                  'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz'], 'remmina': ['rootfs.tar.gz']}[guest]
         require(all(f'guests/{guest}/{name}' in payloads for name in needed),
                 f'{guest}: release lacks signed inventory/image; rebuild guest and run build/guests')
     return selected
@@ -301,7 +301,7 @@ def gate_selftest():
         payloads = {'fw': ['fw1.syspatch', 'fw2.syspatch', 'openbsd.version',
                            'fw1.qcow2.zst', 'fw2.qcow2.zst'],
                     'wan': ['wan.manifest', 'wan.qcow2.zst'],
-                    'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz']}
+                    'svc': ['rootfs.tar.gz'], 'browser': ['rootfs.tar.gz'], 'remmina': ['rootfs.tar.gz']}
         manifest = ''
         for guest, files in payloads.items():
             (guests / guest).mkdir(parents=True)
@@ -314,7 +314,7 @@ def gate_selftest():
         errata = 'OpenBSD 7.9 Errata <a href="/002_later.patch.sig">'
         (work / 'errata-7.9.html').write_text(errata)
         (guests / 'wan/wan.manifest').write_text('alpine=3.24\npackage=libssl3-3.5.1-r2 origin=openssl\n')
-        for guest in ('svc', 'browser'):
+        for guest in ('svc', 'browser', 'remmina'):
             with tarfile.open(guests / guest / 'rootfs.tar.gz', 'w:gz') as archive:
                 for name, text in [('etc/alpine-release', '3.24.2\n'),
                                    ('lib/apk/db/installed', 'P:libssl3\nV:3.5.1-r2\no:openssl\n')]:
@@ -341,12 +341,12 @@ def gate_selftest():
         require('main-v3.24.json' in sources(guests, targets(work, True)), 'release branch selection')
         secdb('3.5.1-r10')
         output = check(1)
-        require(all(f'{g}: libssl3 installed' in output for g in ('wan', 'svc', 'browser')), 'origin match')
+        require(all(f'{g}: libssl3 installed' in output for g in ('wan', 'svc', 'browser', 'remmina')), 'origin match')
         exempt.write_text(''.join(f'{g} openssl CVE-2099-0001 Unused affected feature.\n'
-                                 for g in ('wan', 'svc', 'browser')))
+                                 for g in ('wan', 'svc', 'browser', 'remmina')))
         check(1)  # The second advisory still blocks.
         exempt.write_text(exempt.read_text() + ''.join(
-            f'{g} openssl CVE-2099-0002 Unused affected feature.\n' for g in ('wan', 'svc', 'browser')))
+            f'{g} openssl CVE-2099-0002 Unused affected feature.\n' for g in ('wan', 'svc', 'browser', 'remmina')))
         require('EXCEPTED:' in check(0), 'exception audit output')
         secdb('invalid')
         check(2)  # Exceptions cannot waive a broken feed.

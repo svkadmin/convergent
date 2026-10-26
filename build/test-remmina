@@ -1,0 +1,91 @@
+#!/bin/sh
+# Throwaway build/test guest host only; never run on owner state.
+set -eu
+ic() { incus --force-local --project default "$@" 8>&-; }
+[ -d /var/lib/convergent/test-release ] || { echo 'test-remmina: requires disposable test host' >&2; exit 1; }
+mkdir -p /run/convergent/browser
+exec 8>/run/convergent/browser/remmina.lock
+flock -n 8 || exit 1
+mode=${1:-smoke}
+case $mode in smoke|update) ;; *) exit 1 ;; esac
+work=$(mktemp -d /var/tmp/test-remmina.XXXXXX)
+cleanup() {
+    rc=$?
+    trap - 0
+    ic stop remmina --force >/dev/null 2>&1 || :
+    rm -rf "$work"
+    echo "CV-REMOTE $mode result=$rc"
+    exit "$rc"
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+if ! ic query '/1.0/instances?recursion=1&project=default' | jq -e 'any(.[]; .name == "remmina")' >/dev/null; then
+    ic init candidate-remmina remmina -p remmina
+fi
+[ "$(ic config get remmina boot.autostart)" != true ]
+ic start remmina
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
+ic exec remmina -- sh -eu -c '
+    ! command -v chromium
+    ! test -e /dev/dri/renderD128
+    test ! -s /etc/resolv.conf
+    mountpoint -q /share
+    mountpoint -q /home/remmina
+    command -v cage
+    command -v remmina
+    command -v gnome-keyring-daemon
+    command -v secret-tool
+    command -v gdbus
+'
+ic exec remmina --user 1000 --group 1000 -- sh -eu -c '
+    printf "state\n" > /home/remmina/.cv-state
+    printf "share\n" >/share/.cv-share
+    mkdir -p /home/remmina/.cv-keyring
+'
+# A private test home exercises encrypted keyring persistence without owner credentials.
+keyring() {
+    ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina/.cv-keyring \
+        XDG_RUNTIME_DIR=/run/user/1000 dbus-run-session -- sh -eu -c '
+        printf cv-test-nonempty-password | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+        locked=$(gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login \
+            --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked)
+        test "$locked" = "(<false>,)"
+        gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets \
+            --method org.freedesktop.Secret.Service.SetAlias default /org/freedesktop/secrets/collection/login >/dev/null
+        if [ "$1" = store ]; then printf cv-test-secret | secret-tool store --label=CV-REMOTE test convergent; fi
+        test "$(secret-tool lookup test convergent)" = cv-test-secret
+        test "$(od -An -tx1 -N16 "$HOME/.local/share/keyrings/login.keyring" | tr -d " \n")" = 476e6f6d654b657972696e670a0d000a
+        ! grep -a -q cv-test-secret "$HOME/.local/share/keyrings/login.keyring"
+    ' sh "$1"
+}
+keyring store
+ic stop remmina --force
+ic start remmina
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
+keyring read
+ic stop remmina --force
+if [ "$mode" = update ]; then
+    source=/var/lib/convergent/test-release/guests/remmina
+    cp -a "$source" "$work/broken"
+    mkdir "$work/root"
+    tar -xzf "$work/broken/rootfs.tar.gz" -C "$work/root"
+    printf 'if\n' >"$work/root/usr/local/bin/remmina-launch"
+    tar --numeric-owner -czf "$work/broken/rootfs.tar.gz" -C "$work/root" .
+    sum=$(sha256sum "$work/broken/rootfs.tar.gz" | cut -d' ' -f1)
+    awk -v sum="$sum" '$2 == "rootfs.tar.gz" {$1=sum} {print}' "$work/broken/SHA256SUMS" >"$work/sums"
+    mv "$work/sums" "$work/broken/SHA256SUMS"
+    before=$(ic config get remmina volatile.base_image)
+    share_before=$(ic storage volume snapshot list default share --format csv -c n)
+    if /usr/local/sbin/guests update remmina "$work/broken" >"$work/update.log" 2>&1; then
+        cat "$work/update.log"; echo 'CV-REMOTE corrupt image accepted'; exit 1
+    fi
+    grep -q 'restoring remmina/' "$work/update.log"
+    test "$(ic config get remmina volatile.base_image)" = "$before"
+    test ! -e /var/lib/convergent/guests/pending
+    /usr/local/sbin/guests update remmina "$source"
+    test "$(ic storage volume snapshot list default share --format csv -c n)" = "$share_before"
+    ic start remmina
+    timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
+    keyring read
+    ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share /share/.cv-share'
+fi

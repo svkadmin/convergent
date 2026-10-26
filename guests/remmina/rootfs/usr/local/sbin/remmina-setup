@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+umask 077
+die() { echo "remmina-setup: $*" >&2; exit 1; }
+rm -f /run/remmina-ready
+for path in /home/remmina /share; do
+    [ -d "$path" ] && [ ! -L "$path" ] && mountpoint -q "$path" || die "missing volume: $path"
+done
+dbus-uuidgen --ensure=/etc/machine-id
+mkdir -p /run/user/1000
+chown 1000:1000 /run/user/1000 /home/remmina
+chmod 700 /run/user/1000 /home/remmina
+# Initialise new share ownership; preserve owner-managed permissions on subsequent starts.
+if [ "$(stat -c %u:%g /share)" = 0:0 ]; then chown 1000:1000 /share; chmod 700 /share; fi
+cat >/etc/network/interfaces <<'EOF'
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address 100.80.3.12/24
+    gateway 100.80.3.1
+EOF
+: >/etc/resolv.conf
+touch /run/remmina-ready

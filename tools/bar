@@ -251,7 +251,8 @@ while :; do
 		}
 		block(uplink "--" span("WAN",topo["wan"]) "--[" span("FW1",topo["fw1"]) " " span("FW2",topo["fw2"]) "]--" \
 			span(get("/proc/sys/kernel/hostname"),"up") "--" span("SVC",topo["svc"]) "--" \
-			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : ""), grey, "", 1)
+			span("BR:" browsers,browsers != "?" && browsers+0>0 ? "up" : "") " " \
+			span("RDP:" (fresh && topo["remote"] ~ /^(on|off)$/ ? topo["remote"] : "?"), fresh && topo["remote"] == "on" ? "up" : ""), grey, "", 1)
 		block("rel " rel " " bl,bl == "good" ? grey : red)
 		block(nl == "missing" ? "NL!" : "NL",nl == "missing" ? red : nl == "on" ? orange : grey,"nolock")
 		mic=cached("mic", "inputs")

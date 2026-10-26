@@ -42,14 +42,15 @@ for file in fw/fw1.qcow2 fw/fw2.qcow2 wan/wan.qcow2 wan/wan-metadata.tar.xz \
 	fw/fw1.pf.sha256 fw/fw2.pf.sha256 fw/fw1.rules.sha256 fw/fw2.rules.sha256 \
 	svc/metadata.tar.gz svc/rootfs.tar.gz svc/incus.yaml browser/metadata.tar.gz browser/rootfs.tar.gz \
 	browser/incus/base.yaml browser/incus/def.yaml browser/incus/tmp.yaml browser/incus/int.yaml \
-	fw/SHA256SUMS wan/SHA256SUMS svc/SHA256SUMS browser/SHA256SUMS; do
+	remmina/metadata.tar.gz remmina/rootfs.tar.gz remmina/incus.yaml \
+	fw/SHA256SUMS wan/SHA256SUMS svc/SHA256SUMS browser/SHA256SUMS remmina/SHA256SUMS; do
 	[ -s "$guests/$file" ] || die "missing guest artifact: $file"
 	case $file in */SHA256SUMS | */incus.yaml | */incus/*) continue ;; esac
 	kind=${file%%/*}
 	awk -v name="${file#*/}" '($2 == name || $2 == "*" name) && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {n++}
 		END {exit n != 1}' "$guests/$kind/SHA256SUMS" || die "missing or invalid checksum: $file"
 done
-for kind in fw wan svc browser; do
+for kind in fw wan svc browser remmina; do
 	(cd "$guests/$kind" && sha256sum -c SHA256SUMS) || die "guest checksum mismatch: $kind"
 done
 outdir=$(cd "$(dirname "$3")" && pwd -P) || die "no output directory"

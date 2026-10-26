@@ -1,0 +1,90 @@
+#!/bin/sh
+# Offline tests of the actual unlock script, with UI/Secret Service commands substituted.
+set -eu
+here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+mkdir "$work/bin"
+sed 's|exec /usr/bin/remmina|exec remmina-test-app|' \
+    "$here/../guests/remmina/rootfs/usr/local/bin/remmina-session" >"$work/session"
+cat >"$work/bin/zenity" <<'EOF'
+#!/bin/sh
+case $1 in --error) echo "$2" >&2; exit 0 ;; esac
+case $SAMPLE in
+cancel) exit 1 ;;
+empty) echo ;;
+mismatch) case $2 in *confirm*) echo different ;; *) echo correct ;; esac ;;
+wrong) echo wrong ;;
+*) echo correct ;;
+esac
+EOF
+cat >"$work/bin/gnome-keyring-daemon" <<'EOF'
+#!/bin/sh
+password=$(cat)
+[ "$password" = correct ] || exit 1
+printf 'GnomeKeyring\n\r\000\n' >"$HOME/.local/share/keyrings/login.keyring"
+EOF
+cat >"$work/bin/gdbus" <<'EOF'
+#!/bin/sh
+case $SAMPLE in unavailable) exit 1 ;; locked) echo '(<true>,)' ;; *) echo '(<false>,)' ;; esac
+EOF
+cat >"$work/bin/remmina-test-app" <<'EOF'
+#!/bin/sh
+touch "$HOME/started"
+EOF
+chmod +x "$work/bin/"*
+PATH="$work/bin:$PATH"
+export PATH
+for SAMPLE in cancel empty mismatch wrong unavailable locked plaintext success existing; do
+    HOME=$work/$SAMPLE
+    export HOME SAMPLE
+    mkdir -p "$HOME/.local/share/keyrings"
+    case $SAMPLE in
+    plaintext) printf '[keyring]\n' >"$HOME/.local/share/keyrings/login.keyring" ;;
+    existing) printf 'GnomeKeyring\n\r\000\n' >"$HOME/.local/share/keyrings/login.keyring" ;;
+    esac
+    rc=0
+    sh "$work/session" >"$work/log" 2>&1 || rc=$?
+    case $SAMPLE in
+    success|existing) [ "$rc" = 0 ] && [ -f "$HOME/started" ] ;;
+    *) [ "$rc" != 0 ] && [ ! -e "$HOME/started" ] ;;
+    esac || { cat "$work/log"; echo "CV-REMOTE unit FAIL $SAMPLE"; exit 1; }
+    echo "CV-REMOTE unit ok $SAMPLE"
+done
+# The manifest path validator must admit only the new flat artifact namespace.
+sed -n '/^guest_path() {/,/^}/p' "$here/../tools/fetch-release" >"$work/path"
+. "$work/path"
+for path in guests/remmina/rootfs.tar.gz guests/remmina/incus.yaml guests/remmina/SHA256SUMS; do guest_path "$path"; done
+for path in guests/remmina/../secret guests/remmina/.. guests/remmina/incus/extra.yaml guests/remminax/rootfs.tar.gz; do
+    if guest_path "$path"; then echo "CV-REMOTE unsafe path: $path"; exit 1; fi
+done
+echo 'CV-REMOTE unit paths ok'
+
+grep -qx 'rc_need="sysctl remmina-setup"' "$here/../guests/remmina/rootfs/etc/conf.d/networking"
+echo 'CV-REMOTE unit OpenRC dependency ok'
+
+if command -v jq >/dev/null 2>&1; then
+    for entry in 'remmina remmina none' 'def browser-base browser-def'; do
+        set -- $entry
+        role=$3
+        [ "$role" != none ] || role=
+        case $1 in remmina) profiles='["remmina"]' ;; *) profiles='["browser-base","browser-def"]' ;; esac
+        printf '[{"name":"%s","type":"container","profiles":%s}]\n' "$1" "$profiles" >"$work/instances"
+        jq -e --arg n "$1" --arg b "$2" --arg r "$role" \
+            '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' "$work/instances" >/dev/null
+        if jq -e --arg n "$1" --arg b default --arg r "$role" \
+            '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' "$work/instances" >/dev/null; then exit 1; fi
+    done
+    for state in Running Stopped; do
+        printf '[{"status":"%s","expanded_devices":{"disk":{"type":"disk","pool":"default","source":"share"}}}]\n' "$state" >"$work/instances"
+        rc=0
+        jq -e 'all(.[];
+            if any(.expanded_devices[]?; .type == "disk" and .pool == "default" and .source == "share")
+            then .status == "Stopped" else true end)' "$work/instances" >/dev/null || rc=$?
+        case $state in Running) [ "$rc" != 0 ] ;; Stopped) [ "$rc" = 0 ] ;; esac
+    done
+    echo 'CV-REMOTE unit jq profiles/share ok'
+else
+    echo 'CV-REMOTE unit SKIP jq (not installed)'
+fi

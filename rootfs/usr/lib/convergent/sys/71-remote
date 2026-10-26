@@ -1,0 +1,13 @@
+title=Remote
+actions='open	Open Remmina
+status	Show Remmina status	root
+close	Close Remmina	root'
+
+remote_state() { echo 'Numeric work destinations; private clipboard and keyring'; }
+remote_open() {
+    noargs "$@"
+    . /usr/lib/convergent/sys/70-browser
+    browser_start remmina
+}
+remote_status() { noargs "$@"; run /usr/local/sbin/remote status; }
+remote_close() { noargs "$@"; run /usr/local/sbin/remote close; }

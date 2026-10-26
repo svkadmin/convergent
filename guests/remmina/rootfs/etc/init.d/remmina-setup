@@ -1,0 +1,9 @@
+#!/sbin/openrc-run
+description="Prepare Remmina before networking"
+depend() {
+    need bootmisc sysctl
+    before networking
+}
+start() {
+    /usr/local/sbin/remmina-setup
+}

@@ -406,3 +406,22 @@ before opening int. Boot cleanup removes stale named UI trust even without a run
 interrupted rotation restores the previous complete directory if the new one was not installed.
 Check `/var/log/messages` for `incus-ui` events and the `incus-ui` certificate-expiry metric.
 The trusted local Unix-socket CLI remains available if the web interface is unusable.
+
+### Remmina
+
+Close with **sys remote close** before an update, backup or recovery. If a
+launcher was killed, the minute checker stops its orphan; sys remote close also stops it immediately. The next open removes
+stale runtime sockets. Never copy an unlocked keyring into a browser.
+
+`guests update remmina <image-dir>` uses the normal image rollback journal
+and snapshots remmina-state. Resume an interrupted operation with
+**sys guests update**. For a manual restore, stop Remmina and restore a retained
+guests-* snapshot of remmina-state; do not restore share with it.
+The shared volume may contain newer work from other VMs.
+
+A lost keyring password cannot be recovered. Preserve the old encrypted
+keyring offline, then move its directory out of
+remmina-state/.local/share/keyrings while stopped to create a new one on
+next open. Re-enter remote credentials; do not replace it with an unencrypted
+keyring. Unmount/detach or stop every VM using share before restoring or
+backing up that volume independently.

@@ -575,3 +575,36 @@ RFC1918 prefixes are baked into the release. System segments remain closed.
 
 Topology updates briefly stop both firewalls. A failed update restores both
 old images; work access remains closed while topology hashes differ.
+
+### Remote desktops
+
+Choose **Remote**, or run **sys remote open**, **sys remote status**, or
+**sys remote close**. Close stops the whole container and its unlocked keyring.
+The bar shows RDP:on/off/?; ? includes stale status. Enter a nonempty
+keyring password on every opening; first use asks twice. Cancellation or an
+incorrect password leaves Remmina closed. Connection profiles and encrypted
+credentials survive updates. No plaintext fallback is offered.
+
+Use numeric addresses in the four work networks: SSH (TCP 22), RDP (TCP/UDP
+3389), VNC (TCP 5900–5999) and ping. Firewall nodes and gateways are excluded.
+The clipboard works between Remmina and the remote session, inside Cage;
+host copy/paste is deliberately unavailable. Audio playback is allowed,
+recording is not.
+
+For RDP drive redirection select /share in the connection's shared-folder
+setting. In Incus UI, select the individual stopped VM, **Configuration →
+Devices → Add disk**: pool default, existing filesystem volume share,
+mount path /share (and io.bus=virtiofs where supported). Do not add it to
+every VM's profile. The owner project must use the default custom-volume
+namespace (features.storage.volumes=false; set it with normal administrative
+authority before attaching). Changing that project option affects its volume
+namespace: move any existing private volumes first.
+
+Linux guests need virtiofs support and a mount using the disk device's mount
+tag; Windows needs a compatible virtiofs driver/service, or use RDP drive
+redirection instead. Match access to guest UID/GID 1000 or grant appropriate
+ACLs; do not make the volume world-writable. Detach through the same VM device
+editor when finished. This is a filesystem share, never a block disk mounted
+by several guests. Stop attached instances before backup and avoid starting
+them while it runs. To resize, set share's storage volume size in the UI;
+4 GiB is only the creation default.

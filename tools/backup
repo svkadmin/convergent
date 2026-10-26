@@ -134,6 +134,14 @@ for project in default "$owner"; do
                 continue ;;
             *) die "unknown content type for $project/$pool/$volume: $content" ;;
             esac
+            # W3: shared storage is never exported while any attached instance can write.
+            if [ "$pool:$volume" = default:share ]; then
+                incus --force-local list --all-projects --fast --format json >"$work/share-users"
+                jq -e 'all(.[];
+                    if any(.expanded_devices[]?; .type == "disk" and .pool == "default" and .source == "share")
+                    then .status == "Stopped" else true end)' "$work/share-users" >/dev/null ||
+                    die 'stop every instance attached to share before backup'
+            fi
             ic storage volume export "$pool" "$volume" "$payload/projects/$project/$pool/$volume.$suffix" --compression gzip
         done <"$work/volumes"
     done <"$work/pools"
