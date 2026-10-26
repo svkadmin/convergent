@@ -5,7 +5,7 @@ inherit unpacker
 
 DESCRIPTION="Incus web management interface (Zabbly prebuilt assets)"
 HOMEPAGE="https://github.com/zabbly/incus-ui-canonical"
-SRC_URI="https://pkgs.zabbly.com/incus/stable/pool/main/i/incus/incus-ui-canonical_7.5.1-debian12-202610211642_amd64.deb"
+SRC_URI="https://pkgs.zabbly.com/incus/lts-7.0/pool/main/i/incus/incus-ui-canonical_7.0.1-debian12-202609250207_amd64.deb"
 S="${WORKDIR}"
 LICENSE="AGPL-3"
 SLOT="0"
