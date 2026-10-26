@@ -6,7 +6,7 @@ check() {
 }
 
 depends() {
-	echo crypt btrfs dm dash
+	echo crypt btrfs dm
 }
 
 installkernel() {
