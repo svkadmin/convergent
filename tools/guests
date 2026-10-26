@@ -1439,6 +1439,7 @@ mkdir -p "$state" /run/convergent
 exec 9>/run/convergent/guests.lock
 # Wait out the checker's shared hold (cron, every minute); another guests run holds it longer.
 flock -w 600 9 || die 'another guests operation is running'
+[ ! -e /run/convergent/guests-stopping ] || die 'host is stopping guests'
 # A killed seed writer may leave a guest disk mounted below its scratch directory.
 for stale in "$state"/work.??????; do
     [ -d "$stale" ] && [ ! -L "$stale" ] || continue

@@ -90,6 +90,7 @@ chmod 711 /run/convergent/browser
 # The guests lock covers launch; the browser lock covers the whole session.
 exec 9>/run/convergent/guests.lock
 flock -s -n 9 || die 'guest update in progress'
+[ ! -e /run/convergent/guests-stopping ] || die 'host is stopping guests'
 exec 6>/run/convergent/browser-update.lock
 flock -s -n 6 || die 'browser update in progress'
 if { [ "$role" != tmp ] || [ -n "$portal_mode" ]; } &&

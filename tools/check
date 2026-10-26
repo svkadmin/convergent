@@ -144,6 +144,19 @@ case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|
 net_ok=1
 [ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
+if [ "${1:-}" = auto ]; then (
+    exec 7>/run/convergent/firewall-heal.lock
+    flock -n 7 || exit 0
+    . /usr/lib/convergent/incus/firewall-heal
+    firewall_heal >"$state/.firewall-heal" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$state/.firewall-heal"
+    mv "$state/.firewall-heal" "$state/firewall-heal" || die 'cannot publish self-heal report'
+    if [ -f "$state/last" ]; then
+        sed '/^SELF-HEAL /d' "$state/last" >"$state/.last"
+        cat "$state/firewall-heal" >>"$state/.last"
+        # Keep the full scan's timestamp: minute recovery must not postpone or stale its checks.
+        touch -r "$state/last" "$state/.last" && mv "$state/.last" "$state/last" || die 'cannot update report'
+    fi
+); fi
 exec 9>/run/convergent/check.lock
 flock -n 9 || die 'another checker is running'
 if [ ! -e "$state/accepted" ] && [ -d "$state/previous" ]; then
@@ -166,6 +179,7 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
+[ ! -f "$state/firewall-heal" ] || cat "$state/firewall-heal" >>"$work/report"
 [ "$net_ok" = 1 ] || bad 'host network repair failed (default route or sysctls)'
 
 # The manifest is kept explicitly; never learn an accepted baseline during a check.

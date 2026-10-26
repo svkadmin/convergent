@@ -154,6 +154,14 @@ Either firewall can be updated, rebooted or broken while other carries everythin
 kernel: firewall kernel bug is not host kernel bug, and reverse. Silent failure detected in about
 three seconds.
 
+The minute checker restarts a firewall that has failed its checks for three minutes, only while
+its peer is healthy and MASTER on all six segments, never during the first ten minutes after host
+boot or after its own restart, and at most three times an hour. Guest journals, maintenance and
+shutdown inhibit it; attempts go to syslog and the checker report.
+
+On shutdown, `convergent-setup` stops browsers, svc, wan, then both firewalls before Incus stops:
+20 seconds each to stop gracefully, then a forced stop under an autorestart hold.
+
 ### 3.4 svc (container)
 
 Alpine in unprivileged Incus container on own segment.
