@@ -4,14 +4,21 @@
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
+exec </dev/null
 result=0
 created=
-ic() { incus --force-local --project default "$@"; }
+project() { case $1 in pf-work*) echo owner ;; *) echo default ;; esac; }
+ic() {
+	case $1 in init) instance=$3 ;; config) instance=$4 ;; *) instance=${2:-} ;; esac
+	incus --force-local --project "$(project "$instance")" "$@" </dev/null
+}
+ssh() { command ssh -n "$@"; }
 cleanup() {
 	r=$?
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
+	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart; } || r=1
 	# W1: restore the preferred master if a work probe fails during maintenance.
 	[ -z "${w1_maintenance:-}" ] || printf 'yes\n' | sys firewall undo || r=1
 	# portal retries a node it could not reach; one retry here, as cron would.
@@ -22,6 +29,8 @@ cleanup() {
 		done
 	' || r=1
 	for name in $created; do ic delete "$name" --force || r=1; done
+	[ -z "${work_profile:-}" ] || incus --force-local --project owner profile delete pf-base || r=1
+	[ -z "${work_image:-}" ] || incus --force-local --project owner image delete pf-browser || r=1
 	echo "CV-PF-RESULT $r"
 	exit "$r"
 }
@@ -35,7 +44,7 @@ tcp() {
 			-o /dev/null -w '%{num_connects}' "http://$2:$3" </dev/null) || :
 		case $connections in 1) echo allow ;; 0) echo deny ;; *) return 1 ;; esac
 	else
-		timeout -k 1 8 incus --force-local --project default exec "$1" -- sh -c '
+		timeout -k 1 8 incus --force-local --project "$(project "$1")" exec "$1" -- sh -c '
 			r=0; nc -z -w 3 "$1" "$2" </dev/null >/dev/null 2>&1 || r=$?
 			case $r in 0) echo allow ;; 1) echo deny ;; *) exit 2 ;; esac
 		' sh "$2" "$3"
@@ -44,7 +53,7 @@ tcp() {
 probe() { # expectation source destination port [dns]
 	got=error
 	if [ "${5:-}" = dns ]; then
-		got=$(timeout -k 1 8 incus --force-local --project default exec "$2" -- sh -c '
+		got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
 			r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
 			# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
 			case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
@@ -186,18 +195,24 @@ done
 exec 8>&-
 # W1 work-network matrix: each probe crosses the production trunks and PF.
 sh /usr/lib/convergent/incus/work-gate
+incus --force-local --project default image copy candidate-browser local: --target-project owner --alias pf-browser
+work_image=1
+incus --force-local --project owner profile create pf-base
+work_profile=1
+incus --force-local --project default profile show browser-base |
+	incus --force-local --project owner profile edit pf-base
 work_rows=/run/convergent/pf-work-segments
 awk '$7 == "dev" || $7 == "jhn" {print}' /etc/convergent/segments >"$work_rows"
-while read -r iface vhid parent label prefix gateway family; do
+while read -r iface vhid parent label prefix gateway family <&3; do
 	vlan=${parent#vlan}
 	name=pf-work-$vlan
 	base=${prefix%.0/26}
-	ic init candidate-browser "$name" -p browser-base -c security.protection.delete=false -c limits.memory=256MiB
+	ic init pf-browser "$name" -p pf-base -p "work-$label" -c security.protection.delete=false -c limits.memory=256MiB
 	created="$name $created"
 	ic config device add "$name" render none
-	ic config device add "$name" eth0 nic network=work name=eth0 vlan="$vlan" security.mac_filtering=true
+	[ "$(incus --force-local query "/1.0/instances/$name?project=owner" | jq -r '.expanded_devices.eth0.vlan')" = "$vlan" ]
 	ic start "$name"
-	timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- true; do sleep 1; done' sh "$name"
+	timeout -k 1 60 sh -c 'until incus --force-local --project "$2" exec "$1" -- true; do sleep 1; done' sh "$name" "$(project "$name")"
 	ic exec "$name" -- sh -eu -c '
 		sysctl -qw net.ipv4.conf.eth0.arp_ignore=0
 		ip link set eth0 up
@@ -205,6 +220,8 @@ while read -r iface vhid parent label prefix gateway family; do
 #!/bin/sh
 [ "$1" = bound ] || [ "$1" = renew ] || exit 0
 printf "%s %s %s %s\n" "$ip" "$router" "$dns" "$subnet" >/run/w1-lease
+ip addr replace "$ip/26" dev eth0
+echo "$1" >>/run/w1-events
 DHCP
 		chmod 700 /run/w1-udhcpc
 		udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3
@@ -226,23 +243,67 @@ DHCP
 		done
 	done
 	listen "$name" "$base.10" 8080
-done <"$work_rows"
+done 3<"$work_rows"
 home_want=$(awk '
 function ip(s,a) {split(s,a,"."); return ((a[1]*256+a[2])*256+a[3])*256+a[4]}
 {for(i=1;i<=NF;i++){split($i,c,"/"); size=2^(32-c[2]); if(int(ip("10.0.2.100")/size)==int(ip(c[1])/size)) found=1}}
 END {print found ? "allow" : "deny"}' /etc/convergent/home-lan)
+# Keep one TCP connection open across the CARP transition and hard loss of fw1.
+flow_source=pf-work-320
+flow_target=pf-work-330
+flow_address=$(awk '$3 == "vlan330" {sub(/\.0\/26$/, ".10", $5); print $5}' "$work_rows")
+ic exec "$flow_target" -- sh -c 'nc -lk -s "$1" -p 8081 -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$flow_address"
+ic exec "$flow_source" -- sh -c '
+    { echo before; while [ ! -f /run/pf-flow-continue ]; do sleep 1; done; echo after; sleep 30; } |
+        nc "$1" 8081 >/run/pf-flow-replies 2>/run/pf-flow-error &
+' sh "$flow_address"
+for i in $(seq 30); do ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies && break; sleep 1; done
+ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies
+for i in $(seq 30); do
+    timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:8081" && break
+    sleep 1
+done
+timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:8081"
 for master in fw1 fw2; do
 	if [ "$master" = fw2 ]; then
 		w1_maintenance=1
 		printf 'yes\n' | sys firewall maintenance
+		ic config set fw1 boot.autorestart=false
+		w1_stopped=1
+		ic stop fw1 --force
+		sh /usr/lib/convergent/incus/work-gate
+		ic exec "$flow_source" -- touch /run/pf-flow-continue
+		for i in $(seq 30); do ic exec "$flow_source" -- grep -qx after /run/pf-flow-replies && break; sleep 1; done
+		ic exec "$flow_source" -- grep -qx after /run/pf-flow-replies
 	fi
 	for f in fw1 fw2; do
+		[ "$master:$f" != fw2:fw1 ] || continue
 		if [ "$f" = "$master" ]; then want=MASTER; else want=BACKUP; fi
 		timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig >"/run/convergent/pf-work-$f"
 		awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "/run/convergent/pf-work-$f" >/dev/null
 	done
-	while read -r iface vhid parent label prefix gateway family; do
+	while read -r iface vhid parent label prefix gateway family <&3; do
 		source=pf-work-${parent#vlan}
+		if [ "$master" = fw2 ]; then
+			ic exec "$source" -- sh -eu -c '
+				: >/run/w1-events
+				udhcpc -f -i eth0 -s /run/w1-udhcpc -p /run/w1-dhcp.pid -n -t 5 -T 3 >/run/w1-dhcp.log 2>&1 &
+				pid=$!
+				trap "kill $pid 2>/dev/null || :" 0
+				for i in $(seq 30); do grep -qx bound /run/w1-events && break; sleep 1; done
+				grep -qx bound /run/w1-events
+				cp /run/w1-lease /run/w1-acquired
+				kill -USR1 "$pid"
+				for i in $(seq 30); do grep -qx renew /run/w1-events && break; sleep 1; done
+				grep -qx renew /run/w1-events
+				cmp /run/w1-acquired /run/w1-lease
+			'
+			lease=$(ic exec "$source" -- cat /run/w1-lease)
+			address=${lease%% *}
+			mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
+			ssh -F /etc/convergent/ssh_config fw2 "sed -n '/^lease $address {/,/^}/p' /var/db/dhcpd.leases" > /run/convergent/pf-dhcp
+			grep -q "hardware ethernet $mac;" /run/convergent/pf-dhcp
+		fi
 		probe allow "$source" "$gateway" 53 dns
 		ic exec "$source" -- ping -c 1 -W 3 "$gateway" >/dev/null || result=1
 		probe allow "$source" 1.1.1.1 443
@@ -253,13 +314,34 @@ for master in fw1 fw2; do
 		probe deny "$source" 100.80.2.10 8880
 		probe deny "$source" 100.80.3.10 80
 		probe deny "$source" 100.80.4.10 80
-		while read -r other ov op ol onet og ofamily; do
+		while read -r other ov op ol onet og ofamily <&4; do
 			[ "$other" != "$iface" ] || continue
 			if [ "$family" = "$ofamily" ]; then want=allow; else want=deny; fi
 			probe "$want" "$source" "${onet%.0/26}.10" 8080
-		done <"$work_rows"
-	done <"$work_rows"
+		done 4<"$work_rows"
+	done 3<"$work_rows"
 done
+if [ -n "${w1_stopped:-}" ]; then
+	ic start fw1
+	timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'
+	ic config unset fw1 boot.autorestart
+	w1_stopped=
+fi
+while read -r iface vhid parent label prefix gateway family <&3; do
+	source=pf-work-${parent#vlan}
+	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3
+	lease=$(ic exec "$source" -- cat /run/w1-lease)
+	address=${lease%% *}
+	mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
+	for node in fw1 fw2; do
+		for i in $(seq 30); do
+			ssh -F /etc/convergent/ssh_config "$node" "sed -n '/^lease $address {/,/^}/p' /var/db/dhcpd.leases" > /run/convergent/pf-dhcp
+			grep -q "hardware ethernet $mac;" /run/convergent/pf-dhcp && break
+			sleep 1
+		done
+		grep -q "hardware ethernet $mac;" /run/convergent/pf-dhcp
+	done
+done 3<"$work_rows"
 printf 'yes\n' | sys firewall undo
 w1_maintenance=
 rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
@@ -272,7 +354,7 @@ created="pf-remmina $created"
 ic start pf-remmina
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-remmina -- test -f /run/remmina-ready; do sleep 1; done'
 udp_remote() {
-    got=$(timeout -k 1 8 incus --force-local --project default exec "$2" -- sh -c '
+    got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
         reply=$(printf "cv-remmina\n" | nc -u -w 2 "$1" "$2") || :
         if [ "$reply" = cv-remmina ]; then echo allow; else echo deny; fi
     ' sh "$3" "$4") || got=error
@@ -283,12 +365,12 @@ for vlan in 320 330 360 370; do
         awk '$1 == "inet" {sub(/\.[0-9]+$/, "", $2); print $2}') || exit 1
     case $address in 100.80.[0-9]|100.80.[0-9][0-9]|100.80.[0-9][0-9][0-9]) ;; *) exit 1 ;; esac
     target=pf-work$vlan
-    ic init candidate-browser "$target" -p browser-base -c limits.memory=128MiB
+    label=$(awk -v parent="vlan$vlan" '$3 == parent {print $4}' /etc/convergent/segments)
+    ic init pf-browser "$target" -p pf-base -p "work-$label" -c limits.memory=128MiB
     created="$target $created"
     ic config device add "$target" render none
-    ic config device add "$target" eth0 nic network=work name=eth0 vlan="$vlan" security.mac_filtering=true
     ic start "$target"
-    timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- true; do sleep 1; done' sh "$target"
+    timeout -k 1 60 sh -c 'until incus --force-local --project "$2" exec "$1" -- true; do sleep 1; done' sh "$target" owner
     ic exec "$target" -- sh -eu -c '
         sysctl -qw net.ipv4.conf.eth0.arp_ignore=0
         ip addr add "$1.1/26" dev eth0

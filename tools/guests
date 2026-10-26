@@ -15,6 +15,7 @@ work= loop= mounted= pending= demoted= starting= probes= initializing=
 applying= recovering= rebuilding= polling=
 step=setup
 . "$lib/fw-topology"
+. "$lib/fw-leases"
 
 fail() { [ -n "$polling" ] || logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
@@ -140,6 +141,7 @@ rollback() {
                     { fail "$peer must be healthy on all registered segments; run sys firewall rebuild $guest"; return 1; }
                 ;;
             esac
+            case $guest in fw1|fw2) leases_hold || return ;; esac
             autorestart_hold "$guest" || return
             if running "$guest"; then ic stop "$guest" --force || return; fi
             seed_remove "$guest" || return
@@ -205,6 +207,7 @@ cleanup() {
         fi
     fi
     if [ -n "$starting" ] && ! running "$starting"; then start_guest "$starting" || { fail "cannot restart $starting"; result=1; }; fi
+    [ -z "$work" ] || leases_resume || result=1
     [ -z "$work" ] || dns_restore || result=1
     [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides'; result=1; }
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
@@ -511,7 +514,11 @@ fw_release() {
     fw_mutate fw1 'set -e
 rm -f /etc/convergent/seeded/demote
 sync
-interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+if [ -f /etc/convergent/segments ]; then
+    interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+else
+    interfaces="carp0 carp1 carp2 carp3 carp4 carp5"
+fi
 for i in $interfaces; do
     info=$(ifconfig "$i")
     groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
@@ -544,7 +551,13 @@ seed_create() {
     fw1|fw2|wan)
         cp "$keys/id_ed25519.pub" "$work/root/management.pub" || return
         cp "$tls/ca.crt" "$work/root/syslog-ca.crt" || return
-        case $1 in fw1|fw2) cp "$state/carp-pass" "$work/root/carp-pass" || return ;; esac
+        case $1 in fw1|fw2)
+            cp "$state/carp-pass" "$work/root/carp-pass" || return
+            if [ -f "$state/leases/saved" ]; then
+                cp "$state/leases/saved" "$work/root/dhcpd.leases" || return
+            fi
+            [ ! -f "$state/leases/held" ] || touch "$work/root/dhcpd.hold" || return
+            ;; esac
         if [ "$1" = fw1 ] && [ -n "$pending" ]; then touch "$work/root/demote" || return; fi
         ;;
     svc)
@@ -627,7 +640,8 @@ start_guest() {
 }
 seed_start() {
     seed_launch "$1" || return
-    seed_finish "$1"
+    seed_finish "$1" || return
+    case $1 in fw1|fw2) [ -d "$state/fw.topology" ] || leases_resume ;; esac
 }
 seed_launch() {
     step="seed_start $1"
@@ -911,6 +925,7 @@ replace() {
     guest=$1
     snap=guests-$(date -u +%Y%m%dT%H%M%S)-$$${rebuilding:+-rebuild}
     import_image "$guest"
+    case $guest in fw1|fw2) leases_hold ;; esac
     autorestart_hold "$guest"
     if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
         running "$guest" && stop_guest "$guest"
@@ -963,7 +978,7 @@ replace() {
 rebuild_root() {
     ic query "/1.0/instances/$1/snapshots?recursion=1" >"$work/snapshots" || return
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots" || return
-    while read -r old; do ic snapshot delete "$1" "$old" || return; done <"$work/old-snapshots"
+    while read -r old_snapshot; do ic snapshot delete "$1" "$old_snapshot" || return; done <"$work/old-snapshots"
     locked ic rebuild "$2" "$1" || return
     case $1 in
     wan)
@@ -991,7 +1006,7 @@ replace_root() {
     def|int|remmina) ;;
     *)
         seed_start "$guest"
-        # Nothing comes over from the old firewall; the host pushes DNS data afterwards.
+        # The seed restores leases; the host pushes DNS data afterwards.
         case $guest in fw1|fw2) fw_check "$guest" release ;; esac
         ;;
     esac
@@ -1287,7 +1302,11 @@ update() {
         touch "$state/fw.handoff"
         sync
         fw_mutate fw1 'set -e
-interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+if [ -f /etc/convergent/segments ]; then
+    interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+else
+    interfaces="carp0 carp1 carp2 carp3 carp4 carp5"
+fi
 for i in $interfaces; do ifconfig "$i" group handoff; done
 ifconfig -g handoff carpdemote 128'
         retry pair fw2 fw1
@@ -1301,6 +1320,7 @@ ifconfig -g handoff carpdemote 128'
         soak fw1 fw2
         commit_update
         fi
+        work_profiles
         ;;
     # W3 Remmina: the shared volume deliberately never participates in app rollback.
     remmina)
@@ -1323,6 +1343,7 @@ ifconfig -g handoff carpdemote 128'
     wan|svc)
         if [ "$1" = wan ]; then
             cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'WAN topology differs from host'
+            sh "$lib/work-gate" close
             ic profile device set wan eth0 security.ipv4_filtering=false
             ic profile set wan boot.autorestart=true
         fi
@@ -1485,6 +1506,17 @@ apply() {
     [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     [ -z "$(find "$staged" -type l -print)" ] || die "$staged contains symlinks"
+    if [ -f "$staged/remmina.manifest" ]; then
+        openssl pkeyutl -verify -pubin -inkey /etc/convergent/release.pub -rawin \
+            -in "$staged/remmina.manifest" -sigfile "$staged/remmina.manifest.sig" >/dev/null || die 'invalid staged Remmina signature'
+        awk -v release="$booted" '$1 == "release" {n++; if (NF != 2 || $2 != release) bad=1}
+            END {exit bad || n != 1}' "$staged/remmina.manifest" || die 'Remmina sidecar is for another release'
+        if [ -d "$staged/remmina" ]; then
+            remmina_id=$( (cd "$staged/remmina" && { cat SHA256SUMS; sha256sum ./incus.yaml; }) | sha256sum | cut -d' ' -f1)
+            awk -v id="$remmina_id" '$1 == "guest" {n++; if (NF != 3 || $2 != "remmina" || $3 != id) bad=1}
+                END {exit bad || n != 1}' "$staged/remmina.manifest" || die 'staged Remmina identity differs'
+        fi
+    fi
     kinds='svc wan fw browser remmina'
     if [ -d "$state/browser.rename" ] || browser_legacy; then kinds='browser svc wan fw remmina'; fi
     for kind in $kinds; do
@@ -1494,6 +1526,7 @@ apply() {
         [ "$kind" != browser ] || [ -z "$browser_pending" ] || continue
         echo "guests: applied $kind from release $booted"
     done
+    [ -d "$staged/remmina" ] || rm -f "$staged/remmina.manifest" "$staged/remmina.manifest.sig"
     rmdir "$staged" 2>/dev/null || :
     certificates_apply
     sh "$lib/work-gate" || echo 'guests: work access closed: topology has not converged' >&2

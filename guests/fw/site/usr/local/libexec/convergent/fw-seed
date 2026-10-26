@@ -50,7 +50,14 @@ for iface in $interfaces; do
 done
 set -- "$stage"/hostname.carp*
 [ "$#" = "$(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)" ]
-rcctl enable unbound wan_watch sshd dhcpd
+# Restore before either CARP or the allocator can serve clients.
+if [ -f "$seed/dhcpd.leases" ]; then
+    install -m 600 "$seed/dhcpd.leases" /var/db/dhcpd.leases.new
+    mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
+fi
+services="unbound wan_watch sshd"
+[ -f "$seed/dhcpd.hold" ] || services="$services dhcpd"
+rcctl enable $services
 rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
 rcctl set syslogd flags -h -C /etc/ssl/convergent-ca.pem
 sync
@@ -58,5 +65,5 @@ mv "$stage" /etc/convergent/seeded
 sync
 sh /etc/netstart $interfaces
 rcctl restart syslogd
-rcctl start unbound wan_watch sshd dhcpd
+rcctl start $services
 announce

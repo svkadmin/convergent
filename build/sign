@@ -19,7 +19,7 @@ release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 . "$here/release-check"
 # What the signature vouches for: the manifest and the files it lists.
-for f in manifest guests.manifest; do
+for f in manifest guests.manifest remmina.manifest; do
 	[ -f "$dir/$f" ] || continue
 	(cd "$dir" && grep -E '^[0-9a-f]{64}  ' "$f" | sha256sum -c --quiet -) || die "the release does not match its $f"
 done
@@ -28,8 +28,11 @@ done
 guests=none
 [ ! -f "$dir/guests.manifest" ] || guests=$(sha256sum <"$dir/guests.manifest" | cut -d' ' -f1)
 printf 'release %s\nsigned %s\nguests %s\n' "$release" "$(date -u +%s)" "$guests" >"$dir/latest"
+remmina=none
+[ ! -f "$dir/remmina.manifest" ] || remmina=$(sha256sum <"$dir/remmina.manifest" | cut -d' ' -f1)
+printf 'remmina %s\n' "$remmina" >>"$dir/latest"
 # An encrypted key asks once per file; it is never written out decrypted.
-for f in manifest packages guests.manifest latest; do
+for f in manifest packages guests.manifest remmina.manifest latest; do
 	[ -f "$dir/$f" ] || continue
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$dir/$f" -out "$dir/$f.sig.new" || die "signing $f failed"
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/$f" -sigfile "$dir/$f.sig.new" >/dev/null ||

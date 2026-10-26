@@ -1,0 +1,66 @@
+#!/bin/sh
+# Run the production gate with fake transports and a real N-segment parser.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+mkdir -p "$work/bin" "$work/state"
+export GATE_FIXTURE=$work
+export PATH=$work/bin:$PATH
+sh "$here/networks" registry "$work/registry"
+lib=$repo/rootfs/usr/lib/convergent/incus
+sed -e "s|^lib=.*|lib=$lib|" -e "s|^state=.*|state=$work/state|" \
+    -e "s|/run/convergent/work-gate|$work/gate|g" \
+    -e "s|/etc/convergent/topology.sha256|$work/expected|g" \
+    -e "s|/etc/convergent/segments|$work/registry/etc/convergent/segments|g" "$lib/work-gate" >"$work/gate"
+echo expected >"$work/expected"
+cat >"$work/bin/ssh" <<'SSH'
+#!/bin/sh
+while [ "$#" -gt 2 ]; do shift; done
+node=$1 cmd=$2
+[ ! -f "$GATE_FIXTURE/$node.down" ] || exit 1
+case $cmd in
+*topology*|*expected*) cat "$GATE_FIXTURE/$node.hash" ;;
+*)
+    [ ! -f "$GATE_FIXTURE/$node.unhealthy" ] || exit 1
+    role=$(cat "$GATE_FIXTURE/$node.role")
+    awk -v role="$role" '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: " role " carpdev " $3 " vhid " $2}' "$GATE_FIXTURE/registry/etc/convergent/segments"
+    printf 'Status: Enabled\npfsync0: flags=41<UP,RUNNING>\n defer: on\n'
+    ;;
+esac
+SSH
+cat >"$work/bin/nft" <<'NFT'
+#!/bin/sh
+if [ "$1" = flush ]; then echo open >"$GATE_FIXTURE/verdict"
+else cat >/dev/null; echo closed >"$GATE_FIXTURE/verdict"; fi
+NFT
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/flock"
+chmod +x "$work/bin/ssh" "$work/bin/nft" "$work/bin/flock"
+for node in wan fw1 fw2; do echo expected >"$work/$node.hash"; done
+echo MASTER >"$work/fw1.role"
+echo BACKUP >"$work/fw2.role"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ]
+touch "$work/fw2.down"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ]
+sh "$work/gate" close
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ]
+rm "$work/fw2.down"
+sh "$work/gate"
+echo mismatch >"$work/fw2.hash"
+if sh "$work/gate"; then exit 1; fi
+[ ! -e "$work/gate.valid" ]
+echo expected >"$work/fw2.hash"
+sh "$work/gate"
+echo MASTER >"$work/fw2.role"
+if sh "$work/gate"; then exit 1; fi
+echo BACKUP >"$work/fw2.role"
+sh "$work/gate"
+mkdir "$work/state/fw.topology"
+if sh "$work/gate"; then exit 1; fi
+[ ! -e "$work/gate.valid" ]
+echo 'test-work-gate: standby outage, invalidation, mismatch and split MASTER passed'

@@ -39,6 +39,11 @@ read_pointer() {
 		gsum=$(field guests "" "$pointer/latest") || die 'latest is malformed'
 	bytes "$latest" && bytes "$signed" || die 'latest is malformed'
 	case $gsum in none) ;; '' | *[!0-9a-f]*) die 'latest is malformed' ;; *) [ "${#gsum}" = 64 ] || die 'latest is malformed' ;; esac
+	rsum=none
+	if grep -q '^remmina ' "$pointer/latest"; then
+		rsum=$(field remmina "" "$pointer/latest") || die 'latest has duplicate Remmina entries'
+	fi
+	case $rsum in none) ;; '' | *[!0-9a-f]*) die 'invalid Remmina hash' ;; *) [ "${#rsum}" = 64 ] || die 'invalid Remmina hash' ;; esac
 	age=$(( $(date +%s) - signed ))
 	[ "$age" -ge -300 ] || die 'latest is signed more than 5 minutes in the future; check the clock'
 	signed_ago="signed $((age / 86400)) days ago"
@@ -218,6 +223,27 @@ else
 		{ rm -rf "$dir"; die "guests.manifest is not the one latest names"; }
 fi
 
+# The old fetcher ignores this sidecar and its signed latest field.
+if [ -e /var/lib/convergent/guests/initialized ] && [ "$rsum" != none ]; then
+	rm=$dir/remmina.manifest
+	if [ -n "$usb" ]; then
+		cp "$usb/remmina.manifest" "$usb/remmina.manifest.sig" "$dir/" || die 'cannot copy Remmina manifest'
+	else
+		get --max-time 120 --max-filesize 65536 -o "$rm" "$url/$latest/remmina.manifest" &&
+			get --max-time 120 --max-filesize 1024 -o "$rm.sig" "$url/$latest/remmina.manifest.sig" || die 'Remmina manifest download failed'
+	fi
+	verify "$rm" && [ "$(field release "" "$rm")" = "$latest" ] &&
+		[ "$(sha256sum <"$rm" | cut -d' ' -f1)" = "$rsum" ] || die 'Remmina manifest verification failed'
+	awk '
+		$1 == "release" && NF == 2 {next}
+		$1 == "guest" && NF == 3 && $2 == "remmina" {next}
+		$1 ~ /^(size|unpacked)$/ && NF == 3 && $2 ~ /^guests\/remmina\/[A-Za-z0-9._-]+$/ {next}
+		length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ && NF == 2 && $2 ~ /^guests\/remmina\/[A-Za-z0-9._-]+$/ {next}
+		{exit 1}' "$rm" || die 'invalid Remmina sidecar'
+	cat "$gm" "$rm" >"$dir/guest-manifests"
+	gm=$dir/guest-manifests
+fi
+
 files="slot.img convergent-$latest-a.efi convergent-$latest-b.efi"
 [ -z "$sync" ] || files=
 guest_files=$(awk '$2 ~ /^guests\// {
@@ -326,6 +352,9 @@ if [ -n "$changed" ]; then
 	find "$dir/guests" -type f -name '*.zst' -delete
 	mv "$dir/guests" "$staged/$latest"
 	chmod 0700 "$staged/$latest"
+	if [ -d "$staged/$latest/remmina" ] && [ "$rsum" != none ]; then
+		cp "$dir/remmina.manifest" "$dir/remmina.manifest.sig" "$staged/$latest/"
+	fi
 	sync -f "$staged" || die "could not sync staged guests"
 fi
 exec 8>&-

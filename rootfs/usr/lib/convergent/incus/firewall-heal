@@ -6,6 +6,7 @@ heal_probe() {
         ifconfig carp
         pfctl -si
         ifconfig pfsync0
+        rcctl check dhcpd >/dev/null
         rcctl check unbound >/dev/null
         unbound-control status >/dev/null' 9>&- 8>&- 7>&- 2>/dev/null) || return 1
     printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
@@ -13,7 +14,7 @@ heal_probe() {
 heal_allowed() {
     [ ! -e /run/convergent/guests-stopping ] || return 1
     [ ! -e /var/lib/convergent/firewall-maintenance ] || return 1
-    for journal in pending preparing committed fw.handoff fw.topology; do
+    for journal in pending preparing committed fw.handoff fw.topology leases/held; do
         [ ! -e "/var/lib/convergent/guests/$journal" ] || return 1
     done
 }

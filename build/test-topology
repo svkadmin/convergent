@@ -14,6 +14,9 @@ sh "$here/networks" registry "$scratch/new"
 old_registry=$lib/segments
 new_registry=$scratch/new/etc/convergent/segments
 log=$scratch/events
+leases_hold() { :; }
+leases_resume() { :; }
+work_profiles() { echo "profiles reconciled" >>"$log"; }
 running() { [ "$(cat "$scratch/$1.status")" = running ]; }
 stopped() { ! running "$1"; }
 locked() { "$@"; }
@@ -102,6 +105,7 @@ for phase in before-rebuild one-new both-new first-boot both-booted rollback-int
     [ ! -e "$state/fw.topology" ]
     if [ "$phase" = committed ]; then
         [ "$(cat "$scratch/fw1.image")" = new ]
+        grep -q "profiles reconciled" "$log"
         ! grep -q '^rebuild ' "$log"
     else
         [ "$(cat "$scratch/fw1.image")" = old ]
@@ -111,3 +115,42 @@ for phase in before-rebuild one-new both-new first-boot both-booted rollback-int
     [ ! -e "$scratch/fw1.held" ] && [ ! -e "$scratch/fw2.held" ]
 done
 echo 'test-topology: rollback/replay and commit fixtures passed'
+
+# Exercise the real snapshot loop: EOF used to erase the caller's rollback fingerprint.
+(
+    awk '/^rebuild_root\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/rebuild"
+    . "$scratch/rebuild"
+    ic() { case $1 in query) echo '[]' ;; snapshot) : ;; rebuild) [ "$2" = fingerprint ] ;; *) return 1 ;; esac; }
+    jq() { printf '%s\n' guests-one guests-two; }
+    locked() { "$@"; }
+    old=fingerprint
+    rebuild_root fw1 "$old"
+    [ "$old" = fingerprint ]
+)
+echo 'test-topology: production snapshot loop preserves rollback fingerprint'
+
+if command -v jq >/dev/null 2>&1; then
+    (
+        . "$lib/fw-topology"
+        mkdir -p "$state/fw.topology"
+        for node in fw1 fw2; do
+            printf '{"config":{}}\n' >"$state/fw.topology/$node.json"
+            printf '{"config":{"user.convergent.autorestart":"true","boot.autostart":"false","boot.autorestart":"false"}}\n' >"$scratch/$node.json"
+        done
+        ic() {
+            case $1:$2 in
+            query:*) file=${2##*/}; cat "$scratch/$file.json" ;;
+            config:unset)
+                jq -e --arg k "$4" '.config | has($k)' "$scratch/$3.json" >/dev/null || return
+                jq --arg k "$4" 'del(.config[$k])' "$scratch/$3.json" >"$scratch/config.new" && mv "$scratch/config.new" "$scratch/$3.json" ;;
+            *) return 1 ;;
+            esac
+        }
+        topology_autostart
+        topology_autostart
+        topology_retire
+    )
+    echo 'test-topology: repeated production unsets are idempotent'
+else
+    echo 'test-topology: SKIP jq recovery fixture (jq unavailable)'
+fi

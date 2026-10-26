@@ -265,6 +265,9 @@ def targets(release, gate):
         require(not (Path(release) / 'guests').exists(), 'guests without guests.manifest')
         return []
     text = manifest.read_text()
+    sidecar = Path(release) / 'remmina.manifest'
+    if sidecar.exists():
+        text += sidecar.read_text()
     selected = re.findall(r'^guest (\S+) [0-9a-f]{64}$', text, re.M)
     require(len(selected) == len(set(selected)) and
             all(g in ('fw', 'wan', 'svc', 'browser', 'remmina') for g in selected), 'invalid guest list')

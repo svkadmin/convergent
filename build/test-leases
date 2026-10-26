@@ -1,0 +1,51 @@
+#!/bin/sh
+# Longest reservations survive divergent peers, rebuilds and repeated recovery.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+lib=$here/../rootfs/usr/lib/convergent/incus
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+cat >"$work/old" <<'LEASES'
+lease 100.80.32.51 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 10:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+lease 100.80.36.51 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 10:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:02;
+}
+LEASES
+sed 's/10:00:00/12:00:00/' "$work/old" >"$work/new"
+awk -f "$lib/leases.awk" "$work/new" "$work/old" >"$work/merged"
+sort "$work/new" >"$work/expected"
+sort "$work/merged" >"$work/actual"
+cmp "$work/expected" "$work/actual"
+awk -f "$lib/leases.awk" "$work/old" "$work/merged" >"$work/replay"
+cmp "$work/merged" "$work/replay"
+sed '$d' "$work/old" >"$work/torn"
+if awk -f "$lib/leases.awk" "$work/torn" >/dev/null; then exit 1; fi
+state=$work/state
+mkdir -p "$state" "$work/live"
+cp "$work/old" "$work/live/fw1"
+cp "$work/new" "$work/live/fw2"
+. "$lib/fw-leases"
+running() { [ -f "$work/live/$1" ]; }
+rsh() { case $2 in *'cat /var/db/dhcpd.leases'*) cat "$work/live/$1" ;; *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;; *) : ;; esac; }
+leases_hold
+cmp "$work/live/fw1" "$work/live/fw2"
+sort "$state/leases/saved" >"$work/actual"
+cmp "$work/expected" "$work/actual"
+rm "$work/live/fw1" "$work/live/fw2"
+leases_hold
+sort "$state/leases/saved" >"$work/actual"
+cmp "$work/expected" "$work/actual"
+leases_resume
+[ -e "$state/leases/held" ]
+cp "$work/old" "$work/live/fw1"
+cp "$work/new" "$work/live/fw2"
+leases_resume
+[ ! -e "$state/leases/held" ]
+echo 'test-leases: merge, interrupted checkpoint and replay passed'

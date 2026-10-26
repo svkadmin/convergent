@@ -32,8 +32,9 @@ exit 1;
 	exit "$code"
 )
 firewall_role() {
+	registry=$(firewall_rsh "$1" 'if test -f /etc/convergent/segments; then echo /etc/convergent/segments; else echo /usr/lib/convergent/incus/segments; fi') || return
 	output=$(firewall_rsh "$1" ifconfig) || return
-	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
+	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk "$registry" - >/dev/null
 }
 firewall_pair() { firewall_role "$1" MASTER && firewall_role "$2" BACKUP; }
 firewall_healthy() {
@@ -41,7 +42,7 @@ firewall_healthy() {
 	printf '%s\n' "$output" | grep -q RUNNING && printf '%s\n' "$output" | grep -q 'defer: on' || return 1
 	output=$(firewall_rsh "$1" 'pfctl -si') || return
 	printf '%s\n' "$output" | grep -q '^Status: Enabled' || return 1
-	firewall_rsh "$1" 'pfctl -nf /etc/pf.conf && rcctl check unbound && unbound-control status' >/dev/null || return
+	firewall_rsh "$1" 'pfctl -nf /etc/pf.conf && rcctl check unbound && unbound-control status && { test ! -f /etc/convergent/dhcpd.flags || rcctl check dhcpd; }' >/dev/null || return
 	output=$(firewall_rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1') || return
 	printf '%s\n' "$output" | grep -q 'has address 100.80.2.10'
 }
@@ -69,7 +70,11 @@ firewall_release() {
 	firewall_mutate "$master" '
 rm -f /etc/convergent/seeded/maintenance
 sync
-interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+if [ -f /etc/convergent/segments ]; then
+    interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+else
+    interfaces="carp0 carp1 carp2 carp3 carp4 carp5"
+fi
 for i in $interfaces; do
     info=$(ifconfig "$i")
     groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
@@ -130,7 +135,11 @@ firewall_change() (
 	firewall_mutate "$master" '
 touch /etc/convergent/seeded/maintenance
 sync
-interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+if [ -f /etc/convergent/segments ]; then
+    interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+else
+    interfaces="carp0 carp1 carp2 carp3 carp4 carp5"
+fi
 for i in $interfaces; do ifconfig "$i" group sysmaint; done
 ifconfig -g sysmaint carpdemote 128' || die 'demotion uncertain; run sys firewall undo'
 	settled=1
