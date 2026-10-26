@@ -11,8 +11,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 
 die() { echo "build: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed"; }
+# A marker may follow unterminated console output (pkg_add's progress meter), so match it anywhere.
 console_value() {
-	awk -v tag="$1" '$1 == tag { sub(/\r$/, ""); sub(/^[^ ]+ /, ""); print; n++ } END { if (n != 1) exit 1 }' "$2"
+	awk -v tag="$1 " '{ i = index($0, tag); if (!i) next; v = substr($0, i + length(tag)); sub(/\r$/, "", v); print v; n++ } END { if (n != 1) exit 1 }' "$2"
 }
 
 out=${1:-}
