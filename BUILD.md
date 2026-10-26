@@ -248,13 +248,12 @@ Also qualify a real 0.1.3→0.1.4 pair migration and power loss at each journal
 boundary; verify tagged/native/stacked traffic, IP/ARP/CARP spoofing and IPv6
 with VLAN offload both enabled and disabled on the laptop.
 ### Incus UI
-### Incus UI (W2)
+
 The overlay pins Zabbly's prebuilt `incus-ui-canonical_7.0.1-debian12-202609250207_amd64.deb` from the
 lts-7.0 repository (matching Incus 7.0.1). Its Manifest digests were taken after verifying Zabbly's
 key (4EFC 5906 96CB 15B8 7C73 A3AD 82CC 8797 C838 DCFD), the signed InRelease, the Packages index
 and the .deb SHA256. Repeat that chain when moving the pin; never bypass digest checks. Only
 `/opt/incus/ui` is installed into `/usr/share/incus-ui`; no Debian maintainer scripts, Node or Yarn run.
-into `/usr/share/incus-ui`; no Debian maintainer scripts, Node or Yarn run.
 
 Rebuild host, browser (nss-tools) and wan (fixed management-endpoint diagnostic) images. Run `build/test --guests`,
 `--guests-maint` and `--guests-update`. Delimited W2 sections run the 8443 PF matrix and
