@@ -68,5 +68,15 @@ trap 'rm -f "$tmp"' EXIT HUP INT TERM
 		m=$(stat -f %m "/var/unbound/etc/$f" 2>/dev/null) &&
 			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m"
 	done
+
+	# W4 observability: interface bytes and recursion latency, independent of the CARP registry.
+	netstat -ibn 2>/dev/null | awk -f /usr/local/libexec/convergent/interface-bytes.awk
+	unbound-control stats_noreset 2>/dev/null | awk -F= '
+		$1 == "total.recursion.time.avg" && $2 ~ /^[0-9]+([.][0-9]+)?$/ {
+			print "convergent_unbound_recursion_seconds " $2
+		}'
+	if rcctl check pflog_stream >/dev/null 2>&1; then up=1; else up=0; fi
+	echo "convergent_pflog_stream_up $up"
+	# End W4 observability.
 } >"$tmp"
 mv "$tmp" "$out"

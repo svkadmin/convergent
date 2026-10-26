@@ -19,13 +19,17 @@ done
 read_owned
 case $owned in 0|128) ;; *) logger -t wan-watch "reconciling unexpected wanwatch demotion: $owned" || : ;; esac
 good=0 lost=0
+metrics_at=0
 while :; do
+	probe=
+	probe_up=0
 	want=$owned
 	case $want in 0|128) ;; *) want=128 ;; esac
 	# -w waits after the last probe; SIGINT preserves success on any reply.
 	if ! pgrep -x unbound >/dev/null; then
 		good=0 lost=2 want=128
-	elif timeout -p -s INT 1 ping -q -n -I "$src" -c 3 -i 0.3 -w 1 "$wan" >/dev/null 2>&1; then
+	elif probe=$(timeout -p -s INT 1 ping -q -n -I "$src" -c 3 -i 0.3 -w 1 "$wan" 2>/dev/null); then
+		probe_up=1
 		lost=0
 		[ "$good" -ge 3 ] || good=$((good + 1))
 		[ "$good" -lt 3 ] || want=0
@@ -33,6 +37,17 @@ while :; do
 		# One lost round may be a busy second; two in a row demote.
 		good=0 lost=$((lost + 1))
 		[ "$lost" -lt 2 ] || want=128
+	fi
+	# W4: reuse this round's probes; publish only once per minute.
+	now=$(date +%s)
+	if [ $((now - metrics_at)) -ge 60 ]; then
+		metrics=/var/node_exporter/textfile
+		if {
+			echo "convergent_wan_watch_probe_timestamp_seconds $now"
+			echo "convergent_wan_watch_probe_up $probe_up"
+			printf '%s\n' "$probe" | awk -f /usr/local/libexec/convergent/wan-probe.awk
+		} >"$metrics/.wan-watch.$$" && chmod 644 "$metrics/.wan-watch.$$" &&
+			mv "$metrics/.wan-watch.$$" "$metrics/wan-watch.prom"; then metrics_at=$now; fi
 	fi
 	if [ "$want" != "$owned" ]; then
 		step=$((want - owned))

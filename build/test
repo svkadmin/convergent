@@ -21,6 +21,9 @@ cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
 cv_time start
 
 here=$(cd "$(dirname "$0")" && pwd)
+# W4 observability: offline parsers, status and dashboard fixtures.
+if [ "${1:-}" = --observability ] && [ "$#" = 1 ]; then exec sh "$here/test-observability"; fi
+# End W4 observability.
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(
 	die() { echo "test: $*" >&2; exit 1; }

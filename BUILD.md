@@ -229,3 +229,29 @@ directory is not `$g`). It reads upstream fixes and names what to rebuild (`host
 `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the release.
 Gentoo packages come from its signed build-host inventory. Exit 1: something to rebuild (UNKNOWN
 lines may appear too). Exit 2: only UNKNOWN; a source was not read.
+
+### Daily published-release advisory status
+
+Run `CHANNEL=beta sh build/advisories-publish` after publishing and daily from the operator's root
+cron, for example `17 4 * * * CHANNEL=beta sh /srv/convergent/build/advisories-publish >>/var/log/convergent-advisories.log 2>&1`.
+It lists the channel in R2, checks retained manifests against the signed published copies, and
+reuses `build/advisories` against each retained release's signed package/guest inventory. Keep
+those release directories under the builder, including `packages`, its signature and guest
+payloads, until R2 prunes them. The builder's installed packages are never the scan target.
+
+The command needs the channel private/public keys and existing R2 environment file, including
+for stable; an offline stable key must be made available for the signing session. It uploads
+`advisories.json` and `advisories.json.sig` beside each release, using the same signature scheme
+as latest. Status contains release ID, generation epoch, advisory records (target, package,
+installed version, advisory/CVE, nullable severity/fixed-in) and selected manifest package versions.
+Excepted findings stay visible. A failed/incomplete scan leaves the previous status unchanged and
+returns failure. These mutable sidecars are excluded from identical-release publish comparisons.
+No laptop notification is sent. Signed status is not a claim of coverage beyond GLSA, Alpine secdb
+and OpenBSD errata.
+
+`build/test --observability` runs offline status, parser and dashboard fixtures; install `jq` to
+run its schema/replay cases too. On the rig, run the guest/update dashboard query checks, inject
+logged blocks and inspect the top-source/destination/port tables, and test capture on either
+MASTER, timeout, byte ceiling and interruption. R2 credentials/key access, missing/tampered/stale
+status and a full daily publish/check cycle need the builder/rig. Wi-Fi signal/bitrate and roaming
+need the laptop radio.

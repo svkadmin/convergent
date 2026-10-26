@@ -1,0 +1,45 @@
+#!/bin/sh
+# Root-only transport; sys opens the destination as the owner.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+die() { echo "firewall-capture: $*" >&2; exit 1; }
+run() { "$@"; }
+[ "$(id -u)" = 0 ] || die 'run through sys firewall capture'
+[ "$#" = 2 ] || die 'expected interface-or-segment and seconds'
+case $1 in ''|*[!a-zA-Z0-9_-]*) die 'invalid interface or segment' ;; esac
+case $2 in [1-9]|[1-5][0-9]|60) ;; *) die 'seconds must be 1..60' ;; esac
+. /usr/lib/convergent/sys/14-firewall
+mkdir -p /run/convergent
+exec 9>/run/convergent/guests.lock
+flock -s -n 9 || die 'guest update in progress'
+exec 8>/run/convergent/firewall-capture.lock
+flock -n 8 || die 'a capture is already running'
+if firewall_pair fw1 fw2; then master=fw1
+elif firewall_pair fw2 fw1; then master=fw2
+else die 'need one coherent MASTER and BACKUP pair'; fi
+interface=$1
+case $interface in
+vio[0-9]*|vlan[0-9]*|carp[0-9]*|pfsync0|pflog0) ;;
+*)
+	registry=/etc/convergent/segments
+	[ -f "$registry" ] || registry=/usr/lib/convergent/incus/segments
+	interface=$(awk -v segment="$1" '
+		/^[[:space:]]*#/ {next}
+		{matchname=0; parent=""; for (i=1;i<=NF;i++) {
+			if ($i == segment) matchname=1
+			if ($i ~ /^(vio|vlan)[0-9]+$/) parent=$i
+		} if (matchname && parent != "") {print parent; n++}}
+		END {exit n != 1}' "$registry") || die 'unknown or ambiguous segment'
+	;;
+esac
+case $interface in ''|*[!a-z0-9]*) die 'invalid registry interface' ;; esac
+echo "Capturing $master $interface for at most $2 seconds (1536-byte snapshots, <50 MB)." >&2
+work=$(mktemp -d /run/convergent/capture.XXXXXX)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+(ulimit -f 97656; timeout -k 5 70 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n \
+	"$master" "/usr/local/libexec/convergent/fw-capture $interface $2" 9>&- 8>&- >"$work/capture.pcap") || die 'capture failed'
+[ -s "$work/capture.pcap" ] && [ "$(stat -c %s "$work/capture.pcap")" -le 50000000 ] || die 'capture size invalid'
+cat "$work/capture.pcap"

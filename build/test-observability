@@ -1,0 +1,100 @@
+#!/bin/sh
+# Offline W4 fixtures; no guest, network, root or signing key is required.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+python3 - "$repo" "$work" <<'PY'
+import contextlib, importlib, io, json, re, subprocess, sys
+from pathlib import Path
+repo, work = map(Path, sys.argv[1:])
+source = (repo / 'build/advisories').read_text().split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+scope = {}
+exec(compile(source.split('\nmode, *args =', 1)[0], 'advisories', 'exec'), scope)
+scope['selftest']()
+
+def awk(path, data):
+    result = subprocess.run(['awk', '-f', str(repo / path)], input=data, text=True, capture_output=True, check=True)
+    return result.stdout
+
+fw = 'guests/fw/site/usr/local/libexec/convergent/'
+output = awk(fw + 'interface-bytes.awk', 'Name Mtu Network Address Ibytes Obytes\n'
+             'vio2 1500 <Link> aa:bb 123 456\nvio2 1500 100.80.1/28 100.80.1.2 123 456\n'
+             'vlan370* 1500 <Link> aa:bb 789 999\n')
+assert output.count('carpdev="vio2"') == 2 and 'carpdev="vlan370"} 789' in output
+output = awk(fw + 'wan-probe.awk', '3 packets transmitted, 2 packets received, 33.3% packet loss\n'
+             'round-trip min/avg/max/std-dev = 0.300/1.500/2.700/0.100 ms\n')
+assert 'loss_ratio 0.333000' in output and 'rtt_seconds 0.001500' in output
+assert 'rtt_seconds' not in awk(fw + 'wan-probe.awk', '3 packets transmitted, 0 packets received, 100.0% packet loss\n')
+header = 'Oct 26 12:34:56.000001 rule 1/(match) block in on vio4: 100.80.3.10.123 > 1.1.1.1.443: S\n'
+output = awk(fw + 'pflog-rate.awk', header * 8 + header.replace('12:34:56', '12:34:57'))
+assert output.count('rule 1') == 6 and 'suppressed=3' in output
+assert awk(fw + 'pflog-rate.awk', 'unrecognized\n') == ''
+output = awk('guests/wan/rootfs/usr/local/lib/wan-radio.awk', '\tsignal: -54 dBm\n\ttx bitrate: 144.4 MBit/s\n\trx bitrate: 72.2 MBit/s\n')
+assert 'signal_dbm -54' in output and 'direction="tx"} 144400000' in output
+assert awk('guests/wan/rootfs/usr/local/lib/wan-radio.awk', 'Not connected.\n') == ''
+capture = (repo / 'tools/firewall-capture').read_text()
+registry = capture.split('awk -v segment="$1" \'', 1)[1].split("' \"$registry\"", 1)[0]
+for text, code in [('dom-dev-a carp6 vlan320 7\n', 0), ('carp6 7 vlan320 dom-dev-a\n', 0),
+                   ('dom-dev-b carp6 vlan320 7\n', 1), ('dom-dev-a carp6 vlan320\ndom-dev-a carp7 vlan330\n', 1)]:
+    result = subprocess.run(['awk', '-v', 'segment=dom-dev-a', registry], input=text, text=True, capture_output=True)
+    assert result.returncode == code
+    if code == 0:
+        assert result.stdout.strip() == 'vlan320'
+assert 24 + 32000 * (1536 + 16) < 50000000
+listing = (repo / 'build/advisories-publish').read_text().split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
+xml = work / 'list.xml'
+xml.write_text('<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated>'
+               '<Contents><Key>beta/42/manifest</Key></Contents><Contents><Key>beta/42/guests.manifest</Key></Contents>'
+               '<Contents><Key>stable/43/manifest</Key></Contents><Contents><Key>beta/debug/manifest</Key></Contents></ListBucketResult>')
+result = subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], text=True, capture_output=True, check=True)
+assert result.stdout.strip() == '42 1'
+xml.write_text(xml.read_text().replace('false', 'true'))
+assert subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], capture_output=True).returncode != 0
+
+sys.path.insert(0, str(repo / 'guests/svc/dashboards'))
+network = importlib.import_module('network').generate()
+security = importlib.import_module('security').generate()
+for dash in (network, security):
+    assert len({p['id'] for p in dash['panels']}) == len(dash['panels'])
+    for i, p in enumerate(dash['panels']):
+        a = p['gridPos']
+        for q in dash['panels'][i+1:]:
+            b = q['gridPos']
+            assert not (a['x'] < b['x']+b['w'] and b['x'] < a['x']+a['w'] and
+                        a['y'] < b['y']+b['h'] and b['y'] < a['y']+a['h']), (p['title'], q['title'])
+timeline = next(p for p in network['panels'] if p['title'] == 'CARP · all segments')
+assert 'segment,interface' in timeline['targets'][0]['expr'] and 'carp0' not in json.dumps(network)
+blocked = next(p for p in network['panels'] if p['title'] == 'Blocked · top sources')
+pattern = re.search(r'extract_regexp "([^"]+)"', blocked['targets'][0]['expr'])[1]
+for addresses, expected in [('100.80.3.10.123 > 1.1.1.1.443: S', ('100.80.3.10', '1.1.1.1', '443')),
+                            ('100.80.3.10 > 1.1.1.1: icmp', ('100.80.3.10', '1.1.1.1', None)),
+                            ('fe80::1.123 > ff02::2.5353: udp', ('fe80::1', 'ff02::2', '5353'))]:
+    m = re.search(pattern, addresses)
+    assert m and (m['src'], m['dst'], m['port']) == expected
+status = dict(release='42', generated=1000, advisories=[dict(target='wan', package='openssl',
+              installed_version='1.0', advisory='CVE-test', severity=None, fixed_in='1.1')],
+              packages=[dict(target='host', package='kernel', version='6.18.9')])
+(work / 'status.json').write_text(json.dumps(status))
+print('observability: advisory, awk, layout and log parser fixtures passed')
+PY
+if command -v jq >/dev/null 2>&1; then
+	filter=$repo/rootfs/usr/lib/convergent/release-status.jq
+	parse() { jq -ser --arg release "$1" --arg role installed --argjson now "$2" --argjson previous "$3" -f "$filter" "$4"; }
+	parse 42 1000 0 "$work/status.json" >"$work/status.prom"
+	grep -q 'fixed_in="1.1"' "$work/status.prom"
+	grep -q 'severity="unknown"' "$work/status.prom"
+	if parse 43 1000 0 "$work/status.json" >/dev/null 2>&1; then exit 1; fi
+	if parse 42 699 0 "$work/status.json" >/dev/null 2>&1; then exit 1; fi
+	if parse 42 1000 1001 "$work/status.json" >/dev/null 2>&1; then exit 1; fi
+	cat "$work/status.json" "$work/status.json" >"$work/duplicate.json"
+	if parse 42 1000 0 "$work/duplicate.json" >/dev/null 2>&1; then exit 1; fi
+	jq '.advisories[0].package="bad\nlabel"' "$work/status.json" >"$work/bad.json"
+	if parse 42 1000 0 "$work/bad.json" >/dev/null 2>&1; then exit 1; fi
+	echo 'observability: jq schema, release binding, clock and replay fixtures passed'
+else
+	echo 'observability: SKIP jq fixtures (jq is unavailable)' >&2
+fi
+python3 -I "$repo/guests/svc/dashboards/build.py" --check
