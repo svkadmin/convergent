@@ -25,7 +25,7 @@ def thresholds(*steps):
 
 
 TEXT_ONLY = thresholds(("text", None))
-BAD = thresholds(("text", None), (AMBER, 1))
+BAD = thresholds(("text", None), (RED, 1))
 USE = thresholds(("text", None), (AMBER, 80), (RED, 95))
 OK = vmap([(0, "FAILED", RED), (1, "OK", GREEN)])
 UP = vmap([(0, "DOWN", RED), (1, "UP", GREEN)])
@@ -37,7 +37,7 @@ STATE_DISK = '100 * (1 - node_filesystem_avail_bytes{node="host",mountpoint="/va
 GUEST_STATE = ('(count by (project,name) (incus_cpu_seconds_total{job="incus"}) > bool 0 '
                'or max by (project,name) (cv_guest_expected_running) * 0) '
                'and on() (max(up{job="incus"}) == 1)')
-INFRA = 'remote_ip:in("100.80.1.10","100.80.2.2","100.80.2.3","100.80.0.10")'
+INFRA = 'remote_ip:in("100.80.1.10","100.80.2.2","100.80.2.3","100.80.0.10","127.0.0.1")'
 FIREWALLS = 'remote_ip:in("100.80.2.2","100.80.2.3")'
 # Message hostnames are untrusted, including in retained stream labels.
 LOG_IDENTITY = (' | copy remote_ip as hostname'
@@ -45,6 +45,7 @@ LOG_IDENTITY = (' | copy remote_ip as hostname'
                 ' | format if (remote_ip:="100.80.2.2") "fw1" as hostname'
                 ' | format if (remote_ip:="100.80.2.3") "fw2" as hostname'
                 ' | format if (remote_ip:="100.80.0.10") "wan" as hostname'
+                ' | format if (remote_ip:="127.0.0.1") "svc" as hostname'
                 ' | set_stream_fields hostname, app_name')
 # Keep the first warning of a stack trace; exclude its continuation records and routine audit.
 STACK = (r'^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|'
@@ -66,7 +67,7 @@ SECURITY_EVENTS = (INFRA + ' AND ('
                    '_msg:~' + json.dumps(r'exe="[^"]*/(greetd|tuigreet|login|su|sudo|sshd)"') + ') '
                    'OR _msg:~' + json.dumps('apparmor="(DENIED|ALLOWED)"|type=(USER_DEVICE|1137) ') + ' '
                    'OR (app_name:~"^usbguard(-daemon)?$" AND _msg:~"(?i)allow|block|reject|denied") '
-                   'OR app_name:in("slot","fetch-release","guests","convergent-watchdog","sys-firewall") '
+                   'OR _msg:~"key=.(identity|usb|guestkeys)." OR app_name:in("incus-audit","slot","fetch-release","guests","convergent-watchdog","sys-firewall") '
                    'OR (' + FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND ' + QUIET +
                    ' | replace (' + json.dumps('apparmor="ALLOWED"') + ', ' +
                    json.dumps('apparmor="ALLOWED" [complain]') + ')')
@@ -88,6 +89,8 @@ def target(expr, legend=None, ref="A", instant=False, optional="", ds=PROM, **ex
     t = {"refId": ref, "expr": expr, "datasource": ds, "editorMode": "code"}
     if ds == PROM:
         t.update(instant=instant, range=not instant)
+        if any(name in expr for name in ("incus_", "convergent_", "cv_guest_")):
+            t["interval"] = "1m"
     if legend:
         t["legendFormat"] = legend
     if optional:
@@ -108,16 +111,17 @@ def explore(ds, expr, query_type=None):
     if query_type:
         q["queryType"] = query_type
     return "/explore?left=" + quote(json.dumps({"datasource": ds["uid"], "queries": [q],
-                                               "range": {"from": "now-1h", "to": "now"}}, separators=(",", ":")))
+                                               "range": {"from": "${__from}", "to": "${__to}"}}, separators=(",", ":")), safe="$:{}")
 
 
 def nav():
     pages = [("Overview", "/d/cv-overview"), ("Network", "/d/cv-network-path"),
-             ("Guests", "/d/cv-compartments"), ("Security", "/d/cv-security"),
+             ("Guests", "/d/cv-compartments"), ("Host", "/d/cv-host"),
+             ("Security", "/d/cv-security"), ("Monitoring", "/d/cv-monitoring"),
              ("Explore · all logs", explore(LOGS, "*", "instant"))]
     return [{"title": title, "type": "link", "url": url, "keepTime": True,
              "targetBlank": False, "icon": "dashboard", "asDropdown": False,
-             "includeVars": False, "tags": []} for title, url in pages]
+             "includeVars": True, "tags": []} for title, url in pages]
 
 
 class Canvas:
@@ -285,6 +289,29 @@ class Page:
                             "collapsed": False, "gridPos": grid(0, y, 24, 1), "panels": []})
         return y + 1
 
+    def collapse(self, title, titles):
+        children = [p for p in self.panels if p['title'] in titles]
+        if not children:
+            return
+        next_id = max(p['id'] for p in self.panels) + 1
+        self.panels = [p for p in self.panels if p not in children]
+        index = next((i for i,p in enumerate(self.panels) if p['type'] == 'text'), len(self.panels))
+        self.panels.insert(index, {'id': next_id, 'type': 'row', 'title': title,
+                                  'collapsed': True, 'gridPos': grid(0,0,24,1), 'panels': children})
+
+    def reflow(self):
+        def pack(panels, y):
+            x = height = 0
+            for panel in panels:
+                g = panel['gridPos']
+                if x + g['w'] > 24:
+                    y += height; x = height = 0
+                g['x'], g['y'] = x, y
+                x += g['w']; height = max(height, g['h'])
+                if panel.get('collapsed'):
+                    pack(panel['panels'], y+1)
+        pack(self.panels, 0)
+
     def footer(self, y, content):
         self.panels.append({"id": len(self.panels) + 1, "type": "text", "title": "Not collected",
                             "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
@@ -300,33 +327,40 @@ class Page:
                                           "target": target(CARP_CHANGES + LOG_IDENTITY, ds=LOGS, queryType="instant", maxLines=100)}]}}
 
 
+def guest_labels(expr):
+    return 'max by(project,name) (label_replace(label_replace(%s, "name", "$1", "node", "(.+)"), "project", "default", "node", ".+"))' % expr
+
+
 def guests_table(page, gp, compact=False):
-    keys = "project,name"
-    queries = [GUEST_STATE,
-               'sum by (%s) (rate(incus_cpu_seconds_total{mode=~"user|system"}[2m]))' % keys,
-               'max by (%s) (incus_memory_MemTotal_bytes - incus_memory_MemAvailable_bytes)' % keys,
-               'max by (%s) (incus_memory_MemTotal_bytes)' % keys,
-               '100 * max by (%s) (1 - incus_memory_MemAvailable_bytes / incus_memory_MemTotal_bytes)' % keys]
-    names = ["state", "Incus cores", "Incus RAM", "RAM total", "RAM %"]
+    from health import CHECKER, FW, fresh
+    policy = 'max by (project,name) (cv_guest_expected_running) and on() (' + CHECKER + ')'
+    cpu = guest_labels('100 * (1 - avg by(node) (rate(node_cpu_seconds_total{node=~"fw1|fw2|wan",mode="idle"}[4m])))')
+    ram = guest_labels('(100 * (1 - node_memory_MemAvailable_bytes{node="wan"} / node_memory_MemTotal_bytes{node="wan"})) or (100 * (node_memory_active_bytes{node=~"fw1|fw2"} + node_memory_wired_bytes{node=~"fw1|fw2"}) / node_memory_size_bytes{node=~"fw1|fw2"})')
+    cpu += ' or (100 * sum by(project,name) (rate(incus_cpu_seconds_total{type="container",mode=~"user|system"}[4m])))'
+    ram += ' or (100 * cv_guest_memory_current_bytes / cv_guest_memory_max_bytes)'
+    disk = guest_labels('min by(node) (node_filesystem_avail_bytes{node=~"fw1|fw2|wan",fstype!~"tmpfs|devtmpfs"})')
+    queries = ['clamp_min((' + policy + ') - (' + GUEST_STATE + '), 0)', policy, GUEST_STATE,
+               guest_labels('max by(node) (up{job="node",node=~"fw1|fw2|wan"})'), cpu, ram, disk]
+    names = ['missing expected', 'autostart', 'running', 'exporter', 'guest CPU %', 'guest RAM %', 'filesystem free']
+    service = guest_labels('(convergent_pf_enabled * convergent_unbound_up) and on(node) (' + FW + ')')
+    service += ' or label_replace(label_replace(min(up{node="svc"}), "name", "svc", "", ""), "project", "default", "", "")'
+    if compact:
+        queries, names = queries[:4], names[:4]
+    queries += [service, 'cv_guest_update_phase and on() (' + fresh('guest_updates',180) + ')']
+    names += ['services', 'update phase']
     if not compact:
-        for metric, name, factor in [("incus_network_receive_bytes_total", "in", 8),
-                                     ("incus_network_transmit_bytes_total", "out", 8),
-                                     ("incus_disk_read_bytes_total", "read", 1),
-                                     ("incus_disk_written_bytes_total", "written", 1)]:
-            sel = '{device!="lo"}' if "network" in metric else ""
-            queries.append('%d * sum by (%s) (rate(%s%s[2m]))' % (factor, keys, metric, sel))
-            names.append(name)
-    return page.table("Instances · now", [target(q) for q in queries], gp, ["project", "name"], names,
-                      "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. "
-                      "A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; "
-                      "agentless fw/wan VMs report capped QEMU RSS against configured RAM. "
-                      "Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
-                      [ov("state", mappings=STATE),
-                       ov("name", links=[{"title": "This instance", "url": "/d/cv-compartments?var-project=${__data.fields.project}&var-name=${__value.raw}&${__url_time_range}"}]),
-                       ov("Incus cores", unit="suffix: cores", decimals=2),
-                       ov("Incus RAM", unit="bytes"), ov("RAM total", unit="bytes"),
-                       ov("RAM %", unit="percent", min=0, max=100, thresholds=USE),
-                       ov("in", unit="bps"), ov("out", unit="bps"), ov("read", unit="Bps"), ov("written", unit="Bps")])
+        queries.append(guest_labels('time() - node_boot_time_seconds{node=~"fw1|fw2|wan"}'))
+        names.append('VM uptime')
+    table = page.table('Guest health matrix', [target(q, optional='No native exporter for containers; resource gaps are N/A, not zero.') if i > 2 else target(q) for i,q in enumerate(queries)],
+                      gp, ['project','name'], names,
+                      'Inventory includes stopped on-demand guests as of the last checker scan. Blank policy means inventory is stale. VM CPU is measured inside the VM; container CPU is percent of one core (may exceed 100). OpenBSD RAM is active+wired / pages, WAN uses MemAvailable; container RAM includes cache. svc free is its tightest qgroup headroom; other containers have no filesystem exporter. Exporter is scrape health, not a service probe; Network and Monitoring show services. Updates/restarts are in the lifecycle log below.',
+                      [ov('missing expected', thresholds=BAD), ov('autostart', mappings=vmap([(0,'ON DEMAND',NEUTRAL),(1,'EXPECTED',CYAN)])),
+                       ov('running', mappings=vmap([(0,'STOPPED',NEUTRAL),(1,'RUNNING',GREEN)])),
+                       ov('exporter', mappings=UP), ov('services', mappings=OK), ov('VM uptime',unit='s'), ov('update phase',mappings=vmap([(0,'IDLE',NEUTRAL),(1,'PREPARING',AMBER),(2,'PENDING',AMBER),(3,'COMMITTED',CYAN)])), ov('guest CPU %',unit='percent'), ov('guest RAM %',unit='percent'),
+                       ov('filesystem free',unit='bytes'),
+                       ov('name',links=[{'title':'This instance','url':'/d/cv-compartments?var-project=${__data.fields.project}&var-name=${__value.raw}&${__url_time_range}'}])])
+    table['options']['sortBy'] = [{'displayName':'missing expected','desc':True}]
+    return table
 
 
 def query_var(name, query, default):
@@ -334,5 +368,3 @@ def query_var(name, query, default):
             "query": {"query": query, "refId": "variable"}, "refresh": 2, "sort": 1,
             "multi": False, "includeAll": False, "options": [],
             "current": {"selected": True, "text": default, "value": default}}
-
-

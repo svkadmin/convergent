@@ -11,7 +11,8 @@ sys.dont_write_bytecode = True
 # -I omits the script directory; import only these trusted sibling generators.
 sys.path.insert(0, str(HERE))
 PAGES = (("overview", "overview"), ("network", "network-path"),
-         ("guests", "compartments"), ("security", "security"))
+         ("guests", "compartments"), ("host", "host"),
+         ("security", "security"), ("monitoring", "monitoring"))
 OUTPUT = HERE.parent / "rootfs/usr/share/grafana/dashboards"
 
 

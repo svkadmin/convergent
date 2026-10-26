@@ -1,14 +1,14 @@
 {
   "uid": "cv-security",
   "title": "Convergent · Security",
-  "description": "Measured boot facts, trust, checker and security logs.",
+  "description": "Boot/checker, signed Release/CVE status and security events.",
   "tags": [
     "convergent"
   ],
   "timezone": "browser",
   "editable": false,
   "graphTooltip": 1,
-  "refresh": "5m",
+  "refresh": "1m",
   "time": {
     "from": "now-1h",
     "to": "now"
@@ -19,14 +19,14 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "",
+      "title": "Boot evidence",
       "gridPos": {
         "x": 0,
         "y": 0,
         "w": 14,
-        "h": 2
+        "h": 3
       },
-      "description": "Source: tools/facts boot: EFI SecureBoot=1 and SetupMode=0, kernel confidentiality lockdown, LUKS header against the accepted hash. These are boot-time facts, not continuous verification of the UKI or verity.",
+      "description": "Boot facts require successful collection in this boot. LUKS is an accepted local baseline, including automatic first-run acceptance; it is not release provenance or continuous verification.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -34,7 +34,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(cv_secure_boot_verified)",
+          "expr": "cv_secure_boot_verified and on() (((cv_collector_timestamp_seconds{collector=\"boot\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"boot\"} > time() - 315360000) and (cv_collector_success{collector=\"boot\"} == 1) and on(node) (cv_collector_timestamp_seconds{collector=\"boot\"} >= on(node) group_left node_boot_time_seconds{node=\"host\"})) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -46,7 +46,7 @@
         },
         {
           "refId": "B",
-          "expr": "max(cv_lockdown_enabled)",
+          "expr": "cv_lockdown_enabled and on() (((cv_collector_timestamp_seconds{collector=\"boot\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"boot\"} > time() - 315360000) and (cv_collector_success{collector=\"boot\"} == 1) and on(node) (cv_collector_timestamp_seconds{collector=\"boot\"} >= on(node) group_left node_boot_time_seconds{node=\"host\"})) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -58,7 +58,7 @@
         },
         {
           "refId": "C",
-          "expr": "max(cv_luks_header_matches_release)",
+          "expr": "cv_luks_header_matches_release and on() (((cv_collector_timestamp_seconds{collector=\"boot\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"boot\"} > time() - 315360000) and (cv_collector_success{collector=\"boot\"} == 1) and on(node) (cv_collector_timestamp_seconds{collector=\"boot\"} >= on(node) group_left node_boot_time_seconds{node=\"host\"})) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -66,13 +66,25 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "LUKS header"
+          "legendFormat": "accepted local LUKS baseline"
+        },
+        {
+          "refId": "D",
+          "expr": "cv_collector_timestamp_seconds{collector=\"boot\"} * 1000",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "measured at"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "—",
+          "noValue": "UNKNOWN",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -101,7 +113,7 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "UNVERIFIED",
+                        "text": "FAILED",
                         "color": "#F2495C"
                       }
                     }
@@ -110,7 +122,7 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "VERIFIED",
+                        "text": "OK",
                         "color": "#89C98E"
                       }
                     }
@@ -132,7 +144,7 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "OFF",
+                        "text": "FAILED",
                         "color": "#F2495C"
                       }
                     }
@@ -141,7 +153,7 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "ENFORCING",
+                        "text": "OK",
                         "color": "#89C98E"
                       }
                     }
@@ -153,7 +165,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "LUKS header"
+              "options": "accepted local LUKS baseline"
             },
             "properties": [
               {
@@ -163,7 +175,7 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "CHANGED",
+                        "text": "FAILED",
                         "color": "#F2495C"
                       }
                     }
@@ -172,12 +184,24 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "MATCHES",
+                        "text": "OK",
                         "color": "#89C98E"
                       }
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "measured at"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
               }
             ]
           }
@@ -206,14 +230,14 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "",
+      "title": "Checker evidence",
       "gridPos": {
         "x": 14,
         "y": 0,
         "w": 10,
-        "h": 2
+        "h": 3
       },
-      "description": "Source: tools/check last result and timestamp; tools/facts boot archived pstore record count. Checker must first have a trusted baseline accepted.",
+      "description": "Checker expires after 36h. Inspect sys check and /var/lib/convergent/check/last for failure categories. Crash archives remain in /var/lib/convergent/crash until acknowledged.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -221,7 +245,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(cv_checker_success)",
+          "expr": "cv_checker_success and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -233,7 +257,7 @@
         },
         {
           "refId": "B",
-          "expr": "time() - max(cv_checker_last_run_seconds)",
+          "expr": "time() - cv_checker_last_run_seconds",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -241,11 +265,11 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "checker age"
+          "legendFormat": "age"
         },
         {
           "refId": "C",
-          "expr": "max(cv_crash_records)",
+          "expr": "cv_crash_records",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -259,7 +283,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "—",
+          "noValue": "UNKNOWN",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -309,7 +333,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "checker age"
+              "options": "age"
             },
             "properties": [
               {
@@ -327,7 +351,7 @@
                     },
                     {
                       "color": "#EDB873",
-                      "value": 172800
+                      "value": 129600
                     }
                   ]
                 }
@@ -350,7 +374,7 @@
                       "value": null
                     },
                     {
-                      "color": "#EDB873",
+                      "color": "#F2495C",
                       "value": 1
                     }
                   ]
@@ -383,14 +407,14 @@
     {
       "id": 3,
       "type": "table",
-      "title": "Collectors · now",
+      "title": "Certificates - time remaining",
       "gridPos": {
         "x": 0,
-        "y": 2,
-        "w": 8,
+        "y": 3,
+        "w": 12,
         "h": 6
       },
-      "description": "Source: tools/facts boot, daily, NTS and audit collector success. One instant row per collector; a failed daily collector can still publish readable certificate figures. Checker is separate in the band above.",
+      "description": "Daily certificate inventory; failure and measurement age are on Monitoring. Incus UI certificate is optional and remains managed by its existing owner flow.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -398,130 +422,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (collector) (cv_collector_success)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "result"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "FAILED",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "OK",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
-            },
-            "renameByName": {
-              "Value #A": "result",
-              "Value": "result"
-            },
-            "includeByName": {
-              "collector": true,
-              "Value #A": true,
-              "Value": true
-            },
-            "indexByName": {
-              "collector": 0,
-              "Value #A": 1
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "table",
-      "title": "Certificates · time remaining",
-      "gridPos": {
-        "x": 8,
-        "y": 2,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: tools/facts daily openssl x509 enddate. Only the Incus server certificate is collected; syslog and client certificates are outside this inventory.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "min by (certificate) (cv_certificate_not_after_seconds - time())",
+          "expr": "cv_certificate_not_after_seconds - time()",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -566,26 +467,6 @@
               {
                 "id": "unit",
                 "value": "s"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "#F2495C",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1209600
-                    },
-                    {
-                      "color": "text",
-                      "value": 2592000
-                    }
-                  ]
-                }
               }
             ]
           }
@@ -628,16 +509,16 @@
       ]
     },
     {
-      "id": 5,
+      "id": 4,
       "type": "stat",
-      "title": "Time and audit",
+      "title": "Time / audit evidence",
       "gridPos": {
-        "x": 16,
-        "y": 2,
-        "w": 8,
+        "x": 12,
+        "y": 3,
+        "w": 12,
         "h": 6
       },
-      "description": "Source: tools/facts nts (every minute) chronyc sources/authdata and hourly auditctl lost; host node_exporter configured sysctl collector kernel.tainted. Taint is a bitmask, not a verdict about compromise.",
+      "description": "NTS and audit status are read every minute. Any lost audit record needs attention.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -645,7 +526,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(cv_nts_authenticated_sources)",
+          "expr": "cv_nts_authenticated_sources and on() (((cv_collector_timestamp_seconds{collector=\"nts\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"nts\"} > time() - 180) and (cv_collector_success{collector=\"nts\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -653,11 +534,11 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "NTS agreeing authenticated"
+          "legendFormat": "NTS sources"
         },
         {
           "refId": "B",
-          "expr": "max(cv_audit_lost_total)",
+          "expr": "cv_audit_lost_total and on() (((cv_collector_timestamp_seconds{collector=\"audit\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"audit\"} > time() - 180) and (cv_collector_success{collector=\"audit\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -665,11 +546,11 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "audit records lost"
+          "legendFormat": "audit lost"
         },
         {
           "refId": "C",
-          "expr": "max(node_sysctl_kernel_tainted{node=\"host\"})",
+          "expr": "time() - cv_collector_timestamp_seconds{collector=~\"nts|audit\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -677,7 +558,7 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "kernel taint"
+          "legendFormat": "{{collector}} age"
         }
       ],
       "fieldConfig": {
@@ -702,7 +583,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "NTS agreeing authenticated"
+              "options": "audit lost"
             },
             "properties": [
               {
@@ -710,74 +591,12 @@
                 "value": {
                   "mode": "absolute",
                   "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
                     {
                       "color": "#F2495C",
-                      "value": null
-                    },
-                    {
-                      "color": "text",
-                      "value": 2
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "audit records lost"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "kernel taint"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "CLEAN",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  }
-                ]
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
                       "value": 1
                     }
                   ]
@@ -808,661 +627,25 @@
       }
     },
     {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Clock · absolute offset",
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: host and wan node_exporter timex. Absolute kernel clock offset; amber in alert rules above 0.1 seconds. OpenBSD does not expose this collector.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "abs(node_timex_offset_seconds{node=~\"host|wan\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 0.1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Audit · lost records",
-      "gridPos": {
-        "x": 8,
-        "y": 8,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: tools/facts hourly auditctl -s lost counter. Any lost record needs attention; this is not a count of audited commands.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cv_audit_lost_total",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "lost this boot"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 8,
-      "type": "table",
-      "title": "NVMe · health",
-      "gridPos": {
-        "x": 16,
-        "y": 8,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: tools/facts daily smartctl NVMe health log. Spare should exceed its device threshold; media errors or critical-warning bits need attention. Absent on QEMU's virtio disk.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by (device) (cv_nvme_spare_percent)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "cvOptional": "No NVMe hardware in QEMU.",
-          "format": "table"
-        },
-        {
-          "refId": "B",
-          "expr": "max by (device) (cv_nvme_spare_threshold_percent)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "cvOptional": "No NVMe hardware in QEMU.",
-          "format": "table"
-        },
-        {
-          "refId": "C",
-          "expr": "max by (device) (cv_nvme_media_errors_total)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "cvOptional": "No NVMe hardware in QEMU.",
-          "format": "table"
-        },
-        {
-          "refId": "D",
-          "expr": "max by (device) (cv_nvme_critical_warning)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "cvOptional": "No NVMe hardware in QEMU.",
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "spare"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "threshold"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 100
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "media errors"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "warning bits"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
-            },
-            "renameByName": {
-              "Value #A": "spare",
-              "Value #B": "threshold",
-              "Value #C": "media errors",
-              "Value #D": "warning bits"
-            },
-            "includeByName": {
-              "device": true,
-              "Value #A": true,
-              "Value #B": true,
-              "Value #C": true,
-              "Value #D": true
-            },
-            "indexByName": {
-              "device": 0,
-              "Value #A": 1,
-              "Value #B": 2,
-              "Value #C": 3,
-              "Value #D": 4
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "type": "table",
-      "title": "Textfile freshness · now",
-      "gridPos": {
-        "x": 0,
-        "y": 14,
-        "w": 12,
-        "h": 7
-      },
-      "description": "Source: node_exporter textfile mtimes across host, fw1/fw2 and wan. Boot facts age with this boot; daily facts refresh after 20 hours; audit facts refresh hourly; firewall/wan facts every minute; checker after boot/update and daily. No single age threshold fits them all.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by (node,file) (time() - node_textfile_mtime_seconds)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "age"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "s"
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
-            },
-            "renameByName": {
-              "Value #A": "age",
-              "Value": "age"
-            },
-            "includeByName": {
-              "node": true,
-              "file": true,
-              "Value #A": true,
-              "Value": true
-            },
-            "indexByName": {
-              "node": 0,
-              "file": 1,
-              "Value #A": 2
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "type": "state-timeline",
-      "title": "Checker · over the range",
-      "gridPos": {
-        "x": 12,
-        "y": 14,
-        "w": 12,
-        "h": 7
-      },
-      "description": "Source: tools/check result at each scrape. A gap means no result; failure stays visible until the checker passes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max(cv_checker_success)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "checker"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "FAILED",
-                  "color": "#F2495C"
-                }
-              }
-            },
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "OK",
-                  "color": "#89C98E"
-                }
-              }
-            }
-          ],
-          "min": 0,
-          "max": 2,
-          "custom": {
-            "fillOpacity": 80,
-            "lineWidth": 0,
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showValue": "always",
-        "mergeValues": true,
-        "rowHeight": 0.75,
-        "alignValue": "left",
-        "legend": {
-          "showLegend": false
-        },
-        "tooltip": {
-          "mode": "single"
-        }
-      }
-    },
-    {
-      "id": 11,
-      "type": "logs",
-      "title": "Security · recent events",
-      "gridPos": {
-        "x": 0,
-        "y": 21,
-        "w": 24,
-        "h": 10
-      },
-      "description": "Source: host/wan syslog-ng and fw syslogd to VictoriaLogs. Successful/failed logins (including greetd/tuigreet and su), sudo password failures and commands, USBGuard decisions, AppArmor denials and complain-mode events (ALLOWED), CARP takeovers, guest updates/failures, host updates, bless and exhausted-slot fallback. Latest 50 records in the selected range; hostname is derived from the connection's remote_ip; app_name and message are sender claims. Routine audit and stack continuations excluded; all logs are in Explore.",
-      "datasource": {
-        "type": "victoriametrics-logs-datasource",
-        "uid": "logs"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND ((app_name:in(\"greetd\",\"tuigreet\",\"login\",\"su\",\"sudo\",\"sshd\") AND _msg:~\"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=\") OR (_msg:~\"type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) \" AND _msg:~\"exe=\\\"[^\\\"]*/(greetd|tuigreet|login|su|sudo|sshd)\\\"\") OR _msg:~\"apparmor=\\\"(DENIED|ALLOWED)\\\"|type=(USER_DEVICE|1137) \" OR (app_name:~\"^usbguard(-daemon)?$\" AND _msg:~\"(?i)allow|block|reject|denied\") OR app_name:in(\"slot\",\"fetch-release\",\"guests\",\"convergent-watchdog\",\"sys-firewall\") OR (remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\") | replace (\"apparmor=\\\"ALLOWED\\\"\", \"apparmor=\\\"ALLOWED\\\" [complain]\") | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
-          "datasource": {
-            "type": "victoriametrics-logs-datasource",
-            "uid": "logs"
-          },
-          "editorMode": "code",
-          "queryType": "instant",
-          "maxLines": 50
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "showTime": true,
-        "showLabels": true,
-        "wrapLogMessage": true,
-        "sortOrder": "Descending",
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "showCommonLabels": false,
-        "enableInfiniteScrolling": false
-      },
-      "links": [
-        {
-          "title": "These lines in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28%28app_name%3Ain%28%5C%22greetd%5C%22%2C%5C%22tuigreet%5C%22%2C%5C%22login%5C%22%2C%5C%22su%5C%22%2C%5C%22sudo%5C%22%2C%5C%22sshd%5C%22%29%20AND%20_msg%3A~%5C%22%28%3Fi%29session%20opened%7Csuccessful%20su%7Caccepted%20%28password%7Cpublickey%29%7Cauthentication%20%28failure%7Cfailed%7Cerror%7Csuccess%29%7Cfailed%20%28password%7Cpublickey%7Clogin%7Csu%29%7Cpam_authenticate%7Cpam_faillock%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%7CCOMMAND%3D%5C%22%29%20OR%20%28_msg%3A~%5C%22type%3D%28USER_AUTH%7CUSER_LOGIN%7CUSER_START%7C1100%7C1105%7C1112%29%20%5C%22%20AND%20_msg%3A~%5C%22exe%3D%5C%5C%5C%22%5B%5E%5C%5C%5C%22%5D%2A/%28greetd%7Ctuigreet%7Clogin%7Csu%7Csudo%7Csshd%29%5C%5C%5C%22%5C%22%29%20OR%20_msg%3A~%5C%22apparmor%3D%5C%5C%5C%22%28DENIED%7CALLOWED%29%5C%5C%5C%22%7Ctype%3D%28USER_DEVICE%7C1137%29%20%5C%22%20OR%20%28app_name%3A~%5C%22%5Eusbguard%28-daemon%29%3F%24%5C%22%20AND%20_msg%3A~%5C%22%28%3Fi%29allow%7Cblock%7Creject%7Cdenied%5C%22%29%20OR%20app_name%3Ain%28%5C%22slot%5C%22%2C%5C%22fetch-release%5C%22%2C%5C%22guests%5C%22%2C%5C%22convergent-watchdog%5C%22%2C%5C%22sys-firewall%5C%22%29%20OR%20%28remote_ip%3Ain%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20_msg%3A~%5C%22carp%5B0-9%5D%2B%3A.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20MASTER%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%20%7C%20replace%20%28%5C%22apparmor%3D%5C%5C%5C%22ALLOWED%5C%5C%5C%22%5C%22%2C%20%5C%22apparmor%3D%5C%5C%5C%22ALLOWED%5C%5C%5C%22%20%5Bcomplain%5D%5C%22%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
-        },
-        {
-          "title": "All logs in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
-        }
-      ]
-    },
-    {
-      "id": 12,
+      "id": 5,
       "type": "row",
       "title": "Release",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 9,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 13,
+      "id": 6,
       "type": "table",
       "title": "Installed vs latest release",
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 10,
         "w": 8,
         "h": 5
       },
@@ -1551,12 +734,12 @@
       ]
     },
     {
-      "id": 14,
+      "id": 7,
       "type": "stat",
       "title": "Advisory evidence",
       "gridPos": {
         "x": 8,
-        "y": 32,
+        "y": 10,
         "w": 16,
         "h": 5
       },
@@ -1757,7 +940,7 @@
                       "value": null
                     },
                     {
-                      "color": "#EDB873",
+                      "color": "#F2495C",
                       "value": 1
                     }
                   ]
@@ -1840,7 +1023,7 @@
                       "value": null
                     },
                     {
-                      "color": "#EDB873",
+                      "color": "#F2495C",
                       "value": 1
                     }
                   ]
@@ -1899,12 +1082,12 @@
       }
     },
     {
-      "id": 15,
+      "id": 8,
       "type": "table",
       "title": "Key package versions · release inventories",
       "gridPos": {
         "x": 0,
-        "y": 37,
+        "y": 15,
         "w": 24,
         "h": 6
       },
@@ -2009,12 +1192,12 @@
       ]
     },
     {
-      "id": 16,
+      "id": 9,
       "type": "table",
       "title": "Open advisories · installed and latest",
       "gridPos": {
         "x": 0,
-        "y": 43,
+        "y": 21,
         "w": 24,
         "h": 9
       },
@@ -2115,19 +1298,248 @@
       ]
     },
     {
-      "id": 17,
+      "id": 10,
+      "type": "logs",
+      "title": "Security · recent events",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 10
+      },
+      "description": "Authentication, denials, identity/USB/guest-key audit events, update/deferred/bless/fallback and Incus lifecycle evidence. Source identity comes from the connection, not sender hostname; last 50 records in the selected range.",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\",\"127.0.0.1\") AND ((app_name:in(\"greetd\",\"tuigreet\",\"login\",\"su\",\"sudo\",\"sshd\") AND _msg:~\"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=\") OR (_msg:~\"type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) \" AND _msg:~\"exe=\\\"[^\\\"]*/(greetd|tuigreet|login|su|sudo|sshd)\\\"\") OR _msg:~\"apparmor=\\\"(DENIED|ALLOWED)\\\"|type=(USER_DEVICE|1137) \" OR (app_name:~\"^usbguard(-daemon)?$\" AND _msg:~\"(?i)allow|block|reject|denied\") OR _msg:~\"key=.(identity|usb|guestkeys).\" OR app_name:in(\"incus-audit\",\"slot\",\"fetch-release\",\"guests\",\"convergent-watchdog\",\"sys-firewall\") OR (remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\") | replace (\"apparmor=\\\"ALLOWED\\\"\", \"apparmor=\\\"ALLOWED\\\" [complain]\") | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "logs"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "maxLines": 50
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showCommonLabels": false,
+        "enableInfiniteScrolling": false
+      },
+      "links": [
+        {
+          "title": "These lines in Explore",
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22remote_ip:in%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%2C%5C%22127.0.0.1%5C%22%29%20AND%20%28%28app_name:in%28%5C%22greetd%5C%22%2C%5C%22tuigreet%5C%22%2C%5C%22login%5C%22%2C%5C%22su%5C%22%2C%5C%22sudo%5C%22%2C%5C%22sshd%5C%22%29%20AND%20_msg:~%5C%22%28%3Fi%29session%20opened%7Csuccessful%20su%7Caccepted%20%28password%7Cpublickey%29%7Cauthentication%20%28failure%7Cfailed%7Cerror%7Csuccess%29%7Cfailed%20%28password%7Cpublickey%7Clogin%7Csu%29%7Cpam_authenticate%7Cpam_faillock%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%7CCOMMAND%3D%5C%22%29%20OR%20%28_msg:~%5C%22type%3D%28USER_AUTH%7CUSER_LOGIN%7CUSER_START%7C1100%7C1105%7C1112%29%20%5C%22%20AND%20_msg:~%5C%22exe%3D%5C%5C%5C%22%5B%5E%5C%5C%5C%22%5D%2A%2F%28greetd%7Ctuigreet%7Clogin%7Csu%7Csudo%7Csshd%29%5C%5C%5C%22%5C%22%29%20OR%20_msg:~%5C%22apparmor%3D%5C%5C%5C%22%28DENIED%7CALLOWED%29%5C%5C%5C%22%7Ctype%3D%28USER_DEVICE%7C1137%29%20%5C%22%20OR%20%28app_name:~%5C%22%5Eusbguard%28-daemon%29%3F$%5C%22%20AND%20_msg:~%5C%22%28%3Fi%29allow%7Cblock%7Creject%7Cdenied%5C%22%29%20OR%20_msg:~%5C%22key%3D.%28identity%7Cusb%7Cguestkeys%29.%5C%22%20OR%20app_name:in%28%5C%22incus-audit%5C%22%2C%5C%22slot%5C%22%2C%5C%22fetch-release%5C%22%2C%5C%22guests%5C%22%2C%5C%22convergent-watchdog%5C%22%2C%5C%22sys-firewall%5C%22%29%20OR%20%28remote_ip:in%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20_msg:~%5C%22carp%5B0-9%5D%2B:.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20MASTER%5C%22%29%29%20AND%20NOT%20_msg:~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name:%3D%5C%22kernel%5C%22%20AND%20_msg:~%5C%22%5E%28%5B%5B:space:%5D%5D%7CCall%20%5BTt%5Drace:%7CCPU:%20%5B0-9%5D%7CHardware%20name:%7CModules%20linked%20in:%7CRIP:%7CRSP:%7CR%5BA-Z0-9%5D{2}:%7CEFLAGS:%7CFS:%7CGS:%7CCS:%7CCR%5B0-9%5D:%7CPKRU:%7CCode:%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C%2F%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B%2F0x%29%5C%22%29%20%7C%20replace%20%28%5C%22apparmor%3D%5C%5C%5C%22ALLOWED%5C%5C%5C%22%5C%22%2C%20%5C%22apparmor%3D%5C%5C%5C%22ALLOWED%5C%5C%5C%22%20%5Bcomplain%5D%5C%22%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
+        },
+        {
+          "title": "All logs in Explore",
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "state-timeline",
+      "title": "Checker history",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Historical result; current freshness is above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cv_checker_success",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "checker"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            }
+          ],
+          "min": 0,
+          "max": 2,
+          "custom": {
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "always",
+        "mergeValues": true,
+        "rowHeight": 0.75,
+        "alignValue": "left",
+        "legend": {
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Clock offset",
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Warns after 5m above 0.1s; independent absolute wall-clock checks remain in rules.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "abs(node_timex_offset_seconds{node=~\"host|wan\"})",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 0.1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 13,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 47,
         "w": 24,
         "h": 3
       },
       "options": {
         "mode": "markdown",
-        "content": "Continuous UKI/ESP hashes, live dm-verity verification, TPM attestation, per-key audit counters, AppArmor/USBGuard policy inventories, file integrity sweeps, guest security state and certificates other than incus-server are not collected. Boot, daily and audit facts retain their last sample until rewritten: read freshness alongside the verdicts."
+        "content": "Continuous UKI/ESP verification, TPM attestation and per-key policy inventories are not collected. Host hardware is on Host; collector plumbing is on Monitoring. The latest checker report and crash archive contain the local recovery evidence."
       }
     }
   ],
@@ -2143,7 +1555,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2154,7 +1566,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2165,7 +1577,18 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Host",
+      "type": "link",
+      "url": "/d/cv-host",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2176,18 +1599,29 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Monitoring",
+      "type": "link",
+      "url": "/d/cv-monitoring",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
       "title": "Explore · all logs",
       "type": "link",
-      "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D",
+      "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
       "keepTime": true,
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     }
   ],
@@ -2204,7 +1638,7 @@
         },
         "target": {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"

@@ -1,7 +1,7 @@
 {
   "uid": "cv-compartments",
   "title": "Convergent · Guests",
-  "description": "Incus state and resource use; select a running instance.",
+  "description": "Guest health, lifecycle, native pressure and secondary host cost.",
   "tags": [
     "convergent"
   ],
@@ -18,15 +18,15 @@
   "panels": [
     {
       "id": 1,
-      "type": "stat",
-      "title": "",
+      "type": "table",
+      "title": "Guest health matrix",
       "gridPos": {
         "x": 0,
         "y": 0,
         "w": 24,
-        "h": 2
+        "h": 9
       },
-      "description": "Source: VictoriaMetrics up, Incus /1.0/metrics CPU presence, tools/check autostart inventory. Expected does not include on-demand browsers.",
+      "description": "Inventory includes stopped on-demand guests as of the last checker scan. Blank policy means inventory is stale. VM CPU is measured inside the VM; container CPU is percent of one core (may exceed 100). OpenBSD RAM is active+wired / pages, WAN uses MemAvailable; container RAM includes cache. svc free is its tightest qgroup headroom; other containers have no filesystem exporter. Exporter is scrape health, not a service probe; Network and Monitoring show services. Updates/restarts are in the lifecycle log below.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -34,7 +34,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(up{job=\"incus\"})",
+          "expr": "clamp_min((max by (project,name) (cv_guest_expected_running) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))) - ((count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)), 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -42,11 +42,12 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "Incus scrape"
+          "interval": "1m",
+          "format": "table"
         },
         {
           "refId": "B",
-          "expr": "count(count by (project,name) (incus_cpu_seconds_total))",
+          "expr": "max by (project,name) (cv_guest_expected_running) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -54,111 +55,11 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "running instances"
+          "interval": "1m",
+          "format": "table"
         },
         {
           "refId": "C",
-          "expr": "sum(cv_guest_expected_running)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "expected autostart"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": []
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Incus scrape"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 2,
-      "type": "table",
-      "title": "Instances · now",
-      "gridPos": {
-        "x": 0,
-        "y": 2,
-        "w": 24,
-        "h": 9
-      },
-      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; agentless fw/wan VMs report capped QEMU RSS against configured RAM. Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
           "expr": "(count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)",
           "datasource": {
             "type": "prometheus",
@@ -167,35 +68,12 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "B",
-          "expr": "sum by (project,name) (rate(incus_cpu_seconds_total{mode=~\"user|system\"}[2m]))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "C",
-          "expr": "max by (project,name) (incus_memory_MemTotal_bytes - incus_memory_MemAvailable_bytes)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
+          "interval": "1m",
           "format": "table"
         },
         {
           "refId": "D",
-          "expr": "max by (project,name) (incus_memory_MemTotal_bytes)",
+          "expr": "max by(project,name) (label_replace(label_replace(max by(node) (up{job=\"node\",node=~\"fw1|fw2|wan\"}), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -203,11 +81,12 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         },
         {
           "refId": "E",
-          "expr": "100 * max by (project,name) (1 - incus_memory_MemAvailable_bytes / incus_memory_MemTotal_bytes)",
+          "expr": "max by(project,name) (label_replace(label_replace(100 * (1 - avg by(node) (rate(node_cpu_seconds_total{node=~\"fw1|fw2|wan\",mode=\"idle\"}[4m]))), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\")) or (100 * sum by(project,name) (rate(incus_cpu_seconds_total{type=\"container\",mode=~\"user|system\"}[4m])))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -215,11 +94,13 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         },
         {
           "refId": "F",
-          "expr": "8 * sum by (project,name) (rate(incus_network_receive_bytes_total{device!=\"lo\"}[2m]))",
+          "expr": "max by(project,name) (label_replace(label_replace((100 * (1 - node_memory_MemAvailable_bytes{node=\"wan\"} / node_memory_MemTotal_bytes{node=\"wan\"})) or (100 * (node_memory_active_bytes{node=~\"fw1|fw2\"} + node_memory_wired_bytes{node=~\"fw1|fw2\"}) / node_memory_size_bytes{node=~\"fw1|fw2\"}), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\")) or (100 * cv_guest_memory_current_bytes / cv_guest_memory_max_bytes)",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -227,11 +108,13 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         },
         {
           "refId": "G",
-          "expr": "8 * sum by (project,name) (rate(incus_network_transmit_bytes_total{device!=\"lo\"}[2m]))",
+          "expr": "max by(project,name) (label_replace(label_replace(min by(node) (node_filesystem_avail_bytes{node=~\"fw1|fw2|wan\",fstype!~\"tmpfs|devtmpfs\"}), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\"))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -239,11 +122,12 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         },
         {
           "refId": "H",
-          "expr": "1 * sum by (project,name) (rate(incus_disk_read_bytes_total[2m]))",
+          "expr": "max by(project,name) (label_replace(label_replace((convergent_pf_enabled * convergent_unbound_up) and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\")) or label_replace(label_replace(min(up{node=\"svc\"}), \"name\", \"svc\", \"\", \"\"), \"project\", \"default\", \"\", \"\")",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -251,11 +135,13 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         },
         {
           "refId": "I",
-          "expr": "1 * sum by (project,name) (rate(incus_disk_written_bytes_total[2m]))",
+          "expr": "cv_guest_update_phase and on() (((cv_collector_timestamp_seconds{collector=\"guest_updates\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"guest_updates\"} > time() - 180) and (cv_collector_success{collector=\"guest_updates\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -263,6 +149,21 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
+          "format": "table"
+        },
+        {
+          "refId": "J",
+          "expr": "max by(project,name) (label_replace(label_replace(time() - node_boot_time_seconds{node=~\"fw1|fw2|wan\"}, \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\"))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
           "format": "table"
         }
       ],
@@ -294,7 +195,62 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "state"
+              "options": "missing expected"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#F2495C",
+                      "value": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "autostart"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "ON DEMAND",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "EXPECTED",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "running"
             },
             "properties": [
               {
@@ -305,7 +261,7 @@
                     "options": {
                       "0": {
                         "text": "STOPPED",
-                        "color": "#F2495C"
+                        "color": "#A6B0BC"
                       }
                     }
                   },
@@ -325,6 +281,165 @@
           {
             "matcher": {
               "id": "byName",
+              "options": "exporter"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "DOWN",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "UP",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "services"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "VM uptime"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "update phase"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "IDLE",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "PREPARING",
+                        "color": "#EDB873"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "PENDING",
+                        "color": "#EDB873"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "3": {
+                        "text": "COMMITTED",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "guest CPU %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "guest RAM %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "filesystem free"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
               "options": "name"
             },
             "properties": [
@@ -338,134 +453,6 @@
                 ]
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Incus cores"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "suffix: cores"
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Incus RAM"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bytes"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RAM total"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bytes"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RAM %"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 100
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 80
-                    },
-                    {
-                      "color": "#F2495C",
-                      "value": 95
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "in"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "out"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "read"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "Bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "written"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "Bps"
-              }
-            ]
           }
         ]
       },
@@ -474,7 +461,13 @@
         "cellHeight": "md",
         "footer": {
           "show": false
-        }
+        },
+        "sortBy": [
+          {
+            "displayName": "missing expected",
+            "desc": true
+          }
+        ]
       },
       "transformations": [
         {
@@ -489,15 +482,16 @@
               "__name__": true
             },
             "renameByName": {
-              "Value #A": "state",
-              "Value #B": "Incus cores",
-              "Value #C": "Incus RAM",
-              "Value #D": "RAM total",
-              "Value #E": "RAM %",
-              "Value #F": "in",
-              "Value #G": "out",
-              "Value #H": "read",
-              "Value #I": "written"
+              "Value #A": "missing expected",
+              "Value #B": "autostart",
+              "Value #C": "running",
+              "Value #D": "exporter",
+              "Value #E": "guest CPU %",
+              "Value #F": "guest RAM %",
+              "Value #G": "filesystem free",
+              "Value #H": "services",
+              "Value #I": "update phase",
+              "Value #J": "VM uptime"
             },
             "includeByName": {
               "project": true,
@@ -510,7 +504,8 @@
               "Value #F": true,
               "Value #G": true,
               "Value #H": true,
-              "Value #I": true
+              "Value #I": true,
+              "Value #J": true
             },
             "indexByName": {
               "project": 0,
@@ -523,36 +518,24 @@
               "Value #F": 7,
               "Value #G": 8,
               "Value #H": 9,
-              "Value #I": 10
+              "Value #I": 10,
+              "Value #J": 11
             }
           }
         }
       ]
     },
     {
-      "id": 3,
-      "type": "row",
-      "title": "Selected instance · $project / $name",
-      "collapsed": false,
+      "id": 2,
+      "type": "stat",
+      "title": "Inventory age",
       "gridPos": {
         "x": 0,
-        "y": 11,
+        "y": 9,
         "w": 24,
-        "h": 1
+        "h": 2
       },
-      "panels": []
-    },
-    {
-      "id": 4,
-      "type": "timeseries",
-      "title": "CPU · Incus cores",
-      "gridPos": {
-        "x": 0,
-        "y": 12,
-        "w": 12,
-        "h": 7
-      },
-      "description": "Source: Incus user plus system CPU time. For agentless fw/wan VMs this is QEMU vCPU thread overhead, excluding guest execution; it is not guest CPU utilization.",
+      "description": "Autostart/on-demand inventory updates with the checker; unknown after 36h. Historical series retain stopped instance selectors.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -560,20 +543,20 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(incus_cpu_seconds_total{project=~\"${project:regex}\",name=~\"${name:regex}\",mode=~\"user|system\"}[$__rate_interval]))",
+          "expr": "time() - cv_checker_last_run_seconds",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
           },
           "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "cores"
+          "instant": true,
+          "range": false,
+          "legendFormat": "checker / policy age"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "suffix: cores",
+          "unit": "s",
           "noValue": "—",
           "thresholds": {
             "mode": "absolute",
@@ -585,18 +568,155 @@
             ]
           },
           "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
+            "mode": "thresholds"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "logs",
+      "title": "Selected instance - lifecycle / updates",
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 24,
+        "h": 8
+      },
+      "description": "Incus lifecycle forwarding already exists. Guest update start, failure, deferred and success messages share this view. Match is a name search; inspect the resource field for the exact instance.",
+      "datasource": {
+        "type": "victoriametrics-logs-datasource",
+        "uid": "logs"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "remote_ip:=\"100.80.1.10\" app_name:in(\"incus-audit\",\"guests\",\"sys-firewall\") _msg:~\"${name:regex}\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
+          "datasource": {
+            "type": "victoriametrics-logs-datasource",
+            "uid": "logs"
+          },
+          "editorMode": "code",
+          "queryType": "instant",
+          "maxLines": 50
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "signature",
+        "enableLogDetails": true,
+        "showCommonLabels": false,
+        "enableInfiniteScrolling": false
+      },
+      "links": [
+        {
+          "title": "These lines in Explore",
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22remote_ip:%3D%5C%22100.80.1.10%5C%22%20app_name:in%28%5C%22incus-audit%5C%22%2C%5C%22guests%5C%22%2C%5C%22sys-firewall%5C%22%29%20_msg:~%5C%22${name:regex}%5C%22%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
+        },
+        {
+          "title": "All logs in Explore",
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Native VM CPU",
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Inside-VM CPU idle, including guest execution. Not QEMU thread accounting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * (1 - avg by(node) (rate(node_cpu_seconds_total{node=~\"${name:regex}\",mode=\"idle\"}[4m])))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "{{node}}",
+          "cvOptional": "Native exporter exists only for fw1/fw2/wan; stopped guests have no fresh data."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
           },
           "min": 0,
-          "max": null,
+          "max": 100,
           "custom": {
             "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never",
             "spanNulls": false,
             "gradientMode": "none",
-            "axisSoftMax": 1
+            "axisSoftMax": 100
           }
         },
         "overrides": []
@@ -619,14 +739,14 @@
     {
       "id": 5,
       "type": "timeseries",
-      "title": "Memory · Incus used / total",
+      "title": "Container cgroup memory",
       "gridPos": {
         "x": 12,
-        "y": 12,
+        "y": 19,
         "w": 12,
         "h": 7
       },
-      "description": "Source: Incus MemTotal minus MemAvailable. Agentless fw/wan VMs report QEMU RSS capped at configured RAM, with configured RAM as total; this is not guest memory pressure. Containers use their memory limit.",
+      "description": "Host cgroup memory includes cache; memory.events/PSI on Monitoring distinguish reclaim pressure from OOM.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -634,7 +754,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max(incus_memory_MemTotal_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"} - incus_memory_MemAvailable_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"})",
+          "expr": "cv_guest_memory_current_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -642,11 +762,13 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "Incus used"
+          "interval": "1m",
+          "legendFormat": "current",
+          "cvOptional": "Only running svc/browser cgroups."
         },
         {
           "refId": "B",
-          "expr": "max(incus_memory_MemTotal_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"})",
+          "expr": "cv_guest_memory_max_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -654,7 +776,9 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "Incus total"
+          "interval": "1m",
+          "legendFormat": "hard limit",
+          "cvOptional": "Only running svc/browser cgroups."
         }
       ],
       "fieldConfig": {
@@ -689,7 +813,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Incus total"
+              "options": "hard limit"
             },
             "properties": [
               {
@@ -720,15 +844,15 @@
     },
     {
       "id": 6,
-      "type": "timeseries",
-      "title": "Network · by interface",
+      "type": "table",
+      "title": "VM filesystem headroom",
       "gridPos": {
         "x": 0,
-        "y": 19,
-        "w": 12,
-        "h": 7
+        "y": 26,
+        "w": 24,
+        "h": 6
       },
-      "description": "Source: Incus network counters for the selected instance, excluding loopback.",
+      "description": "Guest filesystems measured inside fw/wan; host volume quotas can fill independently.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -736,7 +860,116 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "8 * rate(incus_network_receive_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\",device!=\"lo\"}[$__rate_interval])",
+          "expr": "node_filesystem_avail_bytes{node=~\"${name:regex}\",fstype!~\"tmpfs|devtmpfs\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "cvOptional": "No node exporter in containers; svc volume qgroups are on Host.",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "available"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "available",
+              "Value": "available"
+            },
+            "includeByName": {
+              "node": true,
+              "mountpoint": true,
+              "device": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "node": 0,
+              "mountpoint": 1,
+              "device": 2,
+              "Value #A": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Network - selected interface",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Incus 60s scrape; four-minute window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "8 * rate(incus_network_receive_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\",device!=\"lo\"}[4m])",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -744,11 +977,12 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "in · {{device}}"
+          "interval": "1m",
+          "legendFormat": "in {{device}}"
         },
         {
           "refId": "B",
-          "expr": "8 * rate(incus_network_transmit_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\",device!=\"lo\"}[$__rate_interval])",
+          "expr": "8 * rate(incus_network_transmit_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\",device!=\"lo\"}[4m])",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -756,7 +990,8 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "out · {{device}}"
+          "interval": "1m",
+          "legendFormat": "out {{device}}"
         }
       ],
       "fieldConfig": {
@@ -804,16 +1039,16 @@
       }
     },
     {
-      "id": 7,
+      "id": 8,
       "type": "timeseries",
-      "title": "Disk · block throughput",
+      "title": "Block I/O - selected instance",
       "gridPos": {
         "x": 12,
-        "y": 19,
+        "y": 32,
         "w": 12,
         "h": 7
       },
-      "description": "Source: Incus disk counters. Throughput is block I/O, not filesystem fill; cache hits need no block read.",
+      "description": "Throughput is not filesystem capacity.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -821,7 +1056,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(incus_disk_read_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\"}[$__rate_interval]))",
+          "expr": "sum(rate(incus_disk_read_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\"}[4m]))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -829,11 +1064,12 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
+          "interval": "1m",
           "legendFormat": "read"
         },
         {
           "refId": "B",
-          "expr": "sum(rate(incus_disk_written_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\"}[$__rate_interval]))",
+          "expr": "sum(rate(incus_disk_written_bytes_total{project=~\"${project:regex}\",name=~\"${name:regex}\"}[4m]))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -841,7 +1077,8 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
-          "legendFormat": "written"
+          "interval": "1m",
+          "legendFormat": "write"
         }
       ],
       "fieldConfig": {
@@ -876,7 +1113,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "written"
+              "options": "write"
             },
             "properties": [
               {
@@ -906,135 +1143,183 @@
       }
     },
     {
-      "id": 8,
-      "type": "table",
-      "title": "Expected autostart · now",
+      "id": 12,
+      "type": "row",
+      "title": "Secondary Incus accounting",
+      "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 39,
         "w": 24,
-        "h": 5
+        "h": 1
       },
-      "description": "Source: tools/check snapshots Incus boot.autostart; one row per expected instance. Compare the live state table above.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
+      "panels": [
         {
-          "refId": "A",
-          "expr": "max by (project,name) (cv_guest_expected_running)",
+          "id": 9,
+          "type": "timeseries",
+          "title": "Incus host cost - CPU",
+          "gridPos": {
+            "x": 0,
+            "y": 40,
+            "w": 12,
+            "h": 7
+          },
+          "description": "Agentless VM QEMU thread accounting excludes guest execution; secondary host cost only.",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
           },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "policy"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(rate(incus_cpu_seconds_total{project=~\"${project:regex}\",name=~\"${name:regex}\",mode=~\"user|system\"}[4m]))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "cores"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "suffix: cores",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
                   {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "EXPECTED RUNNING",
-                        "color": "#A6B0BC"
-                      }
-                    }
+                    "color": "text",
+                    "value": null
                   }
                 ]
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#79BCF5"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 1
               }
-            ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
           }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
         },
         {
-          "id": "organize",
+          "id": 10,
+          "type": "timeseries",
+          "title": "Incus host cost - memory",
+          "gridPos": {
+            "x": 12,
+            "y": 40,
+            "w": 12,
+            "h": 7
+          },
+          "description": "QEMU RSS is capped at configured RAM; deliberately no pressure colors.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(incus_memory_MemTotal_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"} - incus_memory_MemAvailable_bytes{project=~\"${project:regex}\",name=~\"${name:regex}\"})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "used"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "#79BCF5"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 1073741824
+              }
+            },
+            "overrides": []
+          },
           "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
             },
-            "renameByName": {
-              "Value #A": "policy",
-              "Value": "policy"
-            },
-            "includeByName": {
-              "project": true,
-              "name": true,
-              "Value #A": true,
-              "Value": true
-            },
-            "indexByName": {
-              "project": 0,
-              "name": 1,
-              "Value #A": 2
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
             }
           }
         }
       ]
     },
     {
-      "id": 9,
+      "id": 11,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 40,
         "w": 24,
         "h": 3
       },
       "options": {
         "mode": "markdown",
-        "content": "Stopped on-demand instances and their resource history are not an inventory source; only checker autostart expectations remain when stopped. Guest filesystem fill, image currency and storage-pool capacity are not collected. OpenBSD and wan have no Incus agent: their CPU is QEMU vCPU thread overhead and memory is capped QEMU RSS, not guest utilization."
+        "content": "A stopped on-demand guest is normal. Missing expected guests alert only while Incus is reachable. svc has service metrics on Monitoring; guest image currency remains release inventory evidence, not a live package audit."
       }
     }
   ],
@@ -1048,9 +1333,9 @@
           "type": "prometheus",
           "uid": "metrics"
         },
-        "definition": "label_values(incus_cpu_seconds_total, project)",
+        "definition": "label_values({__name__=~\"cv_guest_expected_running|incus_cpu_seconds_total\"}, project)",
         "query": {
-          "query": "label_values(incus_cpu_seconds_total, project)",
+          "query": "label_values({__name__=~\"cv_guest_expected_running|incus_cpu_seconds_total\"}, project)",
           "refId": "variable"
         },
         "refresh": 2,
@@ -1072,9 +1357,9 @@
           "type": "prometheus",
           "uid": "metrics"
         },
-        "definition": "label_values(incus_cpu_seconds_total{project=~\"${project:regex}\"}, name)",
+        "definition": "label_values({__name__=~\"cv_guest_expected_running|incus_cpu_seconds_total\",project=~\"${project:regex}\"}, name)",
         "query": {
-          "query": "label_values(incus_cpu_seconds_total{project=~\"${project:regex}\"}, name)",
+          "query": "label_values({__name__=~\"cv_guest_expected_running|incus_cpu_seconds_total\",project=~\"${project:regex}\"}, name)",
           "refId": "variable"
         },
         "refresh": 2,
@@ -1099,7 +1384,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -1110,7 +1395,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -1121,7 +1406,18 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Host",
+      "type": "link",
+      "url": "/d/cv-host",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -1132,18 +1428,29 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Monitoring",
+      "type": "link",
+      "url": "/d/cv-monitoring",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
       "title": "Explore · all logs",
       "type": "link",
-      "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D",
+      "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
       "keepTime": true,
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     }
   ],
@@ -1160,7 +1467,7 @@
         },
         "target": {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"

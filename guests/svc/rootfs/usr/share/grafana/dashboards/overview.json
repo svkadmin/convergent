@@ -1,7 +1,7 @@
 {
   "uid": "cv-overview",
   "title": "Convergent · Overview",
-  "description": "The path, attention, host and guests on one screen.",
+  "description": "Owner health, actionable alerts and guest state.",
   "tags": [
     "convergent"
   ],
@@ -18,206 +18,32 @@
   "panels": [
     {
       "id": 1,
-      "type": "canvas",
-      "title": "The network path",
+      "type": "stat",
+      "title": "Network",
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 7,
-        "h": 31
+        "w": 5,
+        "h": 3
       },
-      "description": "Source: node up, Incus CPU series, fw-facts CARP/pf and wan-check upstream lease. This is a logical path, not host forwarding: each downstream segment uses a CARP gateway. Both roles agree when all reported interfaces have the same role; Network shows each segment. UP on wan means an accepted lease, not a Wi-Fi association or an Internet probe.",
+      "description": "OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
       },
       "targets": [
         {
-          "refId": "uplink",
-          "expr": "max(convergent_wan_upstream_up{node=\"wan\"})",
-          "legendFormat": "uplink",
-          "instant": true,
-          "range": false,
+          "refId": "A",
+          "expr": "clamp_max((count(cv_alert_active_since_seconds{alertgroup=~\"path|dns\",severity=\"warning\"}) or vector(0)) + 2 * (count(cv_alert_active_since_seconds{alertgroup=~\"path|dns\",severity=\"critical\"}) or vector(0)), 2) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0)) and on() ((count((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)) == 2) and on() ((up{job=\"node\",node=\"wan\"} == 1) and on(node) (node_textfile_mtime_seconds{node=\"wan\",file=~\".*wan.prom\"} > time() - 180) and on(node) (node_textfile_mtime_seconds{node=\"wan\",file=~\".*wan.prom\"} <= time() + 60)) and on() (((cv_collector_timestamp_seconds{collector=\"internet\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"internet\"} > time() - 180) and (cv_collector_success{collector=\"internet\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1) and on() (cv_https_probe_available == 1)))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
-          }
-        },
-        {
-          "refId": "wan",
-          "expr": "max(up{job=\"node\",node=\"wan\"})",
-          "legendFormat": "wan",
+          },
+          "editorMode": "code",
           "instant": true,
           "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "overlap",
-          "expr": "max(convergent_wan_upstream_overlap{node=\"wan\"})",
-          "legendFormat": "overlap",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw1",
-          "expr": "min(convergent_carp_state{node=\"fw1\"})",
-          "legendFormat": "fw1",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw1_max",
-          "expr": "max(convergent_carp_state{node=\"fw1\"})",
-          "legendFormat": "fw1_max",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw1_pf",
-          "expr": "max(convergent_pf_enabled{node=\"fw1\"})",
-          "legendFormat": "fw1_pf",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw2",
-          "expr": "min(convergent_carp_state{node=\"fw2\"})",
-          "legendFormat": "fw2",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw2_max",
-          "expr": "max(convergent_carp_state{node=\"fw2\"})",
-          "legendFormat": "fw2_max",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "fw2_pf",
-          "expr": "max(convergent_pf_enabled{node=\"fw2\"})",
-          "legendFormat": "fw2_pf",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "host",
-          "expr": "max(up{job=\"node\",node=\"host\"})",
-          "legendFormat": "host",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "cpu",
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[2m])))",
-          "legendFormat": "cpu",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "ram",
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{node=\"host\"} / node_memory_MemTotal_bytes{node=\"host\"})",
-          "legendFormat": "ram",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "svc",
-          "expr": "(count(incus_cpu_seconds_total{project=\"default\",name=\"svc\"}) > bool 0) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "svc",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "def",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"def\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "def",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "int",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"int\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "int",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "tmp",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=~\"tmp-[2-9][0-9]\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "tmp",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
-        },
-        {
-          "refId": "tmp-portal",
-          "expr": "((count(incus_cpu_seconds_total{project=\"default\",name=\"tmp-portal\"}) > bool 0) or on() vector(0)) and on() (max(up{job=\"incus\"}) == 1)",
-          "legendFormat": "tmp-portal",
-          "instant": true,
-          "range": false,
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          }
+          "interval": "1m",
+          "legendFormat": "Network"
         }
       ],
       "fieldConfig": {
@@ -235,391 +61,954 @@
           },
           "color": {
             "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DEGRADED",
+                  "color": "#EDB873"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      },
+      "links": [
+        {
+          "title": "Network",
+          "url": "/d/cv-network-path?${__url_time_range}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Guests",
+      "gridPos": {
+        "x": 5,
+        "y": 0,
+        "w": 5,
+        "h": 3
+      },
+      "description": "OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_max((count(cv_alert_active_since_seconds{alertgroup=~\"compartments\",severity=\"warning\"}) or vector(0)) + 2 * (count(cv_alert_active_since_seconds{alertgroup=~\"compartments\",severity=\"critical\"}) or vector(0)), 2) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0)) and on() ((up{job=\"incus\"} == 1) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1)))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Guests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DEGRADED",
+                  "color": "#EDB873"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      },
+      "links": [
+        {
+          "title": "Guests",
+          "url": "/d/cv-compartments?${__url_time_range}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Host",
+      "gridPos": {
+        "x": 10,
+        "y": 0,
+        "w": 5,
+        "h": 3
+      },
+      "description": "OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_max((count(cv_alert_active_since_seconds{alertgroup=~\"hardware-capacity|storage|hardware-slow\",severity=\"warning\"}) or vector(0)) + 2 * (count(cv_alert_active_since_seconds{alertgroup=~\"hardware-capacity|storage|hardware-slow\",severity=\"critical\"}) or vector(0)), 2) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0)) and on() (((cv_collector_timestamp_seconds{collector=\"storage\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"storage\"} > time() - 7200) and (cv_collector_success{collector=\"storage\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1) and on() (((cv_collector_timestamp_seconds{collector=\"daily\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"daily\"} > time() - 129600) and (cv_collector_success{collector=\"daily\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Host"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DEGRADED",
+                  "color": "#EDB873"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      },
+      "links": [
+        {
+          "title": "Host",
+          "url": "/d/cv-host?${__url_time_range}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Security / Updates",
+      "gridPos": {
+        "x": 15,
+        "y": 0,
+        "w": 5,
+        "h": 3
+      },
+      "description": "OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_max((clamp_max((count(cv_alert_active_since_seconds{alertgroup=~\"security-time|security-slow|release.*|logs\",severity=\"warning\"}) or vector(0)) + 2 * (count(cv_alert_active_since_seconds{alertgroup=~\"security-time|security-slow|release.*|logs\",severity=\"critical\"}) or vector(0)), 2) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0)) and on() (((cv_collector_timestamp_seconds{collector=\"boot\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"boot\"} > time() - 315360000) and (cv_collector_success{collector=\"boot\"} == 1) and on(node) (cv_collector_timestamp_seconds{collector=\"boot\"} >= on(node) group_left node_boot_time_seconds{node=\"host\"})) and on(node) (up{job=\"node\",node=\"host\"} == 1) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (((cv_collector_timestamp_seconds{collector=\"nts\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"nts\"} > time() - 180) and (cv_collector_success{collector=\"nts\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)))) + on() (max(cv_release_advisories) > bool 0), 2) and on() ((max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800) and (max(cv_release_check_timestamp_seconds) <= time() + 60) and (count(cv_release_status_verified == 1) == 2) and (min(cv_release_status_generated_seconds) > time() - 172800))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Security / Updates"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DEGRADED",
+                  "color": "#EDB873"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      },
+      "links": [
+        {
+          "title": "Security / Updates",
+          "url": "/d/cv-security?${__url_time_range}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Monitoring",
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 3
+      },
+      "description": "OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_max((count(cv_alert_active_since_seconds{alertgroup=~\"monitoring|log-health\",severity=\"warning\"}) or vector(0)) + 2 * (count(cv_alert_active_since_seconds{alertgroup=~\"monitoring|log-health\",severity=\"critical\"}) or vector(0)), 2) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0)) and on() ((count(up{job=\"monitoring\"} == 1) == 3) and on() (((cv_collector_timestamp_seconds{collector=\"cgroups\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"cgroups\"} > time() - 180) and (cv_collector_success{collector=\"cgroups\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "Monitoring"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "OK",
+                  "color": "#89C98E"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "DEGRADED",
+                  "color": "#EDB873"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "2": {
+                  "text": "FAILED",
+                  "color": "#F2495C"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      },
+      "links": [
+        {
+          "title": "Monitoring",
+          "url": "/d/cv-monitoring?${__url_time_range}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Firing alerts",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 5,
+        "h": 3
+      },
+      "description": "Includes log and metric rules. Zero requires all rule evaluations healthy and recent, a fresh API observation and no recent remote-write errors.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(count(cv_alert_active_since_seconds) or vector(0)) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "firing"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "UNKNOWN",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "#F2495C",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Evidence age",
+      "gridPos": {
+        "x": 5,
+        "y": 3,
+        "w": 19,
+        "h": 3
+      },
+      "description": "Seconds since measurement, not scrape. Rules/Internet expire after 3m; checker after 36h.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cv_collector_timestamp_seconds{collector=~\"rules|internet\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{collector}}"
+        },
+        {
+          "refId": "B",
+          "expr": "time() - cv_checker_last_run_seconds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "legendFormat": "checker"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true,
+        "text": {
+          "titleSize": 13,
+          "valueSize": 20
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Active alerts - explanations",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 8
+      },
+      "description": "vmalert API summary and onset; duration includes pending time. Dashboard links retain time. An unhealthy evaluator hides the table; Monitoring has evaluation errors.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(time() - cv_alert_active_since_seconds) and on() ((cv_rules_healthy == 1) and on() (((cv_collector_timestamp_seconds{collector=\"rules\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"rules\"} > time() - 180) and (cv_collector_success{collector=\"rules\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1)) and on() (up{job=\"vmalert\"} == 1) and on() (increase(vmalert_remotewrite_errors_total[5m]) == 0))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "cvOptional": "Empty only means healthy when the firing-alert count is zero.",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
           }
         },
         "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "uplink"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "wan"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "overlap"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "clear",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "REFUSED",
-                        "color": "#EDB873"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw1"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "INIT",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "BACKUP",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "2": {
-                        "text": "MASTER",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw1_max"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "INIT",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "BACKUP",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "2": {
-                        "text": "MASTER",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw1_pf"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw2"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "INIT",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "BACKUP",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "2": {
-                        "text": "MASTER",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw2_max"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "INIT",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "BACKUP",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "2": {
-                        "text": "MASTER",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "fw2_pf"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "host"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "cpu"
+              "options": "active for"
             },
             "properties": [
               {
                 "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "decimals",
-                "value": 0
+                "value": "s"
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "ram"
+              "options": "alertname"
             },
             "properties": [
               {
-                "id": "unit",
-                "value": "percent"
-              },
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Evidence / recovery",
+                    "url": "${__data.fields.dashboard}?${__url_time_range}&var-project=${__data.fields.project}&var-name=${__data.fields.name}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        },
+        "sortBy": [
+          {
+            "displayName": "severity",
+            "desc": false
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "active for",
+              "Value": "active for"
+            },
+            "includeByName": {
+              "severity": true,
+              "alertname": true,
+              "node": true,
+              "project": true,
+              "name": true,
+              "object": true,
+              "summary": true,
+              "dashboard": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "severity": 0,
+              "alertname": 1,
+              "node": 2,
+              "project": 3,
+              "name": 4,
+              "object": 5,
+              "summary": 6,
+              "dashboard": 7,
+              "Value #A": 8
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "table",
+      "title": "Guest health matrix",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 8
+      },
+      "description": "Inventory includes stopped on-demand guests as of the last checker scan. Blank policy means inventory is stale. VM CPU is measured inside the VM; container CPU is percent of one core (may exceed 100). OpenBSD RAM is active+wired / pages, WAN uses MemAvailable; container RAM includes cache. svc free is its tightest qgroup headroom; other containers have no filesystem exporter. Exporter is scrape health, not a service probe; Network and Monitoring show services. Updates/restarts are in the lifecycle log below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_min((max by (project,name) (cv_guest_expected_running) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))) - ((count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)), 0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (project,name) (cv_guest_expected_running) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "(count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "expr": "max by(project,name) (label_replace(label_replace(max by(node) (up{job=\"node\",node=~\"fw1|fw2|wan\"}), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\"))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "max by(project,name) (label_replace(label_replace((convergent_pf_enabled * convergent_unbound_up) and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)), \"name\", \"$1\", \"node\", \"(.+)\"), \"project\", \"default\", \"node\", \".+\")) or label_replace(label_replace(min(up{node=\"svc\"}), \"name\", \"svc\", \"\", \"\"), \"project\", \"default\", \"\", \"\")",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
+          "format": "table"
+        },
+        {
+          "refId": "F",
+          "expr": "cv_guest_update_phase and on() (((cv_collector_timestamp_seconds{collector=\"guest_updates\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"guest_updates\"} > time() - 180) and (cv_collector_success{collector=\"guest_updates\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "cvOptional": "No native exporter for containers; resource gaps are N/A, not zero.",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
               {
-                "id": "decimals",
-                "value": 0
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "missing expected"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "#F2495C",
+                      "value": 1
+                    }
+                  ]
+                }
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "svc"
+              "options": "autostart"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "ON DEMAND",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "EXPECTED",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "running"
             },
             "properties": [
               {
@@ -630,7 +1019,7 @@
                     "options": {
                       "0": {
                         "text": "STOPPED",
-                        "color": "#F2495C"
+                        "color": "#A6B0BC"
                       }
                     }
                   },
@@ -650,7 +1039,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "def"
+              "options": "exporter"
             },
             "properties": [
               {
@@ -660,8 +1049,8 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "closed",
-                        "color": "#A6B0BC"
+                        "text": "DOWN",
+                        "color": "#F2495C"
                       }
                     }
                   },
@@ -669,8 +1058,8 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "RUNNING",
-                        "color": "#79BCF5"
+                        "text": "UP",
+                        "color": "#89C98E"
                       }
                     }
                   }
@@ -681,2594 +1070,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "int"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "closed",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "RUNNING",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "tmp"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "closed",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "RUNNING",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "tmp-portal"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "closed",
-                        "color": "#A6B0BC"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "RUNNING",
-                        "color": "#79BCF5"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "inlineEditing": false,
-        "showAdvancedTypes": true,
-        "panZoom": false,
-        "infinitePan": false,
-        "zoomToContent": false,
-        "tooltip": {
-          "mode": "none",
-          "disableForOneClick": true
-        },
-        "root": {
-          "type": "frame",
-          "name": "path",
-          "elements": [
-            {
-              "type": "rectangle",
-              "name": "radio",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 6,
-                "height": 84
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              },
-              "connections": [
-                {
-                  "source": {
-                    "x": 0.0,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.0,
-                    "y": 1
-                  },
-                  "targetName": "wan_box",
-                  "path": "straight",
-                  "color": {
-                    "fixed": "#A6B0BC"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "name": "t1",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Radio / wired uplink"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 14,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t2",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Owned by wan · radio details not collected"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 37,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t3",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "upstream lease"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 62,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v4",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "uplink",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "uplink",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 62,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "wan_box",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 116,
-                "height": 107
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              },
-              "connections": [
-                {
-                  "source": {
-                    "x": -0.5,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.0,
-                    "y": 1
-                  },
-                  "targetName": "fw1_box",
-                  "path": "straight",
-                  "color": {
-                    "field": "fw1",
-                    "fixed": "#8A93A3"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                },
-                {
-                  "source": {
-                    "x": 0.5,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.0,
-                    "y": 1
-                  },
-                  "targetName": "fw2_box",
-                  "path": "straight",
-                  "color": {
-                    "field": "fw2",
-                    "fixed": "#8A93A3"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "name": "t6",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "wan"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 124,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t7",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Alpine VM · the only NAT"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 147,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t8",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "exporter"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 172,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v9",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "wan",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "wan",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 172,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t10",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "reserved overlap"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 195,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v11",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "overlap",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "overlap",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 195,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "fw1_box",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 52,
-                "top": 252,
-                "height": 130
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              },
-              "connections": [
-                {
-                  "source": {
-                    "x": 0.0,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": -0.5,
-                    "y": 1
-                  },
-                  "targetName": "host_box",
-                  "path": "straight",
-                  "color": {
-                    "field": "fw1",
-                    "fixed": "#8A93A3"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "name": "t13",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "fw1"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 55,
-                "top": 260,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t14",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "OpenBSD · CARP + pf"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 55,
-                "top": 283,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t15",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "lowest role"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 67.9,
-                "top": 308,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v16",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw1",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw1",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 28.65,
-                "right": 53.8,
-                "top": 308,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t17",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "highest role"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 67.9,
-                "top": 331,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v18",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw1_max",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw1_max",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 28.65,
-                "right": 53.8,
-                "top": 331,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t19",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "pf"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 67.9,
-                "top": 354,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v20",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw1_pf",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw1_pf",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 28.65,
-                "right": 53.8,
-                "top": 354,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "fw2_box",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 52,
-                "right": 3,
-                "top": 252,
-                "height": 130
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              },
-              "connections": [
-                {
-                  "source": {
-                    "x": 0.0,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.5,
-                    "y": 1
-                  },
-                  "targetName": "host_box",
-                  "path": "straight",
-                  "color": {
-                    "field": "fw2",
-                    "fixed": "#8A93A3"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "name": "t22",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "fw2"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 55,
-                "right": 6,
-                "top": 260,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t23",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "OpenBSD · CARP + pf"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 55,
-                "right": 6,
-                "top": 283,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t24",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "lowest role"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 55,
-                "right": 18.9,
-                "top": 308,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v25",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw2",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw2",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 77.65,
-                "right": 4.8,
-                "top": 308,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t26",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "highest role"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 55,
-                "right": 18.9,
-                "top": 331,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v27",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw2_max",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw2_max",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 77.65,
-                "right": 4.8,
-                "top": 331,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t28",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "pf"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 55,
-                "right": 18.9,
-                "top": 354,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v29",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "fw2_pf",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "fw2_pf",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 77.65,
-                "right": 4.8,
-                "top": 354,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t30",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "CARP gateways · mixed roles need attention"
-                },
-                "size": 13,
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 397,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "host_box",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 438,
-                "height": 130
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              },
-              "connections": [
-                {
-                  "source": {
-                    "x": 0.0,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.0,
-                    "y": 1
-                  },
-                  "targetName": "svc_box",
-                  "path": "straight",
-                  "color": {
-                    "fixed": "#A6B0BC"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                },
-                {
-                  "source": {
-                    "x": 0.9,
-                    "y": -1
-                  },
-                  "target": {
-                    "x": 0.9,
-                    "y": 1
-                  },
-                  "targetName": "browsers",
-                  "path": "straight",
-                  "color": {
-                    "fixed": "#A6B0BC"
-                  },
-                  "size": {
-                    "fixed": 2,
-                    "min": 1,
-                    "max": 10
-                  },
-                  "direction": {
-                    "mode": "fixed",
-                    "fixed": "none"
-                  }
-                }
-              ]
-            },
-            {
-              "type": "text",
-              "name": "t32",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "host"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 446,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t33",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Incus host · host segment only"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 469,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t34",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "exporter"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 494,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v35",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "host",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "host",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 494,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t36",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "CPU busy"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 517,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v37",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "cpu",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "cpu",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 517,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t38",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "RAM used"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 540,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v39",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "ram",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "ram",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 540,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "svc_box",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 596,
-                "height": 84
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              }
-            },
-            {
-              "type": "text",
-              "name": "t41",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "svc"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 604,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t42",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Metrics · logs · alerts · Grafana"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 627,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t43",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Incus state"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 652,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v44",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "svc",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "svc",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 652,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t45",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Downstream segments route through CARP"
-                },
-                "size": 13,
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 696,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "rectangle",
-              "name": "browsers",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": ""
-                },
-                "align": "center",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 3,
-                "right": 3,
-                "top": 734,
-                "height": 153
-              },
-              "background": {
-                "color": {
-                  "fixed": "#181b1f"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "#2c3038"
-                },
-                "width": 1,
-                "radius": 10
-              }
-            },
-            {
-              "type": "text",
-              "name": "t47",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "Browsers"
-                },
-                "size": 16,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#d5d9e0"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 742,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t48",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "def / tmp · web segment; int · admin"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle",
-                "color": {
-                  "fixed": "#A6B0BC"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 6,
-                "top": 765,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t49",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "def"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 790,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v50",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "def",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "def",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 790,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t51",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "int"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 813,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v52",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "int",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "int",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 813,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t53",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "tmp"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 836,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v54",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "tmp",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "tmp",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 836,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "text",
-              "name": "t55",
-              "config": {
-                "text": {
-                  "mode": "fixed",
-                  "fixed": "tmp-portal"
-                },
-                "size": 13,
-                "align": "left",
-                "valign": "middle"
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 6,
-                "right": 39.48,
-                "top": 859,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            },
-            {
-              "type": "metric-value",
-              "name": "v56",
-              "config": {
-                "text": {
-                  "mode": "field",
-                  "field": "tmp-portal",
-                  "fixed": ""
-                },
-                "size": 14,
-                "align": "right",
-                "valign": "middle",
-                "color": {
-                  "field": "tmp-portal",
-                  "fixed": "#8A93A3"
-                }
-              },
-              "constraint": {
-                "horizontal": "scale",
-                "vertical": "top"
-              },
-              "placement": {
-                "left": 56.58,
-                "right": 6.76,
-                "top": 859,
-                "height": 20
-              },
-              "background": {
-                "color": {
-                  "fixed": "transparent"
-                }
-              },
-              "border": {
-                "color": {
-                  "fixed": "transparent"
-                },
-                "width": 0
-              }
-            }
-          ],
-          "background": {
-            "color": {
-              "fixed": "transparent"
-            }
-          },
-          "border": {
-            "color": {
-              "fixed": "transparent"
-            },
-            "width": 0
-          },
-          "constraint": {
-            "horizontal": "left",
-            "vertical": "top"
-          },
-          "placement": {
-            "left": 0,
-            "top": 0,
-            "width": 100,
-            "height": 100
-          }
-        }
-      },
-      "transparent": true
-    },
-    {
-      "id": 2,
-      "type": "stat",
-      "title": "",
-      "gridPos": {
-        "x": 7,
-        "y": 0,
-        "w": 5,
-        "h": 2
-      },
-      "description": "Source: vmalert ALERTS, firing only; zero requires a successful vmalert scrape less than 90 seconds old. Otherwise UNKNOWN.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(count(ALERTS{alertstate=\"firing\"}) or on() vector(0)) and on() ((up{job=\"vmalert\"} == 1) and (time() - timestamp(up{job=\"vmalert\"}) < 90))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "firing alerts"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "UNKNOWN",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "#EDB873",
-                "value": 1
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 3,
-      "type": "stat",
-      "title": "",
-      "gridPos": {
-        "x": 12,
-        "y": 0,
-        "w": 6,
-        "h": 2
-      },
-      "description": "Source: VictoriaLogs syslog severity 0–4, last hour; routine audit records and kernel stack continuations excluded. Lines, not incidents.",
-      "datasource": {
-        "type": "victoriametrics-logs-datasource",
-        "uid": "logs"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (severity:in(\"0\",\"1\",\"2\",\"3\",\"4\") OR level:in(\"emerg\",\"alert\",\"crit\",\"error\",\"err\",\"warn\",\"warning\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\") AND _time:1h | stats count() as errors",
-          "datasource": {
-            "type": "victoriametrics-logs-datasource",
-            "uid": "logs"
-          },
-          "editorMode": "code",
-          "legendFormat": "error / warning lines · 1 h",
-          "queryType": "stats"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              },
-              {
-                "color": "#EDB873",
-                "value": 1
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "",
-      "gridPos": {
-        "x": 18,
-        "y": 0,
-        "w": 6,
-        "h": 2
-      },
-      "description": "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "min(cv_collector_success)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "collectors"
-        },
-        {
-          "refId": "B",
-          "expr": "max(time() - node_textfile_mtime_seconds{file=~\".*(convergent_fw|wan)[.]prom\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "live facts age"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": []
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "collectors"
+              "options": "services"
             },
             "properties": [
               {
@@ -3299,647 +1101,19 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "live facts age"
+              "options": "VM uptime"
             },
             "properties": [
               {
                 "id": "unit",
                 "value": "s"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 180
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 5,
-      "type": "table",
-      "title": "Active alerts · now",
-      "gridPos": {
-        "x": 7,
-        "y": 2,
-        "w": 17,
-        "h": 5
-      },
-      "description": "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels. Hidden when vmalert scrapes fail or are over 90 seconds old; check the firing count for UNKNOWN.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "ALERTS{alertstate=\"firing\"} and on() ((up{job=\"vmalert\"} == 1) and (time() - timestamp(up{job=\"vmalert\"}) < 90))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "cvOptional": "An empty table means no firing alerts only when the firing count is zero, not UNKNOWN.",
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
               }
             ]
           },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
           {
             "matcher": {
               "id": "byName",
-              "options": "state"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "FIRING",
-                        "color": "#EDB873"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
-            },
-            "renameByName": {
-              "Value #A": "state",
-              "Value": "state"
-            },
-            "indexByName": {
-              "alertname": 0,
-              "node": 1,
-              "severity": 2,
-              "project": 3,
-              "name": 4,
-              "interface": 5,
-              "device": 6,
-              "collector": 7,
-              "Value #A": 8
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Host CPU · busy",
-      "gridPos": {
-        "x": 7,
-        "y": 7,
-        "w": 8,
-        "h": 5
-      },
-      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "100 * (1 - avg(rate(node_cpu_seconds_total{node=\"host\",mode=\"idle\"}[$__rate_interval])))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "Host CPU · busy"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Host RAM · used",
-      "gridPos": {
-        "x": 15,
-        "y": 7,
-        "w": 9,
-        "h": 5
-      },
-      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "100 * (1 - node_memory_MemAvailable_bytes{node=\"host\"} / node_memory_MemTotal_bytes{node=\"host\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "Host RAM · used"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "State disk · /var",
-      "gridPos": {
-        "x": 7,
-        "y": 12,
-        "w": 6,
-        "h": 5
-      },
-      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "100 * (1 - node_filesystem_avail_bytes{node=\"host\",mountpoint=\"/var\"} / node_filesystem_size_bytes{node=\"host\",mountpoint=\"/var\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "State disk · /var"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "Battery · charge",
-      "gridPos": {
-        "x": 13,
-        "y": 12,
-        "w": 5,
-        "h": 5
-      },
-      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "node_power_supply_capacity{node=\"host\"}",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "Battery · charge",
-          "cvOptional": "No battery in QEMU."
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Host temperature",
-      "gridPos": {
-        "x": 18,
-        "y": 12,
-        "w": 6,
-        "h": 5
-      },
-      "description": "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "node_hwmon_temp_celsius{node=\"host\"}",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{chip}} {{sensor}}",
-          "cvOptional": "Hardware sensors are absent in QEMU."
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "celsius",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 11,
-      "type": "table",
-      "title": "Instances · now",
-      "gridPos": {
-        "x": 7,
-        "y": 17,
-        "w": 17,
-        "h": 7
-      },
-      "description": "Source: Incus /1.0/metrics; tools/check cv_guest_expected_running supplies autostart guests missing now. A stopped guest is shown only while the Incus scrape answers. RAM is total minus available; agentless fw/wan VMs report capped QEMU RSS against configured RAM. Their CPU counts QEMU vCPU thread overhead, excluding guest execution. These are not guest utilization. Rates use two minutes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "(count by (project,name) (incus_cpu_seconds_total{job=\"incus\"}) > bool 0 or max by (project,name) (cv_guest_expected_running) * 0) and on() (max(up{job=\"incus\"}) == 1)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "B",
-          "expr": "sum by (project,name) (rate(incus_cpu_seconds_total{mode=~\"user|system\"}[2m]))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "C",
-          "expr": "max by (project,name) (incus_memory_MemTotal_bytes - incus_memory_MemAvailable_bytes)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "D",
-          "expr": "max by (project,name) (incus_memory_MemTotal_bytes)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        },
-        {
-          "refId": "E",
-          "expr": "100 * max by (project,name) (1 - incus_memory_MemAvailable_bytes / incus_memory_MemTotal_bytes)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "state"
+              "options": "update phase"
             },
             "properties": [
               {
@@ -3949,8 +1123,8 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "STOPPED",
-                        "color": "#F2495C"
+                        "text": "IDLE",
+                        "color": "#A6B0BC"
                       }
                     }
                   },
@@ -3958,12 +1132,66 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "RUNNING",
-                        "color": "#89C98E"
+                        "text": "PREPARING",
+                        "color": "#EDB873"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "PENDING",
+                        "color": "#EDB873"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "3": {
+                        "text": "COMMITTED",
+                        "color": "#79BCF5"
                       }
                     }
                   }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "guest CPU %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "guest RAM %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "filesystem free"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
               }
             ]
           },
@@ -3983,134 +1211,6 @@
                 ]
               }
             ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Incus cores"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "suffix: cores"
-              },
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Incus RAM"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bytes"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RAM total"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bytes"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RAM %"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "min",
-                "value": 0
-              },
-              {
-                "id": "max",
-                "value": 100
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 80
-                    },
-                    {
-                      "color": "#F2495C",
-                      "value": 95
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "in"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "out"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "read"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "Bps"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "written"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "Bps"
-              }
-            ]
           }
         ]
       },
@@ -4119,7 +1219,13 @@
         "cellHeight": "md",
         "footer": {
           "show": false
-        }
+        },
+        "sortBy": [
+          {
+            "displayName": "missing expected",
+            "desc": true
+          }
+        ]
       },
       "transformations": [
         {
@@ -4134,11 +1240,12 @@
               "__name__": true
             },
             "renameByName": {
-              "Value #A": "state",
-              "Value #B": "Incus cores",
-              "Value #C": "Incus RAM",
-              "Value #D": "RAM total",
-              "Value #E": "RAM %"
+              "Value #A": "missing expected",
+              "Value #B": "autostart",
+              "Value #C": "running",
+              "Value #D": "exporter",
+              "Value #E": "services",
+              "Value #F": "update phase"
             },
             "includeByName": {
               "project": true,
@@ -4147,7 +1254,8 @@
               "Value #B": true,
               "Value #C": true,
               "Value #D": true,
-              "Value #E": true
+              "Value #E": true,
+              "Value #F": true
             },
             "indexByName": {
               "project": 0,
@@ -4156,23 +1264,24 @@
               "Value #B": 3,
               "Value #C": 4,
               "Value #D": 5,
-              "Value #E": 6
+              "Value #E": 6,
+              "Value #F": 7
             }
           }
         }
       ]
     },
     {
-      "id": 12,
+      "id": 10,
       "type": "logs",
       "title": "Recent actionable logs",
       "gridPos": {
-        "x": 7,
-        "y": 24,
-        "w": 17,
-        "h": 7
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
       },
-      "description": "Source: VictoriaLogs TLS syslog from host, wan, fw1/fw2. Warnings/errors, AppArmor denials, USB blocks, faillock, sudo and firewall changes. Routine EXECVE and kernel stack continuation records excluded; all records remain in Explore.",
+      "description": "Warnings, security denials and firewall transitions; raw evidence, not incident counts. Open the domain pages for context.",
       "datasource": {
         "type": "victoriametrics-logs-datasource",
         "uid": "logs"
@@ -4180,7 +1289,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "(remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (severity:in(\"0\",\"1\",\"2\",\"3\",\"4\") OR level:in(\"emerg\",\"alert\",\"crit\",\"error\",\"err\",\"warn\",\"warning\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\") AND (_msg:~\"apparmor=\\\"DENIED\\\"|pam_faillock|authentication failure|Failed password\" OR (app_name:=\"usbguard\" AND _msg:~\"(?i)block|reject|denied\") OR (app_name:=\"sudo\" AND _msg:~\"COMMAND=|incorrect password|not in the sudoers\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND (_msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" OR app_name:=\"wan-watch\" OR app_name:=\"pfctl\") AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "(remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\",\"127.0.0.1\") AND (severity:in(\"0\",\"1\",\"2\",\"3\",\"4\") OR level:in(\"emerg\",\"alert\",\"crit\",\"error\",\"err\",\"warn\",\"warning\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.1.10\",\"100.80.2.2\",\"100.80.2.3\",\"100.80.0.10\",\"127.0.0.1\") AND (_msg:~\"apparmor=\\\"DENIED\\\"|pam_faillock|authentication failure|Failed password\" OR (app_name:=\"usbguard\" AND _msg:~\"(?i)block|reject|denied\") OR (app_name:=\"sudo\" AND _msg:~\"COMMAND=|incorrect password|not in the sudoers\")) AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND (_msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" OR app_name:=\"wan-watch\" OR app_name:=\"pfctl\") AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"
@@ -4222,28 +1331,28 @@
       "links": [
         {
           "title": "These lines in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%28remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28severity%3Ain%28%5C%220%5C%22%2C%5C%221%5C%22%2C%5C%222%5C%22%2C%5C%223%5C%22%2C%5C%224%5C%22%29%20OR%20level%3Ain%28%5C%22emerg%5C%22%2C%5C%22alert%5C%22%2C%5C%22crit%5C%22%2C%5C%22error%5C%22%2C%5C%22err%5C%22%2C%5C%22warn%5C%22%2C%5C%22warning%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%20OR%20%28remote_ip%3Ain%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%29%20AND%20%28_msg%3A~%5C%22apparmor%3D%5C%5C%5C%22DENIED%5C%5C%5C%22%7Cpam_faillock%7Cauthentication%20failure%7CFailed%20password%5C%22%20OR%20%28app_name%3A%3D%5C%22usbguard%5C%22%20AND%20_msg%3A~%5C%22%28%3Fi%29block%7Creject%7Cdenied%5C%22%29%20OR%20%28app_name%3A%3D%5C%22sudo%5C%22%20AND%20_msg%3A~%5C%22COMMAND%3D%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%5C%22%29%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%20OR%20%28remote_ip%3Ain%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20%28_msg%3A~%5C%22carp%5B0-9%5D%2B%3A.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20%28MASTER%7CBACKUP%7CINIT%29%5C%22%20OR%20app_name%3A%3D%5C%22wan-watch%5C%22%20OR%20app_name%3A%3D%5C%22pfctl%5C%22%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%28remote_ip:in%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%2C%5C%22127.0.0.1%5C%22%29%20AND%20%28severity:in%28%5C%220%5C%22%2C%5C%221%5C%22%2C%5C%222%5C%22%2C%5C%223%5C%22%2C%5C%224%5C%22%29%20OR%20level:in%28%5C%22emerg%5C%22%2C%5C%22alert%5C%22%2C%5C%22crit%5C%22%2C%5C%22error%5C%22%2C%5C%22err%5C%22%2C%5C%22warn%5C%22%2C%5C%22warning%5C%22%29%29%20AND%20NOT%20_msg:~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name:%3D%5C%22kernel%5C%22%20AND%20_msg:~%5C%22%5E%28%5B%5B:space:%5D%5D%7CCall%20%5BTt%5Drace:%7CCPU:%20%5B0-9%5D%7CHardware%20name:%7CModules%20linked%20in:%7CRIP:%7CRSP:%7CR%5BA-Z0-9%5D{2}:%7CEFLAGS:%7CFS:%7CGS:%7CCS:%7CCR%5B0-9%5D:%7CPKRU:%7CCode:%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C%2F%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B%2F0x%29%5C%22%29%29%20OR%20%28remote_ip:in%28%5C%22100.80.1.10%5C%22%2C%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%2C%5C%22100.80.0.10%5C%22%2C%5C%22127.0.0.1%5C%22%29%20AND%20%28_msg:~%5C%22apparmor%3D%5C%5C%5C%22DENIED%5C%5C%5C%22%7Cpam_faillock%7Cauthentication%20failure%7CFailed%20password%5C%22%20OR%20%28app_name:%3D%5C%22usbguard%5C%22%20AND%20_msg:~%5C%22%28%3Fi%29block%7Creject%7Cdenied%5C%22%29%20OR%20%28app_name:%3D%5C%22sudo%5C%22%20AND%20_msg:~%5C%22COMMAND%3D%7Cincorrect%20password%7Cnot%20in%20the%20sudoers%5C%22%29%29%20AND%20NOT%20_msg:~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name:%3D%5C%22kernel%5C%22%20AND%20_msg:~%5C%22%5E%28%5B%5B:space:%5D%5D%7CCall%20%5BTt%5Drace:%7CCPU:%20%5B0-9%5D%7CHardware%20name:%7CModules%20linked%20in:%7CRIP:%7CRSP:%7CR%5BA-Z0-9%5D{2}:%7CEFLAGS:%7CFS:%7CGS:%7CCS:%7CCR%5B0-9%5D:%7CPKRU:%7CCode:%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C%2F%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B%2F0x%29%5C%22%29%29%20OR%20%28remote_ip:in%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20%28_msg:~%5C%22carp%5B0-9%5D%2B:.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20%28MASTER%7CBACKUP%7CINIT%29%5C%22%20OR%20app_name:%3D%5C%22wan-watch%5C%22%20OR%20app_name:%3D%5C%22pfctl%5C%22%29%20AND%20NOT%20_msg:~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name:%3D%5C%22kernel%5C%22%20AND%20_msg:~%5C%22%5E%28%5B%5B:space:%5D%5D%7CCall%20%5BTt%5Drace:%7CCPU:%20%5B0-9%5D%7CHardware%20name:%7CModules%20linked%20in:%7CRIP:%7CRSP:%7CR%5BA-Z0-9%5D{2}:%7CEFLAGS:%7CFS:%7CGS:%7CCS:%7CCR%5B0-9%5D:%7CPKRU:%7CCode:%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C%2F%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B%2F0x%29%5C%22%29%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
         },
         {
           "title": "All logs in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
         }
       ]
     },
     {
-      "id": 13,
+      "id": 11,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 30,
         "w": 24,
         "h": 3
       },
       "options": {
         "mode": "markdown",
-        "content": "Wi-Fi SSID, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. Radio and sampled pflog evidence are on Network. The path is logical: the host does not forward traffic between segments."
+        "content": "DNS is tested from the host; HTTPS to the same named destination is available only while def already runs. Network is UNKNOWN without HTTPS evidence. Self-heal remains independent of monitoring. Hardware absence, collection failure and stale evidence are distinct on Host and Monitoring."
       }
     }
   ],
@@ -4259,7 +1368,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -4270,7 +1379,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -4281,7 +1390,18 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Host",
+      "type": "link",
+      "url": "/d/cv-host",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -4292,18 +1412,29 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Monitoring",
+      "type": "link",
+      "url": "/d/cv-monitoring",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
       "title": "Explore · all logs",
       "type": "link",
-      "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D",
+      "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
       "keepTime": true,
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     }
   ],
@@ -4320,7 +1451,7 @@
         },
         "target": {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"

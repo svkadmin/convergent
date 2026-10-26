@@ -3,7 +3,7 @@
 # Producers: host boot/daily/nts/audit/checker.prom; fw convergent_fw.prom; wan wan.prom.
 # Expected pf hash: pfctl -sr with __automatic_<id> table names normalised, | sha256, including its prefix.
 # Checker supplies autostart expectations; closed on-demand browsers are not expected.
-# Host forwards Incus lifecycle logs with app_name incus-event.
+# Host forwards Incus lifecycle logs with app_name incus-audit.
 groups:
   - name: path
     interval: 30s
@@ -13,39 +13,54 @@ groups:
         expr: up{job="node",node=~"fw1|fw2"} == 0
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}; recovery: sys firewall rebuild {{ $labels.node }}'}
+        annotations: {summary: 'Firewall exporter unreachable: {{ $labels.node }}; recovery: sys firewall rebuild {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: WanWatchDown
         expr: convergent_wan_watch_up{node=~"fw1|fw2"} == 0
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'WAN failover watcher stopped on {{ $labels.node }}'}
+        annotations: {summary: 'WAN failover watcher stopped on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: WanWatchProbeFailed
+        expr: convergent_wan_watch_probe_up == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Sampled firewall-to-WAN transit probe failing: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: CarpSplit
         expr: sum by (interface,vhid) (convergent_carp_state{node=~"fw1|fw2"} == bool 2) != 1
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'CARP interface has both masters or no master: {{ $labels.interface }}'}
+        annotations: {summary: 'CARP interface has both masters or no master: {{ $labels.interface }}', dashboard: '/d/cv-network-path'}
       - alert: CarpFlapping
         expr: changes(convergent_carp_state{node=~"fw1|fw2"}[10m]) > 4
         labels: {severity: warning}
-        annotations: {summary: 'Repeated CARP transitions on {{ $labels.node }} / {{ $labels.interface }}'}
+        annotations: {summary: 'Repeated CARP transitions on {{ $labels.node }} / {{ $labels.interface }}', dashboard: '/d/cv-network-path'}
       - alert: NoDefaultRoute
         expr: (convergent_default_route_present{node=~"fw1|fw2"} == 0)
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Expected firewall default route absent: {{ $labels.node }}'}
+        annotations: {summary: 'Expected firewall default route absent: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: FirewallRulesetDrift
         expr: (convergent_pf_ruleset_info{node=~"fw1|fw2"} and on (node) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")) unless on (node,loaded) label_replace(cv_firewall_ruleset_expected_info, "node", "$1", "firewall", "(fw1|fw2)")
         labels: {severity: critical}
-        annotations: {summary: 'pf ruleset differs from release on {{ $labels.node }}'}
+        annotations: {summary: 'pf ruleset differs from release on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: StateTableHigh
         expr: convergent_pf_states{node=~"fw1|fw2"} / convergent_pf_state_limit{node=~"fw1|fw2"} > 0.8
         for: 5m
         labels: {severity: warning}
-        annotations: {summary: 'pf state table above 80% on {{ $labels.node }}'}
+        annotations: {summary: 'pf state table above 80% on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: UpstreamOverlap
         expr: (max(convergent_wan_upstream_overlap{node="wan"}) > 0) or (max(cv_wan_overlap_events) > 0)
         labels: {severity: critical, compartment: wan, tag: convergent-alert}
-        annotations: {summary: 'wan refused an upstream lease overlapping the internal /16'}
+        annotations: {summary: 'wan refused an upstream lease overlapping the internal /16', dashboard: '/d/cv-network-path'}
+      - alert: PfsyncNotReady
+        expr: (convergent_pfsync_up == 0) or (convergent_pfsync_defer == 0)
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Firewall state synchronization or defer disabled: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: CarpMixedRoles
+        expr: max by(node) (convergent_carp_state) != min by(node) (convergent_carp_state)
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: 'Firewall has mixed roles across registered segments: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
   - name: dns
     interval: 30s
     concurrency: 1
@@ -54,103 +69,100 @@ groups:
         expr: convergent_unbound_up{node=~"fw1|fw2"} == 0
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'unbound probe failed on {{ $labels.node }}'}
+        annotations: {summary: 'unbound probe failed on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: ResolverStale
         expr: (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180) or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_unbound_up)
         for: 1m
         labels: {severity: warning}
-        annotations: {summary: 'Resolver facts missing or older than three minutes on {{ $labels.node }}'}
+        annotations: {summary: 'Resolver facts missing or older than three minutes on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: BlocklistStale
         expr: time() - convergent_dns_file_mtime_seconds{node=~"fw1|fw2",file="blocklist.rpz"} > 864000
         labels: {severity: warning}
-        annotations: {summary: 'Loaded RPZ generation over 10 days old on {{ $labels.node }}'}
+        annotations: {summary: 'Loaded RPZ generation over 10 days old on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: InternetProbeFailed
+        expr: cv_internet_probe_success == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: '{{ $labels.source }} end-to-end {{ $labels.probe }} check to {{ $labels.target }} failed; inspect Network (one destination only)', dashboard: '/d/cv-network-path'}
   - name: compartments
-    interval: 30s
+    interval: 1m
     concurrency: 1
     rules:
       - alert: GuestStopped
         expr: (cv_guest_expected_running == 1 unless on (project,name) count by (project,name) (incus_cpu_seconds_total{job="incus"})) and on () (up{job="incus"} == 1)
         for: 2m
         labels: {severity: critical}
-        annotations: {summary: 'Expected guest missing from Incus metrics: {{ $labels.project }}/{{ $labels.name }}'}
+        annotations: {summary: 'Expected guest missing from Incus metrics: {{ $labels.project }}/{{ $labels.name }}', dashboard: '/d/cv-compartments'}
       - alert: ServiceDown
         expr: (up == 0) or (convergent_pf_enabled{node=~"fw1|fw2"} == 0)
         for: 1m
         labels: {severity: critical}
-        annotations: {summary: 'Scrape or expected service failed: node={{ $labels.node }} job={{ $labels.job }} instance={{ $labels.instance }}'}
+        annotations: {summary: 'Scrape or expected service failed: node={{ $labels.node }} job={{ $labels.job }} instance={{ $labels.instance }}', dashboard: '/d/cv-compartments'}
+      - alert: GuestOOM
+        expr: increase(cv_guest_memory_events_total{event="oom_kill"}[5m]) > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Guest cgroup OOM kill: {{ $labels.name }}', dashboard: '/d/cv-compartments'}
   - name: hardware-capacity
-    interval: 30s
+    interval: 1m
     concurrency: 1
     rules:
-      - alert: NvmeSpareLow
-        expr: cv_nvme_spare_percent < cv_nvme_spare_threshold_percent
-        labels: {severity: critical}
-        annotations: {summary: 'NVMe available spare below device threshold: {{ $labels.device }}'}
-      - alert: NvmeErrors
-        expr: (cv_nvme_media_errors_total > 0) or (cv_nvme_critical_warning > 0)
-        labels: {severity: critical}
-        annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}'}
       - alert: BatteryLow
         expr: (node_power_supply_capacity{node="host"} < 15) and on (node,power_supply) (node_power_supply_info{node="host",status="Discharging"} == 1)
         for: 2m
         labels: {severity: warning}
-        annotations: {summary: 'Battery below 15% while discharging'}
+        annotations: {summary: 'Battery below 15% while discharging', dashboard: '/d/cv-host'}
       - alert: StateVolumeHigh
         expr: 1 - node_filesystem_avail_bytes{node="host",mountpoint="/var"} / node_filesystem_size_bytes{node="host",mountpoint="/var"} > 0.85
         for: 10m
         labels: {severity: warning}
-        annotations: {summary: 'State filesystem over 85% full'}
+        annotations: {summary: 'State filesystem over 85% full', dashboard: '/d/cv-host'}
+      - alert: StateReadOnly
+        expr: node_filesystem_readonly{node="host",mountpoint="/var"} == 1
+        labels: {severity: critical}
+        annotations: {summary: 'State filesystem is read-only; preserve evidence and reboot', dashboard: '/d/cv-host'}
+      - alert: BtrfsDeviceErrors
+        expr: cv_btrfs_device_errors_total > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Btrfs device errors: {{ $labels.kind }}', dashboard: '/d/cv-host'}
+      - alert: VolumeQuotaHigh
+        expr: cv_volume_used_bytes / cv_volume_limit_bytes > 0.85
+        for: 10m
+        labels: {severity: warning}
+        annotations: {summary: 'svc volume qgroup above 85%: {{ $labels.volume }}', dashboard: '/d/cv-host'}
   - name: security-time
-    interval: 30s
+    interval: 1m
     concurrency: 1
     rules:
-      - alert: SecureBootNotVerified
-        expr: cv_secure_boot_verified == 0
-        labels: {severity: critical}
-        annotations: {summary: 'Secure Boot verification not established'}
-      - alert: LockdownOff
-        expr: cv_lockdown_enabled == 0
-        labels: {severity: critical}
-        annotations: {summary: 'Kernel confidentiality lockdown disabled'}
       - alert: KernelTainted
         expr: node_sysctl_kernel_tainted{node="host"} != 0
         labels: {severity: warning}
-        annotations: {summary: 'Host kernel tainted'}
-      - alert: LuksHeaderChanged
-        expr: cv_luks_header_matches_release == 0
-        labels: {severity: critical}
-        annotations: {summary: 'LUKS header differs from accepted hash'}
-      - alert: CertExpiry
-        expr: cv_certificate_not_after_seconds - time() < 1209600
-        labels: {severity: warning}
-        annotations: {summary: 'Certificate expires within 14 days: {{ $labels.certificate }}'}
+        annotations: {summary: 'Host kernel tainted', dashboard: '/d/cv-security'}
       - alert: ClockOffsetHigh
         expr: (abs(node_timex_offset_seconds{node=~"host|wan"}) > 0.1) or (abs(node_time_seconds{job="node"} - timestamp(node_time_seconds{job="node"})) > 2)
         for: 5m
         labels: {severity: warning}
-        annotations: {summary: 'Clock offset high on {{ $labels.node }}'}
+        annotations: {summary: 'Clock offset high on {{ $labels.node }}', dashboard: '/d/cv-security'}
       - alert: NtsUnauthenticated
         expr: (cv_nts_authenticated_sources < 2) and on () (max(convergent_wan_upstream_up{node="wan"}) == 1)
         for: 5m
         labels: {severity: critical}
-        annotations: {summary: 'Fewer than two authenticated agreeing NTS sources'}
-      - alert: CrashRecorded
-        expr: cv_crash_records > 0
-        labels: {severity: critical}
-        annotations: {summary: 'Unacknowledged pstore crash records'}
+        annotations: {summary: 'Fewer than two authenticated agreeing NTS sources', dashboard: '/d/cv-security'}
       - alert: AuditRecordsLost
         expr: cv_audit_lost_total > 0
         labels: {severity: critical}
-        annotations: {summary: 'The kernel dropped {{ $value }} audit records this boot'}
+        annotations: {summary: 'The kernel dropped {{ $value }} audit records this boot', dashboard: '/d/cv-security'}
   - name: monitoring
-    interval: 30s
+    interval: 1m
     concurrency: 1
     rules:
       - alert: CollectorStale
         expr: |
           (time() - node_textfile_mtime_seconds{node=~"fw1|fw2",file=~".*convergent_fw.prom"} > 180)
+          or (time() - convergent_wan_watch_probe_timestamp_seconds > 180)
+          or (convergent_wan_watch_probe_timestamp_seconds > time() + 60)
+          or (up{job="node",node=~"fw1|fw2"} == 1 unless on(node) convergent_wan_watch_probe_timestamp_seconds)
           or (time() - node_textfile_mtime_seconds{node="host",file=~".*(daily|checker).prom"} > 129600)
-          or (time() - node_textfile_mtime_seconds{node="host",file=~".*audit.prom"} > 7200)
+          or (time() - node_textfile_mtime_seconds{node="host",file=~".*audit.prom"} > 180)
           or (time() - node_textfile_mtime_seconds{node="host",file=~".*nts.prom"} > 180)
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*nts.prom"})
           or (up{job="node",node="host"} == 1 unless on (node) node_textfile_mtime_seconds{file=~".*audit.prom"})
@@ -164,11 +176,14 @@ groups:
           or (node_textfile_mtime_seconds{node="host",file=~".*boot.prom"} < on (node) group_left node_boot_time_seconds{node="host"})
         for: 5m
         labels: {severity: warning}
-        annotations: {summary: 'Collector file absent, stale, from a previous boot or dated in the future'}
+        annotations: {summary: 'Collector file absent, stale, from a previous boot or dated in the future', dashboard: '/d/cv-monitoring'}
       - alert: CollectorBroken
         expr: |
-          (node_textfile_scrape_error{job="node"} != 0)
+          (node_scrape_collector_success == 0)
+          or (convergent_fw_facts_success == 0)
+          or (node_textfile_scrape_error{job="node"} != 0)
           or (cv_collector_success == 0)
+          or absent(cv_nvme_devices)
           or (up{job="node",node="host"} == 1 unless on (node) cv_collector_success)
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_carp_state)
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_carp_expected)
@@ -192,28 +207,52 @@ groups:
           or (up{job="node",node=~"fw1|fw2"} == 1 unless on (node) convergent_default_route_present)
           or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_overlap)
           or (up{job="node",node="wan"} == 1 unless on (node) convergent_wan_upstream_up)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_percent)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_spare_threshold_percent)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_media_errors_total)
-          or (up{job="node",node="host"} == 1 unless on (node) cv_nvme_critical_warning)
+          or (cv_nvme_expected == 1 unless on (node,device) cv_nvme_spare_percent)
+          or (cv_nvme_expected == 1 unless on (node,device) cv_nvme_spare_threshold_percent)
+          or (cv_nvme_expected == 1 unless on (node,device) cv_nvme_media_errors_total)
+          or (cv_nvme_expected == 1 unless on (node,device) cv_nvme_critical_warning)
           or (up{job="node",node="host"} == 1 unless on (node) node_sysctl_kernel_tainted)
           or (up{job="node",node=~"host|wan"} == 1 unless on (node) node_timex_offset_seconds)
           or (up{job="node"} == 1 unless on (node) node_time_seconds)
         for: 5m
         labels: {severity: warning}
-        annotations: {summary: 'Collector failed, textfile is malformed or required facts are missing'}
+        annotations: {summary: 'Collector failed, textfile is malformed or required facts are missing', dashboard: '/d/cv-monitoring'}
       - alert: CheckerFailed
         expr: cv_checker_success == 0
         labels: {severity: critical}
-        annotations: {summary: 'Release/security checker reported a failure'}
+        annotations: {summary: 'Release/security checker reported a failure', dashboard: '/d/cv-monitoring'}
       - alert: CheckerStale
         expr: (time() - cv_checker_last_run_seconds > 129600) or absent(cv_checker_last_run_seconds) or absent(cv_checker_success)
         for: 2m
         labels: {severity: warning}
-        annotations: {summary: 'Checker missing or more than 36 hours since last run'}
+        annotations: {summary: 'Checker missing or more than 36 hours since last run', dashboard: '/d/cv-monitoring'}
+      - alert: RuleEvaluationUnhealthy
+        expr: (cv_rules_healthy == 0) or absent(cv_rules_healthy)
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Rule API reports failed, missing or stalled evaluations', dashboard: '/d/cv-monitoring'}
+      - alert: ObservationStale
+        expr: (time() - cv_collector_timestamp_seconds{collector=~"rules|internet|cgroups|guest_updates"} > 180) or (cv_collector_timestamp_seconds > time() + 60) or (time() - cv_collector_timestamp_seconds{collector="storage"} > 7200) or absent(cv_collector_timestamp_seconds{collector="rules"}) or absent(cv_collector_timestamp_seconds{collector="internet"}) or absent(cv_collector_timestamp_seconds{collector="cgroups"}) or absent(cv_collector_timestamp_seconds{collector="storage"})
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Observation missing, stale or future dated: {{ $labels.collector }}', dashboard: '/d/cv-monitoring'}
+      - alert: MonitoringWriteErrors
+        expr: (increase(vmalert_remotewrite_errors_total[5m]) > 0) or (increase(vmalert_remotewrite_dropped_rows_total[5m]) > 0) or (increase(vm_rows_ignored_total[5m]) > 0) or (increase(vl_rows_dropped_total[5m]) > 0)
+        for: 1m
+        labels: {severity: warning}
+        annotations: {summary: 'Monitoring rejected or dropped data; inspect Monitoring', dashboard: '/d/cv-monitoring'}
+      - alert: MonitoringReadOnly
+        expr: (vm_storage_is_read_only == 1) or (vl_storage_is_read_only == 1)
+        labels: {severity: critical}
+        annotations: {summary: 'Monitoring storage is read-only: {{ $labels.service }}', dashboard: '/d/cv-monitoring'}
+      - alert: MonitoringSignalsMissing
+        expr: absent(vm_storage_is_read_only{job="monitoring",service="metrics"}) or absent(vl_storage_is_read_only{job="monitoring",service="logs"}) or absent(vmalert_remotewrite_errors_total) or absent(cv_guest_memory_current_bytes{name="svc"})
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'Required monitoring self-signals are absent', dashboard: '/d/cv-monitoring'}
   - name: logs
     type: vlogs
-    interval: 30s
+    interval: 1m
     concurrency: 1
     rules:
       # Match wan transport IP, tag and event prefix.
@@ -222,4 +261,69 @@ groups:
       - alert: AuditEvent
         expr: '_time:5m remote_ip:="100.80.1.10" app_name:in("audit","auditd","audispd","audisp-syslog","kernel") _msg:~"key=.(identity|usb|guestkeys).|apparmor=.DENIED" | stats count() hits | filter hits:>0'
         labels: {severity: warning}
-        annotations: {summary: 'Identity, USB policy or guest-key change, or an AppArmor denial; review the log view'}
+        annotations: {summary: 'Identity, USB policy or guest-key change, or an AppArmor denial; review the log view', dashboard: '/d/cv-security'}
+  - name: log-health
+    type: vlogs
+    interval: 1m
+    concurrency: 1
+    rules:
+      - alert: LogHeartbeatMissingHost
+        expr: '_time:5m remote_ip:="100.80.1.10" app_name:="cv-heartbeat" | stats count() as heartbeats | filter heartbeats:0'
+        for: 2m
+        labels: {severity: warning, node: host}
+        annotations: {summary: 'No log heartbeat in five minutes: host', dashboard: '/d/cv-monitoring'}
+      - alert: LogHeartbeatMissingFw1
+        expr: '_time:5m remote_ip:="100.80.2.2" app_name:="cv-heartbeat" | stats count() as heartbeats | filter heartbeats:0'
+        for: 2m
+        labels: {severity: warning, node: fw1}
+        annotations: {summary: 'No log heartbeat in five minutes: fw1', dashboard: '/d/cv-monitoring'}
+      - alert: LogHeartbeatMissingFw2
+        expr: '_time:5m remote_ip:="100.80.2.3" app_name:="cv-heartbeat" | stats count() as heartbeats | filter heartbeats:0'
+        for: 2m
+        labels: {severity: warning, node: fw2}
+        annotations: {summary: 'No log heartbeat in five minutes: fw2', dashboard: '/d/cv-monitoring'}
+      - alert: LogHeartbeatMissingWan
+        expr: '_time:5m remote_ip:="100.80.0.10" app_name:="cv-heartbeat" | stats count() as heartbeats | filter heartbeats:0'
+        for: 2m
+        labels: {severity: warning, node: wan}
+        annotations: {summary: 'No log heartbeat in five minutes: wan', dashboard: '/d/cv-monitoring'}
+  - name: hardware-slow
+    interval: 5m
+    concurrency: 1
+    rules:
+      - alert: NvmeSpareLow
+        expr: cv_nvme_spare_percent < cv_nvme_spare_threshold_percent
+        labels: {severity: critical}
+        annotations: {summary: 'NVMe available spare below device threshold: {{ $labels.device }}', dashboard: '/d/cv-host'}
+      - alert: NvmeErrors
+        expr: (cv_nvme_media_errors_total > 0) or (cv_nvme_critical_warning > 0)
+        labels: {severity: critical}
+        annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}', dashboard: '/d/cv-host'}
+      - alert: ScrubNeedsAttention
+        expr: (cv_btrfs_scrub_errors > 0) or ((cv_btrfs_scrub_finished == 0) and on(node) (time() - cv_btrfs_scrub_started_seconds > 86400)) or (time() - cv_btrfs_scrub_started_seconds > 3456000) or ((cv_btrfs_scrub_recorded == 0) and on(node) (time() - node_boot_time_seconds{node="host"} > 86400))
+        labels: {severity: warning}
+        annotations: {summary: 'Btrfs scrub errors, missing record or more than 40 days old', dashboard: '/d/cv-host'}
+  - name: security-slow
+    interval: 5m
+    concurrency: 1
+    rules:
+      - alert: SecureBootNotVerified
+        expr: cv_secure_boot_verified == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Secure Boot verification not established', dashboard: '/d/cv-security'}
+      - alert: LockdownOff
+        expr: cv_lockdown_enabled == 0
+        labels: {severity: critical}
+        annotations: {summary: 'Kernel confidentiality lockdown disabled', dashboard: '/d/cv-security'}
+      - alert: LuksHeaderChanged
+        expr: cv_luks_header_matches_release == 0
+        labels: {severity: critical}
+        annotations: {summary: 'LUKS header differs from accepted hash', dashboard: '/d/cv-security'}
+      - alert: CertExpiry
+        expr: cv_certificate_not_after_seconds - time() < 1209600
+        labels: {severity: warning}
+        annotations: {summary: 'Certificate expires within 14 days: {{ $labels.certificate }}', dashboard: '/d/cv-security'}
+      - alert: CrashRecorded
+        expr: cv_crash_records > 0
+        labels: {severity: critical}
+        annotations: {summary: 'Unacknowledged pstore crash records', dashboard: '/d/cv-security'}

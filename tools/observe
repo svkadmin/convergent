@@ -1,0 +1,82 @@
+#!/bin/sh
+# Read-only minute observations; never used by firewall self-heal.
+set -u
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+out=/var/lib/node_exporter
+mkdir -p "$out" /run/convergent || exit 1
+exec 9>/run/convergent/observe.lock
+flock -n 9 || exit 0
+umask 022
+tmp=$(mktemp "$out/.observe.XXXXXX") || exit 1
+trap 'rm -f "$tmp"' 0
+trap 'exit 1' HUP INT TERM
+now=$(date +%s)
+{
+    ok=1
+    if rules=$(curl -qfsS --noproxy '*' --connect-timeout 2 --max-time 8 http://100.80.2.10:8880/api/v1/rules); then
+        printf '%s\n' "$rules" | jq -er --argjson now "$now" -f /usr/lib/convergent/monitoring.jq || ok=0
+    else ok=0; fi
+    [ "$ok" = 1 ] || logger -p user.warning -t observe "rule API collection failed"
+    echo "cv_collector_success{collector=\"rules\"} $ok"
+    echo "cv_collector_timestamp_seconds{collector=\"rules\"} $now"
+    dns=0; ok=1
+    addresses=$(timeout -k 1 5 getent ahostsv4 example.com 2>/dev/null) && dns=1
+    address=$(printf '%s\n' "$addresses" | awk 'NR == 1 {print $1}')
+    echo "cv_internet_probe_success{probe=\"dns\",source=\"host\",target=\"example.com\"} $dns"
+    # Only an existing web namespace has ordinary HTTPS egress; never open pf tables or start a guest.
+    if state=$(timeout -k 1 5 incus --force-local --project default query /1.0/instances/def/state 2>/dev/null); then
+        pid=$(printf '%s\n' "$state" | jq -er 'select(.status == "Running" and .pid > 0) | .pid') || pid=
+        if [ -n "$pid" ]; then
+            echo 'cv_https_probe_available 1'
+            https=0
+            if [ "$dns" = 1 ]; then
+                timeout -k 1 10 nsenter --target "$pid" --net -- curl -q4fsS --noproxy '*' --proto '=https' \
+                    --resolve "example.com:443:$address" --connect-timeout 3 --max-time 8 \
+                    --output /dev/null https://example.com/ && https=1
+            fi
+            echo "cv_internet_probe_success{probe=\"https\",source=\"def\",target=\"example.com\"} $https"
+        elif printf '%s\n' "$state" | jq -e '.status == "Stopped"' >/dev/null; then
+            echo 'cv_https_probe_available 0'
+        else ok=0; fi
+    else ok=0; fi
+    echo "cv_collector_success{collector=\"internet\"} $ok"
+    echo "cv_collector_timestamp_seconds{collector=\"internet\"} $now"
+    ok=1
+    for dir in /sys/fs/cgroup/lxc.payload.*; do
+        [ -d "$dir" ] || continue
+        name=${dir##*/lxc.payload.}
+        case $name in svc|def|int|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac
+        for field in current max; do
+            if read -r value <"$dir/memory.$field"; then
+                case $value in max) ;; *[!0-9]*|'') ok=0 ;; *) echo "cv_guest_memory_${field}_bytes{name=\"$name\",project=\"default\"} $value" ;; esac
+            else ok=0; fi
+        done
+        awk -v name="$name" '$1 ~ /^(oom|oom_kill|high|max)$/ {printf "cv_guest_memory_events_total{name=\"%s\",project=\"default\",event=\"%s\"} %s\n", name,$1,$2}' "$dir/memory.events" || ok=0
+        awk -v name="$name" '$1 == "throttled_usec" {printf "cv_guest_cpu_throttled_seconds_total{name=\"%s\",project=\"default\"} %f\n",name,$2/1000000}' "$dir/cpu.stat" || ok=0
+        for resource in memory cpu io; do
+            awk -v name="$name" -v resource="$resource" '{for(i=2;i<=NF;i++) if($i ~ /^total=/) {split($i,a,"="); printf "cv_guest_pressure_seconds_total{name=\"%s\",project=\"default\",resource=\"%s\",scope=\"%s\"} %f\n",name,resource,$1,a[2]/1000000}}' "$dir/$resource.pressure" || ok=0
+        done
+    done
+    echo "cv_collector_success{collector=\"cgroups\"} $ok"
+    echo "cv_collector_timestamp_seconds{collector=\"cgroups\"} $now"
+    set -- "$out/checker.prom"
+    for journal in preparing pending committed; do
+        file=/var/lib/convergent/guests/$journal
+        [ ! -r "$file" ] || set -- "$@" "$file"
+    done
+    ok=1
+    awk '
+        FILENAME ~ /checker[.]prom$/ {
+            if ($0 ~ /^cv_guest_expected_running/) {split($0,a,"\""); state[a[4]]=0} next
+        }
+        $1 ~ /^[a-zA-Z0-9_-]+$/ {
+            phase=FILENAME ~ /preparing$/ ? 1 : FILENAME ~ /pending$/ ? 2 : 3
+            if (phase>state[$1]) state[$1]=phase
+        }
+        END {for(n in state) printf "cv_guest_update_phase{project=\"default\",name=\"%s\"} %d\n",n,state[n]}
+    ' "$@" || ok=0
+    echo "cv_collector_success{collector=\"guest_updates\"} $ok"
+    echo "cv_collector_timestamp_seconds{collector=\"guest_updates\"} $now"
+} >"$tmp"
+chmod 644 "$tmp" && mv "$tmp" "$out/observe.prom"

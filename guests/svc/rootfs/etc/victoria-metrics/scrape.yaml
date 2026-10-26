@@ -6,14 +6,27 @@ scrape_configs:
   - job_name: vmalert
     honor_labels: false
     sample_limit: 10000
-    # Scrape health is generated separately from the unused payload.
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: '.*'
-        action: drop
+        regex: 'vmalert_(iteration_.*|alerting_rules_errors_total|recording_rules_errors_total|remotewrite_.*)|vmauth_http_request_errors_total|process_resident_memory_bytes|go_memstats_heap_alloc_bytes|go_gc_duration_seconds.*'
+        action: keep
     static_configs:
       - targets: ['100.80.2.10:8880']
         labels: {node: svc}
+  - job_name: monitoring
+    honor_labels: false
+    sample_limit: 2000
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'vm_(free_disk_space_bytes|storage_is_read_only|rows_ignored_total|rows_inserted_total|http_request_errors_total|request_errors_total|persistentqueue_.*)|vl_(errors_total|rows_dropped_total|rows_ingested_total|free_disk_space_bytes|storage_is_read_only|storage_log_min_timestamp_seconds|storage_log_max_timestamp_seconds)|vmauth_http_request_errors_total|process_resident_memory_bytes|go_memstats_heap_alloc_bytes|go_gc_duration_seconds.*'
+        action: keep
+    static_configs:
+      - targets: ['127.0.0.1:8428']
+        labels: {node: svc, service: metrics}
+      - targets: ['127.0.0.1:9428']
+        labels: {node: svc, service: logs}
+      - targets: ['127.0.0.1:8427']
+        labels: {node: svc, service: proxy}
   - job_name: node
     honor_labels: false
     sample_limit: 10000
@@ -27,6 +40,7 @@ scrape_configs:
       - targets: ['100.80.0.10:9100']
         labels: {node: wan}
   - job_name: incus
+    scrape_interval: 60s
     metrics_path: /1.0/metrics
     scheme: https
     honor_labels: false

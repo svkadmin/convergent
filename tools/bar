@@ -59,12 +59,14 @@ release=${version:-$release}
 
 # Failed requests or unhealthy rules leave the count unknown.
 poll_alerts() {
-    alerts=$(curl -sf --connect-timeout 2 -m 4 "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules?type=alert" |
+    alerts=$(curl -sf --connect-timeout 2 -m 4 "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules" |
         jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
         select(.[0].data.alerts | type == "array") |
         select(.[1].data.groups | type == "array") |
         select([.[1].data.groups[].rules[]] | length > 0) |
-        select(all(.[1].data.groups[].rules[]; .health == "ok")) |
+        select(all(.[1].data.groups[]; .interval as $interval | all(.rules[];
+            .health == "ok" and ((.lastEvaluation | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $at |
+                $at <= now + 60 and now - $at < 2 * $interval + 90)))) |
         [.[0].data.alerts[] | select(.state == "firing") | .labels.severity] |
         "\(map(select(. == "critical")) | length) \(map(select(. == "warning")) | length) \(map(select(. != "critical" and . != "warning")) | length)"') ||
         alerts='?'
@@ -116,7 +118,7 @@ while :; do
 	if [ "$now" -ge "$next_inputs" ]; then
 		if [ -z "$inputs_pid" ] || ! kill -0 "$inputs_pid" 2>/dev/null; then
 			{ poll_inputs && echo "$now" >"$work/inputs-at"; } & inputs_pid=$!
-			next_inputs=$((now + 5))
+			next_inputs=$((now + 10))
 		fi
 	fi
 	nl=off
@@ -297,5 +299,5 @@ while :; do
 		exit
 	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq /sys/class/hwmon/hwmon*/temp*_input || exit 1
 	comma=,
-	sleep 1
+	sleep 5
 done

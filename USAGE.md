@@ -456,7 +456,7 @@ Host cron and anacron have mail disabled; their jobs and logging still run.
 
 ## The bar
 
-Refreshed every second. Blocks are shown here separated by `|`; the bar draws its own separators:
+Refreshed every five seconds; inputs every ten seconds and alerts every thirty seconds. Blocks are shown here separated by `|`; the bar draws its own separators:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
@@ -468,17 +468,17 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 |---|---|---|
 | `CPU` | busy percent, lowest-highest core clock, package/hottest temperature (every 5 s); `-` if missing | `sys power status` lists every sensor |
 | `RAM`, `SWP` | used/total GiB; RAM is memory in use (`MemTotal - MemAvailable`, so reclaimable cache does not count) minus what guests hold (`check status` sums their cgroups without file cache and VM processes every minute) | Grafana, Guests |
-| `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 5 s) | `sys wifi test` |
+| `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 10 s) | `sys wifi test` |
 | Topology | uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `rel` | booted semantic version (release ID on older images); grey `good` if the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
-| `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 5 s | `sys audio mic off` / `on` |
+| `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 10 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) if svc cannot be read, including during SETUP until svc is up; every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
-| layout, `UP`, clock | keyboard layout (every 5 s), uptime, local date and time | `sys keyboard next` |
+| layout, `UP`, clock | keyboard layout (every 10 s), uptime, local date and time | `sys keyboard next` |
 | `BAT` | capacity; `+` charging, `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging (full or at charge limit); `AC` without a battery | `sys power status` |
 
 Topology starts with the uplink: `WLAN:<network>` (green connected, red with no network, grey when

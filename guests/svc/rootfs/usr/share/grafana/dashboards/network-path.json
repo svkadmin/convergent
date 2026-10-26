@@ -19,14 +19,14 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "",
+      "title": "Internet - DNS and on-demand web",
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 16,
-        "h": 2
+        "w": 24,
+        "h": 3
       },
-      "description": "Source: fw-facts pfctl, ifconfig pfsync0 and unbound-control status.",
+      "description": "Minute DNS via the host resolver; verified HTTPS to example.com uses only an already-running def network namespace and the resolved IPv4 address. No browser startup or policy openings. Closed def means HTTPS unavailable, not failed; a single endpoint is not the whole Internet.",
       "datasource": {
         "type": "prometheus",
         "uid": "metrics"
@@ -34,7 +34,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (node) (convergent_pf_enabled)",
+          "expr": "cv_internet_probe_success and on() (((cv_collector_timestamp_seconds{collector=\"internet\"} <= time() + 60) and (cv_collector_timestamp_seconds{collector=\"internet\"} > time() - 180) and (cv_collector_success{collector=\"internet\"} == 1)) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -42,11 +42,12 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "pf · {{node}}"
+          "legendFormat": "{{probe}} {{target}}",
+          "cvOptional": "HTTPS is measured only while def is running; DNS remains minute evidence."
         },
         {
           "refId": "B",
-          "expr": "max by (node) (convergent_pfsync_up)",
+          "expr": "time() - cv_collector_timestamp_seconds{collector=\"internet\"}",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -54,11 +55,11 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "pfsync · {{node}}"
+          "legendFormat": "measurement age"
         },
         {
           "refId": "C",
-          "expr": "max by (node) (convergent_unbound_up)",
+          "expr": "cv_https_probe_available",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -66,125 +67,13 @@
           "editorMode": "code",
           "instant": true,
           "range": false,
-          "legendFormat": "resolver · {{node}}"
+          "legendFormat": "web probe available"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "type": "value",
-              "options": {
-                "0": {
-                  "text": "DOWN",
-                  "color": "#F2495C"
-                }
-              }
-            },
-            {
-              "type": "value",
-              "options": {
-                "1": {
-                  "text": "UP",
-                  "color": "#89C98E"
-                }
-              }
-            }
-          ]
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 2,
-      "type": "stat",
-      "title": "",
-      "gridPos": {
-        "x": 16,
-        "y": 0,
-        "w": 8,
-        "h": 2
-      },
-      "description": "Source: wan-check. Lease present is not an Internet probe; overlap is latched until a safe lease; portal lasts at most 30 minutes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max(convergent_wan_upstream_up{node=\"wan\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "WAN lease"
-        },
-        {
-          "refId": "B",
-          "expr": "max(convergent_wan_upstream_overlap{node=\"wan\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "overlap refused"
-        },
-        {
-          "refId": "C",
-          "expr": "max(convergent_wan_portal_mode{node=\"wan\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "portal mode"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
+          "noValue": "UNKNOWN",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -203,7 +92,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "WAN lease"
+              "options": "dns example.com"
             },
             "properties": [
               {
@@ -213,7 +102,7 @@
                     "type": "value",
                     "options": {
                       "0": {
-                        "text": "DOWN",
+                        "text": "FAILED",
                         "color": "#F2495C"
                       }
                     }
@@ -222,7 +111,7 @@
                     "type": "value",
                     "options": {
                       "1": {
-                        "text": "UP",
+                        "text": "OK",
                         "color": "#89C98E"
                       }
                     }
@@ -234,48 +123,74 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "overlap refused"
+              "options": "https example.com"
             },
             "properties": [
               {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
                     }
-                  ]
-                }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "portal mode"
+              "options": "measurement age"
             },
             "properties": [
               {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 1
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web probe available"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "N/A - def closed",
+                        "color": "#8A93A3"
+                      }
                     }
-                  ]
-                }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "AVAILABLE",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
               }
             ]
           }
@@ -302,12 +217,1112 @@
       }
     },
     {
+      "id": 14,
+      "type": "timeseries",
+      "title": "DNS · queries and cache hits",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 8,
+        "h": 6
+      },
+      "description": "Source: fw-facts unbound-control stats_noreset, total.num.queries and total.num.cachehits.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(convergent_unbound_queries_total[4m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "queries · {{node}}"
+        },
+        {
+          "refId": "B",
+          "expr": "rate(convergent_unbound_cachehits_total[4m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "cache hits · {{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "DNS · mean recursion latency",
+      "gridPos": {
+        "x": 8,
+        "y": 3,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Source: Unbound total.recursion.time.avg via stats_noreset. Cumulative mean for recursive/cache-miss work since reset, not per-client or cached-answer latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_unbound_recursion_seconds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 0.1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "DNS · SERVFAIL rate",
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Source: Unbound num.answer.rcode.SERVFAIL counter; rate across the selected interval.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(convergent_unbound_servfail_total[4m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Wi-Fi · signal",
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 8,
+        "h": 6
+      },
+      "description": "Source: iw link at wan-check cadence. Missing while disconnected or unsupported; no SSID/BSSID is exported.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_wifi_signal_dbm",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "signal",
+          "cvOptional": "No associated Wi-Fi radio in QEMU or while disconnected."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dBm",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": -100,
+          "max": 0,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 0
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Wi-Fi · link bitrate",
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 8,
+        "h": 6
+      },
+      "description": "Source: iw link's reported TX/RX PHY bitrate when available; not payload throughput.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_wifi_bitrate_bits_per_second",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{direction}}",
+          "cvOptional": "Radio/driver may not report bitrate; absent in QEMU."
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 1000000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Wi-Fi · observed roams",
+      "gridPos": {
+        "x": 8,
+        "y": 15,
+        "w": 8,
+        "h": 6
+      },
+      "description": "BSSID changes between successive associated wan-check samples. Disconnect/reconnect and changes between samples are not counted; resets on WAN reboot.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "increase(convergent_wifi_roams_total[4m])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "association changes"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "WAN watch · RTT",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Source: existing three-ping firewall-to-WAN probe round, sampled once per minute. No extra probe. Missing when all packets are lost or resolver health skips probing; not Internet RTT.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_wan_watch_rtt_seconds and on(node) (convergent_wan_watch_probe_timestamp_seconds > time() - 180)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{node}} -> WAN transit"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 0.1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "WAN watch · packet loss",
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Source: existing probe round, three packets; sampled loss is 0, 1/3, 2/3 or 1. Missing when resolver health skips the round.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_wan_watch_loss_ratio and on(node) (convergent_wan_watch_probe_timestamp_seconds > time() - 180)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 1
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Firewall readiness - pair",
+      "gridPos": {
+        "x": 0,
+        "y": 27,
+        "w": 24,
+        "h": 6
+      },
+      "description": "Readiness is local evidence, not proof of synchronized peer state contents. Missing/stale/failed collection blanks health columns. Demotion groups are below; rules compare against checker baseline.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "convergent_wan_watch_up and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)) and on(node) (convergent_wan_watch_probe_timestamp_seconds > time() - 180) and on(node) (convergent_wan_watch_probe_timestamp_seconds <= time() + 60)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "B",
+          "expr": "convergent_pfsync_up and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "C",
+          "expr": "convergent_pfsync_defer and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "D",
+          "expr": "convergent_carp_preempt and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "E",
+          "expr": "max by(node) (convergent_carp_demotion)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "F",
+          "expr": "(max by(node) (convergent_pf_ruleset_info and on(node,loaded) label_replace(cv_firewall_ruleset_expected_info,\"node\",\"$1\",\"firewall\",\"(fw1|fw2)\")) or on(node) (convergent_fw_facts_success * 0)) and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)) and on() ((cv_checker_last_run_seconds > time() - 129600) and (cv_checker_last_run_seconds <= time() + 60) and on(node) (up{job=\"node\",node=\"host\"} == 1))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        },
+        {
+          "refId": "G",
+          "expr": "time() - convergent_fw_facts_timestamp_seconds",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "watcher"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "pfsync"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "defer"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "preempt"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rules agree"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "FAILED",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "OK",
+                        "color": "#89C98E"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "age"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "watcher",
+              "Value #B": "pfsync",
+              "Value #C": "defer",
+              "Value #D": "preempt",
+              "Value #E": "demotion",
+              "Value #F": "rules agree",
+              "Value #G": "age"
+            },
+            "includeByName": {
+              "node": true,
+              "Value #A": true,
+              "Value #B": true,
+              "Value #C": true,
+              "Value #D": true,
+              "Value #E": true,
+              "Value #F": true,
+              "Value #G": true
+            },
+            "indexByName": {
+              "node": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4,
+              "Value #E": 5,
+              "Value #F": 6,
+              "Value #G": 7
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": 3,
+      "type": "table",
+      "title": "CARP readiness - segment by firewall",
+      "gridPos": {
+        "x": 0,
+        "y": 33,
+        "w": 24,
+        "h": 7
+      },
+      "description": "Every registered segment on both nodes. Mixed roles and missing/split masters alert; colors describe roles.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(node,segment,interface) (convergent_carp_state and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": true,
+          "range": false,
+          "interval": "1m",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "color-text"
+            },
+            "minWidth": 60
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "role"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "INIT",
+                        "color": "#F2495C"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": {
+                        "text": "BACKUP",
+                        "color": "#A6B0BC"
+                      }
+                    }
+                  },
+                  {
+                    "type": "value",
+                    "options": {
+                      "2": {
+                        "text": "MASTER",
+                        "color": "#79BCF5"
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "md",
+        "footer": {
+          "show": false
+        }
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "renameByName": {
+              "Value #A": "role",
+              "Value": "role"
+            },
+            "includeByName": {
+              "segment": true,
+              "interface": true,
+              "node": true,
+              "Value #A": true,
+              "Value": true
+            },
+            "indexByName": {
+              "segment": 0,
+              "interface": 1,
+              "node": 2,
+              "Value #A": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 11,
       "type": "state-timeline",
       "title": "CARP · all segments",
       "gridPos": {
         "x": 0,
-        "y": 2,
+        "y": 40,
         "w": 24,
         "h": 10
       },
@@ -319,7 +1334,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "max by (node,segment,interface) (convergent_carp_state)",
+          "expr": "max by (node,segment,interface) (convergent_carp_state and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -327,6 +1342,7 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
+          "interval": "1m",
           "legendFormat": "{{segment}} · {{interface}} · {{node}}"
         }
       ],
@@ -399,834 +1415,12 @@
       }
     },
     {
-      "id": 4,
-      "type": "timeseries",
-      "title": "pf · states against limit",
-      "gridPos": {
-        "x": 0,
-        "y": 12,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: fw-facts pfctl -si and -sm; current state entries and configured ceiling.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by (node) (convergent_pf_states)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "states · {{node}}"
-        },
-        {
-          "refId": "B",
-          "expr": "max by (node) (convergent_pf_state_limit)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "limit · {{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 5,
-      "type": "timeseries",
-      "title": "pf · diagnostic counters",
-      "gridPos": {
-        "x": 8,
-        "y": 12,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: fw-facts pfctl -si Counters. Rates of diagnostic events, not policy pass/block verdicts; rule-label traffic is not collected.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (node,name) (rate(convergent_pf_counter_total[$__rate_interval]))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}} · {{name}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "pps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "DNS · queries and cache hits",
-      "gridPos": {
-        "x": 16,
-        "y": 12,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: fw-facts unbound-control stats_noreset, total.num.queries and total.num.cachehits.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(convergent_unbound_queries_total[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "queries · {{node}}"
-        },
-        {
-          "refId": "B",
-          "expr": "rate(convergent_unbound_cachehits_total[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "cache hits · {{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 7,
-      "type": "table",
-      "title": "Default route · presence and next hop",
-      "gridPos": {
-        "x": 0,
-        "y": 18,
-        "w": 8,
-        "h": 5
-      },
-      "description": "Source: fw-facts route -n show -inet; one current row per firewall/next hop. This confirms presence, not a policy comparison.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by (node,gateway) (convergent_default_route_info)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "format": "table"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "cellOptions": {
-              "type": "color-text"
-            },
-            "minWidth": 60
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "route"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "md",
-        "footer": {
-          "show": false
-        }
-      },
-      "transformations": [
-        {
-          "id": "merge",
-          "options": {}
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true
-            },
-            "renameByName": {
-              "Value #A": "route",
-              "Value": "route"
-            },
-            "includeByName": {
-              "node": true,
-              "gateway": true,
-              "Value #A": true,
-              "Value": true
-            },
-            "indexByName": {
-              "node": 0,
-              "gateway": 1,
-              "Value #A": 2
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "type": "stat",
-      "title": "Resolver input ages",
-      "gridPos": {
-        "x": 8,
-        "y": 18,
-        "w": 8,
-        "h": 5
-      },
-      "description": "Source: fw-facts RPZ file mtime, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "max by (node) (time() - convergent_dns_file_mtime_seconds{file=\"blocklist.rpz\"})",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "RPZ · {{node}}"
-        },
-        {
-          "refId": "B",
-          "expr": "max by (node) (time() - convergent_fw_facts_timestamp_seconds)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "facts · {{node}}"
-        },
-        {
-          "refId": "C",
-          "expr": "max by (node) (convergent_default_route_present)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": true,
-          "range": false,
-          "legendFormat": "default · {{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": []
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RPZ · fw1"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 864000
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "RPZ · fw2"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 864000
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "facts · fw1"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 180
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "facts · fw2"
-            },
-            "properties": [
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "text",
-                      "value": null
-                    },
-                    {
-                      "color": "#EDB873",
-                      "value": 180
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "default · fw1"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "default · fw2"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "none"
-              },
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "0": {
-                        "text": "DOWN",
-                        "color": "#F2495C"
-                      }
-                    }
-                  },
-                  {
-                    "type": "value",
-                    "options": {
-                      "1": {
-                        "text": "UP",
-                        "color": "#89C98E"
-                      }
-                    }
-                  }
-                ]
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "value_and_name",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "wideLayout": true,
-        "text": {
-          "titleSize": 13,
-          "valueSize": 20
-        }
-      }
-    },
-    {
-      "id": 9,
-      "type": "timeseries",
-      "title": "WAN · traffic by interface",
-      "gridPos": {
-        "x": 16,
-        "y": 18,
-        "w": 8,
-        "h": 5
-      },
-      "description": "Source: wan node_exporter netdev. Includes internal and physical interfaces; radio evidence is below.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "8 * rate(node_network_receive_bytes_total{node=\"wan\",device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "in · {{device}}"
-        },
-        {
-          "refId": "B",
-          "expr": "8 * rate(node_network_transmit_bytes_total{node=\"wan\",device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "out · {{device}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 1000000
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Interfaces · errors and queue drops",
-      "gridPos": {
-        "x": 0,
-        "y": 23,
-        "w": 12,
-        "h": 8
-      },
-      "description": "Source: node_exporter netdev on scraped nodes. Interface errors/drops are queue or link failures, not pf policy drops; platforms may expose only some counters.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(node_network_receive_errs_total{device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "RX error · {{node}} {{device}}"
-        },
-        {
-          "refId": "B",
-          "expr": "rate(node_network_transmit_errs_total{device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "TX error · {{node}} {{device}}"
-        },
-        {
-          "refId": "C",
-          "expr": "rate(node_network_receive_drop_total{device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "RX drop · {{node}} {{device}}"
-        },
-        {
-          "refId": "D",
-          "expr": "rate(node_network_transmit_drop_total{device!=\"lo\"}[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "TX drop · {{node}} {{device}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "pps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 11,
+      "id": 19,
       "type": "logs",
       "title": "Firewall and CARP changes",
       "gridPos": {
-        "x": 12,
-        "y": 23,
+        "x": 0,
+        "y": 50,
         "w": 12,
         "h": 8
       },
@@ -1238,7 +1432,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND (_msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" OR app_name:=\"wan-watch\" OR app_name:=\"pfctl\") AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\") | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "(remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND (_msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" OR app_name:=\"wan-watch\" OR app_name:=\"pfctl\") AND NOT _msg:~\"(?i)(type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE)|type=13(00|02|07|09|27))\" AND NOT (app_name:=\"kernel\" AND _msg:~\"^([[:space:]]|Call [Tt]race:|CPU: [0-9]|Hardware name:|Modules linked in:|RIP:|RSP:|R[A-Z0-9]{2}:|EFLAGS:|FS:|GS:|CS:|CR[0-9]:|PKRU:|Code:|---\\\\[ end trace|</?(TASK|IRQ|NMI)>|[? ]*[a-zA-Z0-9_]+\\\\+0x[0-9a-f]+/0x)\")) OR (remote_ip:=\"100.80.1.10\" app_name:=\"sys-firewall\") | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"
@@ -1280,21 +1474,21 @@
       "links": [
         {
           "title": "These lines in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22remote_ip%3Ain%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20%28_msg%3A~%5C%22carp%5B0-9%5D%2B%3A.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20%28MASTER%7CBACKUP%7CINIT%29%5C%22%20OR%20app_name%3A%3D%5C%22wan-watch%5C%22%20OR%20app_name%3A%3D%5C%22pfctl%5C%22%29%20AND%20NOT%20_msg%3A~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name%3A%3D%5C%22kernel%5C%22%20AND%20_msg%3A~%5C%22%5E%28%5B%5B%3Aspace%3A%5D%5D%7CCall%20%5BTt%5Drace%3A%7CCPU%3A%20%5B0-9%5D%7CHardware%20name%3A%7CModules%20linked%20in%3A%7CRIP%3A%7CRSP%3A%7CR%5BA-Z0-9%5D%7B2%7D%3A%7CEFLAGS%3A%7CFS%3A%7CGS%3A%7CCS%3A%7CCR%5B0-9%5D%3A%7CPKRU%3A%7CCode%3A%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C/%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B/0x%29%5C%22%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%28remote_ip:in%28%5C%22100.80.2.2%5C%22%2C%5C%22100.80.2.3%5C%22%29%20AND%20%28_msg:~%5C%22carp%5B0-9%5D%2B:.%2A%28MASTER%7CBACKUP%7CINIT%29%20-%3E%20%28MASTER%7CBACKUP%7CINIT%29%5C%22%20OR%20app_name:%3D%5C%22wan-watch%5C%22%20OR%20app_name:%3D%5C%22pfctl%5C%22%29%20AND%20NOT%20_msg:~%5C%22%28%3Fi%29%28type%3D%28EXECVE%7CSYSCALL%7CCWD%7CPATH%7CPROCTITLE%29%7Ctype%3D13%2800%7C02%7C07%7C09%7C27%29%29%5C%22%20AND%20NOT%20%28app_name:%3D%5C%22kernel%5C%22%20AND%20_msg:~%5C%22%5E%28%5B%5B:space:%5D%5D%7CCall%20%5BTt%5Drace:%7CCPU:%20%5B0-9%5D%7CHardware%20name:%7CModules%20linked%20in:%7CRIP:%7CRSP:%7CR%5BA-Z0-9%5D{2}:%7CEFLAGS:%7CFS:%7CGS:%7CCS:%7CCR%5B0-9%5D:%7CPKRU:%7CCode:%7C---%5C%5C%5C%5C%5B%20end%20trace%7C%3C%2F%3F%28TASK%7CIRQ%7CNMI%29%3E%7C%5B%3F%20%5D%2A%5Ba-zA-Z0-9_%5D%2B%5C%5C%5C%5C%2B0x%5B0-9a-f%5D%2B%2F0x%29%5C%22%29%29%20OR%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%20app_name:%3D%5C%22sys-firewall%5C%22%29%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
         },
         {
           "title": "All logs in Explore",
-          "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip%3A%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D"
+          "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%20%7C%20copy%20remote_ip%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.1.10%5C%22%29%20%5C%22host%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.2%5C%22%29%20%5C%22fw1%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.2.3%5C%22%29%20%5C%22fw2%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22100.80.0.10%5C%22%29%20%5C%22wan%5C%22%20as%20hostname%20%7C%20format%20if%20%28remote_ip:%3D%5C%22127.0.0.1%5C%22%29%20%5C%22svc%5C%22%20as%20hostname%20%7C%20set_stream_fields%20hostname%2C%20app_name%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}"
         }
       ]
     },
     {
-      "id": 12,
+      "id": 20,
       "type": "timeseries",
       "title": "Segments · in",
       "gridPos": {
-        "x": 0,
-        "y": 31,
+        "x": 12,
+        "y": 50,
         "w": 12,
         "h": 7
       },
@@ -1306,7 +1500,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "8 * rate(convergent_interface_receive_bytes_total[$__rate_interval]) * on(node,carpdev) group_left(segment,interface) (convergent_carp_state >= bool 0)",
+          "expr": "8 * rate(convergent_interface_receive_bytes_total[4m]) * on(node,carpdev) group_left(segment,interface) (convergent_carp_state >= bool 0)",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -1314,6 +1508,7 @@
           "editorMode": "code",
           "instant": false,
           "range": true,
+          "interval": "1m",
           "legendFormat": "{{segment}} · {{interface}} · {{node}}"
         }
       ],
@@ -1342,594 +1537,6 @@
             "spanNulls": false,
             "gradientMode": "none",
             "axisSoftMax": 1000000
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Segments · out",
-      "gridPos": {
-        "x": 12,
-        "y": 31,
-        "w": 12,
-        "h": 7
-      },
-      "description": "Source: OpenBSD netstat interface byte counters joined to CARP parent/segment labels. Physical/VLAN parent traffic includes CARP and broadcasts; this is interface traffic, not routed-only traffic. Both nodes remain visible across failover.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "8 * rate(convergent_interface_transmit_bytes_total[$__rate_interval]) * on(node,carpdev) group_left(segment,interface) (convergent_carp_state >= bool 0)",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{segment}} · {{interface}} · {{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 1000000
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 14,
-      "type": "timeseries",
-      "title": "DNS · mean recursion latency",
-      "gridPos": {
-        "x": 0,
-        "y": 38,
-        "w": 12,
-        "h": 6
-      },
-      "description": "Source: Unbound total.recursion.time.avg via stats_noreset. Cumulative mean for recursive/cache-miss work since reset, not per-client or cached-answer latency.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "convergent_unbound_recursion_seconds",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 0.1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 15,
-      "type": "timeseries",
-      "title": "DNS · SERVFAIL rate",
-      "gridPos": {
-        "x": 12,
-        "y": 38,
-        "w": 12,
-        "h": 6
-      },
-      "description": "Source: Unbound num.answer.rcode.SERVFAIL counter; rate across the selected interval.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "rate(convergent_unbound_servfail_total[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 10
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 16,
-      "type": "timeseries",
-      "title": "Wi-Fi · signal",
-      "gridPos": {
-        "x": 0,
-        "y": 44,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: iw link at wan-check cadence. Missing while disconnected or unsupported; no SSID/BSSID is exported.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "convergent_wifi_signal_dbm",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "signal",
-          "cvOptional": "No associated Wi-Fi radio in QEMU or while disconnected."
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "dBm",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": -100,
-          "max": 0,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 0
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 17,
-      "type": "timeseries",
-      "title": "Wi-Fi · link bitrate",
-      "gridPos": {
-        "x": 8,
-        "y": 44,
-        "w": 8,
-        "h": 6
-      },
-      "description": "Source: iw link's reported TX/RX PHY bitrate when available; not payload throughput.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "convergent_wifi_bitrate_bits_per_second",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{direction}}",
-          "cvOptional": "Radio/driver may not report bitrate; absent in QEMU."
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bps",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 1000000
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 18,
-      "type": "timeseries",
-      "title": "Wi-Fi · observed roams",
-      "gridPos": {
-        "x": 16,
-        "y": 44,
-        "w": 8,
-        "h": 6
-      },
-      "description": "BSSID changes between successive associated wan-check samples. Disconnect/reconnect and changes between samples are not counted; resets on WAN reboot.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "increase(convergent_wifi_roams_total[$__rate_interval])",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "association changes"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "#79BCF5"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 100
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 19,
-      "type": "timeseries",
-      "title": "WAN watch · RTT",
-      "gridPos": {
-        "x": 0,
-        "y": 50,
-        "w": 12,
-        "h": 6
-      },
-      "description": "Source: existing three-ping firewall-to-WAN probe round, sampled once per minute. No extra probe. Missing when all packets are lost or resolver health skips probing; not Internet RTT.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "convergent_wan_watch_rtt_seconds",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": null,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 0.1
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true,
-          "calcs": [
-            "last"
-          ]
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      }
-    },
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "WAN watch · packet loss",
-      "gridPos": {
-        "x": 12,
-        "y": 50,
-        "w": 12,
-        "h": 6
-      },
-      "description": "Source: existing probe round, three packets; sampled loss is 0, 1/3, 2/3 or 1. Missing when resolver health skips the round.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "metrics"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "convergent_wan_watch_loss_ratio",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "metrics"
-          },
-          "editorMode": "code",
-          "instant": false,
-          "range": true,
-          "legendFormat": "{{node}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "noValue": "—",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "text",
-                "value": null
-              }
-            ]
-          },
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "min": 0,
-          "max": 1,
-          "custom": {
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never",
-            "spanNulls": false,
-            "gradientMode": "none",
-            "axisSoftMax": 1
           }
         },
         "overrides": []
@@ -1951,11 +1558,85 @@
     },
     {
       "id": 21,
+      "type": "timeseries",
+      "title": "Segments · out",
+      "gridPos": {
+        "x": 0,
+        "y": 58,
+        "w": 12,
+        "h": 7
+      },
+      "description": "Source: OpenBSD netstat interface byte counters joined to CARP parent/segment labels. Physical/VLAN parent traffic includes CARP and broadcasts; this is interface traffic, not routed-only traffic. Both nodes remain visible across failover.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "8 * rate(convergent_interface_transmit_bytes_total[4m]) * on(node,carpdev) group_left(segment,interface) (convergent_carp_state >= bool 0)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{segment}} · {{interface}} · {{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": null,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 1000000
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 29,
       "type": "table",
       "title": "Blocked · top sources",
       "gridPos": {
-        "x": 0,
-        "y": 56,
+        "x": 12,
+        "y": 58,
         "w": 8,
         "h": 8
       },
@@ -2001,12 +1682,12 @@
       }
     },
     {
-      "id": 22,
+      "id": 30,
       "type": "table",
       "title": "Blocked · top destinations",
       "gridPos": {
-        "x": 8,
-        "y": 56,
+        "x": 0,
+        "y": 66,
         "w": 8,
         "h": 8
       },
@@ -2052,12 +1733,12 @@
       }
     },
     {
-      "id": 23,
+      "id": 31,
       "type": "table",
       "title": "Blocked · top destination ports",
       "gridPos": {
-        "x": 16,
-        "y": 56,
+        "x": 8,
+        "y": 66,
         "w": 8,
         "h": 8
       },
@@ -2103,24 +1784,1567 @@
       }
     },
     {
-      "id": 24,
+      "id": 8,
+      "type": "timeseries",
+      "title": "pf state utilization",
+      "gridPos": {
+        "x": 0,
+        "y": 74,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Alert at 80% for 5m; absolute counts remain in diagnostics.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * convergent_pf_states / convergent_pf_state_limit",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "interval": "1m",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "palette-classic-by-name"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 33,
+      "type": "row",
+      "title": "Troubleshooting - routes, pf and interfaces",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 80,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "DNS - NXDOMAIN",
+          "gridPos": {
+            "x": 0,
+            "y": 81,
+            "w": 12,
+            "h": 6
+          },
+          "description": "Negative answers can be normal; correlate with SERVFAIL and recursion latency.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(convergent_unbound_nxdomain_total[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "{{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 10
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 6,
+          "type": "table",
+          "title": "DNS deployed files",
+          "gridPos": {
+            "x": 12,
+            "y": 81,
+            "w": 12,
+            "h": 6
+          },
+          "description": "Compare deployment times between peers. An unchanged local-owner.conf has no age alarm.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "convergent_dns_file_mtime_seconds * 1000",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-text"
+                },
+                "minWidth": 60
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "modified"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "dateTimeAsIso"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "md",
+            "footer": {
+              "show": false
+            }
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "renameByName": {
+                  "Value #A": "modified",
+                  "Value": "modified"
+                },
+                "includeByName": {
+                  "node": true,
+                  "file": true,
+                  "Value #A": true,
+                  "Value": true
+                },
+                "indexByName": {
+                  "node": 0,
+                  "file": 1,
+                  "Value #A": 2
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "table",
+          "title": "CARP advertisement skew",
+          "gridPos": {
+            "x": 0,
+            "y": 87,
+            "w": 12,
+            "h": 6
+          },
+          "description": "Configured election preference; descriptive, not a failure verdict.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "convergent_carp_advskew",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-text"
+                },
+                "minWidth": 60
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "md",
+            "footer": {
+              "show": false
+            }
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "renameByName": {
+                  "Value #A": "advskew",
+                  "Value": "advskew"
+                },
+                "includeByName": {
+                  "node": true,
+                  "segment": true,
+                  "interface": true,
+                  "Value #A": true,
+                  "Value": true
+                },
+                "indexByName": {
+                  "node": 0,
+                  "segment": 1,
+                  "interface": 2,
+                  "Value #A": 3
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "table",
+          "title": "CARP demotion groups",
+          "gridPos": {
+            "x": 12,
+            "y": 87,
+            "w": 12,
+            "h": 6
+          },
+          "description": "wanwatch, maintenance, upgrade and handoff demotions explain role changes. A nonzero administrative demotion is not automatically a fault.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "convergent_carp_demotion",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-text"
+                },
+                "minWidth": 60
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "md",
+            "footer": {
+              "show": false
+            }
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "renameByName": {
+                  "Value #A": "demotion",
+                  "Value": "demotion"
+                },
+                "includeByName": {
+                  "node": true,
+                  "group": true,
+                  "Value #A": true,
+                  "Value": true
+                },
+                "indexByName": {
+                  "node": 0,
+                  "group": 1,
+                  "Value #A": 2
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "stat",
+          "title": "",
+          "gridPos": {
+            "x": 0,
+            "y": 93,
+            "w": 16,
+            "h": 2
+          },
+          "description": "Source: fw-facts pfctl, ifconfig pfsync0 and unbound-control status.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (node) (convergent_pf_enabled and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "pf · {{node}}"
+            },
+            {
+              "refId": "B",
+              "expr": "max by (node) (convergent_pfsync_up and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "pfsync · {{node}}"
+            },
+            {
+              "refId": "C",
+              "expr": "max by (node) (convergent_unbound_up and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "resolver · {{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "DOWN",
+                      "color": "#F2495C"
+                    }
+                  }
+                },
+                {
+                  "type": "value",
+                  "options": {
+                    "1": {
+                      "text": "UP",
+                      "color": "#89C98E"
+                    }
+                  }
+                }
+              ]
+            },
+            "overrides": []
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "wideLayout": true,
+            "text": {
+              "titleSize": 13,
+              "valueSize": 20
+            }
+          }
+        },
+        {
+          "id": 10,
+          "type": "stat",
+          "title": "",
+          "gridPos": {
+            "x": 16,
+            "y": 93,
+            "w": 8,
+            "h": 2
+          },
+          "description": "Source: wan-check. Lease present is not an Internet probe; overlap is latched until a safe lease; portal lasts at most 30 minutes.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max(convergent_wan_upstream_up{node=\"wan\"} and on(node) ((up{job=\"node\",node=\"wan\"} == 1) and on(node) (node_textfile_mtime_seconds{node=\"wan\",file=~\".*wan.prom\"} > time() - 180) and on(node) (node_textfile_mtime_seconds{node=\"wan\",file=~\".*wan.prom\"} <= time() + 60)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "WAN lease"
+            },
+            {
+              "refId": "B",
+              "expr": "max(convergent_wan_upstream_overlap{node=\"wan\"})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "overlap refused"
+            },
+            {
+              "refId": "C",
+              "expr": "max(convergent_wan_portal_mode{node=\"wan\"})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "portal mode"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": []
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "WAN lease"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "DOWN",
+                            "color": "#F2495C"
+                          }
+                        }
+                      },
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "text": "UP",
+                            "color": "#89C98E"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "overlap refused"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#F2495C",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "portal mode"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#F2495C",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "wideLayout": true,
+            "text": {
+              "titleSize": 13,
+              "valueSize": 20
+            }
+          }
+        },
+        {
+          "id": 12,
+          "type": "timeseries",
+          "title": "pf · states against limit",
+          "gridPos": {
+            "x": 0,
+            "y": 95,
+            "w": 8,
+            "h": 6
+          },
+          "description": "Source: fw-facts pfctl -si and -sm; current state entries and configured ceiling.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (node) (convergent_pf_states)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "states · {{node}}"
+            },
+            {
+              "refId": "B",
+              "expr": "max by (node) (convergent_pf_state_limit)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "limit · {{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 100
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "pf · diagnostic counters",
+          "gridPos": {
+            "x": 8,
+            "y": 95,
+            "w": 8,
+            "h": 6
+          },
+          "description": "Source: fw-facts pfctl -si Counters. Rates of diagnostic events, not policy pass/block verdicts; rule-label traffic is not collected.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (node,name) (rate(convergent_pf_counter_total[4m]))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "interval": "1m",
+              "legendFormat": "{{node}} · {{name}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "pps",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 10
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 15,
+          "type": "table",
+          "title": "Default route · presence and next hop",
+          "gridPos": {
+            "x": 16,
+            "y": 95,
+            "w": 8,
+            "h": 5
+          },
+          "description": "Source: fw-facts route -n show -inet; one current row per firewall/next hop. This confirms presence, not a policy comparison.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (node,gateway) (convergent_default_route_info)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "format": "table"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "color-text"
+                },
+                "minWidth": 60
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "route"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "DOWN",
+                            "color": "#F2495C"
+                          }
+                        }
+                      },
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "text": "UP",
+                            "color": "#89C98E"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "md",
+            "footer": {
+              "show": false
+            }
+          },
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true,
+                  "__name__": true
+                },
+                "renameByName": {
+                  "Value #A": "route",
+                  "Value": "route"
+                },
+                "includeByName": {
+                  "node": true,
+                  "gateway": true,
+                  "Value #A": true,
+                  "Value": true
+                },
+                "indexByName": {
+                  "node": 0,
+                  "gateway": 1,
+                  "Value #A": 2
+                }
+              }
+            }
+          ]
+        },
+        {
+          "id": 16,
+          "type": "stat",
+          "title": "Resolver input ages",
+          "gridPos": {
+            "x": 0,
+            "y": 101,
+            "w": 8,
+            "h": 5
+          },
+          "description": "Source: fw-facts RPZ file mtime, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "max by (node) (time() - convergent_dns_file_mtime_seconds{file=\"blocklist.rpz\"})",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "RPZ · {{node}}"
+            },
+            {
+              "refId": "B",
+              "expr": "max by (node) (time() - convergent_fw_facts_timestamp_seconds)",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "facts · {{node}}"
+            },
+            {
+              "refId": "C",
+              "expr": "max by (node) (convergent_default_route_present and on(node) ((convergent_fw_facts_success == 1) and on(node) (up{job=\"node\",node=~\"fw1|fw2\"} == 1) and on(node) (convergent_fw_facts_timestamp_seconds > time() - 180) and on(node) (convergent_fw_facts_timestamp_seconds <= time() + 60)))",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": true,
+              "range": false,
+              "interval": "1m",
+              "legendFormat": "default · {{node}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "thresholds"
+              },
+              "mappings": []
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "RPZ · fw1"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#EDB873",
+                          "value": 864000
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "RPZ · fw2"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#EDB873",
+                          "value": 864000
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "facts · fw1"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#EDB873",
+                          "value": 180
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "facts · fw2"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "text",
+                          "value": null
+                        },
+                        {
+                          "color": "#EDB873",
+                          "value": 180
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "default · fw1"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "DOWN",
+                            "color": "#F2495C"
+                          }
+                        }
+                      },
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "text": "UP",
+                            "color": "#89C98E"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "default · fw2"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "DOWN",
+                            "color": "#F2495C"
+                          }
+                        }
+                      },
+                      {
+                        "type": "value",
+                        "options": {
+                          "1": {
+                            "text": "UP",
+                            "color": "#89C98E"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "justifyMode": "auto",
+            "orientation": "auto",
+            "wideLayout": true,
+            "text": {
+              "titleSize": 13,
+              "valueSize": 20
+            }
+          }
+        },
+        {
+          "id": 17,
+          "type": "timeseries",
+          "title": "WAN · traffic by interface",
+          "gridPos": {
+            "x": 8,
+            "y": 101,
+            "w": 8,
+            "h": 5
+          },
+          "description": "Source: wan node_exporter netdev. Includes internal and physical interfaces; radio evidence is below.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "8 * rate(node_network_receive_bytes_total{node=\"wan\",device!=\"lo\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "in · {{device}}"
+            },
+            {
+              "refId": "B",
+              "expr": "8 * rate(node_network_transmit_bytes_total{node=\"wan\",device!=\"lo\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "out · {{device}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bps",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 1000000
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        },
+        {
+          "id": 18,
+          "type": "timeseries",
+          "title": "Interfaces · errors and queue drops",
+          "gridPos": {
+            "x": 0,
+            "y": 106,
+            "w": 12,
+            "h": 8
+          },
+          "description": "Source: node_exporter netdev on scraped nodes. Interface errors/drops are queue or link failures, not pf policy drops; platforms may expose only some counters.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "rate(node_network_receive_errs_total{node=~\"${node:regex}\",device=~\"${device:regex}\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "RX error · {{node}} {{device}}"
+            },
+            {
+              "refId": "B",
+              "expr": "rate(node_network_transmit_errs_total{node=~\"${node:regex}\",device=~\"${device:regex}\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "TX error · {{node}} {{device}}"
+            },
+            {
+              "refId": "C",
+              "expr": "rate(node_network_receive_drop_total{node=~\"${node:regex}\",device=~\"${device:regex}\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "RX drop · {{node}} {{device}}"
+            },
+            {
+              "refId": "D",
+              "expr": "rate(node_network_transmit_drop_total{node=~\"${node:regex}\",device=~\"${device:regex}\"}[4m])",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "metrics"
+              },
+              "editorMode": "code",
+              "instant": false,
+              "range": true,
+              "legendFormat": "TX drop · {{node}} {{device}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "pps",
+              "noValue": "—",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              },
+              "color": {
+                "mode": "palette-classic-by-name"
+              },
+              "min": 0,
+              "max": null,
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": false,
+                "gradientMode": "none",
+                "axisSoftMax": 10
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true,
+              "calcs": [
+                "last"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 32,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 81,
         "w": 24,
         "h": 3
       },
       "options": {
         "mode": "markdown",
-        "content": "Complete pf verdict counts by rule, RPZ hit counts and per-client DNS queries, host/WAN default next hops, Wi-Fi SSID/security/PMF, BFD and Internet reachability are not collected. pflog is sampled; resolver up means unbound-control responds."
+        "content": "Complete pf verdict counts by rule, RPZ hit counts and per-client DNS queries, host/WAN default next hops, Wi-Fi SSID/security/PMF, BFD and flow accounting are not collected. DNS probes use the host; HTTPS uses an already-running def namespace to example.com. pflog is sampled; resolver up means unbound-control responds."
       }
     }
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "type": "query",
+        "name": "node",
+        "label": "node",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "metrics"
+        },
+        "definition": "label_values(up{job=\"node\"}, node)",
+        "query": {
+          "query": "label_values(up{job=\"node\"}, node)",
+          "refId": "variable"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": "wan",
+          "value": "wan"
+        }
+      },
+      {
+        "type": "query",
+        "name": "device",
+        "label": "device",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "metrics"
+        },
+        "definition": "label_values(node_network_receive_bytes_total{node=~\"${node:regex}\"}, device)",
+        "query": {
+          "query": "label_values(node_network_receive_bytes_total{node=~\"${node:regex}\"}, device)",
+          "refId": "variable"
+        },
+        "refresh": 2,
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "options": [],
+        "current": {
+          "selected": true,
+          "text": "eth0",
+          "value": "eth0"
+        }
+      }
+    ]
   },
   "links": [
     {
@@ -2131,7 +3355,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2142,7 +3366,7 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2153,7 +3377,18 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Host",
+      "type": "link",
+      "url": "/d/cv-host",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
@@ -2164,18 +3399,29 @@
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
+      "tags": []
+    },
+    {
+      "title": "Monitoring",
+      "type": "link",
+      "url": "/d/cv-monitoring",
+      "keepTime": true,
+      "targetBlank": false,
+      "icon": "dashboard",
+      "asDropdown": false,
+      "includeVars": true,
       "tags": []
     },
     {
       "title": "Explore · all logs",
       "type": "link",
-      "url": "/explore?left=%7B%22datasource%22%3A%22logs%22%2C%22queries%22%3A%5B%7B%22refId%22%3A%22A%22%2C%22expr%22%3A%22%2A%22%2C%22datasource%22%3A%7B%22type%22%3A%22victoriametrics-logs-datasource%22%2C%22uid%22%3A%22logs%22%7D%2C%22queryType%22%3A%22instant%22%7D%5D%2C%22range%22%3A%7B%22from%22%3A%22now-1h%22%2C%22to%22%3A%22now%22%7D%7D",
+      "url": "/explore?left={%22datasource%22:%22logs%22%2C%22queries%22:%5B{%22refId%22:%22A%22%2C%22expr%22:%22%2A%22%2C%22datasource%22:{%22type%22:%22victoriametrics-logs-datasource%22%2C%22uid%22:%22logs%22}%2C%22queryType%22:%22instant%22}%5D%2C%22range%22:{%22from%22:%22${__from}%22%2C%22to%22:%22${__to}%22}}",
       "keepTime": true,
       "targetBlank": false,
       "icon": "dashboard",
       "asDropdown": false,
-      "includeVars": false,
+      "includeVars": true,
       "tags": []
     }
   ],
@@ -2192,7 +3438,7 @@
         },
         "target": {
           "refId": "A",
-          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | set_stream_fields hostname, app_name",
+          "expr": "remote_ip:in(\"100.80.2.2\",\"100.80.2.3\") AND _msg:~\"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)\" | copy remote_ip as hostname | format if (remote_ip:=\"100.80.1.10\") \"host\" as hostname | format if (remote_ip:=\"100.80.2.2\") \"fw1\" as hostname | format if (remote_ip:=\"100.80.2.3\") \"fw2\" as hostname | format if (remote_ip:=\"100.80.0.10\") \"wan\" as hostname | format if (remote_ip:=\"127.0.0.1\") \"svc\" as hostname | set_stream_fields hostname, app_name",
           "datasource": {
             "type": "victoriametrics-logs-datasource",
             "uid": "logs"

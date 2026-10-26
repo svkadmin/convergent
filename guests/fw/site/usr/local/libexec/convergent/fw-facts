@@ -1,71 +1,92 @@
 #!/bin/sh
 # ARCHITECTURE 8, 12; cron replaces this textfile every minute.
 set -u
+export LC_ALL=C
 dir=/var/node_exporter/textfile
 out=$dir/convergent_fw.prom
 tmp=$dir/.convergent_fw.$$
 umask 022
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
-
+trap 'rm -f "$tmp"' 0
+trap 'exit 1' HUP INT TERM
+ok=1
+started=$(date +%s)
+capture() {
+	section=$1; shift
+	success=1
+	data=$("$@" 2>/dev/null) || { success=0; ok=0; data=; }
+	echo "convergent_fw_section_success{section=\"$section\"} $success"
+	[ "$success" = 1 ]
+}
 {
 	echo "convergent_fw_facts_timestamp_seconds $(date +%s)"
-
-	# CARP: 2 master, 1 backup, 0 init.
-	echo "convergent_carp_expected $(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments)"
-	ifconfig | awk -v mode=metrics -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments -
-	echo "convergent_carp_preempt $(sysctl -n net.inet.carp.preempt)"
+	expected=$(awk -v mode=count -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || { expected=0; ok=0; }
+	echo "convergent_carp_expected $expected"
+	groups=; interfaces_ok=0
+	if capture carp ifconfig; then
+		interfaces_ok=1
+		groups=$(printf '%s\n' "$data" | awk '/groups:/ {for(i=2;i<=NF;i++) printf "%s ",$i}')
+		printf '%s\n' "$data" | awk -v mode=metrics -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments - || ok=0
+	fi
+	if capture preempt sysctl -n net.inet.carp.preempt; then echo "convergent_carp_preempt $data"; fi
 	if rcctl check wan_watch >/dev/null 2>&1; then up=1; else up=0; fi
 	echo "convergent_wan_watch_up $up"
 	for group in carp wanwatch sysmaint upgrade handoff; do
-		ifconfig -g "$group" 2>/dev/null | awk -v g="$group" '
-			/demote/ { printf "convergent_carp_demotion{group=\"%s\"} %d\n", g, $NF; exit }'
+		case $group in sysmaint|handoff)
+			if [ "$interfaces_ok" = 1 ]; then
+				case " $groups" in *" $group "*) ;; *)
+					echo "convergent_carp_group_present{group=\"$group\"} 0"
+					echo "convergent_carp_demotion{group=\"$group\"} 0"
+					continue ;;
+				esac
+			fi ;;
+		esac
+		echo "convergent_carp_group_present{group=\"$group\"} 1"
+		if capture "demotion_$group" ifconfig -g "$group"; then
+			printf '%s\n' "$data" | awk -v g="$group" '/demote/ {printf "convergent_carp_demotion{group=\"%s\"} %d\n",g,$NF; found=1; exit} END {exit !found}' || ok=0
+		fi
 	done
-
-	# pfsync: link running, and defer on.
-	ifconfig pfsync0 2>/dev/null | awk '
-		/flags=/ { up = ($0 ~ /RUNNING/) }
-		/defer:/ { df = ($0 ~ /defer: on/) }
-		END { printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n", up, df }'
-
-	# pf: enabled, states and limit, counters, and the loaded ruleset.
-	pfctl -si 2>/dev/null | awk '
-		/^Status:/ { printf "convergent_pf_enabled %d\n", ($2 == "Enabled") }
-		/current entries/ && !done { printf "convergent_pf_states %s\n", $3; done = 1 }
-		/^Counters/ { c = 1; next }
-		/^[^ \t]/ { c = 0 }
-		c && $2 ~ /^[0-9]+$/ { printf "convergent_pf_counter_total{name=\"%s\"} %s\n", $1, $2 }'
-	pfctl -sm 2>/dev/null | awk '/^states/ { print "convergent_pf_state_limit " $4 }'
-	echo "convergent_pf_ruleset_info{loaded=\"$(pfctl -sr 2>/dev/null | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256)\",file=\"$(sha256 -q /etc/pf.conf)\"} 1"
-
-	# Default route.
-	route -n show -inet 2>/dev/null | awk '
-		$1 == "default" { printf "convergent_default_route_info{gateway=\"%s\"} 1\n", $2; n = 1 }
-		END { printf "convergent_default_route_present %d\n", n }'
-
-	# unbound: answering, a few counters, and the age of the pushed files.
-	if unbound-control status >/dev/null 2>&1; then
-		echo "convergent_unbound_up 1"
-		unbound-control stats_noreset 2>/dev/null | awk -F= '
-			$1 == "total.num.queries" { print "convergent_unbound_queries_total " $2 }
-			$1 == "total.num.cachehits" { print "convergent_unbound_cachehits_total " $2 }
-			$1 == "num.answer.rcode.SERVFAIL" { print "convergent_unbound_servfail_total " $2 }
-			$1 == "num.answer.rcode.NXDOMAIN" { print "convergent_unbound_nxdomain_total " $2 }'
-	else
-		echo "convergent_unbound_up 0"
+	if capture pfsync ifconfig pfsync0; then
+		printf '%s\n' "$data" | awk '/flags=/ {up=($0 ~ /RUNNING/)} /defer:/ {df=($0 ~ /defer: on/)} END {printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n",up,df}'
+	fi
+	if capture pf pfctl -si; then
+		printf '%s\n' "$data" | awk '
+			/^Status:/ {printf "convergent_pf_enabled %d\n",($2 == "Enabled"); status=1}
+			/current entries/ && !done {print "convergent_pf_states " $3; done=1}
+			/^Counters/ {c=1; next} /^[^ \t]/ {c=0}
+			c && $2 ~ /^[0-9]+$/ {printf "convergent_pf_counter_total{name=\"%s\"} %s\n",$1,$2}
+			END {exit !(status && done)}' || ok=0
+	fi
+	if capture limits pfctl -sm; then
+		printf '%s\n' "$data" | awk '/^states/ {print "convergent_pf_state_limit " $4; found=1} END {exit !found}' || ok=0
+	fi
+	if capture rules pfctl -sr; then
+		loaded=$(printf '%s\n' "$data" | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256)
+		file=$(sha256 -q /etc/pf.conf) && echo "convergent_pf_ruleset_info{loaded=\"$loaded\",file=\"$file\"} 1" || ok=0
+	fi
+	if capture route route -n show -inet; then
+		printf '%s\n' "$data" | awk '$1 == "default" {printf "convergent_default_route_info{gateway=\"%s\"} 1\n",$2; n=1} END {print "convergent_default_route_present " n+0}'
+	fi
+	if unbound-control status >/dev/null 2>&1; then up=1; else up=0; fi
+	echo "convergent_unbound_up $up"
+	if capture dns unbound-control stats_noreset; then
+		printf '%s\n' "$data" | awk -F= '
+			$1 == "total.num.queries" {print "convergent_unbound_queries_total " $2; n++}
+			$1 == "total.num.cachehits" {print "convergent_unbound_cachehits_total " $2; n++}
+			$1 == "num.answer.rcode.SERVFAIL" {print "convergent_unbound_servfail_total " $2; n++}
+			$1 == "num.answer.rcode.NXDOMAIN" {print "convergent_unbound_nxdomain_total " $2; n++}
+			$1 == "total.recursion.time.avg" {print "convergent_unbound_recursion_seconds " $2; n++}
+			END {exit n != 5}' || ok=0
 	fi
 	for f in blocklist.rpz local-owner.conf; do
 		m=$(stat -f %m "/var/unbound/etc/$f" 2>/dev/null) &&
-			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m"
+			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m" || ok=0
 	done
-
-	# W4 observability: interface bytes and recursion latency, independent of the CARP registry.
-	netstat -ibn 2>/dev/null | awk -f /usr/local/libexec/convergent/interface-bytes.awk
-	unbound-control stats_noreset 2>/dev/null | awk -F= '
-		$1 == "total.recursion.time.avg" && $2 ~ /^[0-9]+([.][0-9]+)?$/ {
-			print "convergent_unbound_recursion_seconds " $2
-		}'
+	if capture interfaces netstat -ibn; then
+		printf '%s\n' "$data" | awk -f /usr/local/libexec/convergent/interface-bytes.awk || ok=0
+	fi
 	if rcctl check pflog_stream >/dev/null 2>&1; then up=1; else up=0; fi
 	echo "convergent_pflog_stream_up $up"
-	# End W4 observability.
+	echo "convergent_fw_facts_success $ok"
+	echo "convergent_fw_facts_duration_seconds $(($(date +%s) - started))"
 } >"$tmp"
 mv "$tmp" "$out"

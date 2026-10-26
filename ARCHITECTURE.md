@@ -589,19 +589,19 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
 ---
 ## 8. Observability
 
-- **Metrics:** VictoriaMetrics scrapes node_exporter (host, firewalls, wan) and Incus metrics
-  (instance state) every 30 seconds. Retention: 14 days. Only the seven Incus series the dashboards
-  query are kept, and the vmalert job keeps just its scrape health. Host node_exporter leaves out
-  the netstat, vmstat, diskstats, schedstat and softnet collectors. Time and synchronisation come
-  from node_exporter's time collector. Extra figures go stale by file age, which node_exporter
-  reports. Figures nothing else provides are small text files written by section 12's scripts: per
-  firewall, CARP, pf and unbound state; on the host, once per boot, release numbers, Secure Boot,
-  lockdown, LUKS header hash and crash records; at boot and daily, NVMe health and certificate
-  expiry; every minute, NTS state. NTS alerts allow five minutes to synchronise while an uplink is
-  up. Collector alerts allow five minutes for boot collection. Guest update timestamps go to the
-  update journal (`/var/lib/convergent/guests/updates`), not the metrics.
+- **Metrics:** node_exporter and bounded VM/VL/vmalert/vmauth self-metrics scrape at 30s;
+  Incus at 60s, retaining seven resource families. Retention stays 14 days without dedup.
+  The host exporter uses an explicit collector set, bounded `/var`/`host` filesystem/interface
+  selectors, and PSI/diskstats diagnostics. `facts` publishes boot evidence, minute NTS/audit,
+  hourly Btrfs/scrub/qgroups and daily NVMe/certificates; failed daily work retries hourly.
+  Explicit NVMe capability makes virtio absence normal. `tools/observe` reads rule evaluation
+  health, guest cgroup pressure and update phases, and tests host DNS each minute. Verified HTTPS to example.com is observed only
+  through an already-running def network namespace; closed def is expected absence, not failure.
+  Host/WAN outbound policy stays closed; no guest is started for probing. It never participates in firewall recovery. Every verdict has source-age evidence;
+  recent scrapes alone cannot make old textfiles healthy.
 - **Logs:** VictoriaLogs receives syslog over TLS from the host, firewalls and wan, including
-  forwarded host audit records. Retention: seven days or 4 GiB, within a 6 GiB volume quota.
+  forwarded host audit records. Minute sender heartbeats detect lost delivery. svc forwards local
+  warnings to VL over loopback UDP (no replay while VL is down); stream labels use remote_ip/app_name. Retention: seven days or 4 GiB, within a 6 GiB volume quota.
   Authentication, audit and firewall logging stay enabled. USBGuard uses LinuxAudit, so device
   decisions reach audit.log and the existing audit syslog forwarder. Local messages keep
   authentication and selected security programs below warning level. Dashboards take each record's
@@ -609,8 +609,8 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
   update summaries and failures go to syslog. Slot bless records exhausted-newer-slot fallback. The
   minute status probe logs observed firewall takeovers only when the last known coherent master
   changes.
-- **Alerts:** vmalert evaluates rules every 30 seconds, watching metrics and logs from every
-  compartment. The status bar shows counts, or "unknown"
+- **Alerts:** vmalert evaluates path/DNS at 30s, monitoring/capacity/logs at 1m and
+  boot/certificate/NVMe/scrub at 5m. Zero alerts requires healthy, recent rule API evidence. The status bar shows counts, or "unknown"
   when svc does not answer. Grafana shows details. Rules carried from Archer and adapted:
 
 | Area | Alerts |
@@ -621,19 +621,18 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
 | Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, IncusPoolHigh |
 | Currency | ReleaseOld, GuestImageOld, GuestReleaseEOL |
 | Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, AuditRecordsLost, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
-| Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale |
+| Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale, RuleEvaluationUnhealthy, ObservationStale, MonitoringWriteErrors, MonitoringReadOnly, MonitoringSignalsMissing, per-sender log heartbeat |
 
 *(Planned:* WanReservedLeak, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected,
 IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 `guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
 
-- **Dashboards:** Overview (path, attention), Network (registered CARP segments, pf, DNS), Guests (Incus
-  state, resources) and Security (boot facts, trust, recent events), opened in the int browser.
-  Stdlib Python generators in `guests/svc/dashboards` share Archer's palette, type scale, Canvas
-  path and first-screen sizing. Current state uses instant queries. CARP role-change annotations
-  start off. Actionable syslog panels link to all records in Explore. Footers name collection gaps.
-  Dashboard checks: [BUILD, Checks](BUILD.md#checks). Security has one bounded event list;
-  `sys security events` filters the two local host logs without svc (USAGE describes its bounds).
+- **Dashboards:** Overview health strip and linked alert explanations; Network connectivity,
+  DNS/radio, firewall readiness and traffic; Guests health matrix and lifecycle; Host storage and
+  hardware; Security boot/checker, Release/CVE and events; Monitoring collection/evaluation/log
+  delivery and resource cost. Stdlib generators in `guests/svc/dashboards` own the shipped JSON.
+  Diagnostics/Incus accounting are collapsed; missing evidence is unknown. Explore preserves time.
+  See the dashboard README for offline/live checks and remaining collection boundaries.
 - **Checker:** runs after every boot, update and daily. It compares the running system with the
   accepted release (verity, pf ruleset hashes, Incus settings and the temporary browser's profile,
   writable `/etc` entries, autostart and SUID inventories, radio VFIO binding, device ownership,
@@ -750,11 +749,11 @@ These are work counts from the code, not measured watts or battery minutes.
 | Change | Expected saving |
 |---|---|
 | `tools/bar`: cache an unchanged Sway layout name | About 24 helper launches/minute (awk and grep at five-second intervals), plus repeated XKB rules-list reads; a failed Sway query invalidates the cache |
-| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute; all but one chip-name read per sensor chip per frame; temperatures read at most every 5 s; clock, lock-health and input polling unchanged |
+| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute; all but one chip-name read per sensor chip per frame; temperatures read at most every 5 s; frames/clock/frequency/lock-health now 5s and inputs 10s |
 | `tools/check status`: combine CARP and portal-table reads on each firewall; serialize wan sessions | Five SSH sessions/minute instead of seven; no concurrent connection creation to the same guest within this run; four fewer remote wc processes/minute; existing pinned keys and 60-second multiplexing remain |
 | `tools/facts`: parse each slot status in shell | Four awk processes removed per boot-status attempt; boot, daily and hourly checks unchanged |
 | `tools/power`: read sysfs with shell builtins; log only changes or failures | Up to four cat processes per CPU policy removed per AC event, plus supply/config reads; duplicate events write no power log to store or forward |
-| `rootfs/etc/conf.d/node_exporter` and the `svc` scrape config: five unused host collectors off; only the Incus series in use and vmalert scrape health kept | Less collector work per scrape and fewer stored series; scrape intervals unchanged (section 8) |
+| `rootfs/etc/conf.d/node_exporter` and the `svc` scrape config: explicit host collectors and bounded self-metrics | Incus at 60s; path/DNS rules at 30s, monitoring at 1m and slow hardware/boot rules at 5m (section 8) |
 
 Status probes still run every minute, with bounded requests and one worker per guest. Portal reads
 hold the existing action lock; a busy lock, failed query or inconsistent sides yields unknown.
@@ -765,7 +764,7 @@ allowlist are unchanged.
 
 No cron interval was lengthened. The minute jobs enforce portal expiry, publish fresh network facts
 or notice boot/update changes. `check auto` gates expensive successful scans to daily and failed
-scans to five minutes. Host facts already run hourly/daily. The firewall's continuous wan-watch loop
+scans to five minutes. Host NTS/audit run each minute; storage runs hourly and failed daily work backs off to hourly. The firewall's continuous wan-watch loop
 demotes after two lost one-second rounds and recovers after three good ones. It is a failover
 control, not merely a dashboard refresh.
 
@@ -783,7 +782,7 @@ control, not merely a dashboard refresh.
 | Lower CPU caps, disable turbo or stronger EPP | Can lower load power at the cost of burst response and throughput; idle savings are not established | Keep the configurable cap (`cpu_cap_khz`; none by default, set per laptop) and source-specific EPP; compare energy per task before more caps |
 | Static hugepages or different THP policy | Possible TLB benefit; reservations, fragmentation or compaction can hurt memory flexibility and latency | Keep current defaults; benchmark VM throughput and desktop tail latency first |
 | Disable mitigations or relax hardening | Possible CPU saving by removing protections | Reject; keep mitigations, strict IOMMU, lockdown, verity, audit and guest confinement |
-| Longer bar, scrape/eval or health intervals | A 60-second scrape/eval interval roughly halves those operations but delays detection and reduces history resolution; slower CARP probes delay failover | Keep current cadences. All vmalert groups explicitly set 30s, so changing only the command-line default would not help |
+| Slower safety probes | Slower CARP/heal probes delay failover | Keep safety cadences; only bar, resource scrapes and slow rule groups changed (section 8) |
 | Shorter retention or suppress routine SSH/cron logs | Less disk use and query work, but less incident/debug history | Keep 14-day metrics, seven-day/4-GiB logs and auth/audit/firewall logs; only redundant power messages are suppressed at source |
 | Smaller guest limits or zram | Lower VM RAM may help, but KARL already disproved small firewalls; container caps do not reserve full size; zram adds metadata and compression work and changes OOM behaviour | Keep guest limits. Zram's old 32-GiB budget was only a plan; no enabled device here to shrink. Measure peak memory/pressure before choosing a size; do not claim a RAM saving from a documentation change |
 
@@ -831,7 +830,8 @@ Convergent writes as little as it can:
 | `sys` | from a key binding | The menu: one file per area in `/usr/lib/convergent/sys` |
 | `apps` | Super+d | Lists graphical apps from their desktop entries in bemenu and starts the chosen one; a failed start shows why |
 | `browser` | from the menu or a key | Starts a browser container with its restricted Wayland and audio sockets |
-| `facts` | at boot; hourly cron | Writes the host's extra figures for node_exporter; archives pstore records |
+| `facts` | boot, minute NTS/audit, hourly storage/daily retry | Writes host facts; archives pstore records |
+| `observe` | minute cron | Read-only Internet, rule API, guest cgroup and update phase evidence |
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
 | `portal`, `devices`, `backup` | from the menu | Captive-portal mode; USB and Thunderbolt approval; the backup (section 7.4) |
 | `account` | by hand; from the menu (`sys security password`) | Changes a login password on the state volume and rebinds `/etc/shadow` |

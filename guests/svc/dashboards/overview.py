@@ -1,107 +1,37 @@
-"""Home: the path, what needs attention, and the machine beside it."""
-from dashlib import (
-    ACTIONABLE, AMBER, BAD, CARD, CARP, CYAN, EDGE, ERRORS, GRAY, HOST_CPU, HOST_RAM, INK, LOGS,
-    NEUTRAL, OK, SCREEN_ROWS, STATE, STATE_DISK, UP, Canvas, Page,
-    grid, guests_table, ov, target, thresholds, vmap)
-
-
-def path(page):
-    c = Canvas()
-
-    def field(name, expr, **props):
-        c.field(name, expr, **props)
-
-    def card(name, title, subtitle, top, height, rows, left=3, width=94):
-        box = c.card(name, left, width, top, height, CARD, EDGE)
-        c.text(left + 3, width - 6, top + 8, title, size=16, colour=INK)
-        c.text(left + 3, width - 6, top + 31, subtitle, size=13, colour=NEUTRAL)
-        for i, (label, value) in enumerate(rows):
-            c.text(left + 3, width * 0.58, top + 56 + i * 23, label, size=13)
-            c.value(left + width * 0.57, width * 0.39, top + 56 + i * 23, value, size=14, coloured=True)
-        return box
-
-    field("uplink", 'max(convergent_wan_upstream_up{node="wan"})', mappings=UP)
-    field("wan", 'max(up{job="node",node="wan"})', mappings=UP)
-    field("overlap", 'max(convergent_wan_upstream_overlap{node="wan"})', mappings=vmap([(0, "clear", NEUTRAL), (1, "REFUSED", AMBER)]))
-    radio = card("radio", "Radio / wired uplink", "Owned by wan · radio details not collected", 6, 84, [("upstream lease", "uplink")])
-    wan = card("wan_box", "wan", "Alpine VM · the only NAT", 116, 107, [("exporter", "wan"), ("reserved overlap", "overlap")])
-    Canvas.link(radio, wan)
-    fws = []
-    for i, n in enumerate(("fw1", "fw2")):
-        field(n, 'min(convergent_carp_state{node="%s"})' % n, mappings=CARP)
-        field(n + "_max", 'max(convergent_carp_state{node="%s"})' % n, mappings=CARP)
-        field(n + "_pf", 'max(convergent_pf_enabled{node="%s"})' % n, mappings=UP)
-        box = card(n + "_box", n, "OpenBSD · CARP + pf", 252, 130,
-                   [("lowest role", n), ("highest role", n + "_max"), ("pf", n + "_pf")], 3 + i * 49, 45)
-        Canvas.link(wan, box, sx=-0.5 if i == 0 else 0.5, colour_field=n)
-        fws.append(box)
-    c.text(3, 94, 397, "CARP gateways · mixed roles need attention", size=13, align="center")
-    field("host", 'max(up{job="node",node="host"})', mappings=UP)
-    field("cpu", HOST_CPU.replace("$__rate_interval", "2m"), unit="percent", decimals=0)
-    field("ram", HOST_RAM, unit="percent", decimals=0)
-    host = card("host_box", "host", "Incus host · host segment only", 438, 130,
-                [("exporter", "host"), ("CPU busy", "cpu"), ("RAM used", "ram")])
-    for i, fw in enumerate(fws):
-        Canvas.link(fw, host, tx=-0.5 if i == 0 else 0.5, colour_field=("fw1", "fw2")[i])
-    field("svc", '(count(incus_cpu_seconds_total{project="default",name="svc"}) > bool 0) and on() (max(up{job="incus"}) == 1)', mappings=STATE)
-    svc = card("svc_box", "svc", "Metrics · logs · alerts · Grafana", 596, 84, [("Incus state", "svc")])
-    Canvas.link(host, svc)
-    c.text(3, 94, 696, "Downstream segments route through CARP", size=13, align="center")
-    browser_rows = []
-    for n in ("def", "int", "tmp", "tmp-portal"):
-        selector = 'name=~"tmp-[2-9][0-9]"' if n == "tmp" else 'name="%s"' % n
-        field(n, '((count(incus_cpu_seconds_total{project="default",%s}) > bool 0) or on() vector(0)) and on() (max(up{job="incus"}) == 1)' % selector,
-              mappings=vmap([(0, "closed", NEUTRAL), (1, "RUNNING", CYAN)]))
-        browser_rows.append((n, n))
-    browsers = card("browsers", "Browsers", "def / tmp · web segment; int · admin", 734, 153, browser_rows)
-    Canvas.link(host, browsers, sx=0.9, tx=0.9)
-    p = page.add("canvas", "The network path", grid(0, 0, 7, SCREEN_ROWS),
-                 "Source: node up, Incus CPU series, fw-facts CARP/pf and wan-check upstream lease. "
-                 "This is a logical path, not host forwarding: each downstream segment uses a CARP gateway. "
-                 "Both roles agree when all reported interfaces have the same role; Network shows each segment. "
-                 "UP on wan means an accepted lease, not a Wi-Fi association or an Internet probe.",
-                 c.targets, {"noValue": "UNKNOWN"}, c.overrides,
-                 {"inlineEditing": False, "showAdvancedTypes": True, "panZoom": False,
-                  "infinitePan": False, "zoomToContent": False,
-                  "tooltip": {"mode": "none", "disableForOneClick": True},
-                  "root": {"type": "frame", "name": "path", "elements": c.elements,
-                           "background": {"color": {"fixed": "transparent"}},
-                           "border": {"color": {"fixed": "transparent"}, "width": 0},
-                           "constraint": {"horizontal": "left", "vertical": "top"},
-                           "placement": {"left": 0, "top": 0, "width": 100, "height": 100}}})
-    p["transparent"] = True
-    return p
+"""Owner health and actionable failures before resource histories."""
+from dashlib import ACTIONABLE, BAD, Page, grid, guests_table, ov, target
+from health import CHECKER, FW, HEALTH, RULES, WAN, fresh, known, verdict
 
 
 def generate():
     p = Page()
-    path(p)
-    evaluator = '(up{job="vmalert"} == 1) and (time() - timestamp(up{job="vmalert"}) < 90)'
-    p.stat("", [target('(count(ALERTS{alertstate="firing"}) or on() vector(0)) and on() (' + evaluator + ')', "firing alerts")],
-           grid(7, 0, 5, 2), "Source: vmalert ALERTS, firing only; zero requires a successful vmalert scrape less than 90 seconds old. Otherwise UNKNOWN.",
-           th=BAD)["fieldConfig"]["defaults"]["noValue"] = "UNKNOWN"
-    q = target(ERRORS + ' AND _time:1h | stats count() as errors', "error / warning lines · 1 h", ds=LOGS, queryType="stats")
-    p.stat("", [q], grid(12, 0, 6, 2),
-           "Source: VictoriaLogs syslog severity 0–4, last hour; routine audit records and kernel stack continuations excluded. Lines, not incidents.", th=BAD)["datasource"] = LOGS
-    p.stat("", [target('min(cv_collector_success)', "collectors", instant=True),
-                target('max(time() - node_textfile_mtime_seconds{file=~".*(convergent_fw|wan)[.]prom"})', "live facts age")],
-           grid(18, 0, 6, 2), "Source: tools/facts collector success and node_exporter textfile mtimes. Firewall/wan facts update each minute; amber after three minutes. Hourly audit and daily/boot facts are on Security.",
-           overrides=[ov("collectors", mappings=OK), ov("live facts age", unit="s", thresholds=thresholds(("text", None), (AMBER, 180)))])
-    alerts = p.table("Active alerts · now", [target('ALERTS{alertstate="firing"} and on() (' + evaluator + ')', optional="An empty table means no firing alerts only when the firing count is zero, not UNKNOWN.")],
-            grid(7, 2, 17, 5), ["alertname", "node", "severity", "project", "name", "interface", "device", "collector"], ["state"],
-            "Source: vmalert ALERTS instant query; one row per firing alert series, with identifying labels. Hidden when vmalert scrapes fail or are over 90 seconds old; check the firing count for UNKNOWN.",
-            [ov("state", mappings=vmap([(1, "FIRING", AMBER)]))])
-    del alerts["transformations"][1]["options"]["includeByName"]
-    for title, expr, gp, unit, maximum, optional in [
-            ("Host CPU · busy", HOST_CPU, grid(7, 7, 8, 5), "percent", 100, ""),
-            ("Host RAM · used", HOST_RAM, grid(15, 7, 9, 5), "percent", 100, ""),
-            ("State disk · /var", STATE_DISK, grid(7, 12, 6, 5), "percent", 100, ""),
-            ("Battery · charge", 'node_power_supply_capacity{node="host"}', grid(13, 12, 5, 5), "percent", 100, "No battery in QEMU."),
-            ("Host temperature", 'node_hwmon_temp_celsius{node="host"}', grid(18, 12, 6, 5), "celsius", None, "Hardware sensors are absent in QEMU.")]:
-        p.timeseries(title, [target(expr, "{{chip}} {{sensor}}" if unit == "celsius" else title, optional=optional)],
-                     gp, unit, "Source: host node_exporter CPU, meminfo, filesystem, power_supply or hwmon collector, as named by the query. Hardware-only series may be absent.", max_=maximum)
-    guests_table(p, grid(7, 17, 17, 7), compact=True)
-    p.logs("Recent actionable logs", ACTIONABLE, grid(7, 24, 17, 7),
-           "Source: VictoriaLogs TLS syslog from host, wan, fw1/fw2. Warnings/errors, AppArmor denials, USB blocks, faillock, sudo and firewall changes. Routine EXECVE and kernel stack continuation records excluded; all records remain in Explore.")
-    p.footer(SCREEN_ROWS, "Wi-Fi SSID, security and PMF; Internet reachability probes; pf passed/blocked counters by label; browser internals. Hardware sensors and battery show a dash when absent. Radio and sampled pflog evidence are on Network. The path is logical: the host does not forward traffic between segments.")
-    return p.dashboard("cv-overview", "Convergent · Overview", "The path, attention, host and guests on one screen.")
+    domains = [
+        ('Network', 'path|dns', '(count(%s) == 2) and on() (%s) and on() (%s)' % (FW, WAN, fresh('internet', 180) + ' and on() (cv_https_probe_available == 1)'), '/d/cv-network-path'),
+        ('Guests', 'compartments', '(up{job="incus"} == 1) and on() (' + CHECKER + ')', '/d/cv-compartments'),
+        ('Host', 'hardware-capacity|storage|hardware-slow', fresh('storage', 7200) + ' and on() (' + fresh('daily', 129600) + ')', '/d/cv-host'),
+        ('Security / Updates', 'security-time|security-slow|release.*|logs', fresh('boot', 315360000) + ' and on() (' + CHECKER + ') and on() (' + fresh('nts', 180) + ')', '/d/cv-security'),
+        ('Monitoring', 'monitoring|log-health', '(count(up{job="monitoring"} == 1) == 3) and on() (' + fresh('cgroups', 180) + ')', '/d/cv-monitoring')]
+    for i, (name, groups, gate, url) in enumerate(domains):
+        value = verdict(groups, gate)
+        if name == 'Security / Updates':
+            release = '(max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800) and (max(cv_release_check_timestamp_seconds) <= time() + 60) and (count(cv_release_status_verified == 1) == 2) and (min(cv_release_status_generated_seconds) > time() - 172800)'
+            value = 'clamp_max((' + value + ') + on() (max(cv_release_advisories) > bool 0), 2) and on() (' + release + ')'
+        panel = known(p.stat(name, [target(value, name)], grid(i * 5, 0, 4 if i == 4 else 5, 3),
+                       'OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.', mappings=HEALTH))
+        panel['links'] = [{'title': name, 'url': url + '?${__url_time_range}'}]
+    known(p.stat('Firing alerts', [target('(count(cv_alert_active_since_seconds) or vector(0)) and on() (' + RULES + ')', 'firing')],
+                 grid(0, 3, 5, 3), 'Includes log and metric rules. Zero requires all rule evaluations healthy and recent, a fresh API observation and no recent remote-write errors.', th=BAD))
+    p.stat('Evidence age', [target('time() - cv_collector_timestamp_seconds{collector=~"rules|internet"}', '{{collector}}'),
+                           target('time() - cv_checker_last_run_seconds', 'checker')], grid(5, 3, 19, 3),
+           'Seconds since measurement, not scrape. Rules/Internet expire after 3m; checker after 36h.', unit='s')
+    alerts = p.table('Active alerts - explanations', [target('(time() - cv_alert_active_since_seconds) and on() (' + RULES + ')',
+                     optional='Empty only means healthy when the firing-alert count is zero.')], grid(0, 6, 24, 8),
+                    ['severity', 'alertname', 'node', 'project', 'name', 'object', 'summary', 'dashboard'], ['active for'],
+                    'vmalert API summary and onset; duration includes pending time. Dashboard links retain time. An unhealthy evaluator hides the table; Monitoring has evaluation errors.',
+                    [ov('active for', unit='s'), ov('alertname', links=[{'title': 'Evidence / recovery', 'url': '${__data.fields.dashboard}?${__url_time_range}&var-project=${__data.fields.project}&var-name=${__data.fields.name}'}])])
+    alerts['options']['sortBy'] = [{'displayName': 'severity', 'desc': False}]
+    guests_table(p, grid(0, 14, 24, 8), compact=True)
+    p.logs('Recent actionable logs', ACTIONABLE, grid(0, 22, 24, 8),
+           'Warnings, security denials and firewall transitions; raw evidence, not incident counts. Open the domain pages for context.')
+    p.footer(30, 'DNS is tested from the host; HTTPS to the same named destination is available only while def already runs. Network is UNKNOWN without HTTPS evidence. Self-heal remains independent of monitoring. Hardware absence, collection failure and stale evidence are distinct on Host and Monitoring.')
+    return p.dashboard('cv-overview', 'Convergent · Overview', 'Owner health, actionable alerts and guest state.')

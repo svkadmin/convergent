@@ -374,8 +374,7 @@ for node in fw1 fw2 wan svc; do
     grep -qx "$node running" "$work/guests" || bad "$node is not running"
 done
 jq -r '.[] | (.project // "default") as $p |
-    select(.expanded_config["boot.autostart"] == "true") |
-    "cv_guest_expected_running{project=\"\($p)\",name=\"\(.name)\"} 1"' "$work/instances" >>"$work/metrics" || bad 'guest metrics failed'
+    "cv_guest_expected_running{project=\"\($p)\",name=\"\(.name)\"} \(if .expanded_config["boot.autostart"] == "true" then 1 else 0 end)"' "$work/instances" >>"$work/metrics" || bad 'guest metrics failed'
 jq -e 'all(.[]; .expanded_config["boot.autostart"] != "true" or .status == "Running")' \
     "$work/instances" >/dev/null || bad 'an autostart guest is stopped'
 

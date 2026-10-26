@@ -16,13 +16,13 @@ $!{
 }
 s/\\/\\\\/g; s/"/\\"/g; s/\n/\\n/g'
 }
-metric() { printf '%s' "$1" | base64 -d | sed 's/\$__rate_interval/2m/g; s/\$__interval/1m/g; s/${project:regex}/default/g; s/${name:regex}/svc/g'; }
+metric() { printf '%s' "$1" | base64 -d | sed 's/\$__rate_interval/4m/g; s/\$__interval/1m/g; s/${project:regex}/default/g; s/${name:regex}/svc/g; s/${node:regex}/wan/g; s/${device:regex}/eth0/g'; }
 transfer() {
     printf 'get\nnoproxy = "*"\nmax-time = 10\n'
     printf 'data-urlencode = "query=%s"\nurl = "%s"\noutput = "%s"\n' \
         "$(quote "$1")" "$(quote "$2")" "$(quote "$3")"
 }
-jq -r '.title as $d | .panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
+jq -r '.title as $d | .panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
     [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
 [ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }
@@ -55,7 +55,7 @@ while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
         [ "$optional" != required ] || fail=1
     fi
 done <"$work/targets"
-jq -r '.title as $d | (.panels[] | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
+jq -r '.title as $d | (.panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "logs") | [$d, $p, .queryType, (.expr | @base64)]),
     (.annotations.list[] | [$d, .name, .target.queryType, (.target.expr | @base64)]) | @tsv' "$dir/"*.json >"$work/logs"
 logs=0
@@ -92,14 +92,14 @@ while IFS="$(printf '\t')" read -r dashboard panel kind expr; do
 done <"$work/logs" 3<"$work/status"
 # Exercise forged identities without storing test events.
 # Use one documented union rows({...}) pipe per event (VictoriaLogs >= 1.49.0).
-nodes='{"100.80.1.10":"host","100.80.2.2":"fw1","100.80.2.3":"fw2","100.80.0.10":"wan"}'
+nodes='{"100.80.1.10":"host","100.80.2.2":"fw1","100.80.2.3":"fw2","100.80.0.10":"wan","127.0.0.1":"svc"}'
 rows=$(jq -nr --argjson nodes "$nodes" '[($nodes | keys[], "100.80.3.10") as $ip |
     {remote_ip:$ip, hostname:"fw1", app_name:"kernel", _msg:"carp0: BACKUP -> MASTER", _stream:"{hostname=\"fw1\"}"},
     {remote_ip:$ip, hostname:"host", app_name:"sudo", _msg:"COMMAND=/bin/true", _stream:"{hostname=\"host\"}"}]
     | map(tojson) | join(") | union rows(")')
 for page in network-path security; do
-    expected=2; [ "$page" != security ] || expected=6
-    expr=$(jq -r '.panels[] | select(.type == "logs") | .targets[].expr' "$dir/$page.json")
+    expected=2; [ "$page" != security ] || expected=7
+    expr=$(jq -r '.panels[] | recurse(.panels[]?) | select(.type == "logs") | .targets[].expr' "$dir/$page.json")
     : >"$work/identity"
     if ! curl -qsS --fail-with-body --output "$work/identity" --noproxy '*' --max-time 10 -G \
         --data-urlencode "query=NOT * | union rows($rows) | filter $expr" \
