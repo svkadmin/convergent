@@ -373,3 +373,20 @@ message with the exact commands) rather than fail later with the guest down. Two
 - A state volume with a `.incustmp` copy beside it or instead of it: the loss hit a snapshot
   restore (well under a second). Volume missing: `sudo mv` the copy back. Volume present: the
   restore completed, `sudo btrfs subvolume delete` the copy. Then `sys guests update`.
+
+### Interrupted work-topology migration
+
+Finish old-release handoff/maintenance journals before upgrading the host.
+A topology change uses `/var/lib/convergent/guests/fw.topology`, which retains
+both old image fingerprints and instance configurations. Both firewalls have
+autostart/restart held while their roots are being replaced; a partially
+rebuilt pair must never be started manually. Rerun `sudo guests apply` (or the
+original `guests update fw <image-dir>`) to replay recovery. Uncommitted work
+restores both old images before either starts; committed work finishes startup.
+If rollback itself fails, the journal and holds remain for the next retry.
+
+Do not delete this journal, prune its old images or clear its boot holds.
+Inspect `guests status`, the update log and both consoles. Work access stays
+closed until the topology hashes in the host, fw1, fw2 and wan agree; ordinary
+`check auto` reopens it after convergence. DHCP clients may need to renew after
+a pair rebuild because lease files are intentionally not restored.

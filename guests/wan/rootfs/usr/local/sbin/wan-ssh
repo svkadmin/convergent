@@ -2,6 +2,7 @@
 # ARCHITECTURE 3.2; allow only the exact SSH commands below.
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 case ${SSH_ORIGINAL_COMMAND:-} in
+topology) exec cat /etc/convergent/topology.sha256 ;;
 "seed-status")
 	exec cat /var/lib/convergent/seeded
 	;;

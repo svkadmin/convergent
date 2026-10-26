@@ -8,20 +8,12 @@ heal_probe() {
         ifconfig pfsync0
         rcctl check unbound >/dev/null
         unbound-control status >/dev/null' 9>&- 8>&- 7>&- 2>/dev/null) || return 1
-    printf '%s\n' "$reply" | awk '
-        /^carp[0-5]:/ {iface=$1; seen[iface]++}
-        /carp: / {n++; if ($2 == "MASTER") m++; else if ($2 == "BACKUP") b++}
-        /^Status: Enabled/ {pf=1}
-        /^pfsync0:.*RUNNING/ {sync=1}
-        /defer: on/ {defer=1}
-        END {for (i in seen) {interfaces++; if (seen[i] != 1) bad=1}
-            if (interfaces != 6 || n != 6 || bad || !pf || !sync || !defer) exit 1
-            if (m == 6) print "master"; else if (b == 6) print "backup"; else exit 1}'
+    printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
 }
 heal_allowed() {
     [ ! -e /run/convergent/guests-stopping ] || return 1
     [ ! -e /var/lib/convergent/firewall-maintenance ] || return 1
-    for journal in pending preparing committed fw.handoff; do
+    for journal in pending preparing committed fw.handoff fw.topology; do
         [ ! -e "/var/lib/convergent/guests/$journal" ] || return 1
     done
 }
@@ -85,7 +77,7 @@ firewall_heal() (
         attempts=$((attempts + 1))
         rm -f "$heal/$node"
         printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
-        heal_note "$node restart requested; $peer healthy MASTER on all six segments ($attempts/3)"
+        heal_note "$node restart requested; $peer healthy MASTER on all registered segments ($attempts/3)"
         # Keep the lock until bounded mutators finish, including after a checker termination.
         (
             trap '' HUP INT TERM

@@ -41,6 +41,9 @@ networks:
   - name: guests
     type: bridge
     config: *bridge
+  - name: work
+    type: bridge
+    config: *bridge
 profiles:
   - name: default
     config: {}
@@ -108,6 +111,13 @@ profiles:
         nictype: bridged
         parent: guests
         security.ipv4_filtering: "false"
+        security.mac_filtering: "false"
+        security.port_isolation: "false"
+      eth7:
+        type: nic
+        network: work
+        vlan: none
+        vlan.tagged: "320,330,360,370"
         security.mac_filtering: "false"
         security.port_isolation: "false"
   - name: wan

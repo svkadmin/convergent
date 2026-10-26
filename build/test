@@ -21,6 +21,9 @@ cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
 cv_time start
 
 here=$(cd "$(dirname "$0")" && pwd)
+# W1 work-network fixtures (no root or virtual machines).
+if [ "${1:-}" = --networks ] && [ "$#" = 1 ]; then exec sh "$here/test-networks"; fi
+# End W1 fixtures.
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(
 	die() { echo "test: $*" >&2; exit 1; }
@@ -593,10 +596,11 @@ ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
     [ "$role" != down ] || return 1
-    for i in 0 1 2 3 4 5; do
-        echo "carp$i: flags=41<UP,RUNNING>"
-        echo " carp: $role carpdev vio$i vhid $((i + 1))"
-    done
+    while read -r iface vhid parent segment prefix gateway family; do
+        case $iface in \#*|'') continue ;; esac
+        echo "$iface: flags=41<UP,RUNNING>"
+        echo " carp: $role carpdev $parent vhid $vhid"
+    done </etc/convergent/segments
     echo 'Status: Enabled'
     echo 'pfsync0: flags=41<UP,RUNNING>'
     echo ' defer: on'
@@ -615,7 +619,7 @@ test_peer=INIT; if heal_probe fw1; then exit 1; fi
 test_peer=MASTER
 ssh _ _ _ _ _ _ fw1 >"$work/raw"
 sample=$work/sample
-for filter in '/Status:/d' '/defer:/d' '/^carp5:/d' 's/^carp5:/carp4:/' 's/MASTER carpdev vio5/BACKUP carpdev vio5/'; do
+for filter in '/Status:/d' '/defer:/d' '/^carp5:/d' 's/^carp5:/carp4:/' 's/MASTER carpdev vio6/BACKUP carpdev vio6/'; do
     sed "$filter" "$work/raw" >"$sample"
     if heal_probe fw1; then exit 1; fi
 done
@@ -628,7 +632,8 @@ printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=f
     '--force-local --project default restart fw2 --force' \
     '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
 cmp "$work/actual" "$work/expected"
-for t in 1240 1300 1360 1420 1480 1540 1600 1660 1720 1780 1840 1900; do tick "$t"; done
+# W1: each restart includes 600 seconds of boot grace and 180 seconds of observations.
+for t in 1240 1300 1360 1420 1480 1540 1600 1660 1720 1780 1840 1900 1960 2560 2620 2680 2740 3340 3400 3460 3520; do tick "$t"; done
 [ "$(attempts)" = 3 ]
 # Expiry allows another attempt, but a missed minute resets the failure window.
 tick 5400; tick 5460; tick 5520
@@ -639,7 +644,7 @@ grep -q 'hold retained' "$work/report"
 [ "$(tail -n 1 "$work/calls")" = '--force-local --project default restart fw2 --force' ]
 for test_peer in down BACKUP INIT; do tick 5640; [ ! -e "$work/run/firewall-heal/fw2" ]; done
 test_peer=MASTER
-for journal in pending preparing committed fw.handoff; do
+for journal in pending preparing committed fw.handoff fw.topology; do
     tick 5700
     touch "$work/state/guests/$journal"
     tick 5760
@@ -650,12 +655,13 @@ for marker in "$work/state/firewall-maintenance" "$work/run/guests-stopping"; do
     touch "$marker"; tick 5820; rm "$marker"
     grep -q inhibited "$work/report"
 done
-for t in 6000 6060 6120; do tick "$t"; done
-busy=1; tick 6180
+# W1: let the failed-restart grace expire before the lock-inhibition samples.
+for t in 6180 6240 6300; do tick "$t"; done
+busy=1; tick 6360
 [ "$(attempts)" = 4 ]
 grep -q 'inhibited by guests lock' "$work/report"
 busy=0 failed=0 test_status=STOPPED
-tick 6240
+tick 6420
 grep -q 'default start fw2$' "$work/calls"
 HEAL
 sh -eu <<'DRAIN' || bad $LINENO
@@ -1306,7 +1312,7 @@ cv_time maintenance-reboot
     for f in fw1 fw2; do
         case $f in fw1) want=BACKUP ;; fw2) want=MASTER ;; esac
         carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig)
-        printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}'
+        printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
     done
     printf 'yes\n' | sys firewall undo
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
@@ -1395,7 +1401,7 @@ for phase in delayed partial; do
     {
         echo 'set -e'
         if [ "$phase" = partial ]; then
-            echo 'for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done'
+            echo 'for i in $(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments); do ifconfig "$i" group handoff; done'
         fi
         cat <<'REMOTE'
 echo CV-HANDOFF-WAIT
@@ -1408,7 +1414,7 @@ done
 rm /tmp/convergent-test-handoff
 REMOTE
         if [ "$phase" = delayed ]; then
-            echo 'for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done'
+            echo 'for i in $(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments); do ifconfig "$i" group handoff; done'
         fi
         echo 'ifconfig -g handoff carpdemote 128'
         echo 'echo CV-HANDOFF-DONE'
@@ -1448,7 +1454,7 @@ cv_time handoff-recovery
 # Recreate a killed handoff and its leftover probe routes before the normal update.
 touch "$state/fw.handoff" && sync || bad $LINENO
 timeout 30 ssh -F /etc/convergent/ssh_config fw1 'set -e
-for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done
+for i in $(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments); do ifconfig "$i" group handoff; done
 ifconfig -g handoff carpdemote 128' || bad $LINENO
 for address in 100.80.0.10 100.80.2.10; do
     ip route replace "$address/32" via 100.80.1.3 dev host || bad $LINENO
@@ -1521,7 +1527,7 @@ for f in fw1 fw2; do
 	case $f in fw1) want=MASTER groups='handoff|upgrade|sysmaint' ;; fw2) want=BACKUP groups='handoff|sysmaint' ;; esac
 	timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'test ! -e /etc/convergent/seeded/maintenance' || bad $LINENO
 	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || bad $LINENO
-	printf '%s\n' "$carp" | awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || bad $LINENO
+	printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || bad $LINENO
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
 done
 cv_time wan-update
@@ -2043,7 +2049,7 @@ pair_ok() {
     for f in fw1 fw2; do
         case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
         timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig 2>/dev/null |
-            awk -v want="$want" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || return 1
+            awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || return 1
     done
 }
 deadline=$(($(date +%s) + 1500))
@@ -2080,7 +2086,7 @@ for step in journal rebuilt; do
         [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Stopped ] || bad $LINENO
         deadline=$(($(date +%s) + 1500))
         until timeout 30 ssh -F /etc/convergent/ssh_config fw2 ifconfig 2>/dev/null |
-            awk '/carp: / {n++; if ($2 != "MASTER") bad=1} END {exit !(n == 6 && !bad)}'; do
+            awk -v want=MASTER -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null; do
             [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
             sleep 2
         done
@@ -2130,6 +2136,51 @@ done
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
 	fi
+	# W1 topology-change migration and rollback; reuse production pair transactions.
+	if [ "$mode" = guests-update ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time work-topology-migration
+(
+    set -eu
+    for node in fw1 fw2; do
+        ic config get "$node" volatile.base_image >"$release/$node.topology-before"
+    done
+    # Force the topology branch without modifying the trusted image artifacts.
+    sed 's/if \[ -n "$topology_changed" \]; then/if true; then/' /usr/local/sbin/guests >"$release/guests-topology"
+    for fault in fw1 fw2 none; do
+        if [ "$fault" = none ]; then
+            cp "$release/guests-topology" "$release/guests-topology-run"
+        else
+            awk -v fault="$fault" '
+                {print}
+                $0 == "fw_check() {" {
+                    print "    if [ \"$1\" = \"" fault "\" ] && [ -d \"$state/fw.topology\" ]; then return 1; fi"
+                }' "$release/guests-topology" >"$release/guests-topology-run"
+        fi
+        rc=0
+        sh -x "$release/guests-topology-run" update fw "$release/guests/fw" >"$release/topology-$fault.log" 2>&1 || rc=$?
+        if [ "$fault" = none ]; then [ "$rc" = 0 ]; else [ "$rc" != 0 ]; fi
+        [ ! -e "$state/fw.topology" ]
+        # Every boot follows both rebuilds; a rollback also stops both candidates first.
+        awk '
+            /^\+ topology_hold$/ {held=1; roots=0}
+            /^\+ rebuild_root fw[12] / && held {roots++}
+            /^\+ seed_start fw[12]$/ && held {if(roots != 2) bad=1; boots++}
+            END {exit bad || boots < 2}' "$release/topology-$fault.log"
+        for node in fw1 fw2; do
+            [ "$(ic config get "$node" volatile.base_image)" = "$(cat "$release/$node.topology-before")" ]
+            [ "$(ic config get "$node" boot.autostart)" != false ]
+            case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+            timeout 30 ssh -F /etc/convergent/ssh_config "$node" ifconfig >"$release/$node.topology-carp"
+            awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$release/$node.topology-carp" >/dev/null
+        done
+    done
+    sh /usr/lib/convergent/incus/work-gate
+)
+[ "$?" = 0 ] || { fw_diag; bad $LINENO; }
+EOF
+	fi
+	# End W1 topology migration section.
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time update-done
 sync

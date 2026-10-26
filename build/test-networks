@@ -1,0 +1,96 @@
+#!/bin/sh
+# W1 offline schema, renderer and exact-membership fixtures.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+export CONVERGENT_CONFIG=$work/config
+parser=$repo/rootfs/usr/lib/convergent/incus/carp.awk
+get() { sh "$repo/tools/config-get" "$CONVERGENT_CONFIG" "$1"; }
+[ "$(get work_dev_name)" = dom-dev ]
+for bad in \
+	'work_dev_name: ../evil' 'work_dev_name: a;id' 'work_dev_name: -dev' \
+	'work_dev_name: dom-jhn' 'work_dev_prefix_a: 100.80.8.0/26' \
+	'work_dev_prefix_a: 100.80.11.0/26' 'work_dev_prefix_a: 100.80.32.64/26' \
+	'work_dev_prefix_a: 100.80.032.0/26' 'work_dev_prefix_a: 100.80.32.0/24' \
+	'work_dev_prefix_a: 100.80.36.0/26' 'work_jhn_prefix_a: 100.81.36.0/26' \
+	'work_interdomain: allow' 'home_lan_prefixes: 0.0.0.0/0' \
+	'home_lan_prefixes: 192.168.1.1/24' 'home_lan_prefixes: 192.168.0.0/15' \
+	'home_lan_prefixes: 172.15.0.0/16' 'home_lan_prefixes: 10.0.0.0/7' \
+	'home_lan_prefixes: 10.01.0.0/16' 'home_lan_prefixes: 10.0.0.0/8,' \
+	'home_lan_prefixes: 10.0.0.0/8,10.0.0.0/8' \
+	'home_lan_prefixes: 10.0.0.0/8;id'; do
+	printf '%s\n' "$bad" >"$CONVERGENT_CONFIG"
+	if get hostname >"$work/output" 2>"$work/error"; then echo "accepted $bad" >&2; exit 1; fi
+	[ ! -s "$work/output" ]
+done
+for prefix in 100.80.5.0/26 100.80.7.0/26 100.80.12.0/26 100.80.255.0/26; do
+	printf 'work_dev_prefix_a: %s\n' "$prefix" >"$CONVERGENT_CONFIG"
+	[ "$(get work_dev_prefix_a)" = "$prefix" ]
+done
+for home_prefixes in '' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 192.168.1.2/32 '10.0.0.0/8,192.168.0.0/16'; do
+	printf 'home_lan_prefixes: "%s"\n' "$home_prefixes" >"$CONVERGENT_CONFIG"
+	[ "$(get home_lan_prefixes)" = "$home_prefixes" ]
+done
+: >"$CONVERGENT_CONFIG"
+for topology in default changed; do
+	if [ "$topology" = changed ]; then
+		cat >"$CONVERGENT_CONFIG" <<'EOF'
+work_dev_name: coding
+work_dev_prefix_a: 100.80.40.0/26
+work_dev_prefix_b: 100.80.41.0/26
+home_lan_prefixes: 10.0.2.0/24,192.168.1.0/24
+EOF
+	fi
+	for kind in fw wan host svc; do
+		target=$work/$topology/$kind
+		mkdir -p "$target"
+		case $kind in
+		fw) cp -R "$repo/guests/fw/site/." "$target/" ;;
+		wan|svc) cp -R "$repo/guests/$kind/rootfs/." "$target/" ;;
+		host) cp -R "$repo/rootfs/." "$target/" ;;
+		esac
+		sh "$here/networks" "$kind" "$target"
+	done
+	fw=$work/$topology/fw
+	registry=$fw/etc/convergent/segments
+	for kind in wan svc host; do
+		cmp "$registry" "$work/$topology/$kind/etc/convergent/segments"
+		cmp "$fw/etc/convergent/topology.sha256" "$work/$topology/$kind/etc/convergent/topology.sha256"
+	done
+	[ "$(awk -v mode=count -f "$parser" "$registry")" = "$(grep -vc '^#' "$registry")" ]
+	awk '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: MASTER carpdev " $3 " vhid " $2 " advskew 0"}' "$registry" >"$work/live"
+	[ "$(awk -f "$parser" "$registry" "$work/live")" = master ]
+	sed 's/MASTER/BACKUP/g' "$work/live" >"$work/backup"
+	[ "$(awk -f "$parser" "$registry" "$work/backup")" = backup ]
+	for filter in '/^carp5:/d' 's/^carp5:/carp4:/' 's/vhid 7 /vhid 17 /' \
+		's/carpdev vlan320/carpdev vio7/' 's/MASTER carpdev vlan320/BACKUP carpdev vlan320/' \
+		's/MASTER/INIT/' '$d'; do
+		sed "$filter" "$work/live" >"$work/bad"
+		if awk -f "$parser" "$registry" "$work/bad"; then echo "accepted CARP corruption $filter" >&2; exit 1; fi
+	done
+	cat "$registry" "$registry" >"$work/duplicate"
+	if awk -v mode=registry -f "$parser" "$work/duplicate"; then exit 1; fi
+	awk -v mode=metrics -f "$parser" "$registry" "$work/live" >"$work/metrics"
+	grep -q 'segment=' "$work/metrics"
+	while read -r iface vhid parent label prefix gateway family; do
+		case $family in dev|jhn) ;; *) continue ;; esac
+		base=${prefix%.0/26}
+		grep -Fq "range $base.51 $base.61;" "$fw/etc/dhcpd.conf"
+		grep -Fq "option routers $gateway;" "$fw/etc/dhcpd.conf"
+		grep -Fq "option domain-name-servers $gateway;" "$fw/etc/dhcpd.conf"
+		grep -Fq "interface: $gateway" "$fw/var/unbound/etc/unbound.conf"
+		grep -Fxq 'group wanwatch' "$fw/etc/hostname.$iface"
+		grep -Fq "carppeer $base.@WORKPEER@" "$fw/etc/hostname.$iface"
+		grep -Fq "block in log quick on $parent to 100.80.0.0/16" "$fw/etc/pf.conf"
+	done <"$registry"
+	! grep -E '@(WORK|HOME)_[A-Z_]+@' "$fw/etc/pf.conf" "$work/$topology/wan/etc/nftables.nft" "$work/$topology/host/etc/nftables.rules"
+done
+! cmp -s "$work/default/fw/etc/convergent/topology.sha256" "$work/changed/fw/etc/convergent/topology.sha256"
+# The baseline registry still certifies an old pair during coordinated rollback.
+awk '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: MASTER carpdev " $3 " vhid " $2}' "$repo/rootfs/usr/lib/convergent/incus/segments" >"$work/legacy"
+awk -f "$parser" "$repo/rootfs/usr/lib/convergent/incus/segments" "$work/legacy" >/dev/null
+if awk -f "$parser" "$registry" "$work/legacy"; then exit 1; fi
+echo 'test-networks: schema, rendering and CARP corruption fixtures passed'

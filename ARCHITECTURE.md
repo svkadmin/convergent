@@ -54,8 +54,9 @@ Archer.
 ```
 
 Segments are Layer-2 bridges on host. Host holds an address only on `host`, ignores rest (section
-4.4). Incus binds each guest's fixed address to its NIC, so each guest cannot send as anyone else;
-wan is the exception (section 4.1).
+4.4). Incus binds infrastructure guest addresses to their NICs; wan forwards internal sources
+(section 4.1). Work VLANs use MAC filtering and PF source validation with host infrastructure
+anti-spoofing, because Incus cannot combine VLANs and IP filtering.
 
 ---
 
@@ -136,7 +137,7 @@ checks: [BUILD, Firewall images](BUILD.md#firewall-images).
   clamping toward wan, ruleset hash checker compares with release.
 - **unbound** (OpenBSD base) answers DNS on every gateway address, so failover carries DNS (section
   4.5).
-- **Owner maintenance:** adds `sysmaint` group to all six CARP interfaces on master and demotes it
+- **Owner maintenance:** adds `sysmaint` group to all registered CARP interfaces on master and demotes it
   by 128. Failed runs remove the group; successful runs keep it until `sys fw undo`. Persistent host
   journal makes interrupted actions recoverable without decrementing health or upgrade counters.
   Guest and DNS push locks serialize operations. Each remote mutation takes base Perl's nonblocking
@@ -155,7 +156,7 @@ kernel: firewall kernel bug is not host kernel bug, and reverse. Silent failure 
 three seconds.
 
 The minute checker restarts a firewall that has failed its checks for three minutes, only while
-its peer is healthy and MASTER on all six segments, never during the first ten minutes after host
+its peer is healthy and MASTER on all registered segments, never during the first ten minutes after host
 boot or after its own restart, and at most three times an hour. Guest journals, maintenance and
 shutdown inhibit it; attempts go to syslog and the checker report.
 
@@ -230,8 +231,12 @@ configuration, so changing it needs coordinated edits.
 | web | 100.80.3.0/24 | .1 | .2 | .3 | def .10, tmp in portal mode .11, normal tmp .20 to .99 |
 | admin | 100.80.4.0/28 | .1 | .2 | .3 | int browser .10 |
 | guests | 100.80.8.0/22 | .1 | .2 | .3 | guests from .10, assigned by menu |
+| dom-dev-a / b | 100.80.32.0/26 / 100.80.33.0/26 | .62 | .49 | .50 | static .1–.48; DHCP .51–.61 |
+| dom-jhn-a / b | 100.80.36.0/26 / 100.80.37.0/26 | .62 | .49 | .50 | static .1–.48; DHCP .51–.61 |
 
-All addresses static. Incus binds each guest's address and MAC to NIC (IP and MAC filtering on).
+System addresses are static. Work guests use static addresses or firewall DHCP.
+Incus binds system guest addresses and MACs to NICs (IP and MAC filtering on);
+work VLAN access ports use MAC filtering and host L2 protections.
 Exceptions: firewall NICs (CARP's shared MAC: unfiltered, unisolated) and wan's transit NIC (IPv4
 filtering off; MAC filtering and port isolation on). Incus' own DHCP, DNS and NAT off on every
 bridge. IPv6 off everywhere.
@@ -603,7 +608,7 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
 IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
 `guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
 
-- **Dashboards:** Overview (path, attention), Network (six CARP segments, pf, DNS), Guests (Incus
+- **Dashboards:** Overview (path, attention), Network (registered CARP segments, pf, DNS), Guests (Incus
   state, resources) and Security (boot facts, trust, recent events), opened in the int browser.
   Stdlib Python generators in `guests/svc/dashboards` share Archer's palette, type scale, Canvas
   path and first-screen sizing. Current state uses instant queries. CARP role-change annotations
@@ -865,3 +870,26 @@ monitoring copy instead of two.
 | journald and its sealing | syslog-ng shipping records off the host as they are written |
 | Developer mode, management VLAN, branch staging, re-runs, pacman hooks | The build host and signed releases replace them |
 | HTTP/3 blocking | No longer needed with the browser on its own segment |
+
+### Work networks (0.1.4)
+
+One addressless Incus managed bridge, `work`, carries VLANs 320/330/360/370 on
+firewall `vio7`; fixed host ports are `fw1work` and `fw2work`. The default
+`dom-dev` prefixes are 100.80.32.0/26 and 100.80.33.0/26; `dom-jhn` uses
+100.80.36.0/26 and 100.80.37.0/26. Each reserves .1–.48 for static guests,
+.49/.50 for the firewall nodes, .51–.61 for DHCP, and .62 for CARP gateway/DNS.
+Both dhcpd servers synchronize over vio1; rebuilds discard leases.
+
+PF permits routing within a family, denies dev↔jhn and system destinations,
+and permits public destinations plus configured RFC1918 `home_lan_prefixes`.
+WAN performs the only masquerade. Host bridge filtering denies infrastructure
+IP/ARP spoofing, guest CARP/DHCP servers, IPv6 and nested VLANs. Access ports
+use MAC filtering; each VLAN remains an L2 trust domain.
+
+`build/networks` renders every image from the validated scalar schema.
+`/etc/convergent/segments` records every expected CARP interface, VHID, parent,
+label, prefix, gateway and family. Shared `carp.awk` validates exact membership
+and coherent roles; metrics carry segment labels and a registry-derived count.
+Work ports remain closed until host, WAN and both firewall topology hashes agree.
+A topology change stops both firewalls, rebuilds both roots, then starts the pair;
+its durable journal restores both old images on failure before either boots.

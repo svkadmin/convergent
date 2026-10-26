@@ -1,0 +1,24 @@
+#!/bin/sh
+# Reopening is allowed only after host, both firewalls and WAN report the baked topology.
+set -eu
+lib=/usr/lib/convergent/incus
+state=/var/lib/convergent/guests
+close_gate() {
+	nft -f - <<'NFT'
+flush chain bridge host-l2 work_gate
+add rule bridge host-l2 work_gate drop
+NFT
+}
+exec 5>/run/convergent/work-gate.lock
+flock -w 60 5 || exit 1
+[ "${1:-}" != close ] || { close_gate; exit; }
+for journal in fw.topology pending preparing committed; do
+	[ ! -e "$state/$journal" ] || { close_gate; exit 1; }
+done
+expected=$(cat /etc/convergent/topology.sha256)
+for node in fw1 fw2 wan; do
+	case $node in wan) cmd=topology ;; *) cmd='cat /etc/convergent/topology.sha256' ;; esac
+	actual=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$node" "$cmd" 9>&- 8>&- 7>&- 6>&- 5>&-) || { close_gate; exit 1; }
+	[ "$actual" = "$expected" ] || { close_gate; exit 1; }
+done
+nft flush chain bridge host-l2 work_gate

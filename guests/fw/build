@@ -115,6 +115,8 @@ done
 # 3. The site set: this tree, plus what this build makes fresh.
 site=$work/site
 cp -R "$here/site" "$site"
+sh "$here/../../build/networks" fw "$site"
+cp "$site/etc/convergent/segments" "$site/etc/convergent/topology.sha256" "$out/"
 find "$site" -type d -exec chmod 755 {} +
 find "$site" -type f -exec chmod 644 {} +
 chmod 755 "$site/install.site" "$site/usr/local/libexec/convergent/fw-facts"
@@ -192,14 +194,14 @@ build_node() {
 	qemu-img convert -O qcow2 "$out/$n.qcow2" "$out/$n.compact.qcow2"
 	mv "$out/$n.compact.qcow2" "$out/$n.qcow2"
 
-	# Smoke-boot overlays with the seven production NICs.
+	# Smoke-boot overlays with the eight production NICs.
 	log=$out/$n.boot.log
 	: >"$log"
 	qemu-img create -q -f qcow2 -b "$out/$n.qcow2" -F qcow2 "$work/$n.smoke.qcow2"
 	cp "$ovmf_vars" "$work/$n.smoke.vars.fd"
 	nics=
 	i=0
-	while [ "$i" -lt 7 ]; do
+	while [ "$i" -lt 8 ]; do
 		nics="$nics -netdev user,id=s$i,net=10.0.$((i + 10)).0/24,ipv6=off -device virtio-net-pci,netdev=s$i"
 		i=$((i + 1))
 	done
@@ -273,5 +275,5 @@ for pid in $nodepids; do
 done
 nodepids=
 printf '%s\n' "$OPENBSD_VERSION" >"$out/openbsd.version"
-(cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 fw[12].syspatch openbsd.version >SHA256SUMS)
+(cd "$out" && sha256sum fw[12].qcow2 fw[12].pf.sha256 fw[12].rules.sha256 fw[12].syspatch openbsd.version segments topology.sha256 >SHA256SUMS)
 echo "build: done: $out/fw1.qcow2 $out/fw2.qcow2"

@@ -1,0 +1,119 @@
+#!/bin/sh
+# Render the same validated topology into every image; never source config input.
+set -eu
+export LC_ALL=C
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+[ "$#" = 2 ] || { echo 'usage: networks host|fw|wan|svc|registry <staging-root>' >&2; exit 1; }
+kind=$1 root=$2
+input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
+cfg() { sh "$repo/tools/config-get" "$input" "$1"; }
+dev=$(cfg work_dev_name)
+jhn=$(cfg work_jhn_name)
+da=$(cfg work_dev_prefix_a)
+db=$(cfg work_dev_prefix_b)
+ja=$(cfg work_jhn_prefix_a)
+jb=$(cfg work_jhn_prefix_b)
+home_prefixes=$(cfg home_lan_prefixes | tr ',' ' ')
+mkdir -p "$root/etc/convergent"
+registry=$root/etc/convergent/segments
+cp "$repo/rootfs/usr/lib/convergent/incus/segments" "$registry"
+i=$(awk -v mode=count -f "$repo/rootfs/usr/lib/convergent/incus/carp.awk" "$registry")
+for row in "dev $dev-a $da 320" "dev $dev-b $db 330" "jhn $jhn-a $ja 360" "jhn $jhn-b $jb 370"; do
+	set -- $row
+	base=${3%.0/26}
+	printf 'carp%s %s vlan%s %s %s %s.62 %s\n' "$i" "$((i + 1))" "$4" "$2" "$3" "$base" "$1" >>"$registry"
+	i=$((i + 1))
+done
+awk -v mode=registry -f "$repo/rootfs/usr/lib/convergent/incus/carp.awk" "$registry"
+{ cat "$registry"; printf 'home_lan %s\n' "$home_prefixes"; } | sha256sum | awk '{print $1}' >"$root/etc/convergent/topology.sha256"
+printf '%s\n' "$home_prefixes" >"$root/etc/convergent/home-lan"
+[ "$kind" != registry ] || exit 0
+nets="$da, $db, $ja, $jb"
+infra=
+for prefix in "$da" "$db" "$ja" "$jb"; do
+	base=${prefix%.0/26}
+	infra="${infra:+$infra, }$base.49, $base.50, $base.62"
+done
+home_prefixes=$(printf '%s' "$home_prefixes" | sed 's/ /, /g')
+substitute() {
+	sed -e "s|@WORK_NETS@|$nets|g" -e "s|@WORK_INFRA@|$infra|g" \
+		-e "s|@HOME_LAN@|$home_prefixes|g" -e "s|@WORK_DEV@|$da, $db|g" -e "s|@WORK_JHN@|$ja, $jb|g" "$1" >"$1.new"
+	mv "$1.new" "$1"
+}
+case $kind in
+host)
+	substitute "$root/etc/nftables.rules"
+	mkdir -p "$root/usr/lib/convergent/incus/work"
+	while read -r iface vhid parent segment prefix gateway family; do
+		[ "$family" != system ] && [ "${iface#\#}" = "$iface" ] || continue
+		cat >"$root/usr/lib/convergent/incus/work/work-$segment.yaml" <<EOF
+config: {}
+devices:
+  eth0:
+    type: nic
+    network: work
+    name: eth0
+    vlan: "${parent#vlan}"
+    security.mac_filtering: "true"
+EOF
+	done <"$registry"
+	;;
+fw)
+	lib=$root/usr/local/libexec/convergent
+	mkdir -p "$lib"
+	cp "$repo/rootfs/usr/lib/convergent/incus/carp.awk" "$lib/"
+	echo up >"$root/etc/hostname.vio7"
+	echo 'authoritative;' >"$root/etc/dhcpd.conf"
+	echo 'default-lease-time 3600;' >>"$root/etc/dhcpd.conf"
+	echo 'max-lease-time 7200;' >>"$root/etc/dhcpd.conf"
+	rules=$root/etc/convergent/work.rules
+	dns=$root/etc/convergent/work.dns
+	: >"$rules"; : >"$dns"
+	for node in fw1 fw2; do
+		case $node in fw1) me=49 peer=50 ;; fw2) me=50 peer=49 ;; esac
+		printf 'WORKME=%s\nWORKPEER=%s\n' "$me" "$peer" >>"$root/etc/convergent/node.$node"
+	done
+	while read -r iface vhid parent segment prefix gateway family; do
+		[ "$family" != system ] && [ "${iface#\#}" = "$iface" ] || continue
+		base=${prefix%.0/26}
+		cat >"$root/etc/hostname.$parent" <<EOF
+vnetid ${parent#vlan} parent vio7
+inet $base.@WORKME@ 255.255.255.192
+up
+EOF
+		cat >"$root/etc/hostname.$iface" <<EOF
+inet $gateway 255.255.255.192 NONE vhid $vhid carpdev $parent advskew @ADVSKEW@ pass @CARPPASS@ carppeer $base.@WORKPEER@
+group wanwatch
+EOF
+		cat >>"$root/etc/dhcpd.conf" <<EOF
+subnet $base.0 netmask 255.255.255.192 {
+	option routers $gateway;
+	option domain-name-servers $gateway;
+	range $base.51 $base.61;
+}
+EOF
+		printf '\tinterface: %s\n\taccess-control: %s allow\n' "$gateway" "$prefix" >>"$dns"
+		cat >>"$rules" <<EOF
+pass in quick on $parent inet proto { tcp udp } from $prefix to $gateway port 53 keep state (source-track rule, max-src-states 200)
+pass in quick on $parent inet proto icmp from $prefix to $gateway icmp-type echoreq keep state
+block in log quick on $parent to self
+block in log quick on $parent to <work_infra>
+pass in quick on $parent inet from $prefix to <work_$family> keep state (source-track rule, max-src-states 2000)
+block in log quick on $parent to 100.80.0.0/16
+pass in quick on $parent inet from $prefix to <home_lan> keep state (source-track rule, max-src-states 2000)
+pass in quick on $parent inet from $prefix to ! <nonpublic> keep state (source-track rule, max-src-states 2000)
+block in log quick on $parent
+EOF
+	done <"$registry"
+	substitute "$root/etc/pf.conf"
+	sed "/^# W1 work policy$/r $rules" "$root/etc/pf.conf" >"$root/etc/pf.conf.new"
+	mv "$root/etc/pf.conf.new" "$root/etc/pf.conf"
+	sed "/^server:$/r $dns" "$root/var/unbound/etc/unbound.conf" >"$dns.new"
+	mv "$dns.new" "$root/var/unbound/etc/unbound.conf"
+	rm "$rules" "$dns"
+	;;
+wan) substitute "$root/etc/nftables.nft" ;;
+svc) : ;;
+*) echo "networks: unknown target $kind" >&2; exit 1 ;;
+esac

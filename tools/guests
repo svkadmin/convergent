@@ -14,6 +14,7 @@ boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
 applying= recovering= rebuilding= polling=
 step=setup
+. "$lib/fw-topology"
 
 fail() { [ -n "$polling" ] || logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
@@ -87,6 +88,7 @@ autorestart_hold() {
     ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
 }
 autorestart_clear() (
+    [ ! -d "$state/fw.topology" ] || return 0
     ic query '/1.0/instances?recursion=1&project=default' >"$work/autorestart-instances" || return
     jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | .name' \
         "$work/autorestart-instances" >"$work/autorestart" || return
@@ -134,7 +136,7 @@ rollback() {
                 # A healthy BACKUP peer takes over when the target stops.
                 running "$peer" && (image_dir=/var/lib/convergent/release-guests/guests/fw; fw_check "$peer") &&
                     { carp "$peer" MASTER || carp "$peer" BACKUP; } ||
-                    { fail "$peer must be healthy on all six segments; run sys firewall rebuild $guest"; return 1; }
+                    { fail "$peer must be healthy on all registered segments; run sys firewall rebuild $guest"; return 1; }
                 ;;
             esac
             autorestart_hold "$guest" || return
@@ -182,6 +184,9 @@ cleanup() {
     set +e
     [ "$result" = 0 ] || printf 'guests: %s: operation failed (status %s); cleaning up\n' "$failed_step" "$failed_status" >&2
     step=cleanup
+    if [ -n "$work" ] && [ -d "$state/fw.topology" ]; then
+        topology_recover || { fail 'pair rollback pending; both firewalls held; rerun guests apply'; exit 1; }
+    fi
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
     if [ -n "${recovering:-}" ]; then
@@ -342,10 +347,13 @@ certificates_apply() (
 )
 verify_image() {
     step="verify $1"
+    case $1 in fw|fw1|fw2|wan)
+        cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'image topology differs from host' ;;
+    esac
     case $1 in
-    fw) set -- fw1.qcow2 fw2.qcow2 fw1.pf.sha256 fw2.pf.sha256 fw1.rules.sha256 fw2.rules.sha256 ;;
-    fw1|fw2) set -- "$1.qcow2" "$1.pf.sha256" "$1.rules.sha256" ;;
-    wan) set -- wan-metadata.tar.xz wan.qcow2 ;;
+    fw) set -- fw1.qcow2 fw2.qcow2 fw1.pf.sha256 fw2.pf.sha256 fw1.rules.sha256 fw2.rules.sha256 segments topology.sha256 ;;
+    fw1|fw2) set -- "$1.qcow2" "$1.pf.sha256" "$1.rules.sha256" segments topology.sha256 ;;
+    wan) set -- wan-metadata.tar.xz wan.qcow2 topology.sha256 ;;
     *) set -- metadata.tar.gz rootfs.tar.gz ;;
     esac
     : >"$work/checksums"
@@ -450,11 +458,14 @@ healthy() {
 }
 carp() {
     step="carp $1"
-    rsh "$1" 'ifconfig' | awk -v want="$2" '/carp: / {n++; if ($2 != want) bad=1} END {exit !(n == 6 && !bad)}' || fail "expected six $2 interfaces"
+    rsh "$1" 'ifconfig' >"$work/carp" || return
+    awk -v want="$2" -f "$lib/carp.awk" /etc/convergent/segments "$work/carp" >/dev/null || fail "expected registered $2 interfaces"
 }
 pair() { carp "$1" MASTER && carp "$2" BACKUP; }
 fw_check() {
     step="fw_check $1"
+    [ "$(rsh "$1" 'cat /etc/convergent/topology.sha256')" = "$(cat /etc/convergent/topology.sha256)" ] || { fail 'firewall topology differs from host'; return 1; }
+    rsh "$1" 'rcctl check dhcpd' >/dev/null || return
     rsh "$1" 'ifconfig pfsync0' >"$work/pfsync" || return
     grep -q RUNNING "$work/pfsync" && grep -q 'defer: on' "$work/pfsync" || { fail 'pfsync is not running with defer enabled'; return 1; }
     rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || { fail 'PF is not enabled'; return 1; }
@@ -492,7 +503,8 @@ fw_release() {
     fw_mutate fw1 'set -e
 rm -f /etc/convergent/seeded/demote
 sync
-for i in carp0 carp1 carp2 carp3 carp4 carp5; do
+interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+for i in $interfaces; do
     info=$(ifconfig "$i")
     groups=$(printf "%s\n" "$info" | sed -n "s/^[[:space:]]*groups: //p")
     for group in handoff upgrade; do
@@ -1044,10 +1056,10 @@ rebuild() {
     else
         [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
         if ! carp "$peer" MASTER; then
-            running "$1" || die "$peer must be MASTER on all six segments before rebuilding $1"
+            running "$1" || die "$peer must be MASTER on all registered segments before rebuilding $1"
             starting=$1
             stop_guest "$1"
-            retry carp "$peer" MASTER || die "$peer did not take over all six segments"
+            retry carp "$peer" MASTER || die "$peer did not take over all registered segments"
         fi
         rm -f "$state/fw.rebuilt"
         sync
@@ -1065,7 +1077,7 @@ rebuild() {
     retry pair fw1 fw2
     if [ "$1" = fw2 ]; then backup_soak; else soak fw1 fw2; fi
     commit_update
-    echo "guests: rebuilt $1; fw1 MASTER / fw2 BACKUP on all six segments"
+    echo "guests: rebuilt $1; fw1 MASTER / fw2 BACKUP on all registered segments"
 }
 
 init() {
@@ -1118,6 +1130,7 @@ init() {
         init_done server
     fi
     sh "$lib/host-net" 9>&- 8>&- 7>&- 6>&-
+    work_network
     trust=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
     ic config trust list --format json | jq -e --arg fp "$trust" '.[] | select(.fingerprint == $fp)' >/dev/null ||
         ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics
@@ -1151,6 +1164,8 @@ init() {
     for node in fw1 fw2; do
         init_guest "$node" --vm --profile fw
     done
+    work_trunks
+    work_profiles
     image_dir=$release/guests/wan
     init_guest wan --vm --profile wan
     radio
@@ -1227,6 +1242,15 @@ update() {
             actual=$(rsh "$node" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
             [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
         done
+        topology_changed=
+        for node in fw1 fw2; do
+            actual=$(rsh "$node" 'if test -f /etc/convergent/topology.sha256; then cat /etc/convergent/topology.sha256; fi')
+            [ "$actual" = "$(cat "$image_dir/topology.sha256")" ] || topology_changed=1
+        done
+        if [ -n "$topology_changed" ]; then
+            topology_update
+        else
+        cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'firewall topology differs from host'
         retry pair fw1 fw2
         replace fw2
         retry pair fw1 fw2
@@ -1235,7 +1259,8 @@ update() {
         touch "$state/fw.handoff"
         sync
         fw_mutate fw1 'set -e
-for i in carp0 carp1 carp2 carp3 carp4 carp5; do ifconfig "$i" group handoff; done
+interfaces=$(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments) || exit 1
+for i in $interfaces; do ifconfig "$i" group handoff; done
 ifconfig -g handoff carpdemote 128'
         retry pair fw2 fw1
         soak fw2 fw1
@@ -1247,9 +1272,11 @@ ifconfig -g handoff carpdemote 128'
         retry pair fw1 fw2
         soak fw1 fw2
         commit_update
+        fi
         ;;
     wan|svc)
         if [ "$1" = wan ]; then
+            cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'WAN topology differs from host'
             ic profile device set wan eth0 security.ipv4_filtering=false
             ic profile set wan boot.autorestart=true
         fi
@@ -1309,6 +1336,7 @@ ifconfig -g handoff carpdemote 128'
     esac
     parallel_autostart
     record_installed "$1" "$2"
+    sh "$lib/work-gate" || echo 'guests: work access closed until all topology hashes agree' >&2
     logger -t guests "update $1 done: $2" 2>/dev/null || :
 }
 stale_installed() {
@@ -1419,6 +1447,7 @@ apply() {
     done
     rmdir "$staged" 2>/dev/null || :
     certificates_apply
+    sh "$lib/work-gate" || echo 'guests: work access closed: topology has not converged' >&2
 }
 
 # Capture the command status before diagnostics or rollback can change it.
@@ -1483,6 +1512,7 @@ storage_check() {
     done
 }
 [ "$1" = init ] || storage_check
+[ "$1" = init ] || topology_recover
 [ "$1" = init ] || autorestart_clear
 # A rebuild journal from before 0.1.3 has only that command's way back; a newer one rolls back here.
 if [ "$1" != rebuild ]; then
