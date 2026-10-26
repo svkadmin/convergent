@@ -29,21 +29,23 @@ if [ "${1:-}" = retry ]; then
 	done
 fi
 
-# A wired uplink (USB NIC) has no hotplug handler: bring it up once it appears, unless
-# its lease was refused; ifup does nothing for an interface already up.
+# Remember carrier changes too, including unplug/replug between checks.
 for ifc in $UP_IFS; do
-	[ "$ifc" != "$WIFI_IF" ] || continue
+	[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
 	if [ ! -e "/sys/class/net/$ifc" ]; then
 		# Drop ifup's remembered state so a replug starts a new DHCP client.
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
+		rm -f "$d/link.$ifc"
 		continue
 	fi
 	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
-	# A quick replug between checks can leave ifup's state but no address.
-	if ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
+	link=$(cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes") || continue
+	previous=$(cat "$d/link.$ifc" 2>/dev/null || :)
+	if [ "$link" != "$previous" ] || ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 	fi
 	ifup "$ifc" 9>&- >/dev/null 2>&1 || :
+	cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes" >"$d/link.$ifc"
 done
 
 good=0
