@@ -1,15 +1,17 @@
 #!/sbin/openrc-run
-# Create guests once, or apply downloaded guests after the host is marked good.
+# Create or update guests after blessing; stop them before Incus on shutdown.
 
-description="Creates guests or applies downloaded guest updates"
+description="Creates, updates and stops guests"
 
 depend() {
 	# Not need: guests init stops and starts Incus, which would stop this service too.
 	use incus
 	after incus
+	before cronie greetd
 }
 
 start() {
+	rm -f /run/convergent/guests-stopping
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
 	if [ -e /var/lib/convergent/guests/initialized ]; then
@@ -47,4 +49,10 @@ start() {
 		done
 		echo failed >"$2/setup"' sh "$src" "$st" </dev/null >/dev/null 2>&1 &
 	eend 0
+}
+
+stop() {
+	ebegin "Stopping browsers, svc, wan and firewalls before Incus"
+	/bin/sh /usr/lib/convergent/incus/shutdown
+	eend $?
 }

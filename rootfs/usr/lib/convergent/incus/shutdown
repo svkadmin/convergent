@@ -1,0 +1,54 @@
+#!/bin/sh
+# ARCHITECTURE 5.2; drain guests before OpenRC sends SIGPWR to incusd.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+ic() { timeout -k 1 10 incus --force-local --project default "$@" 9>&-; }
+note() { logger -t guests "shutdown: $*" 2>/dev/null || :; }
+stop_one() (
+    node=$1 old_auto=$2 old_hold=$3 ephemeral=$4
+    ic config set "$node" boot.autorestart=false user.convergent.autorestart=true || exit 1
+    note "stopping $node"
+    if ! timeout -k 5 25 incus --force-local --project default stop "$node" --timeout 20 9>&-; then
+        note "forcing $node off after graceful stop failed"
+        timeout -k 5 40 incus --force-local --project default stop "$node" --force 9>&- || :
+    fi
+    instances=$(timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&-) || exit 1
+    printf '%s\n' "$instances" | jq -e --arg n "$node" --arg e "$ephemeral" '
+        [.[] | select(.name == $n)] |
+        if length == 0 then $e == "true" else length == 1 and .[0].status == "Stopped" end' >/dev/null ||
+        { note "$node did not stop; autorestart hold retained"; exit 1; }
+    [ "$ephemeral" != true ] || exit 0
+    # Restore only our override; an interrupted update may already own a hold.
+    if [ "$old_auto" = - ]; then ic config unset "$node" boot.autorestart
+    else ic config set "$node" boot.autorestart="$old_auto"; fi
+    if [ "$old_hold" = - ]; then ic config unset "$node" user.convergent.autorestart
+    else ic config set "$node" user.convergent.autorestart="$old_hold"; fi
+)
+mkdir -p /run/convergent
+touch /run/convergent/guests-stopping
+exec 9>/run/convergent/guests.lock
+flock -w 30 9 || { note 'guest operation still running; leaving final shutdown to Incus'; exit 1; }
+trap '' HUP INT TERM
+work=$(mktemp -d /run/convergent/shutdown.XXXXXX)
+trap 'rm -rf "$work"' 0
+timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- >"$work/instances"
+jq -r '.[] | select(.status != "Stopped") |
+    (if (.name | test("^(def|int|web|admin|tmp-(portal|[0-9]+))$")) then 1
+     elif .name == "svc" then 2 elif .name == "wan" then 3
+     elif (.name == "fw1" or .name == "fw2") then 4 else empty end) as $stage |
+    [$stage, .name, (.config["boot.autorestart"] // "-"),
+     (.config["user.convergent.autorestart"] // "-"), .ephemeral] | @tsv' "$work/instances" >"$work/order"
+result=0
+for stage in 1 2 3 4; do
+    pids=
+    while read -r group node old_auto old_hold ephemeral; do
+        [ "$group" = "$stage" ] || continue
+        stop_one "$node" "$old_auto" "$old_hold" "$ephemeral" &
+        pids="$pids $!"
+    done <"$work/order"
+    for pid in $pids; do wait "$pid" || result=1; done
+done
+note "guest drain completed (status $result)"
+exit "$result"

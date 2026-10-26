@@ -578,6 +578,148 @@ EOF
 	if [ "$mode" = guests-maint ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time maintenance-fixtures
+sh -eu <<'HEAL' || bad $LINENO
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+mkdir -p "$work/run" "$work/state/guests"
+sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" \
+    -e "s|/proc/uptime|$work/uptime|g" /usr/lib/convergent/incus/firewall-heal >"$work/heal"
+. "$work/heal"
+busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
+logger() { :; }
+flock() { [ "$busy" = 0 ]; }
+timeout() { shift 3; "$@"; }
+ssh() {
+    if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
+    case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
+    [ "$role" != down ] || return 1
+    for i in 0 1 2 3 4 5; do
+        echo "carp$i: flags=41<UP,RUNNING>"
+        echo " carp: $role carpdev vio$i vhid $((i + 1))"
+    done
+    echo 'Status: Enabled'
+    echo 'pfsync0: flags=41<UP,RUNNING>'
+    echo ' defer: on'
+}
+incus() {
+    if [ "$4" = list ]; then echo "$5,$test_status"; return; fi
+    echo "$*" >>"$work/calls"
+    [ "$4:$failed" != restart:1 ]
+}
+tick() { echo "$1.00 0" >"$work/uptime"; firewall_heal >"$work/report"; }
+attempts() { grep -c 'default restart fw2 --force' "$work/calls" || :; }
+: >"$work/calls"
+[ "$(heal_probe fw1)" = master ]
+test_peer=BACKUP; [ "$(heal_probe fw1)" = backup ]
+test_peer=INIT; if heal_probe fw1; then exit 1; fi
+test_peer=MASTER
+ssh _ _ _ _ _ _ fw1 >"$work/raw"
+sample=$work/sample
+for filter in '/Status:/d' '/defer:/d' '/^carp5:/d' 's/^carp5:/carp4:/' 's/MASTER carpdev vio5/BACKUP carpdev vio5/'; do
+    sed "$filter" "$work/raw" >"$sample"
+    if heal_probe fw1; then exit 1; fi
+done
+sample=
+for t in 1000 1060 1120; do tick "$t"; [ "$(attempts)" = 0 ]; done
+tick 1180
+[ "$(attempts)" = 1 ]
+sed -n '1,3p' "$work/calls" >"$work/actual"
+printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+    '--force-local --project default restart fw2 --force' \
+    '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
+cmp "$work/actual" "$work/expected"
+for t in 1240 1300 1360 1420 1480 1540 1600 1660 1720 1780 1840 1900; do tick "$t"; done
+[ "$(attempts)" = 3 ]
+# Expiry allows another attempt, but a missed minute resets the failure window.
+tick 5400; tick 5460; tick 5520
+[ "$(attempts)" = 3 ]
+failed=1; tick 5580
+[ "$(attempts)" = 4 ]
+grep -q 'hold retained' "$work/report"
+[ "$(tail -n 1 "$work/calls")" = '--force-local --project default restart fw2 --force' ]
+for test_peer in down BACKUP INIT; do tick 5640; [ ! -e "$work/run/firewall-heal/fw2" ]; done
+test_peer=MASTER
+for journal in pending preparing committed fw.handoff; do
+    tick 5700
+    touch "$work/state/guests/$journal"
+    tick 5760
+    [ ! -e "$work/run/firewall-heal/fw2" ]
+    rm "$work/state/guests/$journal"
+done
+for marker in "$work/state/firewall-maintenance" "$work/run/guests-stopping"; do
+    touch "$marker"; tick 5820; rm "$marker"
+    grep -q inhibited "$work/report"
+done
+for t in 6000 6060 6120; do tick "$t"; done
+busy=1; tick 6180
+[ "$(attempts)" = 4 ]
+grep -q 'inhibited by guests lock' "$work/report"
+busy=0 failed=0 test_status=STOPPED
+tick 6240
+grep -q 'default start fw2$' "$work/calls"
+HEAL
+sh -eu <<'DRAIN' || bad $LINENO
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' 0
+eval "$(sed -n '/^ic()/p; /^note()/p; /^stop_one() (/,/^)/p' /usr/lib/convergent/incus/shutdown)"
+logger() { :; }
+timeout() {
+    printf '%s\n' "$*" >>"$fixture/timeouts"
+    shift 3; "$@"
+}
+incus() {
+    echo "$*" >>"$fixture/calls"
+    case $2 in
+    query)
+        if [ "$ephemeral" = true ] && [ -f "$fixture/stopped" ]; then echo '[]'
+        else
+            status=Running; [ ! -f "$fixture/stopped" ] || status=Stopped
+            printf '[{"name":"wan","status":"%s"}]\n' "$status"
+        fi ;;
+    --project)
+        case $4:$5 in
+        config:set) touch "$fixture/held" ;;
+        stop:wan)
+            [ -f "$fixture/held" ]
+            [ "$6" = --force ] || return 1
+            [ "$stuck" = 0 ] || return 1
+            touch "$fixture/stopped" ;;
+        esac ;;
+    *) return 1 ;;
+    esac
+}
+stuck=0
+stop_one wan - - false
+grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
+grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
+grep -q 'config unset wan boot.autorestart' "$fixture/calls"
+grep -q 'config unset wan user.convergent.autorestart' "$fixture/calls"
+rm "$fixture/stopped"; : >"$fixture/calls"
+stop_one wan false true false
+grep -q 'config set wan boot.autorestart=false$' "$fixture/calls"
+grep -q 'config set wan user.convergent.autorestart=true$' "$fixture/calls"
+rm "$fixture/stopped"; : >"$fixture/calls"
+stuck=1
+if stop_one wan - - false; then exit 1; fi
+if grep -q 'config unset' "$fixture/calls"; then exit 1; fi
+stuck=0
+stop_one wan - - true
+# Exercise the inventory selector with browsers, stopped and unrelated instances.
+work=$fixture
+cat >"$work/instances" <<'JSON'
+[{"name":"def","status":"Running","config":{},"ephemeral":false},
+ {"name":"tmp-23","status":"Running","config":{},"ephemeral":true},
+ {"name":"int","status":"Stopped","config":{},"ephemeral":false},
+ {"name":"svc","status":"Running","config":{},"ephemeral":false},
+ {"name":"wan","status":"Running","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"},"ephemeral":false},
+ {"name":"fw1","status":"Running","config":{},"ephemeral":false},
+ {"name":"fw2","status":"Running","config":{},"ephemeral":false},
+ {"name":"unrelated","status":"Running","config":{},"ephemeral":false}]
+JSON
+eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
+printf '1\tdef\t-\t-\tfalse\n1\ttmp-23\t-\t-\ttrue\n2\tsvc\t-\t-\tfalse\n3\twan\tfalse\ttrue\tfalse\n4\tfw1\t-\t-\tfalse\n4\tfw2\t-\t-\tfalse\n' >"$work/expected"
+cmp "$work/expected" "$work/order"
+DRAIN
 # Polling must keep transient failures out of stderr and syslog.
 (
     set -e
@@ -848,6 +990,48 @@ fw_unlocked() {
         exit(flock($lock, LOCK_EX|LOCK_NB) ? 0 : 1);
     '\'''
 }
+cv_time firewall-self-heal
+# Freeze QEMU without a stop event: only the minute checker can recover it.
+(
+    set -e
+    . /usr/lib/convergent/incus/firewall-heal
+    fw_pid() { incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
+    frozen1= frozen2=
+    trap '[ -z "$frozen1" ] || kill -CONT "$frozen1" 2>/dev/null || :; [ -z "$frozen2" ] || kill -CONT "$frozen2" 2>/dev/null || :' 0
+    trap 'exit 1' HUP INT TERM
+    [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]
+    frozen2=$(fw_pid fw2)
+    kill -STOP "$frozen2"
+    deadline=$(($(date +%s) + 360))
+    while :; do
+        [ "$(date +%s)" -lt "$deadline" ]
+        [ "$(heal_probe fw1)" = master ]
+        current=$(fw_pid fw2) || current=0
+        if [ "$current" != "$frozen2" ] && [ "$(heal_probe fw2)" = backup ]; then break; fi
+        sleep 5
+    done
+    frozen2=
+    grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
+    [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
+    grep -q '^SELF-HEAL .*fw2' /var/lib/convergent/check/firewall-heal
+    # With both guests unresponsive, no new attempt or replacement QEMU is allowed.
+    cp /run/convergent/firewall-heal/attempts "$release/heal-attempts"
+    frozen1=$(fw_pid fw1) frozen2=$(fw_pid fw2)
+    kill -STOP "$frozen1" "$frozen2"
+    deadline=$(($(date +%s) + 240))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        [ "$(fw_pid fw1)" = "$frozen1" ] && [ "$(fw_pid fw2)" = "$frozen2" ]
+        cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
+        sleep 5
+    done
+    kill -CONT "$frozen1" "$frozen2"
+    frozen1= frozen2=
+    deadline=$(($(date +%s) + 120))
+    until [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 5
+    done
+)
+[ "$?" = 0 ] || bad $LINENO
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do

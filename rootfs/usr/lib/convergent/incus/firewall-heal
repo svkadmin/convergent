@@ -1,0 +1,109 @@
+#!/bin/sh
+# ARCHITECTURE 3.3, 8; called by check auto under the self-heal lock.
+heal_probe() {
+    reply=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
+        set -e
+        ifconfig carp
+        pfctl -si
+        ifconfig pfsync0
+        rcctl check unbound >/dev/null
+        unbound-control status >/dev/null' 9>&- 8>&- 7>&- 2>/dev/null) || return 1
+    printf '%s\n' "$reply" | awk '
+        /^carp[0-5]:/ {iface=$1; seen[iface]++}
+        /carp: / {n++; if ($2 == "MASTER") m++; else if ($2 == "BACKUP") b++}
+        /^Status: Enabled/ {pf=1}
+        /^pfsync0:.*RUNNING/ {sync=1}
+        /defer: on/ {defer=1}
+        END {for (i in seen) {interfaces++; if (seen[i] != 1) bad=1}
+            if (interfaces != 6 || n != 6 || bad || !pf || !sync || !defer) exit 1
+            if (m == 6) print "master"; else if (b == 6) print "backup"; else exit 1}'
+}
+heal_allowed() {
+    [ ! -e /run/convergent/guests-stopping ] || return 1
+    [ ! -e /var/lib/convergent/firewall-maintenance ] || return 1
+    for journal in pending preparing committed fw.handoff; do
+        [ ! -e "/var/lib/convergent/guests/$journal" ] || return 1
+    done
+}
+heal_note() {
+    printf 'SELF-HEAL %s %s\n' "$(date -u +%FT%TZ)" "$*" >"$heal/event"
+    logger -t sys-firewall "self-heal: $*" 2>/dev/null || :
+}
+firewall_heal() (
+    heal=/run/convergent/firewall-heal
+    mkdir -p "$heal" || exit 1
+    if ! heal_allowed; then
+        rm -f "$heal/fw1" "$heal/fw2"
+        echo 'SELF-HEAL inhibited: guest journal, maintenance or shutdown'
+        [ ! -f "$heal/event" ] || cat "$heal/event"
+        exit 0
+    fi
+    read -r uptime rest </proc/uptime
+    now=${uptime%.*}
+    # A firewall boots and relinks its kernel for minutes: no verdict early after host boot.
+    [ "$now" -ge 600 ] || { echo 'SELF-HEAL waiting: host up less than 10 minutes'; exit 0; }
+    [ -f "$heal/attempts" ] || : >"$heal/attempts"
+    awk -v now="$now" '$1 > now-3600 {print}' "$heal/attempts" >"$heal/attempts.new" &&
+        mv "$heal/attempts.new" "$heal/attempts" || exit 1
+    attempts=$(wc -l <"$heal/attempts")
+    fw1=$(heal_probe fw1) || fw1=unhealthy
+    fw2=$(heal_probe fw2) || fw2=unhealthy
+    for node in fw1 fw2; do
+        case $node in fw1) health=$fw1 peer=fw2 peer_health=$fw2 ;; fw2) health=$fw2 peer=fw1 peer_health=$fw1 ;; esac
+        if [ "$health:$peer_health" != unhealthy:master ]; then
+            rm -f "$heal/$node"
+            echo "SELF-HEAL $node: $health; peer $peer: $peer_health; no restart"
+            continue
+        fi
+        # The same grace after our own restart, so a booting firewall is not restarted again.
+        restarted=0
+        [ ! -f "$heal/$node.restarted" ] || read -r restarted <"$heal/$node.restarted"
+        if [ "$((now - restarted))" -lt 600 ]; then
+            rm -f "$heal/$node"
+            echo "SELF-HEAL $node: restarted $((now - restarted))s ago; waiting for its boot"
+            continue
+        fi
+        first=$now previous=$now
+        [ ! -f "$heal/$node" ] || read -r first previous <"$heal/$node"
+        # A missed minute or clock discontinuity breaks the consecutive observation window.
+        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 90 ]; then first=$now; fi
+        printf '%s %s\n' "$first" "$now" >"$heal/$node" || exit 1
+        echo "SELF-HEAL $node: unhealthy for $((now - first))s; peer $peer: master; attempts $attempts/3 in the last hour"
+        [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] || continue
+        exec 8>/run/convergent/guests.lock
+        if ! flock -n 8; then
+            echo "SELF-HEAL $node: restart inhibited by guests lock"
+            continue
+        fi
+        # Recheck immediately before mutation; never restart against a stale peer observation.
+        if heal_probe "$node" >/dev/null || [ "$(heal_probe "$peer")" != master ] || ! heal_allowed; then
+            rm -f "$heal/$node"
+            continue
+        fi
+        read -r uptime rest </proc/uptime
+        printf '%s\n' "${uptime%.*}" >>"$heal/attempts" || exit 1
+        attempts=$((attempts + 1))
+        rm -f "$heal/$node"
+        printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
+        heal_note "$node restart requested; $peer healthy MASTER on all six segments ($attempts/3)"
+        # Keep the lock until bounded mutators finish, including after a checker termination.
+        (
+            trap '' HUP INT TERM
+            status=$(timeout -k 1 10 incus --force-local --project default list "$node" --format csv -c ns 9>&- 8>&- 7>&-) || status=
+            case $status in
+            "$node,RUNNING") set -- restart "$node" --force ;;
+            "$node,STOPPED") set -- start "$node" ;;
+            *) heal_note "$node restart refused: unknown Incus state"; exit 1 ;;
+            esac
+            if timeout -k 1 10 incus --force-local --project default config set "$node" \
+                boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- &&
+                timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; then
+                if timeout -k 1 10 incus --force-local --project default config unset "$node" \
+                    boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&-; then
+                    heal_note "$node restart completed; awaiting health probes"
+                else heal_note "$node restarted but autorestart hold could not be cleared"; fi
+            else heal_note "$node restart failed or timed out; autorestart hold retained if set"; fi
+        ) >/dev/null 2>&1
+    done
+    [ ! -f "$heal/event" ] || cat "$heal/event"
+)
