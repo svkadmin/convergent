@@ -35,7 +35,7 @@ work=$(mktemp -d /run/convergent/shutdown.XXXXXX)
 trap 'rm -rf "$work"' 0
 timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- >"$work/instances"
 jq -r '.[] | select(.status != "Stopped") |
-    (if (.name | test("^(def|int|web|admin|tmp-(portal|[0-9]+))$")) then 1
+    (if (.name | test("^(def|int|remmina|web|admin|tmp-(portal|[0-9]+))$")) then 1
      elif .name == "svc" then 2 elif .name == "wan" then 3
      elif (.name == "fw1" or .name == "fw2") then 4 else empty end) as $stage |
     [$stage, .name, (.config["boot.autorestart"] // "-"),

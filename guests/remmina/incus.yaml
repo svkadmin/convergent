@@ -1,0 +1,63 @@
+# Separate application image; never attach the browser profiles.
+config:
+  security.privileged: "false"
+  security.nesting: "false"
+  # Nested subvolumes escape the container's qgroup. Masked: the kernel reads only the low 32 bits.
+  security.syscalls.deny: |
+    ioctl errno 1 [1,0x50009401,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x5000940e,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009417,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009418,SCMP_CMP_MASKED_EQ,0xffffffff]
+  security.guestapi: "false"
+  # The host default arp_ignore=8 reaches container interfaces; the firewalls need ARP replies.
+  linux.sysctl.net.ipv4.conf.eth0.arp_ignore: "0"
+  security.idmap.isolated: "true"
+  security.idmap.size: "65536"
+  limits.cpu: "2"
+  # Below the default 10: under load the firewalls get the CPU first, so CARP adverts keep their pace.
+  limits.cpu.priority: "5"
+  limits.memory: 1GiB
+  limits.memory.swap: "false"
+  limits.processes: "512"
+  boot.autostart: "false"
+  security.protection.delete: "true"
+description: Remmina confinement (software rendering)
+devices:
+  root:
+    type: disk
+    pool: default
+    path: /
+    size: 2GiB
+  eth0:
+    type: nic
+    nictype: bridged
+    parent: web
+    name: eth0
+    hwaddr: "00:16:3e:80:03:12"
+    ipv4.address: 100.80.3.12
+    security.ipv4_filtering: "true"
+    security.mac_filtering: "true"
+    security.port_isolation: "true"
+  wayland:
+    type: disk
+    source: /run/convergent/browser/remmina/sockets/wayland-0
+    path: /mnt/browser/wayland-0
+    readonly: "true"
+    # browser sets the real socket and required=true on the instance; at creation it does not exist yet.
+    required: "false"
+  pipewire:
+    type: disk
+    source: /run/convergent/browser/remmina/sockets/pulse-0
+    path: /mnt/browser/pipewire-0
+    readonly: "true"
+    required: "false"
+  state:
+    type: disk
+    pool: default
+    source: remmina-state
+    path: /home/remmina
+  share:
+    type: disk
+    pool: default
+    source: share
+    path: /share

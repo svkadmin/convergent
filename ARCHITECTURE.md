@@ -865,3 +865,30 @@ monitoring copy instead of two.
 | journald and its sealing | syslog-ng shipping records off the host as they are written |
 | Developer mode, management VLAN, branch staging, re-runs, pacman hooks | The build host and signed releases replace them |
 | HTTP/3 blocking | No longer needed with the browser on its own segment |
+
+### Remmina (0.1.4)
+
+A separate Alpine image runs Remmina at 100.80.3.12/24, MAC
+00:16:3e:80:03:12, on web. Its isolated Incus profile has no GPU,
+host D-Bus, SSH agent or host-directory mount. The browser supervisor supplies
+way-secure and playback-only Pulse and holds the same update/backup lock. The minute checker reaps Remmina after supervisor death; orderly shutdown drains it before svc.
+Sway security contexts restrict privileged globals, not ordinary clipboard
+selection; nested Cage with software rendering gives Remmina its own clipboard.
+
+PF admits only work TCP 22/3389/5900–5999, UDP 3389 and ICMP echo, excluding
+all work infrastructure addresses. Its terminating block precedes web DNS.
+The work tables belong to the work-network renderer. Numeric destinations only;
+no Internet, home LAN, system-service, DNS or same-bridge access.
+
+The shifted 512 MiB remmina-state volume mounts at /home/remmina. A private
+session bus starts Secret Service with a nonempty password; locked or plaintext
+keyrings abort startup. The pinned Remmina executable is rebuilt with a patch
+that clears credentials instead of taking its local-storage fallback when
+Secret Service is absent. GNOME Keyring alone persists passwords. The patched
+executable hash and patch accompany its Alpine package inventory in the image.
+An unlocked compromised client can read its credentials.
+
+The shifted filesystem volume share defaults to 4 GiB at /share. It is an
+explicit cross-domain file-transfer path, attached individually to owner VMs.
+Application updates snapshot/restore only remmina-state, never share.
+Backups refuse a share export while any attached instance is running.

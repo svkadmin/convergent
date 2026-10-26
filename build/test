@@ -21,6 +21,11 @@ cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
 cv_time start
 
 here=$(cd "$(dirname "$0")" && pwd)
+# W3 Remmina offline unlock and artifact-path fixtures.
+if [ "${1:-}" = --remmina-unit ] && [ "$#" = 1 ]; then
+    exec sh "$here/test-remmina-unit"
+fi
+# End W3 Remmina.
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(
 	die() { echo "test: $*" >&2; exit 1; }
@@ -451,6 +456,12 @@ test_guest_delivery() {
 	for kind in fw wan svc browser; do
 		(cd "$delivery/release/guests/$kind" && sha256sum -c SHA256SUMS) || die "$kind round trip failed"
 	done
+	# W3 Remmina signed transport and profile round trip.
+	(cd "$delivery/release/guests/remmina" && sha256sum -c SHA256SUMS) || die 'remmina round trip failed'
+	cmp "$guests/remmina/incus.yaml" "$delivery/release/guests/remmina/incus.yaml" || die 'remmina profile differs'
+	remmina_id=$( (cd "$guests/remmina" && { cat SHA256SUMS; sha256sum ./incus.yaml; }) | sha256sum | cut -d' ' -f1)
+	grep -qx "guest remmina $remmina_id" "$delivery/release/guests.manifest" || die 'missing remmina identity'
+	# End W3 Remmina.
 	cmp "$guests/svc/incus.yaml" "$delivery/release/guests/svc/incus.yaml" || die 'svc profile differs'
 	for role in base def tmp int; do
 		cmp "$guests/browser/incus/$role.yaml" "$delivery/release/guests/browser/incus/$role.yaml" || die "browser $role profile differs"
@@ -2131,6 +2142,9 @@ tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
 	fi
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+# W3 Remmina: rebuild failure restores state and leaves share alone.
+timeout -k 30 600 sh /var/lib/convergent/test-release/remmina-test update || bad $LINENO
+# End W3 Remmina.
 cv_time update-done
 sync
 echo CV-UPDATE-RESULT "$result"
@@ -2186,6 +2200,9 @@ inject_guests() {
 cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
 EOF
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
+	# W3 Remmina lifecycle fixture.
+	cp "$here/test-remmina" "$var/lib/convergent/test-release/remmina-test"
+	# End W3 Remmina lifecycle fixture.
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
 	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
 	cp -r "$here/fixtures/browser-legacy" "$var/lib/convergent/test-release/"
@@ -2465,6 +2482,9 @@ case $r in
 *) result=1 ;;
 esac
 if [ "$r" = 0 ]; then
+	# W3 Remmina: private state, keyring and share.
+	timeout -k 10 180 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
+	# End W3 Remmina.
 	timeout -k 30 900 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	timeout -k 30 900 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
 fi

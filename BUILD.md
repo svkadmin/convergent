@@ -229,3 +229,34 @@ directory is not `$g`). It reads upstream fixes and names what to rebuild (`host
 `svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the release.
 Gentoo packages come from its signed build-host inventory. Exit 1: something to rebuild (UNKNOWN
 lines may appear too). Exit 2: only UNKNOWN; a source was not read.
+
+### Remmina image and qualification (0.1.4)
+
+On the native Linux builder run **sudo sh guests/remmina/build**; stage
+guests/remmina/out/* as `<guests-dir>/remmina/`. The image uses Alpine 3.24
+Remmina 1.4.43-r0 and its bundled protocol plugins. It rebuilds the executable
+from the SHA512-pinned upstream tarball with Alpine's pinned DSO patch and
+secret-service-only.patch; build dependencies are removed. Cache/mirror those
+two pinned source inputs for offline rebuilds. No Chromium is installed.
+build/guests, build/publish, fetch-release and build/stick carry/check
+the Remmina image, profile and inventory through the signed guest manifest.
+The advisory gate includes Remmina's Alpine package database.
+
+Merge W1 before building firewalls: W3 deliberately references, but never
+defines, the work_nets and work_infra tables. Run **build/test --guests**,
+**--guests-maint**, **--guests-update** with the Remmina artifacts present.
+The offline command **sh build/test --remmina-unit** checks cancellation, empty/wrong passwords, locked/unavailable service, plaintext refusal and artifact paths. The new delimited sections exercise work TCP bounds, responding UDP, ICMP,
+DNS/system/home/public denial, share mounting, encrypted keyring persistence
+and failed/successful image replacement without share rollback.
+Run the PF matrix with each firewall as master and again after live handoff.
+
+On the laptop, qualify Remote under Sway: type into RDP/VNC/SSH, play audio,
+and confirm microphone/monitor capture fails. Copy distinct host/remote
+sentinels in both directions: only Remmina-to-remote transfer may work; host
+clipboard must remain unchanged (also test primary selection). Cancel the
+keyring prompt, submit empty/wrong passwords, then unlock/save/reopen.
+Kill Secret Service after unlock and save a new connection: no local password
+may appear in its profile; restart must either retrieve the encrypted secret
+or ask again. Check launcher TERM/KILL cleanup, UI share attach/detach and RDP
+redirection against representative Linux/Windows guests. These GUI/protocol
+checks require the rig/laptop and are release qualification gates.

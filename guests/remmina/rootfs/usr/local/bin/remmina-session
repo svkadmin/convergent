@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+umask 077
+die() { zenity --error --text="$*"; exit 1; }
+keyrings=$HOME/.local/share/keyrings
+mkdir -p "$keyrings"
+for file in "$keyrings"/*.keyring; do
+    [ -e "$file" ] || continue
+    magic=$(od -An -tx1 -N16 "$file" | tr -d ' \n')
+    [ "$magic" = 476e6f6d654b657972696e670a0d000a ] || die 'Unencrypted or unknown keyring: refusing password storage.'
+done
+password=$(zenity --password --title='Remote: unlock keyring (nonempty password)') || exit 1
+[ -n "$password" ] || die 'An empty keyring password is forbidden.'
+if [ ! -f "$keyrings/login.keyring" ]; then
+    confirm=$(zenity --password --title='Remote: confirm new keyring password') || exit 1
+    [ "$password" = "$confirm" ] || die 'Keyring passwords differ.'
+    unset confirm
+fi
+printf '%s' "$password" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+unset password
+locked=$(gdbus call --session --dest org.freedesktop.secrets \
+    --object-path /org/freedesktop/secrets/collection/login \
+    --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked) || exit 1
+[ "$locked" = '(<false>,)' ] || die 'Keyring remains locked.'
+magic=$(od -An -tx1 -N16 "$keyrings/login.keyring" | tr -d ' \n')
+[ "$magic" = 476e6f6d654b657972696e670a0d000a ] || die 'Encrypted login keyring was not created.'
+gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets \
+    --method org.freedesktop.Secret.Service.SetAlias default /org/freedesktop/secrets/collection/login >/dev/null
+exec /usr/bin/remmina

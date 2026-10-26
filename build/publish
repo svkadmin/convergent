@@ -29,7 +29,7 @@ if [ -f "$dir/guests.manifest" ]; then
 	manifests="manifest guests.manifest"
 	grep -qx "release $release" "$dir/guests.manifest" || die "guests.manifest is not for release $release"
 	guest_files=$(awk '$2 ~ /^guests\// {
-		if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+		if ($2 !~ /^guests\/((fw|wan|svc|browser|remmina)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
 		if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
 	}' "$dir/guests.manifest") || die 'invalid guest path in guests.manifest'
 	files="$files guests.manifest.sig guests.manifest $guest_files"

@@ -26,14 +26,14 @@ case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
 finished=
 trap '[ -n "$finished" ] || rm -rf "$dir/guests" "$dir/guests.manifest.new" "$dir/guests.manifest" "$dir/guests.manifest.sig"' 0
 echo "release $release" >"$dir/guests.manifest.new"
-for g in fw wan svc browser; do
+for g in fw wan svc browser remmina; do
 	[ -d "$src/$g" ] || continue
 	[ ! -L "$src/$g" ] || die "$g is a symlink"
 	files=$(awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
 		{ sub(/^\*/, "", $2); if ($2 !~ /^[A-Za-z0-9._-]+$/ || $2 == "." || $2 == ".." || seen[$2]++) exit 1; print $2 }' "$src/$g/SHA256SUMS") || die "invalid $g/SHA256SUMS"
 	[ -n "$files" ] || die "empty $g/SHA256SUMS"
 	case $g in
-	svc) files="$files incus.yaml" ;;
+	svc|remmina) files="$files incus.yaml" ;;
 	browser)
 		[ ! -L "$src/$g/incus" ] || die "browser/incus is a symlink"
 		for f in "$src/$g"/incus/*.yaml; do files="$files incus/${f##*/}"; done

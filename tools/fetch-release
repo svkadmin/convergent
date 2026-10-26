@@ -29,7 +29,7 @@ field() { awk -v k="$1" -v f="${2:-}" '$1 == k && (f == "" || $2 == f) { print $
 num() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
 have() { [ -f "$dir/$1" ] && stat -c %s "$dir/$1" || echo 0; }
 guest_path() {
-	printf '%s\n' "$1" | grep -Eq '^guests/((fw|wan|svc|browser)/[A-Za-z0-9._-]+|browser/incus/[A-Za-z0-9._-]+\.yaml)$' || return 1
+	printf '%s\n' "$1" | grep -Eq '^guests/((fw|wan|svc|browser|remmina)/[A-Za-z0-9._-]+|browser/incus/[A-Za-z0-9._-]+\.yaml)$' || return 1
 	case ${1##*/} in . | ..) return 1 ;; esac
 }
 bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" ]; }; }
@@ -78,7 +78,7 @@ staged_current() (
 	[ -z "$(find "$staged/$latest" -type l -print)" ] || return 1
 	paths=$(printf '%s\n' "$guest_files" | tr '\n' ' ')
 	for g in $changed; do [ -d "$staged/$latest/$g" ] || return 1; done
-	for g in fw wan svc browser; do
+	for g in fw wan svc browser remmina; do
 		[ -d "$staged/$latest/$g" ] || continue
 		guest_valid "$staged/$latest/$g" "$paths" || return 1
 	done
@@ -214,7 +214,7 @@ fi
 files="slot.img convergent-$latest-a.efi convergent-$latest-b.efi"
 [ -z "$sync" ] || files=
 guest_files=$(awk '$2 ~ /^guests\// {
-	if ($2 !~ /^guests\/((fw|wan|svc|browser)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+	if ($2 !~ /^guests\/((fw|wan|svc|browser|remmina)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
 	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
 }' "$gm") || die 'invalid guest path in guests.manifest'
 if [ -n "$usb" ] && [ -z "$guest_files" ] && [ -f /var/lib/convergent/guests/initialized ]; then
@@ -229,7 +229,7 @@ if [ -n "$usb" ] && [ -z "$guest_files" ] && [ -f /var/lib/convergent/guests/ini
 	fi
 fi
 changed=
-awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser)$/ || length($3) != 64 || $3 ~ /[^0-9a-fA-F]/ || seen[$2]++) exit 1; print $2, tolower($3)}' \
+awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser|remmina)$/ || length($3) != 64 || $3 ~ /[^0-9a-fA-F]/ || seen[$2]++) exit 1; print $2, tolower($3)}' \
 	"$gm" >"$dir/guest-ids" || die 'invalid guest identity in guests.manifest'
 while read -r g guest_id; do
 	installed=

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Fixed Remmina controls; socket supervision belongs to browser.
+set -eu
+umask 077
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+[ "$#" = 1 ] || { echo 'usage: remote open|status|close' >&2; exit 1; }
+case $1 in
+open) exec /usr/local/sbin/browser remmina ;;
+status)
+    instances=$(sudo /usr/local/sbin/guests status) || exit 1
+    printf '%s\n' "$instances" | awk '$1 == "remmina" {print; found=1} END {if (!found) print "remmina absent"}'
+    ;;
+close|reap)
+    if [ "$(id -u)" != 0 ]; then
+        [ "$1" = close ] || exit 1
+        exec sudo -- /usr/local/sbin/remote close
+    fi
+    mkdir -p /run/convergent
+    exec 9>/run/convergent/guests.lock
+    flock -s -n 9 || { echo 'remote: guest update in progress' >&2; exit 1; }
+    exec 6>/run/convergent/browser-update.lock
+    flock -s -n 6 || exit 1
+    if [ "$1" = reap ]; then
+        mkdir -p /run/convergent/browser
+        exec 8>/run/convergent/browser/remmina.lock
+        flock -n 8 || exit 0
+    fi
+    instances=$(incus --force-local query '/1.0/instances?recursion=1&project=default')
+    printf '%s\n' "$instances" | jq -e 'all(.[] | select(.name == "remmina"); .type == "container" and .profiles == ["remmina"])' >/dev/null
+    if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
+        incus --force-local --project default stop remmina --force
+        [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
+    fi
+    [ "$1" != reap ] || rm -rf /run/convergent/browser/remmina
+    ;;
+*) echo 'usage: remote open|status|close' >&2; exit 1 ;;
+esac

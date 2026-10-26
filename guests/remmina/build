@@ -1,0 +1,111 @@
+#!/bin/sh
+# ARCHITECTURE 3.5; native x86_64 Linux and root required.
+set -eu
+umask 022
+here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+. "$here/../alpine.sh"
+die() { echo "remmina/build: $*" >&2; exit 1; }
+[ "$#" = 0 ] && [ "$(id -u)" = 0 ] || die 'run as root, without arguments'
+[ "$(uname -s):$(uname -m)" = Linux:x86_64 ] || die 'native x86_64 Linux required'
+mkdir -p "$here/out"
+work=$(mktemp -d /var/tmp/convergent-remmina.XXXXXXXX)
+cleanup() {
+    trap '' HUP INT TERM
+    alpine_cleanup || return
+    case $work in /var/tmp/convergent-remmina.*) rm -rf -- "$work" ;; esac
+}
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
+root=$mini/target
+alpine_prepare
+alpine_apk --initdb add $(cat "$here/packages")
+case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die 'not Alpine 3.24' ;; esac
+# Rebuild the pinned Alpine executable with the Secret-Service-only policy; retain its matching plugins.
+alpine_apk add --virtual .remmina-build build-base cmake samurai patch gettext-dev \
+    avahi-ui-dev curl-dev freerdp-dev fuse3-dev gnutls-dev gtk+3.0-dev json-glib-dev \
+    libayatana-appindicator-dev libgcrypt-dev libjpeg-turbo-dev libsecret-dev libsodium-dev \
+    libssh-dev libvncserver-dev libxkbfile-dev openssl-dev pcre2-dev python3-dev vte3-dev zlib-dev
+curl -fsSL --proto '=https' --proto-redir '=https' \
+    https://gitlab.com/Remmina/Remmina/-/archive/v1.4.43/Remmina-v1.4.43.tar.gz -o "$work/remmina.tar.gz"
+printf '%s  %s\n' \
+    8d96f4ef89ef36bf6ebb548a5d36a58828c09b54dcc4e76494e6110f3a683d84291f449ed59efc8414b5c4f646fa9f8432d0fa97e9d4ac745d737741c3549c42 \
+    "$work/remmina.tar.gz" | sha512sum -c -
+mkdir -p "$root/tmp/remmina-build"
+tar -xzf "$work/remmina.tar.gz" --strip-components=1 -C "$root/tmp/remmina-build"
+cp "$here/secret-service-only.patch" "$root/tmp/remmina-build/"
+curl -fsSL --proto '=https' --proto-redir '=https' \
+    https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/community/remmina/remmina-1.0.0-dsofix.patch \
+    -o "$root/tmp/remmina-build/dsofix.patch"
+printf '%s  %s\n' \
+    47657c9e2db48db1c6498fd177426ea2121b2fef3f4ab09e967f6f75fd1e64758ea68cbb036d20e9375b8d7618f63aad53fd14e367aafb2c44d865a6f220f47d \
+    "$root/tmp/remmina-build/dsofix.patch" | sha512sum -c -
+chroot "$root" /bin/sh -eu <<'COMPILE'
+cd /tmp/remmina-build
+patch -p1 <dsofix.patch
+patch -p1 <secret-service-only.patch
+! grep -q 'remmina_crypt_encrypt(value)' src/remmina_file.c
+LDFLAGS=-lintl cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=MinSizeRel \
+    -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
+    -DWITH_APPINDICATOR=OFF -DWITH_AVAHI=ON -DWITH_FREERDP3=ON -DWITH_GCRYPT=ON \
+    -DWITH_LIBSSH=ON -DWITH_PTHREAD=ON -DWITH_TELEPATHY=OFF -DWITH_VTE=ON \
+    -DWITH_ZLIB=ON -DWITH_KF5WALLET=OFF -DWITH_CUPS=OFF -DWITH_LIBSECRET=ON \
+    -DWITH_SPICE=OFF -DWITH_WWW=OFF -DWITH_PYTHONLIBS=ON
+cmake --build build --target remmina
+install -m 755 build/src/remmina /usr/bin/remmina
+COMPILE
+rm -rf "$root/tmp/remmina-build"
+alpine_apk del .remmina-build
+find "$root/usr/lib" -name remmina-plugin-secret.so | grep -q . || die 'libsecret plugin missing'
+for package in chromium dbus-x11 incus-agent; do
+    if alpine_apk info --exists "$package" >/dev/null 2>&1; then die "unexpected package: $package"; fi
+done
+# Reuse the container's minimal OpenRC/runtime files, never Chromium or its setup.
+cp -R "$here/../browser/rootfs/etc/." "$root/etc/"
+rm -f "$root/etc/init.d/browser-setup"
+cp -R "$here/rootfs/." "$root/"
+printf 'remmina\n' >"$root/etc/hostname"
+chmod 755 "$root/usr/local/bin/"* "$root/usr/local/sbin/remmina-setup" "$root/etc/init.d/remmina-setup"
+chroot "$root" /bin/sh -eu <<'SETUP'
+addgroup -g 1000 remmina
+adduser -D -u 1000 -G remmina -h /home/remmina -s /sbin/nologin remmina
+passwd -l root
+mkdir -p /home/remmina /share /mnt/browser /usr/share/convergent-remmina
+touch /mnt/browser/wayland-0 /mnt/browser/pipewire-0
+chown 1000:1000 /home/remmina
+chmod 700 /home/remmina
+rm -rf /etc/runlevels
+mkdir -p /etc/runlevels/sysinit /etc/runlevels/boot /etc/runlevels/default /etc/runlevels/shutdown
+for service in devfs dmesg sysfs; do rc-update add "$service" sysinit; done
+for service in hostname bootmisc sysctl remmina-setup networking; do rc-update add "$service" boot; done
+for service in killprocs savecache; do rc-update add "$service" shutdown; done
+find / -xdev -type f \( -perm -4000 -o -perm -2000 \) -exec chmod a-s {} \;
+SETUP
+alpine_apk info -v | LC_ALL=C sort >"$work/packages.txt"
+cp "$work/packages.txt" "$root/usr/share/convergent-remmina/packages.txt"
+cp "$here/secret-service-only.patch" "$root/usr/share/convergent-remmina/"
+sha256sum "$root/usr/bin/remmina" | cut -d' ' -f1 >"$root/usr/share/convergent-remmina/executable.sha256"
+: >"$root/etc/apk/repositories"
+rm -f "$root/etc/machine-id" "$root/var/lib/dbus/machine-id"
+mkdir -p "$root/run" "$root/tmp"
+chmod 1777 "$root/tmp"
+epoch=${SOURCE_DATE_EPOCH:-$(date +%s)}
+case $epoch in ''|*[!0-9]*) die 'invalid SOURCE_DATE_EPOCH' ;; esac
+cat >"$work/metadata.yaml" <<EOF
+architecture: x86_64
+creation_date: $epoch
+properties:
+  os: Alpine
+  release: '3.24'
+  variant: convergent-remmina
+  description: Remmina 1.4.43 (Secret Service only)
+EOF
+tar --numeric-owner --owner=0 --group=0 -czf "$work/metadata.tar.gz" -C "$work" metadata.yaml
+alpine_cleanup
+tar --numeric-owner -czf "$work/rootfs.tar.gz" -C "$root" .
+cp "$here/incus.yaml" "$work/incus.yaml"
+(cd "$work" && sha256sum metadata.tar.gz rootfs.tar.gz incus.yaml packages.txt >SHA256SUMS)
+for artifact in metadata.yaml metadata.tar.gz rootfs.tar.gz incus.yaml packages.txt SHA256SUMS; do
+    mv "$work/$artifact" "$here/out/$artifact"
+done
+echo "remmina/build: image in $here/out"

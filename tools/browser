@@ -25,13 +25,14 @@ shift
 case $# in 3|4|5) ;; *) die 'invalid session arguments' ;; esac
 display=$1 ipc=$2 role=$3
 shift 3
-case $role in def|tmp|int) ;; *) die 'role must be def, tmp or int' ;; esac
+case $role in def|tmp|int|remmina) ;; *) die 'role must be def, tmp, int or remmina' ;; esac
 portal_mode=
 if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=1; shift; fi
 [ $# -le 1 ] || die 'expected at most one URL'
 [ -z "$portal_mode" ] || [ $# = 1 ] || set -- http://neverssl.com/
 for url do case $url in http://?*|https://?*) ;; *) die 'URL must be HTTP(S)' ;; esac; done
 case $role in
+    remmina) [ $# = 0 ] || die 'remmina accepts no arguments' ;;
     int) [ $# = 0 ] || [ "$1" = http://100.80.2.10:3000/ ] || die 'int only opens Grafana'; set -- ;;
 esac
 uid=$SUDO_UID
@@ -93,17 +94,34 @@ flock -s -n 9 || die 'guest update in progress'
 [ ! -e /run/convergent/guests-stopping ] || die 'host is stopping guests'
 exec 6>/run/convergent/browser-update.lock
 flock -s -n 6 || die 'browser update in progress'
-if { [ "$role" != tmp ] || [ -n "$portal_mode" ]; } &&
+if [ "$role" != remmina ] && { [ "$role" != tmp ] || [ -n "$portal_mode" ]; } &&
     [ ! -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ]; then
     die 'the browser image predates this release: run sys update install, or sys update usb with a stick that carries the guests'
 fi
+if [ "$role" = remmina ] && [ ! -f /var/lib/convergent/release-guests/guests/remmina/incus.yaml ]; then
+    die 'Remmina image is not installed; run sys update install'
+fi
 journal=/var/lib/convergent/guests
 if [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
-    [ -f "$journal/profiles.before/browser-base.yaml" ] ||
-    grep -qE '^(def|int|web|admin) ' "$journal/pending" 2>/dev/null; then
+    [ -f "$journal/profiles.before/browser-base.yaml" ] || [ -f "$journal/profiles.before/remmina.yaml" ] ||
+    grep -qE '^(def|int|web|admin|remmina) ' "$journal/pending" 2>/dev/null; then
     die 'interrupted browser update; rerun the guests update first'
 fi
 name=$role
+profile_base=browser-base
+profile_role=browser-$role
+image=candidate-browser
+launcher=/usr/local/bin/browser-launch
+ready=/run/browser-ready
+state_volume=browser-$role-state
+if [ "$role" = remmina ]; then
+    profile_base=remmina
+    profile_role=
+    image=candidate-remmina
+    launcher=/usr/local/bin/remmina-launch
+    ready=/run/remmina-ready
+    state_volume=remmina-state
+fi
 if [ -n "$portal_mode" ]; then
     name=tmp-portal
     exec 8>"/run/convergent/browser/$name.lock"
@@ -163,8 +181,8 @@ install -d -o "$uid" -g "$gid" -m 0700 "$run/state"
 # wait through that unused (a first browser once found its Wayland listener gone).
 instances=$(instances_json)
 if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
-    printf '%s\n' "$instances" | jq -e --arg n "$name" --arg r "$role" \
-        '.[] | select(.name == $n) | .type == "container" and .profiles == ["browser-base", "browser-" + $r]' \
+    printf '%s\n' "$instances" | jq -e --arg n "$name" --arg b "$profile_base" --arg r "$profile_role" \
+        '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' \
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
 fi
@@ -179,6 +197,7 @@ if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; 
     # Fixed words ($name is def, int, tmp-portal or tmp-NN), split on purpose; "$@" is the URLs.
     sockets="-d wayland,source=$run/sockets/wayland-0 -d wayland,required=false -d pipewire,source=$run/sockets/pulse-0 -d pipewire,required=false"
     case $role in
+        remmina) ic init "$image" "$name" -p remmina $sockets ;;
         tmp) ic init candidate-browser "$name" --ephemeral -p browser-base -p browser-tmp $sockets ;;
         *) ic init candidate-browser "$name" -p browser-base -p "browser-$role" $sockets ;;
     esac
@@ -230,15 +249,19 @@ device wayland "source=$run/sockets/wayland-0" required=true
 # Retain the image socket mount path; its wire protocol is now Pulse.
 device pipewire "source=$run/sockets/pulse-0" required=true
 if [ "$role" != tmp ]; then
-    nested=$(timeout -k 1 30 btrfs subvolume list -o "/var/lib/incus/storage-pools/default/custom/default_browser-$role-state") || die 'cannot check browser state subvolumes'
-    [ -z "$nested" ] || die "nested subvolumes in browser-$role-state; remove them before starting"
+    nested=$(timeout -k 1 30 btrfs subvolume list -o "/var/lib/incus/storage-pools/default/custom/default_$state_volume") || die 'cannot check browser state subvolumes'
+    [ -z "$nested" ] || die "nested subvolumes in $state_volume; remove them before starting"
+fi
+if [ "$role" = remmina ]; then
+    nested=$(timeout -k 1 30 btrfs subvolume list -o /var/lib/incus/storage-pools/default/custom/default_share) || die 'cannot check share subvolumes'
+    [ -z "$nested" ] || die 'nested subvolumes in share; remove them before starting'
 fi
 ic start "$name"
 mapping=$(ic config get "$name" volatile.idmap.current)
 guest_uid=$(printf '%s\n' "$mapping" | jq -er '.[] | select(.Isuid and .Nsid <= 1000 and (.Nsid + .Maprange) > 1000) | .Hostid + 1000 - .Nsid')
 setfacl -m "u:$guest_uid:rw" "$run/sockets/wayland-0" "$run/sockets/pulse-0"
 attempts=0
-until ic exec "$name" -- test -f /run/browser-ready; do
+until ic exec "$name" -- test -f "$ready"; do
     attempts=$((attempts + 1))
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
@@ -257,7 +280,7 @@ mkfifo -m 600 "$run/output"
 tail -c 65536 9>&- 8>&- 7>&- 6>&- <"$run/output" >"$run/browser.log" &
 capture=$!
 incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
-    --user 1000 --group 1000 -- /usr/local/bin/browser-launch "$@" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
+    --user 1000 --group 1000 -- "$launcher" "$@" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
 browser=$!
 flock -u 9
 exec 9>&-

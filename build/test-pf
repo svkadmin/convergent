@@ -153,4 +153,62 @@ for mode in off on off; do
 	for source in pf-def pf-tmp pf-int svc; do probe deny "$source" 10.0.2.100 80; done
 done
 exec 8>&-
+# W3 Remmina work-network matrix; W1 owns the VLANs and PF tables.
+ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
+created="pf-remmina $created"
+ic start pf-remmina
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-remmina -- test -f /run/remmina-ready; do sleep 1; done'
+udp_remote() {
+    got=$(timeout -k 1 8 incus --force-local --project default exec "$2" -- sh -c '
+        reply=$(printf "cv-remmina\n" | nc -u -w 2 "$1" "$2") || :
+        if [ "$reply" = cv-remmina ]; then echo allow; else echo deny; fi
+    ' sh "$3" "$4") || got=error
+    [ "$got" = "$1" ] || { echo "CV-REMOTE FAIL udp $2 $3:$4 want=$1 got=$got"; result=1; }
+}
+for vlan in 320 330 360 370; do
+    address=$(ssh -F /etc/convergent/ssh_config fw1 "ifconfig vlan$vlan" |
+        awk '$1 == "inet" {sub(/\.[0-9]+$/, "", $2); print $2}') || exit 1
+    case $address in 100.80.[0-9]|100.80.[0-9][0-9]|100.80.[0-9][0-9][0-9]) ;; *) exit 1 ;; esac
+    target=pf-work$vlan
+    ic init candidate-browser "$target" -p browser-base -c limits.memory=128MiB
+    created="$target $created"
+    ic config device add "$target" render none
+    ic config device add "$target" eth0 nic network=work name=eth0 vlan="$vlan" security.mac_filtering=true
+    ic start "$target"
+    timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- true; do sleep 1; done' sh "$target"
+    ic exec "$target" -- sh -eu -c '
+        sysctl -qw net.ipv4.conf.eth0.arp_ignore=0
+        ip addr add "$1.1/26" dev eth0
+        ip link set eth0 up
+        ip route add default via "$1.62"
+    ' sh "$address"
+    for port in 22 3389 5900 5999 5899 6000 53 80 443; do
+        listen "$target" "$address.1" "$port"
+        probe allow "$target" "$address.1" "$port"
+        case $port in 22|3389|5900|5999) want=allow ;; *) want=deny ;; esac
+        probe "$want" pf-remmina "$address.1" "$port"
+    done
+    for port in 3389 3390 53; do
+        ic exec "$target" -- sh -c 'nc -ulk -p "$1" -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$port"
+        udp_remote allow "$target" "$address.1" "$port"
+        case $port in 3389) want=allow ;; *) want=deny ;; esac
+        udp_remote "$want" pf-remmina "$address.1" "$port"
+    done
+    ic exec pf-remmina -- ping -c 1 -W 3 "$address.1" || result=1
+    for host in 49 50 62; do
+        for port in 22 3389 5900; do probe deny pf-remmina "$address.$host" "$port"; done
+        got=$(ic exec pf-remmina -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
+        [ "$got" = deny ] || result=1
+    done
+done
+for destination in 100.80.3.1 100.80.1.10 100.80.2.10 100.80.4.10 100.80.0.10 10.0.2.100 1.1.1.1; do
+    for port in 22 53 80 443 3389 5900; do probe deny pf-remmina "$destination" "$port"; done
+done
+probe deny pf-remmina 100.80.3.1 53 dns
+listen pf-def 100.80.3.10 3389
+probe allow pf-def 100.80.3.10 3389
+probe deny pf-remmina 100.80.3.10 3389
+ic exec pf-remmina -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
+echo "CV-REMOTE network result=$result"
+# End W3 Remmina.
 exit "$result"

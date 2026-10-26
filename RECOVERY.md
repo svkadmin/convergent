@@ -373,3 +373,22 @@ message with the exact commands) rather than fail later with the guest down. Two
 - A state volume with a `.incustmp` copy beside it or instead of it: the loss hit a snapshot
   restore (well under a second). Volume missing: `sudo mv` the copy back. Volume present: the
   restore completed, `sudo btrfs subvolume delete` the copy. Then `sys guests update`.
+
+### Remmina
+
+Close with **sys remote close** before an update, backup or recovery. If a
+launcher was killed, the minute checker stops its orphan; sys remote close also stops it immediately. The next open removes
+stale runtime sockets. Never copy an unlocked keyring into a browser.
+
+`guests update remmina <image-dir>` uses the normal image rollback journal
+and snapshots remmina-state. Resume an interrupted operation with
+**sys guests update**. For a manual restore, stop Remmina and restore a retained
+guests-* snapshot of remmina-state; do not restore share with it.
+The shared volume may contain newer work from other VMs.
+
+A lost keyring password cannot be recovered. Preserve the old encrypted
+keyring offline, then move its directory out of
+remmina-state/.local/share/keyrings while stopped to create a new one on
+next open. Re-enter remote credentials; do not replace it with an unencrypted
+keyring. Unmount/detach or stop every VM using share before restoring or
+backing up that volume independently.
