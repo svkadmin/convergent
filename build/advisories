@@ -480,7 +480,7 @@ def gate_selftest():
         check(0)
         for latest, expected in (('7.0.1-debian12-202609250206', 0), ('7.0.1-debian12-202609250207', 0),
                                  ('7.0.1-debian12-202609260207', 1)):
-            with patch('__main__.incus_ui_latest', return_value=latest), contextlib.redirect_stdout(io.StringIO()):
+            with patch.dict(globals(), incus_ui_latest=lambda work, latest=latest: latest), contextlib.redirect_stdout(io.StringIO()):
                 result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
             data = json.loads(status.read_text())
             require(result == expected and len(data['advisories']) == 8 + expected, 'UI daily status result')
@@ -488,7 +488,7 @@ def gate_selftest():
             if expected:
                 require(any(a['target'] == 'host' and a['fixed_in'] == latest for a in data['advisories']), 'missing UI rebuild')
             status.unlink()
-        with patch('__main__.incus_ui_latest', side_effect=ValueError('bad signature')), contextlib.redirect_stdout(io.StringIO()):
+        with patch.dict(globals(), incus_ui_latest=lambda work: int('bad signature')), contextlib.redirect_stdout(io.StringIO()):
             result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
         require(result == 2 and not status.exists(), 'failed UI verification was publishable')
         (work / 'packages').write_text(inventory)
