@@ -10,6 +10,7 @@ depends() {
 }
 
 installkernel() {
+	instmods mei mei_me mei_gsc mei_gsc_proxy mei_pxp mei_hdcp
 	# The hardware watchdog, armed once the passphrase is in.
 	if ! dracut_module_included convergent-rescue; then instmods lpc_ich i2c_i801 iTCO_wdt; fi
 }

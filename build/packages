@@ -18,7 +18,7 @@ rm -rf "$BUILDER/image-config"
 mkdir -p "$conf"
 cp -r "$BUILDER/etc/portage/make.conf" "$BUILDER/etc/portage/binrepos.conf" "$BUILDER/etc/portage/gnupg" \
 	"$BUILDER/etc/portage/repos.conf" "$conf/"
-for d in package.use package.accept_keywords package.license sets profile; do
+for d in package.use package.accept_keywords package.license sets profile patches; do
 	mkdir -p "$conf/$d"
 	cp -r "$repo/portage/$d/." "$conf/$d/"
 done
@@ -39,7 +39,10 @@ for d in bin sbin lib lib64 usr/sbin; do
 done
 
 sets="@system @convergent @convergent-apps"
-emerge="env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse"
+# Patched packages never come from a binary package: one built without the patch would ship.
+patched=$(cd "$repo/portage/patches" && ls -d */*)
+nobin=$(printf -- '--usepkg-exclude=%s ' $patched)
+emerge="env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse $nobin"
 chroot_mount
 trap chroot_umount EXIT
 
@@ -57,6 +60,13 @@ else
 	if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
 		chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging \
 			--oneshot --quiet-build=y --usepkg-exclude=sys-kernel/gentoo-kernel sys-kernel/gentoo-kernel
+		mkdir -p "${stamp%/*}" && echo "$want" >"$stamp"
+	fi
+	# Changed patches rebuild their packages, which keep the same version.
+	stamp=$BUILDER/var/lib/convergent/patches.sha256
+	want=$(cd "$repo/portage/patches" && find . -type f | LC_ALL=C sort | xargs cat | sha256sum | cut -d' ' -f1)
+	if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
+		chroot "$BUILDER" $emerge --oneshot --quiet-build=y $patched
 		mkdir -p "${stamp%/*}" && echo "$want" >"$stamp"
 	fi
 	# Remove packages no longer needed by the sets.

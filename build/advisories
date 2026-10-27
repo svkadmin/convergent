@@ -12,13 +12,17 @@ python_run() {
 import contextlib
 import datetime as dt
 import functools
+import gzip
+import hashlib
 import io
 import json
 import re
+import subprocess
 import sys
 import tarfile
 import tempfile
 import xml.etree.ElementTree as ET
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -212,6 +216,7 @@ def selftest():
         raise ValueError('WAN inventory without origins was accepted')
     require(installed_apk('P:libssl3\nV:3.5.1-r0\no:openssl\n') ==
             [('libssl3', '3.5.1-r0', 'openssl')], 'apk origin')
+    incus_ui_selftest()
     gate_selftest()
     print('advisories: selftest ok (versions, inventories, gate and exceptions)')
 
@@ -297,6 +302,102 @@ def sources(guests, selected):
     return feeds
 
 
+def incus_ui_version(version, debian=False):
+    pattern = r'(7\.0\.[0-9]+)-debian12-([0-9]{12})' if debian else r'(7\.0\.[0-9]+)_p([0-9]{12})(?:-r[0-9]+)?'
+    match = re.fullmatch(pattern, version)
+    require(match, f'unsupported Incus UI version: {version}')
+    return tuple(map(int, match[1].split('.'))), int(match[2])
+
+
+def incus_ui_packages(release, compressed):
+    checksums = re.findall(r'^SHA256:\n((?:[ \t]+[^\n]+\n)+)', release, re.M)
+    require(len(checksums) == 1, 'missing/ambiguous Zabbly SHA256 section')
+    entries = [line.split() for line in checksums[0].splitlines()]
+    entries = [entry for entry in entries if len(entry) == 3 and entry[2] == 'main/binary-amd64/Packages.gz']
+    require(len(entries) == 1, 'missing/ambiguous Zabbly Packages.gz checksum')
+    digest, size, _ = entries[0]
+    require(size.isdigit() and int(size) == len(compressed) and
+            hashlib.sha256(compressed).hexdigest() == digest, 'Zabbly Packages.gz checksum/size mismatch')
+    versions = []
+    for record in re.split(r'\n\s*\n', gzip.decompress(compressed).decode().strip()):
+        fields = dict(line.split(': ', 1) for line in record.splitlines() if line and not line[0].isspace() and ': ' in line)
+        if fields.get('Package') != 'incus-ui-canonical' or fields.get('Architecture') != 'amd64':
+            continue
+        version = fields.get('Version', '')
+        incus_ui_version(version, debian=True)
+        versions.append(version)
+    require(versions, 'Zabbly index has no amd64 incus-ui-canonical')
+    return max(versions, key=lambda version: incus_ui_version(version, debian=True))
+
+
+def incus_ui_latest(work):
+    for name in ('zabbly-key.asc', 'zabbly-InRelease', 'zabbly-Packages.gz'):
+        require(not (work / (name + '.failed')).exists(), f'{name}: fetch failed')
+    with tempfile.TemporaryDirectory(prefix='zabbly-gpg-', dir=work) as home:
+        command = ['gpg', '--homedir', home, '--batch', '--no-options']
+        subprocess.run(command + ['--import', str(work / 'zabbly-key.asc')], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        verified = subprocess.run(command + ['--status-fd', '2', '--decrypt', str(work / 'zabbly-InRelease')],
+                                  check=True, capture_output=True, text=True)
+        signatures = [line.split() for line in verified.stderr.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
+        require(len(signatures) == 1 and signatures[0][-1] == '4EFC590696CB15B87C73A3AD82CC8797C838DCFD',
+                'Zabbly InRelease signed by an unexpected key')
+        return incus_ui_packages(verified.stdout, (work / 'zabbly-Packages.gz').read_bytes())
+
+
+def incus_ui_selftest():
+    version = '7.0.1-debian12-202609250207'
+    records = ('Package: incus-ui-canonical\nArchitecture: amd64\nVersion: ' + version + '\n\n'
+               'Package: incus-ui-canonical\nArchitecture: arm64\nVersion: 7.0.9-debian12-209901010000\n\n'
+               'Package: incus\nArchitecture: amd64\nVersion: 7.0.9-debian12-209901010000\n')
+    compressed = gzip.compress(records.encode())
+    release = ('SHA256:\n ' + hashlib.sha256(compressed).hexdigest() + ' ' + str(len(compressed)) +
+               ' main/binary-amd64/Packages.gz\n')
+    require(incus_ui_packages(release, compressed) == version, 'wrong UI package/architecture')
+    require(incus_ui_version('7.0.1_p202609250207-r1') == incus_ui_version(version, True), 'UI version mapping')
+    require(incus_ui_version('7.0.1_p202609250206') < incus_ui_version(version, True), 'UI build comparison')
+    require(incus_ui_version('7.0.2_p202601010000') > incus_ui_version(version, True), 'UI release comparison')
+    for bad_release, bad_data in ((release, compressed + b'x'), (release.replace('SHA256:', 'MD5Sum:'), compressed),
+                                  (release + release, compressed), (release.replace('amd64', 'arm64'), compressed)):
+        try:
+            incus_ui_packages(bad_release, bad_data)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('invalid UI index was accepted')
+    with tempfile.TemporaryDirectory(prefix='incus-ui-test-') as temporary:
+        work = Path(temporary)
+        (work / 'zabbly-Packages.gz').write_bytes(compressed)
+        verified = subprocess.CompletedProcess([], 0, release,
+            '[GNUPG:] VALIDSIG 4EFC590696CB15B87C73A3AD82CC8797C838DCFD 0 0 0 4 0 1 10 01 '
+            '4EFC590696CB15B87C73A3AD82CC8797C838DCFD\n')
+        with patch.object(subprocess, 'run', return_value=verified) as run:
+            require(incus_ui_latest(work) == version, 'verified UI index')
+            require('--import' in run.call_args_list[0].args[0] and '--decrypt' in run.call_args.args[0] and
+                    run.call_args.kwargs['check'], 'UI signature verification is not required')
+            verified.stderr = verified.stderr.replace('4EFC590696CB15B87C73A3AD82CC8797C838DCFD', '0' * 40)
+            try:
+                incus_ui_latest(work)
+            except ValueError:
+                pass
+            else:
+                raise ValueError('wrong UI signing key was accepted')
+        with patch.object(subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'gpg')):
+            try:
+                incus_ui_latest(work)
+            except subprocess.CalledProcessError:
+                pass
+            else:
+                raise ValueError('invalid UI signature was accepted')
+        (work / 'zabbly-InRelease.failed').touch()
+        try:
+            incus_ui_latest(work)
+        except ValueError:
+            pass
+        else:
+            raise ValueError('cached UI index used after fetch failure')
+
+
 def gate_selftest():
     with tempfile.TemporaryDirectory(prefix='advisories-test-') as temporary:
         work = Path(temporary)
@@ -373,6 +474,24 @@ def gate_selftest():
             result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
         require(result == 2 and not status.exists(), 'partial daily scan was publishable')
         (work / 'main-v3.24.json.failed').unlink()
+        # UI updates appear in daily status, without gating a release on an unreviewed build.
+        inventory = (work / 'packages').read_text()
+        (work / 'packages').write_text(inventory + 'package www-apps/incus-ui-7.0.1_p202609250207 0\n')
+        check(0)
+        for latest, expected in (('7.0.1-debian12-202609250206', 0), ('7.0.1-debian12-202609250207', 0),
+                                 ('7.0.1-debian12-202609260207', 1)):
+            with patch('__main__.incus_ui_latest', return_value=latest), contextlib.redirect_stdout(io.StringIO()):
+                result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+            data = json.loads(status.read_text())
+            require(result == expected and len(data['advisories']) == 8 + expected, 'UI daily status result')
+            require(any(p['package'] == 'www-apps/incus-ui' for p in data['packages']), 'missing UI package version')
+            if expected:
+                require(any(a['target'] == 'host' and a['fixed_in'] == latest for a in data['advisories']), 'missing UI rebuild')
+            status.unlink()
+        with patch('__main__.incus_ui_latest', side_effect=ValueError('bad signature')), contextlib.redirect_stdout(io.StringIO()):
+            result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+        require(result == 2 and not status.exists(), 'failed UI verification was publishable')
+        (work / 'packages').write_text(inventory)
         # End advisory status fixtures.
         secdb('invalid')
         check(2)  # Exceptions cannot waive a broken feed.
@@ -462,6 +581,18 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
         yield from result[0]
         require(not result[1], '; '.join(result[1]))
 
+    def incus_ui():
+        versions = re.findall(r'^package www-apps/incus-ui-(\S+) \S+$', (Path(release) / 'packages').read_text(), re.M)
+        if not versions:
+            return
+        require(len(versions) == 1, 'ambiguous Incus UI inventory')
+        installed = incus_ui_version(versions[0])
+        latest = incus_ui_latest(work)
+        if installed < incus_ui_version(latest, debian=True):
+            yield ('www-apps/incus-ui', f'ZABBLY-INCUS-UI-{latest}',
+                   f'www-apps/incus-ui installed {versions[0]}; newer Zabbly build {latest}; review UI pin',
+                   dict(package='www-apps/incus-ui', installed_version=versions[0], fixed_in=latest, severity=None))
+
     def kernel():
         require(release, 'no release directory')
         versions = re.findall(r'^kernel\s+(\S+)\s*$', (Path(release) / 'manifest').read_text(), re.M)
@@ -538,6 +669,8 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
             yield f'Alpine minirootfs installed {match[1]}; fixed {latest}; refresh pin'
 
     section('host', [('host', host)])
+    if not gate or status:
+        section('Incus UI', [('host', incus_ui)])
     if 'fw' in selected:
         section('firewalls', [(machine, lambda machine=machine: firewall(machine)) for machine in ('fw1', 'fw2')])
     section('Alpine guests', [(guest, lambda guest=guest: alpine(guest)) for guest in selected if guest != 'fw'])
@@ -560,7 +693,7 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
                 versions.append(dict(target='host', package=key, version=version))
         for line in (Path(release) / 'packages').read_text().splitlines():
             match = re.fullmatch(r'package (\S+)-([0-9][^ ]*) \S+', line)
-            if match and match[1].split('/')[-1] in ('incus', 'openssl', 'systemd-utils', 'openrc'):
+            if match and match[1].split('/')[-1] in ('incus', 'incus-ui', 'openssl', 'systemd-utils', 'openrc'):
                 versions.append(dict(target='host', package=match[1], version=match[2]))
         for guest in selected:
             if guest == 'fw':
@@ -660,6 +793,11 @@ fetch() {
 
 python_run python3 - sources "$release" "$guests" "$mode" >"$work/sources" || die "invalid release inventories"
 while read -r name url; do fetch "$name" "$url"; done <"$work/sources"
+if [ "$mode" != gate ] && grep -q '^package www-apps/incus-ui-' "$release/packages"; then
+	fetch zabbly-key.asc https://pkgs.zabbly.com/key.asc
+	fetch zabbly-InRelease https://pkgs.zabbly.com/incus/lts-7.0/dists/bookworm/InRelease
+	fetch zabbly-Packages.gz https://pkgs.zabbly.com/incus/lts-7.0/dists/bookworm/main/binary-amd64/Packages.gz
+fi
 
 # Publish a complete GLSA set; a failed sync must not replace the last fetch.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")

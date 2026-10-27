@@ -30,6 +30,44 @@ ic() { echo "$*" >>"$work/grafana-calls"; }
 incus_ui=
 . "$work/grafana"
 grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
+# Reap only stopped tmp browsers with a free slot lock, rechecking after locking.
+(
+    sed -n '/^reap_tmp() (/,/^)/p' "$repo/tools/browser" |
+        sed "s|/run/convergent/browser|$work/locks|g" >"$work/reap"
+    . "$work/reap"
+    mkdir "$work/locks"
+    cat >"$work/instances" <<'EOF'
+[
+  {"name":"tmp-20","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-21","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-22","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-portal","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-23","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-24","status":"Stopped","type":"virtual-machine","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-25","status":"Stopped","type":"container","profiles":["default"]},
+  {"name":"def","status":"Stopped","type":"container","profiles":["browser-base","browser-def"]},
+  {"name":"tmp-200","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]}
+]
+EOF
+    instances_json() {
+        cat "$work/instances"
+        sed 's/"name":"tmp-22","status":"Stopped"/"name":"tmp-22","status":"Running"/' \
+            "$work/instances" >"$work/next"
+        mv "$work/next" "$work/instances"
+    }
+    flock() {
+        [ "$*" = '-n 7' ]
+        echo attempt >>"$work/lock-attempts"
+        [ "$(wc -l <"$work/lock-attempts")" != 2 ]
+    }
+    ic() { echo "$*" >>"$work/reaped"; }
+    reap_tmp
+    printf 'delete tmp-20\ndelete tmp-portal\n' >"$work/expected"
+    cmp "$work/expected" "$work/reaped"
+    [ "$(wc -l <"$work/lock-attempts")" = 4 ]
+    instances_json() { return 1; }
+    if reap_tmp; then exit 1; fi
+)
 # Delayed events must be awaited; a permanently missing event must hit the deadline.
 sed -n '/^audit_ready() {/,/^done$/p' "$here/test-incus-ui" |
     sed "s|/var/log/messages|$work/messages|g; s/+ 60/+ 2/" >"$work/audit"
