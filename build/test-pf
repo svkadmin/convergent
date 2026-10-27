@@ -371,6 +371,10 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 
 # Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
 # The remmina profile pins the one address PF allows: reuse the installed container when there is one.
+# check auto stops a Remmina container whose supervisor lock is free; hold it as the launcher does.
+mkdir -p /run/convergent/browser
+exec 7>/run/convergent/browser/remmina.lock
+flock -n 7
 if ic info remmina >/dev/null 2>&1; then
 	rem=remmina
 	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
