@@ -54,6 +54,9 @@ EOF
 		esac
 		sh "$here/networks" "$kind" "$target"
 	done
+	# nft refuses an empty element list; an empty home LAN leaves the set empty instead.
+	if grep -q 'elements = { *}' "$work/$topology/wan/etc/nftables.nft"; then exit 1; fi
+	grep -q 'set home_lan {' "$work/$topology/wan/etc/nftables.nft"
 	fw=$work/$topology/fw
 	registry=$fw/etc/convergent/segments
 	for kind in wan svc host; do
