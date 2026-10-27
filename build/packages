@@ -66,7 +66,8 @@ else
 	stamp=$BUILDER/var/lib/convergent/patches.sha256
 	want=$(cd "$repo/portage/patches" && find . -type f | LC_ALL=C sort | xargs cat | sha256sum | cut -d' ' -f1)
 	if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
-		chroot "$BUILDER" $emerge --oneshot --quiet-build=y $patched
+		chroot "$BUILDER" env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging \
+			--oneshot --quiet-build=y $nobin $patched
 		mkdir -p "${stamp%/*}" && echo "$want" >"$stamp"
 	fi
 	# Remove packages no longer needed by the sets.
