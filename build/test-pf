@@ -331,10 +331,18 @@ if [ -n "${w1_stopped:-}" ]; then
 	timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'
 	ic config unset fw1 boot.autorestart
 	w1_stopped=
+	# check auto reopens a gate closed while fw1 booted; do what it does.
+	timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
 fi
 while read -r iface vhid parent label prefix gateway family <&3; do
 	source=pf-work-${parent#vlan}
-	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3
+	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3 || {
+		nft list chain bridge host-l2 work_gate | sed 's/^/CV-PF gate: /'
+		for f in fw1 fw2; do
+			timeout 20 ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -c MASTER; rcctl check dhcpd; grep dhcpd /var/log/daemon | tail -n 6' 2>&1 | sed "s/^/CV-PF $f: /"
+		done
+		exit 1
+	}
 	lease=$(ic exec "$source" -- cat /run/w1-lease)
 	address=${lease%% *}
 	mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
