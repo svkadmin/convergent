@@ -5,37 +5,46 @@ lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
 valid=/run/convergent/work-gate.valid
 close_gate() {
+	[ ! -f "$valid" ] || logger -t work-gate "work access closed: $1" 2>/dev/null || :
 	rm -f "$valid"
 	nft -f - <<'NFT'
 flush chain bridge host-l2 work_gate
 add rule bridge host-l2 work_gate drop
 NFT
 }
+# A node that cannot answer is no evidence of a mismatch: a validated gate keeps its state.
+undecided() {
+	[ -f "$valid" ] && [ "$(cat "$valid")" = "$expected" ] || close_gate "$1"
+	exit 1
+}
 exec 5>/run/convergent/work-gate.lock
 flock -w 60 5 || exit 1
-[ "${1:-}" != close ] || { close_gate; exit; }
-[ ! -e "$state/fw.topology" ] || { close_gate; exit 1; }
+[ "${1:-}" != close ] || { close_gate requested; exit; }
+[ ! -e "$state/fw.topology" ] || { close_gate 'topology change in progress'; exit 1; }
 expected=$(cat /etc/convergent/topology.sha256)
 remote() { timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$@" </dev/null 9>&- 8>&- 7>&- 6>&- 5>&-; }
-actual=$(remote wan topology) || { close_gate; exit 1; }
-[ "$actual" = "$expected" ] || { close_gate; exit 1; }
+actual=$(remote wan topology) || undecided 'wan unreachable'
+[ "$actual" = "$expected" ] || { close_gate 'wan topology differs'; exit 1; }
 missing=0 masters=0
 for node in fw1 fw2; do
 	if ! actual=$(remote "$node" 'cat /etc/convergent/topology.sha256'); then
 		missing=$((missing + 1))
 		continue
 	fi
-	[ "$actual" = "$expected" ] || { close_gate; exit 1; }
-	if live=$(remote "$node" 'set -e; rcctl check unbound >/dev/null; unbound-control status >/dev/null; ifconfig; pfctl -si'); then
-		role=$(printf '%s\n' "$live" | awk -v health=1 -f "$lib/carp.awk" /etc/convergent/segments -) || { close_gate; exit 1; }
+	[ "$actual" = "$expected" ] || { close_gate "$node topology differs"; exit 1; }
+	# A booting or failing-over node has CARP states in flux: count it as missing, not as a mismatch.
+	if live=$(remote "$node" 'set -e; rcctl check unbound >/dev/null; unbound-control status >/dev/null; ifconfig; pfctl -si') &&
+		role=$(printf '%s\n' "$live" | awk -v health=1 -f "$lib/carp.awk" /etc/convergent/segments -); then
 		[ "$role" != master ] || masters=$((masters + 1))
 	else
 		missing=$((missing + 1))
 	fi
 done
-[ "$masters" = 1 ] || { close_gate; exit 1; }
+[ "$masters" -le 1 ] || { close_gate 'two masters'; exit 1; }
+[ "$masters" = 1 ] || [ "$missing" = 0 ] || undecided 'no firewall answered as master'
+[ "$masters" = 1 ] || { close_gate 'no master'; exit 1; }
 if [ "$missing" != 0 ]; then
-	[ -f "$valid" ] && [ "$(cat "$valid")" = "$expected" ] || { close_gate; exit 1; }
+	[ -f "$valid" ] && [ "$(cat "$valid")" = "$expected" ] || { close_gate 'standby missing before validation'; exit 1; }
 else
 	printf '%s\n' "$expected" >"$valid"
 fi

@@ -406,11 +406,14 @@ else
 	ic start pf-remmina
 fi
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/remmina-ready; do sleep 1; done' sh "$rem"
+# Delivery, not echo: BusyBox nc (1.10 mode) has no -k, and a UDP listener binds to its first peer.
 udp_remote() {
-    got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
-        reply=$(printf "cv-remmina\n" | nc -u -w 2 "$1" "$2") || :
-        if [ "$reply" = cv-remmina ]; then echo allow; else echo deny; fi
-    ' sh "$3" "$4") || got=error
+    ic exec "$target" -- sh -c 'rm -f /run/cv-udp; timeout 6 nc -lu -p "$1" </dev/null >/run/cv-udp 2>/dev/null &' sh "$4"
+    sleep 1
+    timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c \
+        'printf "cv-remmina\n" | nc -u -w 1 "$1" "$2"' sh "$3" "$4" >/dev/null 2>&1 || :
+    sleep 1
+    if ic exec "$target" -- grep -qx cv-remmina /run/cv-udp; then got=allow; else got=deny; fi
     [ "$got" = "$1" ] || { echo "CV-REMOTE FAIL udp $2 $3:$4 want=$1 got=$got"; result=1; }
 }
 for master in fw1 fw2; do
@@ -450,7 +453,6 @@ for master in fw1 fw2; do
             probe "$want" "$rem" "$address.1" "$port"
         done
         for port in 3389 3390 53; do
-            [ "$master" != fw1 ] || ic exec "$target" -- sh -c 'nc -ulk -p "$1" -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$port"
             udp_remote allow "$target" "$address.1" "$port"
             case $port in 3389) want=allow ;; *) want=deny ;; esac
             udp_remote "$want" "$rem" "$address.1" "$port"
