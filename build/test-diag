@@ -1,0 +1,115 @@
+#!/bin/sh
+# Offline collector statuses, privacy filters and crash archive fixtures.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-diag: $*" >&2; exit 1; }
+o=$work
+sed -n '/^x() {/,/^}/p' "$here/diag/body-std.sh" >"$work/probe"
+. "$work/probe"
+# The production body deliberately runs without errexit so failed probes can be reported.
+set +e
+x sh -c 'echo failed >&2; exit 7' >"$work/result"
+grep -q '(rc=7)' "$work/result" || die 'lost failure status'
+x sh -c 'head -c 500000 /dev/zero; exit 9' >"$work/result"
+grep -aq '(rc=9)' "$work/result" || die 'truncation lost status'
+x nonexistent-diagnostic-command >"$work/result"
+grep -q '(rc=127)' "$work/result" || die 'lost missing command status'
+timeout() { shift 3; command timeout -k 1 0.1 "$@"; }
+x sh -c 'sleep 3' >"$work/result"
+grep -q '(rc=124)' "$work/result" || die 'lost timeout status'
+unset -f timeout
+set -e
+cat >"$work/private" <<'EOF'
+PCI [2646:1234] 0000:00:14.3 driver=vfio-pci
+USB 3-8 idVendor=8087 idProduct=0033 authorized=0 bConfigurationValue=1
+USB allow id 8087:0033 serial "SECRET123" name "Alice keyboard" hash "privatehash" via-port "3-8"
+power policy0 scaling_governor=powersave energy_performance_preference=power scaling_max_freq=2500000
+BERT record=1 severity=fatal data_bytes=4 raw_bytes=0
+Critical Warning:                   0x00
+MAC 00:16:3e:12:34:56 aa:bb:cc:dd:ee:ff
+IPv4 100.80.1.2 127.0.0.1 192.168.12.34 9.9.9.9
+IPv6 2001:db8::1 fe80::1234 fd00::2 ::ffff:192.0.2.9
+Serial Number: SECRET123
+file /home/alice/PRIVATE-DOCUMENT.txt
+SSID=PRIVATE-NETWORK
+EOF
+awk -f "$here/diag/scrub.awk" "$work/private" >"$work/public"
+! grep -Eq 'SECRET|Alice|privatehash|PRIVATE|alice|00:16:3e|aa:bb:cc|192\.168|9\.9\.9\.9|2001:|fe80:|fd00:' "$work/public" || die 'privacy filter leak'
+grep -qF '[2646:1234] 0000:00:14.3' "$work/public"
+grep -qF 'authorized=0' "$work/public"
+grep -qF 'scaling_max_freq=2500000' "$work/public"
+grep -qF 'BERT record=1 severity=fatal' "$work/public"
+cat >"$work/smart" <<'EOF'
+Model Number: Alice private SSD
+Serial Number: SECRET123
+SMART overall-health self-assessment test result: PASSED
+Critical Warning:                   0x00
+Temperature:                        37 Celsius
+Available Spare:                    100%
+Media and Data Integrity Errors:    0
+Data Units Written:                 12,345 [6.32 TB]
+  5 Reallocated_Sector_Ct 0x0033 100 100 010 Pre-fail Always - 0
+Error log: address=192.168.12.34 secret
+EOF
+awk -f "$here/diag/smart.awk" "$work/smart" | awk -f "$here/diag/scrub.awk" >"$work/health"
+[ "$(wc -l <"$work/health")" = 7 ] || die 'missing health fields'
+! grep -Eq 'Alice|SECRET|address|Error log' "$work/health" || die 'SMART identity leak'
+printf '\000\000\000\000\000\000\000\000\000\000\000\000\004\000\000\000\001\000\000\000ABCD' >"$work/record"
+od -An -v -tu1 "$work/record" | awk -f "$here/diag/bert.awk" | awk -f "$here/diag/scrub.awk" >"$work/bert-summary"
+grep -q 'BERT record=1 severity=fatal data_bytes=4 raw_bytes=0' "$work/bert-summary"
+! grep -q ABCD "$work/bert-summary"
+if printf '0 0 0' | awk -f "$here/diag/bert.awk" >/dev/null; then die 'accepted short BERT'; fi
+arch=$work/crash
+mkdir "$arch"
+bad() { die "$*"; }
+sed -n '/^\tbert=\/sys/,/^\tfi$/p' "$repo/tools/facts" | sed "s|bert=/sys/firmware/acpi/tables/data/BERT|bert=$work/record|" >"$work/archive"
+. "$work/archive"
+. "$work/archive"
+[ "$(find "$arch" -type f | wc -l)" = 1 ] || die 'duplicate BERT archive'
+cmp "$work/record" "$arch"/bert-*
+sh "$here/diag/mkdiag.sh" "$here/diag/body-std.sh" "$work/collector"
+sh -n "$work/collector"
+cat >"$work/body" <<'EOF'
+printf '%s\n' 'SSID=PRIVATE-NETWORK' 'PCI [2646:1234]'
+exit 9
+EOF
+sh "$here/diag/mkdiag.sh" "$work/body" "$work/wrapped"
+sed "s|/var/lib/convergent/debug/.d.XXXXXX|$work/.d.XXXXXX|" "$work/wrapped" >"$work/run"
+status=0
+sh "$work/run" >"$work/wrapped-output" || status=$?
+[ "$status" = 9 ] || die 'wrapper lost body status'
+! grep -q PRIVATE "$work/wrapped-output" || die 'wrapper exposed raw output'
+grep -qF 'PCI [2646:1234]' "$work/wrapped-output"
+echo 'test: diagnostic status, privacy, health and BERT fixtures passed'
+
+# Failure paths reach host syslog at a locally retained severity even with no svc.
+logger() { printf '%s\n' "$*" >>"$work/log"; return 1; }
+for script in check facts; do
+	sed -n '/^die() /p; /^bad() /p' "$repo/tools/$script" >"$work/log-functions"
+	. "$work/log-functions"
+	ok=1
+	bad 'fixture failure'
+	[ "$ok" = 0 ] || die 'failure did not set state'
+	grep -q -- "-p user.err -t $script fixture failure" "$work/log" || exit 1
+	if (die 'fatal fixture') 2>/dev/null; then exit 1; fi
+done
+sed -n '/^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p' "$repo/tools/power" >"$work/power-functions"
+. "$work/power-functions"
+cpu=$work/cpu rc=0 current=old
+mkdir -p "$cpu/policy0"
+echo 0 >"$cpu/policy0/affected_cpus"
+write_failed "$cpu/policy0/scaling_governor" powersave rejected 2>/dev/null || :
+[ "$rc" = 1 ] && grep -q -- '-p user.err -t power' "$work/log"
+rc=0
+: >"$cpu/policy0/affected_cpus"
+write_failed "$cpu/policy0/scaling_governor" powersave rejected 2>/dev/null || :
+[ "$rc" = 0 ] && grep -q -- '-p user.notice -t power' "$work/log"
+sed -n '/^trap .*handler failed/p' "$repo/tools/power" >"$work/power-trap"
+status=0
+(. "$work/power-trap"; exit 7) || status=$?
+[ "$status" = 7 ] && grep -q 'handler failed (status 7)' "$work/log"
+echo 'test: failure logging severities and exit status passed'

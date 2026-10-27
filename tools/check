@@ -8,8 +8,8 @@ state=/var/lib/convergent/check
 out=/var/lib/node_exporter
 list=/usr/lib/convergent/etc-state
 work=
-die() { echo "check: $*" >&2; exit 1; }
-bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+die() { logger -p user.err -t check "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
+bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 rsh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&- 7>&-; }
 [ "$(id -u)" = 0 ] || die 'run as root'
@@ -143,7 +143,7 @@ fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
 # Remmina: a killed supervisor must not leave an unlocked orphan running.
 if [ "${1:-}" = auto ]; then
-    timeout -k 1 30 /usr/local/sbin/remote reap || logger -t remote 'orphan cleanup deferred or failed'
+    timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
 fi
 # End Remmina.
 net_ok=1
