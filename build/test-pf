@@ -273,6 +273,8 @@ for master in fw1 fw2; do
 			done
 			exit 1
 		}
+		# The gate keeps work open without fw1 only after it validated both nodes (check auto does this).
+		timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
 		ic config set fw1 boot.autorestart=false
 		w1_stopped=1
 		ic stop fw1 --force
