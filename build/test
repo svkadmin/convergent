@@ -3104,7 +3104,7 @@ def interrupted(signum, frame):
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
-    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host,avx512f=off", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
+    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
     "-run-with", "user=" + os.environ["CVTEST_QEMU_ID"],
     "-sandbox", "on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
