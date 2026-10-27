@@ -151,10 +151,12 @@ pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
 if [ -n "$usb" ]; then
 	cp "$usb/latest" "$usb/latest.sig" "$pointer/" || die 'cannot read USB latest and signature'
 else
-	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest" 2>/dev/null) || {
+	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest" 2>"$pointer/error") || {
+		status=$?
+		reason=$(head -n 1 "$pointer/error" | cut -c1-160)
 		rm -rf "$pointer"
 		[ "$code" != 404 ] || die 'no release is published on this channel yet'
-		die "cannot reach $host"
+		die "cannot reach $host (curl $status, HTTP ${code:-none}${reason:+: $reason})"
 	}
 	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot download latest.sig from $host"; }
 fi
