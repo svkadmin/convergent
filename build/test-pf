@@ -29,6 +29,7 @@ cleanup() {
 			[ ! -f /run/cv-pf-$p.pid ] || { kill "$(cat /run/cv-pf-$p.pid)" && rm /run/cv-pf-$p.pid; }
 		done
 	' || r=1
+	[ -z "${rem_started:-}" ] || ic stop remmina --force || r=1
 	for name in $created; do ic delete "$name" --force || r=1; done
 	[ -z "${work_profile:-}" ] || incus --force-local --project owner profile delete pf-base || r=1
 	[ -z "${work_image:-}" ] || incus --force-local --project owner image delete pf-browser || r=1
@@ -369,10 +370,17 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 
 
 # Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
-ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
-created="pf-remmina $created"
-ic start pf-remmina
-timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-remmina -- test -f /run/remmina-ready; do sleep 1; done'
+# The remmina profile pins the one address PF allows: reuse the installed container when there is one.
+if ic info remmina >/dev/null 2>&1; then
+	rem=remmina
+	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
+else
+	rem=pf-remmina
+	ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
+	created="pf-remmina $created"
+	ic start pf-remmina
+fi
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/remmina-ready; do sleep 1; done' sh "$rem"
 udp_remote() {
     got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
         reply=$(printf "cv-remmina\n" | nc -u -w 2 "$1" "$2") || :
@@ -414,29 +422,29 @@ for master in fw1 fw2; do
             [ "$master" != fw1 ] || listen "$target" "$address.1" "$port"
             probe allow "$target" "$address.1" "$port"
             case $port in 22|3389|5900|5999) want=allow ;; *) want=deny ;; esac
-            probe "$want" pf-remmina "$address.1" "$port"
+            probe "$want" "$rem" "$address.1" "$port"
         done
         for port in 3389 3390 53; do
             [ "$master" != fw1 ] || ic exec "$target" -- sh -c 'nc -ulk -p "$1" -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$port"
             udp_remote allow "$target" "$address.1" "$port"
             case $port in 3389) want=allow ;; *) want=deny ;; esac
-            udp_remote "$want" pf-remmina "$address.1" "$port"
+            udp_remote "$want" "$rem" "$address.1" "$port"
         done
-        ic exec pf-remmina -- ping -c 1 -W 3 "$address.1" || result=1
+        ic exec "$rem" -- ping -c 1 -W 3 "$address.1" || result=1
         for host in 49 50 62; do
-            for port in 22 3389 5900; do probe deny pf-remmina "$address.$host" "$port"; done
-            got=$(ic exec pf-remmina -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
+            for port in 22 3389 5900; do probe deny "$rem" "$address.$host" "$port"; done
+            got=$(ic exec "$rem" -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
             [ "$got" = deny ] || result=1
         done
     done
     for destination in 100.80.3.1 100.80.1.10 100.80.2.10 100.80.4.10 100.80.0.10 10.0.2.100 1.1.1.1; do
-        for port in 22 53 80 443 8443 3389 5900; do probe deny pf-remmina "$destination" "$port"; done
+        for port in 22 53 80 443 8443 3389 5900; do probe deny "$rem" "$destination" "$port"; done
     done
-    probe deny pf-remmina 100.80.3.1 53 dns
+    probe deny "$rem" 100.80.3.1 53 dns
     [ "$master" != fw1 ] || listen pf-def 100.80.3.10 3389
     probe allow pf-def 100.80.3.10 3389
-    probe deny pf-remmina 100.80.3.10 3389
-    ic exec pf-remmina -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
+    probe deny "$rem" 100.80.3.10 3389
+    ic exec "$rem" -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
 done
 printf 'yes\n' | sys firewall undo
 w1_maintenance=
