@@ -52,6 +52,16 @@ tcp() {
 		' sh "$2" "$3"
 	fi
 }
+# Evidence for a failed work probe: instance states, the source's view and the masters' view.
+work_diag() {
+	incus --force-local --project owner list -c ns --format csv 2>&1 | sed 's/^/CV-PF diag: /'
+	ic exec "$1" -- sh -c 'ip -4 -br addr; ip -4 route; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
+		sed "s/^/CV-PF diag $1: /"
+	for f in fw1 fw2; do
+		timeout 20 command ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep 100.80.3; pfctl -ss | grep -c " 100.80.3"' 2>&1 |
+			sed "s/^/CV-PF diag $f: /"
+	done
+}
 probe() { # expectation source destination port [dns]
 	got=error
 	if [ "${5:-}" = dns ]; then
@@ -73,6 +83,7 @@ probe() { # expectation source destination port [dns]
 		done
 	fi
 	if [ "$got" = "$1" ]; then verdict=ok; else verdict=FAIL; result=1; fi
+	case $verdict:$2 in FAIL:pf-work-*) work_diag "$2" "$3" ;; esac
 	echo "CV-PF $verdict src=$2 dst=$3 port=$4${5:+/udp} want=$1 got=$got"
 }
 listen() {
@@ -315,7 +326,11 @@ for master in fw1 fw2; do
 				for i in $(seq 30); do grep -qx renew /run/w1-events && break; sleep 1; done
 				grep -qx renew /run/w1-events
 				cmp /run/w1-acquired /run/w1-lease
-			'
+			' || {
+				ic exec "$source" -- cat /run/w1-dhcp.log /run/w1-events 2>&1 | sed "s/^/CV-PF dhcp $source: /"
+				work_diag "$source" "$gateway"
+				exit 1
+			}
 			lease=$(ic exec "$source" -- cat /run/w1-lease)
 			address=${lease%% *}
 			mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
