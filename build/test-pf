@@ -55,10 +55,11 @@ tcp() {
 # Evidence for a failed work probe: instance states, the source's view and the masters' view.
 work_diag() {
 	incus --force-local --project owner list -c ns --format csv 2>&1 | sed 's/^/CV-PF diag: /'
-	ic exec "$1" -- sh -c 'ip -4 -br addr; ip -4 route; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
+	nft list chain bridge host-l2 work_gate 2>&1 | grep -E 'drop|chain' | sed 's/^/CV-PF diag gate: /'
+	ic exec "$1" -- sh -c 'ip -4 addr show eth0 | grep inet; ip -4 route; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
 		sed "s/^/CV-PF diag $1: /"
 	for f in fw1 fw2; do
-		timeout 20 command ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep 100.80.3; pfctl -ss | grep -c " 100.80.3"' 2>&1 |
+		timeout 20 /usr/bin/ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep 100.80.3; pfctl -ss | grep -c " 100.80.3"' 2>&1 |
 			sed "s/^/CV-PF diag $f: /"
 	done
 }
