@@ -18,7 +18,8 @@ cleanup() {
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
-	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart; } || r=1
+	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart
+		timeout -k 5 1800 sh -c 'until command ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'; } || r=1
 	# Restore the preferred master if a work probe fails during maintenance.
 	[ -z "${w1_maintenance:-}" ] || printf 'yes\n' | sys firewall undo || r=1
 	# portal retries a node it could not reach; one retry here, as cron would.
