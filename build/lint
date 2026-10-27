@@ -27,6 +27,11 @@ fi
 # Tracked files; an exported tree (no .git) is checked whole.
 files=$(git ls-files 2>/dev/null) || files=$(find . -type f ! -path './.git/*' | sed 's|^\./||')
 
+# Incus 7.0.1 refuses --project with query: the project belongs in the URL.
+hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' |
+	xargs grep -nE -- '--project [^ ]+ query |query --project' 2>/dev/null) &&
+	{ printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'incus query takes its project in the URL, not --project'; }
+
 # Shell: every script, init script and sourced module parses.
 scripts=
 for f in $files; do
