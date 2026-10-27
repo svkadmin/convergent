@@ -1,0 +1,12 @@
+Treat idle inhibition as privileged: a sandboxed client must not stop the auto-lock.
+
+--- a/sway/server.c
++++ b/sway/server.c
+@@ -108,6 +108,7 @@
+ #endif
+ 
+ 	return
++		global == server.idle_inhibit_manager_v1.wlr_manager->global ||
+ 		global == server.output_manager_v1->global ||
+ 		global == server.output_power_manager_v1->global ||
+ 		global == server.input_method->global ||

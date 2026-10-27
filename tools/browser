@@ -79,6 +79,23 @@ stop_container() {
             fi ;;
     esac
 }
+reap_tmp() (
+    snapshot=$(instances_json) || exit 1
+    abandoned=$(printf '%s\n' "$snapshot" | jq -r '.[] | select(.type == "container" and
+        .status == "Stopped" and .profiles == ["browser-base", "browser-tmp"] and
+        (.name | test("^tmp-([2-9][0-9]|portal)$"))) | .name') || exit 1
+    for stale in $abandoned; do
+        exec 7>"/run/convergent/browser/$stale.lock"
+        flock -n 7 || continue
+        # A launcher may have acquired this slot since the first snapshot.
+        snapshot=$(instances_json) || exit 1
+        if printf '%s\n' "$snapshot" | jq -e --arg n "$stale" 'any(.[]; .name == $n and
+            .type == "container" and .status == "Stopped" and
+            .profiles == ["browser-base", "browser-tmp"])' >/dev/null; then
+            ic delete "$stale" || exit 1
+        fi
+    done
+)
 portal_on() { /usr/local/sbin/portal status | grep -qx 'portal: on'; }
 wait_socket() {
     attempts=0
@@ -113,6 +130,7 @@ if [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
     grep -qE '^(def|int|web|admin|remmina) ' "$journal/pending" 2>/dev/null; then
     die 'interrupted browser update; rerun the guests update first'
 fi
+reap_tmp || echo "browser: stale temporary browser cleanup failed" >&2
 name=$role
 profile_base='browser-base'
 profile_role=browser-$role
