@@ -65,7 +65,12 @@ probe() { # expectation source destination port [dns]
 			[ "$1:$got" = allow:deny ] || break
 		done
 	else
-		got=$(tcp "$2" "$3" "$4") || got=error
+		# Right after a failover CARP and ARP settle; an expected allow gets three tries too.
+		for attempt in 1 2 3; do
+			got=$(tcp "$2" "$3" "$4") || got=error
+			[ "$1:$got" = allow:deny ] || break
+			sleep 2
+		done
 	fi
 	if [ "$got" = "$1" ]; then verdict=ok; else verdict=FAIL; result=1; fi
 	echo "CV-PF $verdict src=$2 dst=$3 port=$4${5:+/udp} want=$1 got=$got"
@@ -374,7 +379,7 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 # check auto stops a Remmina container whose supervisor lock is free; hold it as the launcher does.
 mkdir -p /run/convergent/browser
 exec 7>/run/convergent/browser/remmina.lock
-flock -n 7
+flock -w 120 7
 if ic info remmina >/dev/null 2>&1; then
 	rem=remmina
 	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
