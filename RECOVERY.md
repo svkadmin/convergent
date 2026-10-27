@@ -1,14 +1,13 @@
 # Recovery
 
-Each recipe says when it applies, what to do, and how to tell it worked. Run commands on the laptop
-as the owner unless stated.
+Run commands on the laptop as owner unless stated. Each recipe includes a success check.
 
 ## Recovery boot menu
 
 Press an arrow key during the three-second boot menu to stop the timer. Pick the release and slot
-ending in `(Recovery)`, e.g. `Gentoo Linux <release> (slot a) (Recovery)`. Enter the LUKS passphrase
-(US layout); three wrong attempts power off. Recovery needs the same unlock as a normal boot, and
-the same verified release must be able to boot.
+ending in `(Recovery)`, e.g. `SLOT A | Gentoo <version> - <kernel> (Recovery)`. Enter the LUKS
+passphrase (US layout); three wrong attempts power off. Recovery needs the same unlock as a normal
+boot, and the same verified release must be able to boot.
 
 The menu shows the release, slot and read-write data at `/run/cv-state`:
 
@@ -27,11 +26,10 @@ release cannot reach the passphrase prompt, try the other slot (recipe 3) or the
 
 ## Standalone rescue entry
 
-Choose `Convergent rescue (<release>)` when neither slot boots. Unlike a release's `(Recovery)`
-profile, it has its own initramfs and never mounts a slot root. It needs a working ESP, kernel and
-encrypted state. Enter the LUKS passphrase (US layout); three failures power off. State mounts
-read-write at `/run/cv-state`. No network, watchdog, boot counter, blessing or option to continue
-into a release.
+Choose `RESCUE | Gentoo <version> - <kernel>` when neither slot boots. It has its own initramfs,
+needs working ESP/kernel/encrypted state, and never mounts a slot root. Enter the LUKS passphrase
+(US layout); three failures power off. State mounts read-write at `/run/cv-state`. No network,
+watchdog, boot counter, blessing or option to continue into a release.
 
 1. Root shell. Tools are those in the rescue initramfs; `/sysroot` is empty. `exit` returns.
 2. Reset owner password. Same reset and password rules as per-release Recovery, uid 1000.
@@ -82,16 +80,14 @@ Rescue test coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
 
 ## 1. Wrong passphrase, the laptop powers off
 
-Three wrong tries power it off; nothing is lost. The passphrase uses the US layout; see
-[README, First boot](README.md#first-boot). The screen may stay black while the prompt waits. Type
-it blind and press Enter. Keys pressed meanwhile show as empty `host login:` prompts; ignore them.
-Power on and type it again.
+Three wrong tries power off without data loss. [US layout](USAGE.md#first-boot) applies. If black,
+type it blind and press Enter. Keys pressed meanwhile show as empty `host login:` prompts; ignore
+them. Power on and type it again.
 
-The boot can also stop before the prompt, with
-`more than one disk has a cv-state partition; detach the other`. Power off, unplug the other
-Convergent disk, and boot again. A USB disk cannot reinstall over a laptop disk that holds
-Convergent, since the two cannot yet be told apart. Erase the old one first, with the firmware's
-disk wipe (Dell: F2, Maintenance, Data Wipe) or another system.
+The boot can also stop before the prompt, with `more than one disk has a cv-state partition; detach
+the other`. Power off, unplug the other Convergent disk, and boot again. A USB disk cannot reinstall
+over a laptop disk that holds Convergent, since the two cannot yet be told apart. Erase the old one
+first, with the firmware's disk wipe (Dell: F2, Maintenance, Data Wipe) or another system.
 
 Right after an update, each power-on uses one of the new release's three tries; three powered-off
 sessions bring the previous release back (recipe 2).
@@ -106,33 +102,28 @@ Once back, the failed release's log is in its own `/var`, not in the running one
 
 ```sh
 sudo slot status                                     # booted release, slot, good, highest
-sudo mkdir -p /run/st && sudo mount -o ro,subvolid=5 /dev/mapper/cv-state /run/st
+sudo mkdir -p /run/st && sudo mount -o ro,nologreplay,subvolid=5 /dev/mapper/cv-state /run/st
 sudo grep ' slot:' /run/st/var-<failed release>/log/messages
 sudo umount /run/st
 ```
 
-Send that output with the release number. Nothing else needs undoing. Write the next release once it
-is fixed.
+Send the output/release ID; install the fixed release when available.
 
 ## 3. Go back to the previous release by hand
 
-At power-on, press an arrow key within the three-second menu to stop it. Each slot is an entry named
-`Gentoo Linux 0.1.0 (<release>, slot a)` or `slot b`. Older releases omit the semantic version.
-Releases before 2026-10-18 show only `Gentoo Linux`; the top one is the default. Pick the other
-slot. Works when: `sudo slot status` shows the other slot booted.
+Stop the three-second menu with an arrow key. Pick the other `SLOT A | Gentoo <version> - <kernel>`
+or SLOT B entry. Older entries may show only Gentoo Linux; the top bootable release is default.
+Verify the other slot booted with `sudo slot status`.
 
-That slot's `/var` predates the update, so changes made since are not in it. Guests are not rolled
-back and stay as they are. Nothing stops this after a guest update yet. The next `slot write` must
-be newer than the highest release ever marked good.
+Its `/var` predates the update; guest pool data stays current and may conflict with old metadata.
+There is no guest-update rollback guard. The next `slot write` must exceed highest-good.
 
 ## 4. `guests init` or `guests update` stopped
 
-On a disk image, the first boot runs `guests init` automatically (bar: `SETUP`; log
-`/var/log/guests-setup.log`). Both print the failed step. Run `sys guests setup` (it uses
-`/var/lib/convergent/release-guests`), or `sudo guests init <dir>` with the same directory as
-before. Finished steps are skipped. `guests update` restores the old guest automatically if the new
-one fails its checks; run it again once the cause is fixed. Works when: `SETUP` is gone and fw1,
-fw2, wan and svc run.
+Disk-image first boot runs `guests init` (bar SETUP, log `/var/log/guests-setup.log`). Retry the
+printed failure with `sys guests setup` (uses `/var/lib/convergent/release-guests`) or
+`sudo guests init <dir>` using the original directory; completed steps skip. Update failure restores
+the old guest: fix the cause and retry. Finish when SETUP disappears and fw1/fw2/wan/svc run.
 
 ```sh
 sudo guests status                          # one line per guest and its state
@@ -171,9 +162,8 @@ The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Wo
 
 ## 6. Wi-Fi works, no Internet
 
-The path is wan → fw1 or fw2 → the host. One firewall down is fine; both down is not. The host
-itself cannot browse, by design: pf lets it resolve names through the firewalls and reach a short
-list of update servers. Browsers have Internet, so try one (`browser def`) to tell them apart.
+Path: wan → either firewall → host/browser. One firewall suffices. Host web access is restricted to
+updates; test Internet in `browser def`.
 
 ```sh
 sys wifi status        # connected, with an address
@@ -183,12 +173,10 @@ sys guests status              # fw1, fw2, wan, svc running
 sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig carp | grep carp:'   # MASTER here, BACKUP on fw2
 ```
 
-No address or default route in wan diag: check Wi-Fi (`sys wifi status`) and the upstream network. A
-captive portal (hotel, train) needs `sys portal on` first. Portal DNS uses the selected default-route
-uplink's first nameserver; it must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not
-tried, so `no usable upstream resolver` does not prove the lease has no usable resolver. fw1 cannot
-reach 9.9.9.9:853: fw1, wan or routing is down, or the upstream blocks DNS over TLS. Anything else:
-send the output.
+No address/default route: check `sys wifi status` and upstream. Captive portal: `sys portal on`.
+[Resolver selection](USAGE.md#captive-portals) uses only the first server, so no usable upstream
+resolver does not rule out usable later servers. Failed 9.9.9.9:853 means firewall/WAN/routing
+failure or upstream DoT blocking. Otherwise send the output.
 
 ## 7. A USB device does not work
 
@@ -200,8 +188,8 @@ sudo devices list            # blocked devices with a number
 sudo devices allow <number>  # asks you to type yes; permanent
 ```
 
-If the boot disk was moved to another port and the system stalls: power off, put it back in the old
-port, boot, and regenerate the policy with all trusted devices in place (README, first boot step 4).
+If moving the boot disk causes a stall, power off, restore its old port, boot and regenerate policy
+with trusted devices attached ([first boot, step 4](USAGE.md#first-boot)).
 
 ## 8. Where the logs are
 
@@ -217,11 +205,12 @@ port, boot, and regenerate the policy with all trusted devices in place (README,
 | Health check report | `sys security report`; `/var/lib/convergent/check/last` |
 | Searchable in Grafana (int browser, needs svc) | Host, firewall and wan syslog, incl. host audit records. Not file-only logs such as `/var/log/guests-setup.log` or `/var/log/incus/` |
 
-All need `sudo` to read, except the self-test report in the owner's home.
+Local protected logs need `sudo`; the owner can read the self-test report, run `rc-status -a` and
+use Grafana without it.
 
 ## 9. Read the encrypted state from another Linux
 
-For example, from Rocky with the Convergent disk attached as `/dev/sdX`. As root:
+On another Linux with the disk attached as `/dev/sdX`, as root:
 
 ```sh
 cryptsetup open /dev/disk/by-partlabel/cv-state cvstate     # asks the LUKS passphrase
@@ -247,8 +236,8 @@ sudo cryptsetup luksDump /dev/disk/by-partlabel/cv-state             # check
 
 ## 11. Start over
 
-Write the disk image again (README, Install). Everything on the disk is lost, `/home` included.
-Backup contents and exclusions: [USAGE, Backups](USAGE.md#backups). There is no restore tool. Finish
+[Rewrite the disk image](USAGE.md#install); this erases everything, including `/home`. Backup
+contents and exclusions: [USAGE, Backups](USAGE.md#backups). There is no restore tool. Finish
 automatic guest setup first. Mount the backup disk. Then, as root, select a generation and verify it
 before restoring anything:
 
@@ -320,15 +309,15 @@ ic storage volume show "$pool" "$volume-before-restore"
 ```
 
 The temporary names must be unused. Renaming the old volume also redirects its attachments, so reset
-every consumer's profile or local device to the restored name before restarting. For `share`,
-use `--project owner` for owner devices/profiles, retaining its default volume namespace
+every consumer's profile or local device to the restored name before restarting. For `share`, use
+`--project owner` for owner devices/profiles, retaining its default volume namespace
 (`features.storage.volumes=false`; [share setup](USAGE.md#remote-desktops)). The old volume's
-`used_by` identifies attachments and must be empty after reattachment. Keep it until data is verified.
-Repeat for owner volumes with their own project, pool and consumers. If no volume exists yet, skip
-the old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify saved
-profiles, downloads and Grafana/history. Open Remmina to check its keyring and `/share`, then
-verify owner share attachments before restarting those instances. Then remove unused old volumes with
-`ic storage volume delete "$pool" <volume-before-restore>`.
+`used_by` identifies attachments and must be empty after reattachment. Keep it until data is
+verified. Repeat for owner volumes with their own project, pool and consumers. If no volume exists
+yet, skip the old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify
+saved profiles, downloads and Grafana/history. Open Remmina to check its keyring and `/share`, then
+verify owner share attachments before restarting those instances. Then remove unused old volumes
+with `ic storage volume delete "$pool" <volume-before-restore>`.
 
 Finally, import the owner's containers. Then start them after checking their expanded devices:
 
@@ -343,14 +332,14 @@ done
 ## 12. An online update fails
 
 Start with `sys update check`: it names the newest version (or release ID for older manifests) and
-how old its signature is. Channel migration: [BUILD, Sign and publish](BUILD.md#sign-and-publish).
-`sys update install` stops with the reason; running it again resumes the download.
+how old its signature is. `sys update install` stops with the reason; running it again resumes the
+download.
 
 | Message | Do |
 |---|---|
 | `resolves to no public address` | Wi-Fi first (recipe 5). Else the blocklist holds the server: add the host from `/etc/convergent/update.conf` to `/var/lib/convergent/dns/allow`, run `sudo dns-push local`, retry |
 | `could not open the update source` | A firewall is not answering: recipe 6 |
-| `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built (README, Update) |
+| `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USB updates](USAGE.md#host-updates)) |
 | `this release has no online updates` | The image lacks its release key or update URL: update from USB |
 | `not enough free space in /var` | Free what is still missing in `/var`, plus 1 GiB |
 | `latest is signed more than 5 minutes in the future; check the clock` | Set the clock (`date`), then run it again |
@@ -360,35 +349,34 @@ good).
 
 ## 13. A kernel panic or CrashRecorded alert
 
-An oops now panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
-archives built-in EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, and the ACPI BERT
-record, when firmware provides one, to `/var/lib/convergent/crash/bert-<sha256>` (archived once); both
-are accessible only to root (mode 0700). It verifies and syncs each copy before removing the firmware record. Older
-archives in `/var/lib/convergent/pstore` move to `crash` on the first run. The Security dashboard
-shows archived crash counts beside checker results; `CrashRecorded` reports unacknowledged records.
+An oops panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
+archives built-in EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, and the ACPI
+BERT record, when available, to `/var/lib/convergent/crash/bert-<sha256>` (deduplicated by hash).
+Archive directories are root-only 0700; BERT files are 0600. Pstore copies are compared/synced
+before firmware deletion; the collector does not delete BERT. Old `/var/lib/convergent/pstore`
+archives move to crash. Security shows counts; CrashRecorded flags unacknowledged records.
 
-`kernel.panic_on_oops=1` is KSPP hardening. For a repeatedly oopsing driver, run
-`sudo sysctl -w kernel.panic_on_oops=0` to disable that panic trigger until reboot. To keep the
-exception, set `0` in `rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release; the
-running root is read-only. If the reboot loop prevents that, boot the previous slot first (recipe
-3).
+`kernel.panic_on_oops=1` is KSPP hardening. For a repeatedly oopsing driver, run `sudo sysctl -w
+kernel.panic_on_oops=0` to disable that panic trigger until reboot. To keep the exception, set `0`
+in `rootfs/etc/sysctl.d/90-convergent.conf` and build/install a release; the running root is
+read-only. If the reboot loop prevents that, boot the previous slot first (recipe 3).
 
 ```sh
 sudo find /var/lib/convergent/crash -type f
 sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
 ```
 
-Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory or `bert-<sha256>` file
-(`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`), then run `sudo facts boot` to refresh
-`cv_crash_records` (the archived file count). `CrashRecorded` clears when no archived files remain. Firmware must support EFI
-variable writes during a panic. An empty archive alone does not prove the last shutdown was clean.
-If the release keeps crashing, boot the other slot (recipe 3).
+Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory or
+`bert-<sha256>` file (`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`), then run `sudo facts
+boot` to refresh `cv_crash_records` (the archived file count). `CrashRecorded` clears when no
+archived files remain. Firmware must support EFI variable writes during a panic. An empty archive
+alone does not prove the last shutdown was clean. If the release keeps crashing, boot the other slot
+(recipe 3).
 
 ## 14. Incus state torn by a power loss
 
-Incus does two of the guest tool's steps in halves that a power loss can separate. `guests` then
-refuses every command (the bar shows the failed update; `/var/log/guests-update.log` has the
-message with the exact commands) rather than fail later with the guest down. Two cases:
+Power loss can split Incus operations. `guests` refuses commands; the bar shows failure and
+`/var/log/guests-update.log` prints exact repairs. Two cases:
 
 - A guest without a storage record: the loss hit a rebuild between dropping and recreating the
   record (a few milliseconds). Run the printed `incus admin sql global "INSERT ..."`, then the
@@ -418,7 +406,8 @@ The trusted local Unix-socket CLI remains available if the web interface is unus
 
 Run `sys remote close`; the minute checker also stops orphans. The next open removes stale sockets.
 Resume an interrupted update with `sys guests update`. Manual rollback uses a retained `guests-*`
-snapshot of `remmina-state` while Remmina is stopped; leave `share` alone because it may hold newer work.
+snapshot of `remmina-state` while Remmina is stopped; leave `share` alone because it may hold newer
+work.
 
 A lost keyring password cannot be recovered. Keep an offline copy, then move the stopped volume's
 `.local/share/keyrings` directory aside. Next open creates a new encrypted keyring; re-enter remote

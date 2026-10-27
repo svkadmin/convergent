@@ -1,954 +1,682 @@
 # Convergent architecture
 
-Convergent is a single-owner laptop system: security first, daily use second, with no trade-off. The
-machine converges on the state declared in this repository. It runs only what is built here,
-verified at boot, replaced whole on update.
-
-This file gives design and reasons. It describes the target; *(planned)* marks parts not yet built.
-Today's state: [BUILD, Status](BUILD.md#status). Section 14 compares Convergent with predecessor,
-Archer.
-
----
+Design and security boundaries. Commands: [USAGE](USAGE.md); repairs: [RECOVERY](RECOVERY.md);
+build and hardware-test status: [BUILD](BUILD.md#status). Planned features are marked explicitly.
 
 ## 1. Principles
 
-1. **Verified, not trusted.** Kernel checks every OS block as read. Signed boot *(planned)* would
-   extend this to firmware, boot loader and kernel: nothing on the laptop changes OS without the
-   build key.
-2. **Built elsewhere.** Build host compiles, assembles and signs. The laptop gets images only: no
-   compiler or package manager at run time.
-3. **Compartments.** The radio, firewalls, svc, browsers and work guests run separately.
-   PF controls routed traffic; host bridge/input rules and WAN egress rules enforce edge restrictions.
-4. **Fail closed.** With both firewalls down, routed traffic stops; members of a work VLAN share L2.
-5. **Replace, don't patch.** Updates swap whole image. Previous image stays bootable.
-6. **Plain files.** Configuration is files and templates here. Build settings come from validated
-   config file.
-7. **Small.** Each component earns its memory and code. Idle target: under 3 GB with all guests
-   running, to be measured, not assumed.
-
----
+- **Verified root:** dm-verity checks OS blocks on read. Secure Boot signing is planned; until then,
+  firmware does not authenticate the UKI or its root hash.
+- **Built elsewhere:** the laptop receives whole images, without a compiler or package manager.
+- **Compartments:** separate radio, firewall, service, browser and work guests limit exposure.
+  PF controls routing; host bridge/input rules and WAN egress rules protect the edges.
+- **Fail closed:** both firewalls down stops routed traffic. Same-VLAN work traffic remains local.
+- **A/B replacement:** the previous image stays bootable with its matching `/var`.
+- **Declared configuration:** validated build inputs and repository files define the image.
 
 ## 2. Overview
 
-```
-                        Wi-Fi card (VFIO)
-                              |
-                      +---------------+
-                      |  wan    (VM)  |  Alpine. The radio, upstream DHCP, the one NAT.
-                      +-------+-------+
-                              | transit
-            +-----------------+-----------------+
-            |                                   |
-    +-------+-------+     sync link     +-------+-------+
-    |  fw1    (VM)  |-------------------|  fw2    (VM)  |  OpenBSD. pf, CARP, pfsync,
-    +-------+-------+                   +-------+-------+  unbound. Route all segments.
-            |  one CARP gateway address per segment     |  The gateway is the resolver.
-  +---------+--------+-----------+------------+----------+-----------+
-  | host             | svc       | web        | admin    | guests    |
- HOST              svc (ct)    browsers      int        user containers
- Gentoo, OpenRC,   Alpine:     (Incus ct)   browser     and VMs (Incus)
- Sway, Incus;      metrics,    def, tmp     (Incus ct)
- its only address  logs,      (+ portal)     for
- is on "host"      alerts                   Grafana
+```text
+                         Wi-Fi card (VFIO)
+                                |
+                         wan (Alpine VM)       upstream DHCP, NAT
+                                | transit
+                    +-----------+-----------+
+                    |                       |
+              fw1 (OpenBSD VM) --- sync --- fw2 (OpenBSD VM)
+                    |      CARP, pfsync, Unbound      |
+             +------+------+-------+-------+---------+-------+
+             | host | svc  | web   | admin | guests  | work  |
+             |      |      | def   | int   |         | VLANs |
+             |      |      | tmp   |       |         |       |
+             |      |      |Remmina|       |         |       |
 ```
 
-Segments are Layer-2 bridges on host. Host holds an address only on `host`, ignores rest (section
-4.4). Incus binds infrastructure guest addresses to their NICs; wan forwards internal sources
-(section 4.1). Work VLANs use MAC filtering and PF source validation with host infrastructure
-anti-spoofing, because Incus cannot combine VLANs and IP filtering.
-
----
+Incus bridges provide L2. Only `host` has a host address. Infrastructure NIC filtering binds
+addresses to guests; work VLANs use MAC filtering and infrastructure anti-spoofing because Incus
+cannot combine VLANs with IP filtering. Routing policy is in section 4.
 
 ## 3. Components
 
 ### 3.1 Host
 
-| Area | Design |
+| Area | Implementation and reason |
 |---|---|
-| Base | Gentoo, hardened profile, OpenRC, glibc |
-| Kernel | Gentoo distribution kernel, hardened, plus Convergent fragment: confidentiality lockdown; modules signed with a key that exists only during the build; no kexec, suspend or hibernation; DM, DM_INIT, DM_VERITY, EROFS and storage drivers built in; FireWire, X.25, TIPC, RDS, CAN left out; unused protocols and filesystems never loaded (`modprobe.d`; out of build *(planned)*); setuid, setgid, file capabilities stripped except sudo, su, passwd, unix_chkpwd, D-Bus helper; command-line hardening (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); console font applied at boot (`fbcon=nodefer`); no Wi-Fi driver, so host cannot take radio back |
-| Kernel settings | One sysctl file from Archer: ptrace, perf, BPF and kernel-pointer restrictions; dmesg restricted; protected links and FIFOs; TIOCSTI and line-discipline loading off; no redirects or source routing; martians logged; reverse-path filtering; no core dumps |
-| IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; NVIDIA functions bound to vfio-pci before any driver probes them and kept powered down; Wi-Fi function must sit alone in its IOMMU group, no ACS override |
-| Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
-| Audit | auditd immutable rules: identity files, guests' SSH keys, accepted check baseline, DNS files, authentication, privilege changes, boot files, keys, module loading, policy changes, root-run commands; records forwarded to svc |
-| Accounts | Root locked. Owner in `wheel`, `seat`, `audio`, `video`, `dialout`; `su` limited to `wheel`; sudo: 5-minute ticket, PTY, own log; passwords hashed with yescrypt (SHA-512 crypt for initramfs recovery reset); faillock after 5 failures for 15 minutes; restrictive umask |
-| Boot | systemd-boot (boot loader only, from `systemd-utils`; no systemd init), editor disabled; one UKI per slot (normal and recovery profiles) plus a standalone rescue UKI; *(Planned:* signing with owner's key*)* |
-| Root filesystem | Read-only EROFS image per slot, A and B; kernel creates dm-verity device from UKI command line; root hash to be covered by Secure Boot signature *(planned)* |
-| State | One LUKS2 volume (Argon2id), Btrfs: `/var`, `/home`, short list of machine-specific `/etc` files, Incus pool; `/home`, `/tmp`, state mounts `nodev`, `nosuid`, `noexec` where nothing needs to run from them |
-| Memory | Install selects no swap (default), zram, or swapfile on LUKS2 state; no hibernation |
-| Seat and session | seatd; greetd with tuigreet on tty1 (user name typed each time); Sway, foot, bemenu, mako, swaylock, swayidle; PipeWire and WirePlumber started by session; sof-firmware and alsa-ucm-conf for SoundWire audio |
-| Virtualisation | Incus: QEMU/KVM for VMs, LXC for containers |
-| Devices | USBGuard, default deny. Policy changes use USBGuard IPC (rules file is state-bound). Device controls and policy review: [USAGE, Devices](USAGE.md#devices). Camera module gates: section 9 |
-| Power | Never suspends. CPU energy preference and optional clock cap (`cpu_cap_khz`, none by default) set at boot and per power source on AC events. Runtime power management for NVIDIA GPU and audio. Optional battery charge end/start thresholds (off by default: 100/95). Optional firmware `platform_profile` selection (quiet/balanced/performance, only if offered); firmware keeps fan control. A known-noisy ACPI event masked, never the embedded controller's *(planned)* |
-| Host firewall | nftables: input only on `host` and only from listed sources (section 4.2); no forwarding |
-| Logs | syslog-ng over TLS to svc; bounded local buffer for when svc is down |
-| Crashes | `/var/lib/convergent/crash/<timestamp>/`; EFI pstore and ACPI BERT collection (BERT once, as `crash/bert-<sha256>`) and panic recovery: [RECOVERY 13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert) |
-| Time | chrony, NTS from three sources, two must agree; starts without waiting for network; serves NTP to firewalls |
-| Listening on the host | chrony (UDP 123, firewalls only), node_exporter (TCP 9100, svc only), Incus metrics (TCP 8444, TLS with metrics certificate, svc only), Incus UI/API (TCP 8443, session client certificate, int only) |
+| Base | Gentoo hardened profile, OpenRC, glibc; systemd-utils supplies boot tools |
+| Kernel | Gentoo kernel plus `build/kernel.config`: confidentiality lockdown, enforced module signatures with an ephemeral build key, built-in verity/EROFS/storage/KVM; no kexec, suspend, hibernation, host Wi-Fi, FireWire, X.25, TIPC, RDS or CAN |
+| Image trimming | Unused modules/filesystems removed or blocked; setuid/setgid retained only for sudo, su, passwd, unix_chkpwd and the D-Bus helper; all file capabilities removed |
+| Command line | `init_on_alloc`, `slab_nomerge`, page/stack randomization, no vsyscall/debugfs; fbcon=nodefer applies the console font at boot |
+| Kernel interfaces | Restricted ptrace, perf, BPF, pointers and dmesg; protected links/FIFOs; no TIOCSTI, automatic line disciplines, redirects, source routing or core dumps; martian-packet logging; strict reverse-path filtering |
+| DMA | intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma; NVIDIA functions claimed by vfio-pci and runtime power management; Wi-Fi alone in its IOMMU group, no ACS override. Boot verification of Thunderbolt protection is planned |
+| Confinement | AppArmor plus Incus-generated guest profiles; host profile modes in section 5.3 |
+| Audit | Immutable rules cover identities, guest keys, checker baseline, DNS, authentication, privileges, boot files, modules, policy and root commands; forwarded to svc |
+| Accounts | Root locked; owner in wheel/seat/audio/video/dialout; su restricted to wheel; sudo PTY, own log and five-minute ticket; yescrypt passwords; five failures lock login for 15 minutes; restrictive umask |
+| Session | seatd, greetd/tuigreet on tty1, Sway, foot, bemenu, mako, swaylock/swayidle, session PipeWire/WirePlumber; SOF firmware and ALSA UCM for SoundWire |
+| Virtualization | Incus uses QEMU/KVM for VMs and LXC for containers; UI assets pinned for Incus 7.0.1 |
+| Devices | USBGuard denies unapproved devices; state-bound rules change through IPC. Camera loading needs a saved choice (section 9) |
+| Power | No suspend; CPU preference/cap applied at boot and power-source events. Optional charge/thermal controls leave fan control to firmware. ACPI-event masking is planned |
+| Time | chrony uses configured NTS sources (three by default), requiring two; starts without network and serves firewall NTP |
+| Network | nftables input restrictions and no host forwarding (section 4.4) |
 
-Incus starts with `INCUS_SKIP_INSTANCE_TYPES=true`, so it never downloads instance-type definitions.
+`INCUS_SKIP_INSTANCE_TYPES=true` prevents downloading instance-type definitions. Storage/boot:
+section 5; logs/crashes: section 8 and [RECOVERY
+13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert).
 
 ### 3.2 wan (VM)
 
-Alpine, LTS kernel with `e2fsprogs` for its ext4 root. Owns Wi-Fi card by VFIO passthrough, joins
-networks with iwd, takes upstream address by DHCP, performs the system's only NAT.
+Alpine LTS kernel, ext4 root and e2fsprogs. Owns the VFIO radio, runs iwd/upstream DHCP and performs
+NAT. A passed-through USB Ethernet adapter provides the optional wired uplink via
+`devices wired attach`, with Incus USB `required=false` and included Realtek NIC firmware.
 
-- **Privacy on the air:** random MAC per network; regulatory country set; protected management
-  frames where offered; DHCP sends no host name; no mDNS or LLMNR.
-- **Networks:** credentials travel over SSH on standard input and stay in wan; replacement keeps
-  saved networks (section 7.2). Replies are sanitized. After association, the host polls wan's Wi-Fi
-  IPv4 address six times, five seconds apart, before reporting DHCP failure. Controls, hidden
-  networks and roaming: [USAGE, Wi-Fi](USAGE.md#wi-fi).
-- **Wired uplink:** `sys wired attach` calls `devices wired attach`. The Incus `usb` device uses
-  vendorid, productid, serial and required=false. Guest-operation lock serializes assignment with
-  guest updates. wan's image has Realtek NIC firmware; after removal or addressless replug, it
-  clears stale ifup state before retrying DHCP. Interface identity and carrier-change counters also
-  force fresh DHCP after a cable move, including a loss/regain between minute checks. Identity
-  checks, hotplug and routing:
-  [USAGE, Devices](USAGE.md#devices).
-- **Egress:** own traffic limited to DHCP and NAT; starts nothing inward except syslog to svc.
-- **Management:** no Incus agent or guest API; SSH from host only, on transit address, with
-  OpenSSH's default (post-quantum hybrid) key exchange.
-- **Overlap:** refuses upstream lease overlapping internal range; raises alert.
-- **Local log:** wan keeps warnings and up from any program, and all kernel, iwd, DHCP and chrony
-  messages, in `/var/log/wan/diag.log` (root only; 256 KiB, one rotation). Only `wan diag` prints it.
-- **Captive portals:** portal DNS uses the selected default-route uplink's first nameserver; it
-  must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not tried. DNS to wan's transit
-  address reaches it by NAT rule, no forwarder process. Only from portal browser, only in portal
-  mode. If that nameserver is unusable, portal mode fails closed. Portal mode ends by itself after
-  30 minutes.
-- **Time:** host clock (PTP over KVM, disciplined by chrony in VM).
-- **Size:** memory capped at 512 MiB; emulated HPET off, free page reporting on (both measured on
-  Archer).
+- Random MAC per network, regulatory country, protected management frames where offered; no DHCP
+  hostname, mDNS or LLMNR, to reduce upstream identification.
+- Credentials arrive over SSH stdin and stay in wan; replies are sanitized. The host checks Wi-Fi
+  IPv4 six times, five seconds apart after association. Saved networks survive replacement.
+- No Incus agent/guest API; host-only SSH on transit uses OpenSSH's default key exchange.
+- Upstream output allows DHCP; transit output allows replies/syslog. Input allows management,
+  metrics and firewall probes. Private forwarding is limited by section 4.2.
+- Overlapping upstream leases are refused and raise UpstreamOverlap.
+- Wired DHCP clears stale state after removal, addressless replug, identity or carrier changes,
+  including cable loss/regain between checks. Assignment shares the guest-operation lock.
+- PTP over KVM disciplines guest chrony without a network time listener.
+- HPET off, free-page reporting on. Limits: section 11.
+
+Controls: [Wi-Fi](USAGE.md#wi-fi), [Devices](USAGE.md#devices), [Captive
+portals](USAGE.md#captive-portals). Diagnostic log: [RECOVERY 8](RECOVERY.md#8-where-the-logs-are).
 
 ### 3.3 fw1, fw2 (VMs)
 
-OpenBSD. Dedicated system interfaces, a work VLAN trunk and a sync link. Image construction and advisory
-checks: [BUILD, Firewall images](BUILD.md#firewall-images).
+OpenBSD with dedicated system interfaces, a work VLAN trunk and sync link. Separate kernels isolate
+firewall failures from host kernel failures.
 
-- **CARP:** one virtual host ID per segment, same on both. fw1 skew 0, fw2 skew 100.
-  `net.inet.carp.preempt=1` moves all addresses together. Advertisements unicast to peer
-  (`carppeer`), so Linux bridge multicast plays no part.
-- **pfsync** on sync link, with `defer`, so failover keeps established connections.
-- **wan-watch** runs under rc.d. Demotes CARP by 128 if unbound dies or wan's transit address stops
-  answering. Each round sends three probes 300 ms apart, bounded to one second; one reply passes.
-  Two lost rounds in a row (about 2 s) demote; three consecutive good rounds clear it. Kernel's
-  `wanwatch` group counter tracks ownership across watcher restarts.
-- **pf** routes and filters between all segments (section 4.2); per-source state limits, MSS
-  clamping toward wan, ruleset hash checker compares with release.
-- **unbound** (OpenBSD base) answers DNS on every gateway address, so failover carries DNS (section
-  4.5).
-- **Owner maintenance:** adds `sysmaint` group to all registered CARP interfaces on master and demotes it
-  by 128. Failed runs remove the group; successful runs keep it until `sys fw undo`. Persistent host
-  journal makes interrupted actions recoverable without decrementing health or upgrade counters.
-  Guest and DNS push locks serialize operations. Each remote mutation takes base Perl's nonblocking
-  `flock` on `/var/run/convergent-maintenance.lock`, held across exec and inherited by children.
-  File created if missing, never unlinked; PID informational. Kernel frees lock when last holder
-  closes it, even if remote work outlives SSH. Rebuild reuses guest journals, seeding, handback and
-  DNS push. Durable marker records completed replacement and seeding before resume can skip them.
-  Procedures and checks: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
-- **Routes:** default via wan's transit address; every internal segment directly connected.
-- **Also:** NTP client of host, node_exporter, syslog to svc, SSH from host only.
-- **DHCP:** work VLANs only; both servers synchronize leases over the sync link (section 4.1).
-- **Size:** 1 GiB each; every boot relinks kernel (KARL) beside loaded blocklist.
+- **CARP:** One VHID/segment; fw1 skew 0, fw2 skew 100; `net.inet.carp.preempt=1`; unicast carppeer
+  avoids bridge multicast dependence
+- **pfsync:** Sync link with defer preserves established connections across failover
+- **wan-watch:** rc.d service demotes wanwatch by 128 if Unbound disappears or two probe rounds
+  fail; three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
+  passes. Group counter survives watcher restarts
+- **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
+- **Unbound:** Resolver on CARP gateways, so DNS follows failover
+- **DHCP:** Work VLANs only; synchronized leases checkpointed across replacement
+- **Management:** Host-only SSH, NTP from host, exporter and TLS syslog to svc; default route via
+  wan
+- **Maintenance:** Separate `sysmaint` demotion by 128 across registered CARP interfaces preserves
+  health/upgrade counters; host journal survives interruptions; guest/DNS locks serialize operations
 
-Either firewall can be updated, rebooted or broken while other carries everything. Each has own
-kernel: firewall kernel bug is not host kernel bug, and reverse. Silent failure detected in about
-three seconds.
+Remote mutations use base Perl's nonblocking `flock` on `/var/run/convergent-maintenance.lock`,
+held across exec/children. Never unlink it: the PID is informational and work can outlive SSH.
+The kernel releases it when its last holder closes; reboot clears `/var/run`. Rebuild records
+replacement/seeding durably before skipping completed work on retry.
+Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 
-The minute checker restarts a firewall that has failed its checks for three minutes, only while
-its peer is healthy and MASTER on all registered segments, never during the first ten minutes after host
-boot or after its own restart, and at most three times an hour. Guest journals, maintenance and
-shutdown inhibit it; attempts go to syslog and the checker report.
+The minute checker restarts a firewall after three minutes of failed checks only if its peer is
+healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
+restart, permits three attempts/hour, and is inhibited by guest journals, maintenance and shutdown.
+Attempts appear in syslog and the checker report.
 
-On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then both firewalls:
-20 seconds each to stop gracefully, then a forced stop under an autorestart hold.
+On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then firewalls, with
+20 seconds per guest for graceful stop before forcing. Autorestart is held during stopping; previous
+overrides are restored after a confirmed stop, while failures retain the hold.
 
 ### 3.4 svc (container)
 
-Alpine in unprivileged Incus container on own segment.
+Unprivileged Alpine container on its own segment.
 
-| Service | Role | Bounds |
-|---|---|---|
-| VictoriaMetrics | Metrics; scrapes host, firewalls and wan | Cache, retention and query concurrency capped |
-| VictoriaLogs | Logs; syslog over TLS from host, firewalls and wan | Cache, retention and query concurrency capped |
-| vmalert | Evaluates alert rules (section 8); status bar reads its alerts API | |
-| Grafana | Dashboards. Started only while viewed; bound to svc's address; login required; anonymous access off | Stopped when not in use |
+| Service | Role |
+|---|---|
+| VictoriaMetrics | Scrapes host/firewall/WAN metrics; bounded cache, retention and queries |
+| VictoriaLogs | TLS syslog; bounded cache, retention and queries |
+| vmalert | Alert evaluation and bar API |
+| vmauth | Query proxy |
+| Grafana | Authenticated dashboards on svc's address; anonymous access off; runs while int is open |
 
-While svc restarts or is replaced, status bar shows alert counts as unknown, not stale; host buffers
-logs. DNS does not depend on svc.
+During replacement the host buffers logs and the bar reports unknown alert counts. DNS is
+independent of svc. Retention/collection: section 8; memory: section 11.
 
 ### 3.5 Browsers
 
-Chromium runs in unprivileged Incus containers built from one browser image:
+One Alpine Chromium image supplies unprivileged def/tmp/int containers. Roles, persistence and
+commands: [USAGE, Browsers](USAGE.md#browsers). Each gets:
 
-- **def:** default browser on `web`, persistent profile volume.
-- **tmp:** ephemeral container on `web`, gone when closed; a launch first deletes stopped temporary
-  containers that a crash left behind, each only after taking its slot lock; `--portal` selects captive
-  portal mode.
-- **int:** persistent container on `admin`, only browser that reaches Grafana and the Incus UI/API.
+- A restricted Sway security-context socket: no capture, injection, other Wayland sockets, Sway IPC
+  or X11, to isolate host interaction.
+- Its own playback-only pipewire-pulse socket; no recording or D-Bus/desktop portals.
+- A private download directory and Intel render node; portal mode uses software rendering.
+- Image policies disabling DoH (gateway DNS), telemetry, studies and captive-portal probes.
+  Window titles identify roles. External links opening in tmp remain planned.
 
-Each container gets: GPU render node (except tmp in portal mode); Wayland socket from Sway's
-security context (no screen capture, input injection, other Wayland sockets, Sway IPC or X11); own
-Pulse socket from its `pipewire-pulse` instance, playback only, recording blocked for every role;
-own download directory. No D-Bus, so no portals or screen sharing.
-
-Portal mode uses tmp profile with overrides: fixed address 100.80.3.11 (`a_portal`), no render
-device, 512 MiB, wan's resolver, captive-page policies. Normal tmp instances use 100.80.3.20–99 and never
-get those policies or that address. Portal mode defaults to NeverSSL, allows HTTP, disables capture,
-extensions and search.
-
-Chromium policies are part of image: DNS-over-HTTPS off (gateway resolves); telemetry, studies and
-captive-portal probes off; each mode labelled in window title, so owner always knows which browser
-is in front. Links opened from other programs go to `tmp` by default *(planned)*.
+Stopped temporary containers left by crashes are deleted only after taking their slot lock.
+Portal overrides use a_portal, 512 MiB, WAN DNS, no render device, HTTP-enabled captive-page
+policies, and no capture, extensions or search. Addresses: section 4.1.
 
 #### Incus management
 
-The UI at `https://100.80.1.10:8443/ui/` grants full administration of all projects,
-infrastructure, networks, profiles, storage and devices. PF admits only int; host nftables drops
-other TCP 8443 traffic before loopback/established accepts. Metrics use a separate identity on 8444.
+Int alone reaches the full-administration UI/API. PF admits int; host nftables drops other TCP
+8443 traffic before loopback/established accepts. Metrics use a separate identity on 8444.
 
-`tools/incus-ui` creates a 90-day client certificate through owner sudo; only its AES-256 encrypted
+`tools/incus-ui` creates a 90-day client certificate through sudo. Only its AES-256 encrypted
 PKCS#12 and public certificate persist in root-only TLS state. Each session prompts in a host
 terminal, verifies the fingerprint and imports as UID 1000 into fresh tmpfs NSS state. Both
-persistent Chromium NSS locations are masked, including for plain int sessions. Trust is added
-after import; closing the entire int session stops the container and removes trust/session data.
-Boot and `check auto` clean orphans; interrupted rotation recovers the complete credential directory.
-Grafana-only launches receive no key. Owner commands: [USAGE, Incus management](USAGE.md#incus-management).
+persistent NSS locations are masked even for plain int. Trust is added after import; closing int
+stops it and removes session trust/data. Boot and check auto clean orphans; interrupted rotation
+restores a complete credential directory. Grafana-only launches receive no key.
+Commands/endpoint: [USAGE, Incus management](USAGE.md#incus-management).
 
 #### Remmina
 
-Remmina runs in a separate unprivileged Alpine container at 100.80.3.12 on `web`, using the
-browser supervisor's session/update lock, restricted Wayland socket and playback-only audio.
-It has no GPU, host D-Bus, SSH agent or host-directory mount. Software-rendered Cage isolates
-its clipboard from the host. Only numeric work destinations are reachable (section 4.2).
+Separate unprivileged Alpine container on web; restricted Wayland/playback audio and browser
+session/update lock. No GPU, host D-Bus, SSH agent or host-directory mount. Software-rendered Cage
+isolates its clipboard. Only numeric work destinations are reachable (section 4.2).
 
-The shifted `remmina-state` volume (512 MiB) mounts at `/home/remmina`. A private session bus
-unlocks GNOME Keyring with a nonempty password; cancellation, locked or plaintext keyrings abort
-startup. Remmina is patched to clear credentials when Secret Service is unavailable rather than
-save them locally. An unlocked compromised client can read its credentials.
+Shifted remmina-state mounts at /home/remmina. Its private session bus unlocks GNOME Keyring;
+cancellation, locked or plaintext keyrings abort. The patched client clears credentials if Secret
+Service fails rather than saving locally. A compromised unlocked client can read its credentials.
 
-The shifted filesystem volume `share` defaults to 4 GiB at `/share`; attaching it to individual
-owner VMs explicitly permits file transfer across domains. App updates restore only
-`remmina-state`, never `share`; backups require every attached instance stopped.
-The minute checker stops orphan Remmina sessions.
+Shifted share mounts at /share; explicit VM attachments permit cross-domain file transfer.
+Updates restore only remmina-state, never shared work. The minute checker stops orphan sessions.
+Sizes: section 11; commands/sharing: [USAGE, Remote desktops](USAGE.md#remote-desktops).
 
 ### 3.6 User guests
 
-`guests init` creates the `owner` project and NIC-only work profiles, sharing managed networks
-while keeping separate profiles. The owner supplies VM disks and resources through Incus;
-guest creation in `sys` remains planned. Work addressing and isolation are in section 4.1.
-
----
+`guests init` creates project owner with NIC-only work profiles and shared managed networks,
+keeping profiles separate. The owner supplies disks/resources in Incus; sys guest creation is
+planned. Configuration: [USAGE, Work VMs](USAGE.md#work-vms).
 
 ## 4. Network
 
 ### 4.1 Addressing
 
-Internal addresses come from one /16, 100.80.0.0/16, in RFC 6598 shared space that carrier-grade NAT
-also uses. wan refuses upstream lease overlapping it. Range repeated in host, wan, firewall and tool
-configuration, so changing it needs coordinated edits.
+Internal space is 100.80.0.0/16 (RFC 6598 shared space). WAN rejects overlapping upstream leases.
+Changing it requires coordinated host, WAN, firewall and tool configuration.
 
-| Segment | Prefix | Gateway and resolver (CARP) | fw1 | fw2 | Members |
+| Segment | Prefix | CARP gateway/DNS | fw1 | fw2 | Members |
 |---|---|---|---|---|---|
 | transit | 100.80.0.0/28 | .1 | .2 | .3 | wan .10 |
 | sync | 100.80.0.16/30 | none | .17 | .18 | none |
 | host | 100.80.1.0/28 | .1 | .2 | .3 | host .10 |
 | svc | 100.80.2.0/28 | .1 | .2 | .3 | svc .10 |
-| web | 100.80.3.0/24 | .1 | .2 | .3 | def .10, portal .11, Remmina .12, normal tmp .20 to .99 |
-| admin | 100.80.4.0/28 | .1 | .2 | .3 | int browser .10 |
-| guests | 100.80.8.0/22 | .1 | .2 | .3 | reserved guest segment; menu assignment planned |
-| dom-dev-a / b | 100.80.32.0/26 / 100.80.33.0/26 | .62 | .49 | .50 | static .1–.48; DHCP .51–.61 |
-| dom-jhn-a / b | 100.80.36.0/26 / 100.80.37.0/26 | .62 | .49 | .50 | static .1–.48; DHCP .51–.61 |
+| web | 100.80.3.0/24 | .1 | .2 | .3 | def .10, portal .11, Remmina .12, tmp .20–.99 |
+| admin | 100.80.4.0/28 | .1 | .2 | .3 | int .10 |
+| guests | 100.80.8.0/22 | .1 | .2 | .3 | Reserved; menu assignment planned |
+| dom-dev-a / b | 100.80.32.0/26 / 100.80.33.0/26 | .62 | .49 | .50 | Static .1–.48; DHCP .51–.61 |
+| dom-jhn-a / b | 100.80.36.0/26 / 100.80.37.0/26 | .62 | .49 | .50 | Static .1–.48; DHCP .51–.61 |
 
-System addresses are static. Work guests use static addresses or firewall DHCP.
-Incus binds system guest addresses and MACs to NICs (IP and MAC filtering on);
-work VLAN access ports use MAC filtering and host L2 protections.
-Exceptions: firewall NICs (CARP's shared MAC: unfiltered, unisolated) and wan's transit NIC (IPv4
-filtering off; MAC filtering and port isolation on). Incus' own DHCP, DNS and NAT off on every
-bridge. IPv6 off everywhere.
+System addresses are static; work supports static/DHCP. System NICs use IP/MAC filtering and port
+isolation except firewall NICs (CARP shared MAC, unfiltered/unisolated) and WAN transit (no IPv4
+filtering, because it forwards other sources). Incus DHCP/DNS/NAT and IPv6 are disabled.
 
-The addressless `work` bridge carries VLANs 320/330/360/370 on firewall `vio7`, through
-`fw1work` and `fw2work`. Prefixes and family names above are defaults from `config.example.yaml`.
-Each VLAN is an L2 trust domain: MAC filtering and host bridge rules block infrastructure
-IP/ARP spoofing, guest DHCP/CARP servers, IPv6 and stacked VLANs. Routed policy is in section 4.2.
-Both DHCP servers synchronize over `vio1`; replacement checkpoints leases and seeds them back.
+Addressless work carries VLANs 320/330/360/370 on firewall vio7 via fw1work/fw2work.
+Family names/prefixes are defaults from `config.example.yaml`. Each VLAN is an L2 trust domain.
+MAC/bridge rules block infrastructure IP/ARP spoofing, guest DHCP/CARP servers, IPv6 and stacked
+VLANs. DHCP synchronizes over vio1; replacement checkpoints and reseeds leases.
 
-`build/networks` renders the topology into each image. `/etc/convergent/segments` lists expected
-CARP interfaces, VHIDs, parents, labels, prefixes, gateways and families; `carp.awk` checks exact
-membership and coherent roles. Work ports open after host, WAN and both firewall hashes agree
-and one healthy MASTER serves; a validated topology may keep serving with its standby unavailable.
+`build/networks` renders topology into each image. `/etc/convergent/segments` lists CARP interfaces,
+VHIDs, parents, labels, prefixes, gateways and families; carp.awk checks exact membership/coherent
+roles. Work opens after host, WAN and both firewall hashes agree with a healthy MASTER. An already
+validated topology can keep serving without its standby.
 
 ### 4.2 Flows
 
-Allowed IPv4 flows are below; routed application replies use connection state. DNS (TCP/UDP 53) to the local
-gateway is allowed on host, svc, web, admin, guests and work, except from Remmina.
+Allowed IPv4 flows; application replies use state. TCP/UDP DNS 53 to the local gateway is allowed on
+host/svc/web/admin/guests/work except Remmina.
 
-| From | To | Ports | Why |
+| From | To | Ports | Reason |
 |---|---|---|---|
-| host | internet | NTP 123, NTS-KE 4460 | Time |
-| host | update source | HTTPS 443 | Releases: download server addresses, opened by `fetch-release` only while it runs (failed close expires within 4 hours) |
-| host | blocklist source | HTTPS 443 | Weekly blocklist download |
-| host | svc | syslog 6514, vmalert 8880, VictoriaLogs query 9428 | Logs, alert counts, menu log view |
-| host | fw1, fw2, wan | SSH 22 | Management, Wi-Fi credentials, blocklist and record pushes |
-| fw1, fw2 | host | NTP 123 | Time |
-| fw1, fw2 | internet | DoT 853 to forwarders | Resolution |
-| svc | host, fw1, fw2, wan | 9100 | Metrics scrape |
-| svc | host | Incus metrics 8444 | Instance state |
-| fw1, fw2, wan | svc | syslog 6514 | Logs |
-| web (def, tmp) | internet | 80, 443 (TCP and UDP) | Browsing |
-| web (def, tmp) | upstream LAN | IPP 631, only when printing is switched on *(planned)* | Printing |
-| web (tmp in portal mode) | wan | DNS 53, only in portal mode | Captive portal resolution |
-| web (tmp in portal mode) | upstream LAN | 80, 443, only in portal mode | Portal page |
-| admin (int) | svc | Grafana 3000 | Dashboards |
-| admin (int) | host | TCP 8443, session client certificate | Incus UI/API administration |
-| web (Remmina) | work guests, excluding firewall nodes and gateways | TCP 22, 3389, 5900–5999; UDP 3389; ICMP echo | Remote desktops and SSH; all other Remmina traffic blocked |
-| work guests | same-family work guests | IPv4 | Cross-VLAN work traffic; other families and system segments blocked |
-| work guests | internet; configured home LAN prefixes | IPv4 | Public egress; explicit RFC1918 home access |
-| work guests | local gateway | ICMP echo | Gateway check |
-| work clients ↔ firewalls | work VLAN | UDP 68 ↔ 67; firewall ICMP echo to clients | DHCP |
-| fw1 ↔ fw2 | segment peers; sync link | CARP; pfsync and UDP 8067 on sync | Gateway, state and lease synchronization |
-| fw1, fw2 | wan | ICMP echo | Uplink health probe |
-| guests | internet | TCP 80, 443 by default; `pf.guests` overrides | Guest work |
-| wan | anything internal | nothing it starts, except syslog to svc | Untrusted |
+| host | Internet | UDP 123, TCP 4460 | NTP/NTS |
+| host | Update source | TCP 443 | Temporary download addresses; failed close expires within four hours |
+| host | Blocklist source | TCP 443 | Weekly download |
+| host | svc | TCP 6514, 8880, 9428 | Logs, alerts, log queries |
+| host | fw1/fw2/wan | TCP 22 | Management and configuration |
+| fw1/fw2 | host | UDP 123 | Time |
+| fw1/fw2 | DoT forwarders | TCP 853 | Resolution |
+| svc | host/fw1/fw2/wan | TCP 9100 | Exporters |
+| svc | host | TCP 8444 | Certificate-authenticated Incus metrics |
+| fw1/fw2/wan | svc | TCP 6514 | Logs |
+| def/tmp | Public Internet | TCP/UDP 80, 443 | Browsing |
+| def/tmp | Upstream printers | TCP 631 | Printing table; enabling control planned |
+| portal tmp | wan | TCP/UDP 53 in portal mode | Upstream DNS |
+| portal tmp | Portal destinations | TCP 80, 443 in portal mode | Captive page |
+| int | svc | TCP 3000 | Grafana |
+| int | host | TCP 8443 | Session-certificate Incus administration |
+| Remmina | Work clients, excluding nodes/gateways | TCP 22, 3389, 5900–5999; UDP 3389; ICMP echo | Remote access; all else blocked |
+| work | Same-family work | IPv4 | Cross-VLAN traffic; other families/system segments blocked |
+| work | Public Internet; configured home prefixes | IPv4 | Work egress and explicit RFC1918 access |
+| work | Local gateway | ICMP echo | Gateway check |
+| work ↔ firewalls | Work VLAN | UDP 68 ↔ 67; firewall echo to clients | DHCP |
+| fw1 ↔ fw2 | Peers; sync | CARP; pfsync, UDP 8067 on sync | Gateway/state/lease synchronization |
+| fw1/fw2 | wan | ICMP echo | Uplink probe |
+| guests | Public Internet | TCP 80, 443; pf.guests overrides | Reserved guest egress |
+| wan | Internal | Only initiated syslog to svc | Treat radio as untrusted |
 
-PF excludes nonpublic destinations from Internet access. WAN permits private egress only for
-the active portal browser and work sources targeting configured `home_lan_prefixes`;
-PF further limits portal traffic to its enabled DNS/HTTP/HTTPS destinations.
+PF excludes nonpublic destinations from Internet rules. WAN permits private egress only for active
+portal sources and work targeting configured home_lan_prefixes; PF further limits portal
+DNS/HTTP/HTTPS destinations.
 
 ### 4.3 Failover
 
-Active firewall answers on every CARP address. If it stops, other takes every address within about
-three seconds and already holds connection state. NAT happens only in wan, so outside address never
-changes during failover. Resolver moves with gateway. If both stop, inter-segment routing stops. One
-firewall can fail; wan cannot. Same-VLAN work traffic does not require routing.
+The active firewall owns all CARP addresses. Failure transfers gateways, DNS and synchronized state
+to its peer in about three seconds. WAN retains NAT and the external address. Both firewalls down
+stops routing; same-VLAN work continues. WAN is a single point of failure.
 
 ### 4.4 The host and the bridges
 
-Bridge without address is still host interface, so host ignores them explicitly: nftables drops
-input on every interface but `host`; ARP ignored on other bridges; reverse-path filtering strict;
-forwarding off. The host is never a router; the firewalls are.
+Addressless bridges still expose host interfaces. Host nftables restricts new input to host
+and section 4.2's sources, with loopback/established exceptions and the earlier 8443 gate. Other
+bridges ignore ARP; strict reverse-path filtering and disabled forwarding prevent host routing.
 
 ### 4.5 DNS
 
-- **Resolution:** unbound on both firewalls forwards over DNS-over-TLS to forwarders given by
-  address and certificate name. Validates DNSSEC; answers internal segments only.
-- **IPv4 only:** DNS transport IPv4 only; AAAA answers not suppressed. DNS-over-HTTPS canary domain
-  answers NXDOMAIN, so applications fall back to system resolver.
-- **Rebinding:** configured IPv4 private, shared-space and loopback ranges, plus IPv4-mapped IPv6
-  addresses, are stripped.
-- **Local names:** built-in names and reverse records from `local-names.conf` template, filled with
-  address prefixes at firewall image build. Owner records in one file, validated, pushed to both
-  firewalls with blocklist.
-- **Blocklist:** RPZ zone. Host downloads weekly, retries on failure, validates, pushes same file to
-  both firewalls over SSH. Last good copy stays in force until new one validates. Short allow-list
-  holds owner's exceptions.
-- **Owner editor:** `sys dns` lists records and exceptions; adds/removes IPv4 A records and
-  allow-list names through `dns-push`. Helper holds push lock through validation, proposed diff,
-  confirmation, activation. Rejects duplicate names, malformed names or IPv4 addresses, and
-  conflicts with either firewall's built-in names. Other manually maintained record types stay
-  supported by push, not editable here. Edit journals previous owner inputs on encrypted state;
-  recovery restores those and both firewalls. Commit marker prevents completed push being rolled
-  back during journal cleanup. `last-push` records UTC time for full and local pushes;
-  weekly-download stamp stays separate.
-- **Reload:** activation and rollback reload Unbound with `unbound-control reload_keep_cache`, which
-  keeps the cache when cache sizes and thread count are unchanged (OpenBSD 7.9's Unbound 1.24.2).
+- Unbound serves internal segments, validates DNSSEC and forwards over IPv4 DoT with
+  address/certificate-name pairs. AAAA answers remain. The DoH canary returns NXDOMAIN to encourage
+  system resolution.
+- Rebinding protection strips configured private/shared/loopback IPv4 and IPv4-mapped IPv6 answers.
+- Built-in names/reverse records come from local-names.conf at build time. Owner records and RPZ
+  blocklist are validated/pushed together over SSH. Failed weekly downloads retain the last good
+  list; owner exceptions exempt subdomains.
+- dns-push holds its lock through validation, diff, confirmation and activation. Encrypted-state
+  journals restore previous inputs and both firewalls; a commit marker prevents undoing completed
+  pushes. Recovery stays pending until both nodes answer. last-push is separate from weekly stamp.
+- Activation/rollback uses `unbound-control reload_keep_cache`, retaining cache when sizes/thread
+  count stay unchanged (OpenBSD 7.9's Unbound 1.24.2).
 
----
+Commands/files/editor validation: [USAGE, DNS](USAGE.md#dns-blocklist-and-own-records).
+
 ## 5. Storage and boot
 
 ### 5.1 Disk
 
 | Partition | Content |
 |---|---|
-| ESP | systemd-boot; one UKI per slot, normal and recovery profiles |
-| slot A, slot B | EROFS images, dm-verity hash trees |
-| state | LUKS2 (Argon2id); Btrfs: `/var` (snapshot per slot generation), `/home`, `/etc` entries, Incus pool |
+| ESP | systemd-boot, A/B UKIs with normal/recovery profiles, standalone rescue |
+| A/B slots | EROFS images and dm-verity trees |
+| State | LUKS2/Argon2id, Btrfs: per-release var, shared home/etc/pool, optional swap |
 
-Encrypted state has discard disabled on purpose: discard reveals free-space patterns. Btrfs is
-scrubbed monthly. Selected custom volumes have size limits. A pool-wide quota *(planned)* stops
-guests and logs filling the space `/var` and `/home` need.
+Discard is disabled to hide free-space patterns. Monthly Btrfs scrub checks data. Selected custom
+volumes have quotas; a pool-wide quota is planned to protect home/var from aggregate guest growth.
+Install sizing/swap: [USAGE, Install](USAGE.md#install).
 
 ### 5.2 Boot
 
-1. Firmware verifies systemd-boot with owner's key *(planned)*.
-2. systemd-boot picks slot (section 7.3), starts UKI profile 0. Profile 1 (`ID=recovery`,
-   `TITLE=Recovery`, selectable in menu) shares kernel, initramfs and verity root; adds only
-   `convergent.recovery=1` before `init=`.
-3. Kernel creates slot's dm-verity device from UKI command line.
-4. Initramfs mounts it read-only as root. Refuses to boot if more than one disk has `cv-state`
-   partition; asks for LUKS passphrase; opens state. Auto-sized installs grow last state partition
-   when over 1 GiB is free (partition, LUKS, then Btrfs). Fixed/percentage installs keep size via
-   install-written `install-state-size` marker on state; without it, no growth. `state-max-gib` caps
-   growth only if marker says `auto`. Interrupted grows finish on later boot. Selects slot's `/var`;
-   cold-snapshots it on new slot's first boot; mounts `/var` and `/home`; bind-mounts listed `/etc`
-   entries after merging missing image system accounts (IDs below 1000; keeps existing entries,
-   warns on ID collisions) and adding existing owner to `dialout` in group/gshadow. Mounts `/run`
-   and `/tmp` as tmpfs, arms hardware watchdog, switches to real root. The initramfs carries the Intel
-   MEI/GSC proxy modules.
-5. OpenRC starts host, then Incus. Incus autostarts fw1, fw2, wan and svc. With priority/delay unset,
-   instances use bulk startup, limited to `max(floor(CPU threads/4), 1)` concurrent starts. No start
-   step needs name before firewalls' resolvers answer.
+1. Firmware starts systemd-boot; owner-key verification is planned.
+2. The loader selects a slot (section 7.3), UKI profile 0. Profile 1 (`ID=recovery`,
+   `TITLE=Recovery`)
+   shares kernel/initramfs/verity, adding `convergent.recovery=1` before `init=`.
+3. The kernel creates dm-verity from the UKI command line; initramfs mounts verified root read-only.
+4. Unlock refuses ambiguous cv-state partitions. After unlock, normal boot arms the watchdog before
+   state mounting; Recovery waits until Continue. Auto state grows partition, LUKS and Btrfs when
+   over 1 GiB is available. Fixed/percentage installs do not grow; absent install-state-size
+   disables
+   growth. Legacy state-max-gib caps auto growth. Interrupted growth resumes later.
+5. Initramfs cold-snapshots the last good var for a new release, or seeds it from the image on
+   first installation. It mounts var/home/pool, merges missing system accounts below ID 1000
+   (preserving existing entries and warning on collisions), adds the owner to dialout, and binds
+   listed etc state. Var/home use nodev,nosuid; pool uses nodev; tmp is an 8-GiB
+   nodev,nosuid,noexec tmpfs. Optional swap is separate. Intel MEI/GSC proxy modules are included.
+6. OpenRC starts host and Incus. fw1/fw2/wan/svc autostart in bulk, with concurrency
+   `max(floor(CPU threads/4), 1)` when priority/delay are unset. Startup needs no DNS before
+   Unbound.
 
-Verity checks every block when read. Tampered block fails to read, at boot or later.
+Changed verity blocks fail reads at boot or later. Recovery runs after state mounts but before
+etc binds/pivot, without services/network. `rd.shell=0`, `rd.emergency=poweroff`, lockdown, verity
+and the disabled editor remain enforced. Reset uses UID 1000, `openssl passwd -6` and atomic
+root:shadow 0640 replacement. Procedures: [RECOVERY](RECOVERY.md#recovery-boot-menu).
 
-With recovery flag, after LUKS unlock and state mount, initramfs offers console menu before binding
-`/etc` or switching root: root shell (exit returns), owner password reset, continue, reboot, power
-off. Shows release, slot and read-write state path `/run/cv-state`. Reset finds uid 1000 in state's
-passwd, hashes two matching password entries with `openssl passwd -6`, and atomically replaces
-owner's shadow field with root:shadow 0640. Watchdog armed after leaving recovery. No network or
-daemon starts. `rd.shell=0`, `rd.emergency=poweroff`, lockdown, verity and disabled boot editor stay
-in force.
+UKI titles are `SLOT A | <NAME> <version> - <kernel>` with `(Recovery)` on profile 1. Entry IDs are
+`convergent-<release>-a.efi` and `convergent-<release>-a.efi@recovery` (similarly b). Systemd-boot
+260.1 sorts descending IMAGE_VERSION, then filename, preserving profile discovery order. `default
+convergent-[0-9]*` selects the newest non-exhausted normal profile. Both profiles share
+`convergent-<release>-a+3.efi`; Recovery consumes a try. `slot bless` removes the shared counter.
+Ukify creates main with `--profile 'ID=main'` in the final build and joins only the recovery
+fragment, avoiding a third profile and duplicate kernel/initrd. Temporary fragments are removed;
+manifest/installed filenames stay unchanged. ESP capacity checks include actual UKI sizes.
 
-Normal titles name version, kernel, release and slot, e.g. `SLOT A | Gentoo 0.1.0 - 6.18.57`
-(release id orders entries). Recovery appends `(Recovery)`. Entry IDs: `convergent-<release>-a.efi`
-and `convergent-<release>-a.efi@recovery`, boot counters stripped from both.
+Standalone rescue uses the release kernel/microcode and separate dracut initramfs, with
+`convergent.rescue=1`, no verity table or slot root. Its synthetic-root/pre-mount hooks unlock state
+and run the menu without growth, preparing release var, pivoting or arming a watchdog. No network/
+guest services or host continuation; password reset shares Recovery code.
 
-systemd-boot 260.1 sorts entries by descending IMAGE_VERSION, then descending filename; profiles
-keep discovery order (0 first) in that stable sort. So `default convergent-[0-9]*` selects newest
-non-exhausted UKI's normal profile. Both profiles share one counted file, e.g.
-`convergent-<release>-a+3.efi`. Entering recovery on unblessed release uses one try. Continuing runs
-usual health checks. `slot bless` renames that shared file to `convergent-<release>-a.efi`, blessing
-both profiles.
+Rescue includes cryptsetup, Btrfs, OpenSSL, slot, USB filesystem/disk/archive tools, libraries and
+i915 firmware. It mounts release USB read-only and requires the embedded channel signature. `slot
+rescue-write` is gated to rescue and permits confirmed reinstall/downgrade with normal
+size/hash/readback checks and counted UKIs, preserving var/good/highest. `slot rescue-next` sets
+normal LoaderEntryOneShot. Log export starts no guests. Procedures: [RECOVERY,
+Rescue](RECOVERY.md#standalone-rescue-entry).
 
-Ukify 260 creates profile 0 in final build (`--profile 'ID=main'`); only recovery fragment is
-joined. Separate p0 and p1 fragments would add third profile, since ukify automatically supplies
-base profile. Fragments live in a temporary directory and are removed: release files, manifest
-entries and installed UKI names stay the same. Kernel and initrd occur once; profiles add only
-metadata and recovery command line. Installer's ESP check uses actual UKI size, including these
-sections.
-
-Standalone rescue UKI, independent of both slots: release kernel, Intel microcode, separate dracut
-initramfs with `convergent` and `convergent-rescue`. Command line: `convergent.rescue=1`, no verity
-table, no slot root. Cmdline hook claims synthetic root. Pre-mount hook unlocks state (same code and
-US keyboard rules as normal boot), runs rescue console menu, and never reaches root mounting or
-pivot. Neither grows state nor prepares release `/var`. Slot pre-pivot hook and watchdog drivers
-omitted. No network services or guest daemons run. Menu shares Recovery's password reset code.
-
-Rescue includes cryptsetup, Btrfs, OpenSSL, `slot`, USB filesystem support, and small console, disk,
-checksum and archive tools, with libraries and i915 firmware. Mounts release USB media read-only;
-requires embedded channel key's manifest signature. `slot rescue-write` gated to rescue. Permits
-explicitly confirmed reinstall or downgrade, reuses normal write/readback and counted UKI
-installation, keeps `/var`, `good` and `highest`. `slot rescue-next` sets normal entry ID in
-`LoaderEntryOneShot`. Logs export without starting guests. No continue-to-host path or rescue
-blessing.
-
-Build rescue before EROFS, at `/usr/lib/convergent/rescue.efi`, under slot's verity hash. Release
-files and manifest fields stay unchanged, so update 7 clients can still write release. After health
-checks and blessing, `slot` compares that file with ESP's `EFI/Linux/convergent-rescue.efi`; if
-different, copies to `.new`, checks, syncs, renames, syncs. A failed release cannot replace rescue.
-Failed copy keeps existing rescue; later bless retries. Installer also copies it and reserves
-space for two release UKIs, both systemd-boot paths, rescue and extra rescue for atomic replacement.
-Older releases without rescue stay installable.
-
-`IMAGE_ID=zz-convergent-rescue` sorts after bootable releases; systemd-boot 260 moves exhausted
-entries below it regardless of sort key. Numbered default pattern excludes rescue, even when both
-slots are exhausted. Bless migrates old `default convergent-*` line. Rescue is a normal, currently
-unsigned UKI; can be signed for Secure Boot later. ESP copy is unaffected by slot corruption, but
-firmware does not authenticate it while Secure Boot is off. Rescue test coverage:
-[BUILD, Test in QEMU](BUILD.md#test-in-qemu).
+The rescue UKI is built before EROFS at `/usr/lib/convergent/rescue.efi`, protected by slot verity.
+It adds no host manifest fields. After blessing, slot updates ESP EFI/Linux/convergent-rescue.efi
+via checked/synced .new and atomic rename; a failed release cannot replace it. Copy failure retains
+the old rescue and retries on later bless. The installer reserves space for two slot UKIs, two
+loader paths and two rescue copies. Releases without rescue remain installable.
+IMAGE_ID=zz-convergent-rescue sorts below bootable slots, above exhausted entries; the numbered
+default excludes it. Bless migrates the old `default convergent-*` setting. Secure Boot is off, so
+ESP rescue is independent of slot corruption but unauthenticated.
 
 ### 5.3 What is writable
 
-Everything under `/usr` and rest of `/etc` comes from verified image. Writable `/etc` entries are
-explicit list: `machine-id`, `passwd`, `shadow`, `group`, `gshadow`, `subuid`, `subgid` and
-`usbguard/rules.conf`. Incus and guest SSH keys live under `/var/lib`. Persistence limits:
-[section 10](#10-security-model).
+Verified usr/etc have eight state-bound exceptions: machine-id, passwd, shadow, group, gshadow,
+subuid, subgid and usbguard/rules.conf. Incus and guest SSH keys live in var/lib. Home, etc and pool
+are shared across slots; var is per release. Persistence boundaries: section 10.
 
-Image's `rootfs/etc/apparmor.d/` profiles confine chronyd, node_exporter, bluetoothd, way-secure and
-pipewire-pulse. chronyd, node_exporter, bluetoothd and pipewire-pulse enforce. way-secure only
-complains (log, do not block) until real-hardware use shows no denials. Chronyd can adjust time and
-use RTC and its NTS state. Exporter reads kernel metrics and its textfiles. BlueZ uses system D-Bus,
-Bluetooth sockets and pairing state. Browser helpers can use owner's Wayland/PipeWire sockets and
-named session sockets; Pulse also supports owner's ordinary session server. Profile syntax and
-runtime checks: [BUILD, Checks](BUILD.md#checks). Boot AppArmor service loads them before
-default-runlevel daemons, caching under `/var/cache/apparmor` (never read-only `/etc`); new release
-drops old cache. Desktop coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
-
----
+Host AppArmor profiles in `rootfs/etc/apparmor.d/` enforce chronyd, node_exporter, bluetoothd and
+pipewire-pulse. way-secure complains pending hardware validation. Chrony may adjust time/use RTC/NTS
+state; exporter reads metrics/textfiles; BlueZ uses D-Bus/Bluetooth/pairing state; browser helpers
+use named session sockets. Pulse also supports the owner's server. AppArmor loads before
+default-runlevel daemons, caching in `/var/cache/apparmor`; new release snapshots drop old caches.
+[Checks](BUILD.md#checks).
 
 ## 6. Build and keys
 
-Build host is dedicated machine (VM today) that does nothing else. It holds:
+The dedicated builder holds a signed stage3 chroot, dated/signed Portage snapshot, repository
+`/etc/portage` configuration, official hardened binary packages, locally compiled variants and
+release outputs. Packages patched via `portage/patches/<category>/<package>/` always compile and
+rebuild on patch changes; Sway's patch makes idle inhibition privileged so browsers cannot prevent
+locking.
 
-- build environment: signed Gentoo stage3 chroot;
-- Portage snapshot pinned by date, verified by signature;
-- `/etc/portage` from this repository;
-- binary package cache: Gentoo's official hardened binary packages where they match, our own builds
-  where USE flags differ;
-- outputs of each release.
+`portage/overlay` supplies aa-exec without the Python-dependent utilities, way-secure for restricted
+Wayland, pinned tio/serial drivers and static Incus UI assets. Inputs/commands/release ordering:
+[BUILD](BUILD.md#build-a-release).
 
-`portage/overlay` holds packages Gentoo does not offer as needed: `aa-exec` alone, which Incus uses
-to confine its image unpacker (stock apparmor-utils would pull Python into image), and `way-secure`,
-giving each browser restricted Wayland security context. Also pins GURU's `net-dialup/tio` 3.7 and
-its distfile hashes for serial consoles. Image keeps and checks FTDI, CP210x, PL2303, CH341 and CDC
-ACM drivers; Gentoo udev uses `dialout` for their device nodes. MC's terminal-background skin is set
-via env.d; Files and Notes controls: [USAGE, Keys](USAGE.md#keys).
+The online beta key protects downloads/bucket compromise, not the builder. Stable's encrypted key
+stays offline until the owner checks the manifest before attaching it for signing. Signatures
+establish origin, not benign contents. Offline owner Secure
+Boot keys are planned. Channel/provenance/publication: [BUILD](BUILD.md#sign-and-publish).
 
-`portage/patches/<category>/<package>/` holds patches applied to Gentoo packages. A patched package is
-always compiled, never taken from a binary package, and rebuilt when any patch changes, since its
-version stays the same. The only patch now makes Sway's idle inhibition privileged, so a browser cannot
-stop the auto-lock.
+Build steps (commands in [BUILD](BUILD.md#build-a-release)):
 
-Channels and promotion: [BUILD, Status](BUILD.md#status).
+1. Verify the pinned Portage snapshot signature.
+2. Assemble @convergent and @convergent-apps packages into staging.
+3. Overlay rootfs files.
+4. Remove modules not owned by `gentoo-kernel` before `depmod`; build initramfs, rescue,
+   EROFS/verity and A/B UKIs.
+5. Record release/version/kernel/root hash and file hashes in manifest.
+6. Build WAN, firewall, svc, browser and Remmina images separately.
+7. Sign manifests with the channel key; UKI signing remains planned.
+8. Publish payloads and signed latest pointer.
 
-Version fields and release ordering: [BUILD, Build a release](BUILD.md#build-a-release).
+### Build-time hardware support
 
-The `beta` key on the build host permits unattended signing and publication. It guards against a
-changed download or stolen bucket token, not a compromised build host. The `stable` key is attached
-only after the owner checks the manifest. Signatures prove origin, not that the build is benign.
-Owner's Secure Boot key *(planned)* stays on offline media like the stable key. Key setup and
-publication: [BUILD, Sign and publish](BUILD.md#sign-and-publish).
-
-A release is one verified root image, two boot files (one per slot), and optional guest images and
-profiles.
-
-Release is built in these steps (commands in [BUILD.md](BUILD.md#build-a-release)):
-
-1. Sync pinned snapshot; refuse unsigned one.
-2. Build `@convergent` and owner's `@convergent-apps` sets into staging root, from binaries where
-   possible.
-3. Copy `rootfs/` from this repository over it.
-4. Use staged kernel to build initramfs, EROFS image, dm-verity tree and UKIs. Kernel modules not owned
-   by `gentoo-kernel` are dropped before `depmod`.
-5. Write manifest: release ID, semantic version, kernel version, root hash, file hashes.
-6. Build guest images, each in own build: wan (Alpine), fw (OpenBSD), svc (Alpine), browser and Remmina
-   (Alpine).
-7. Sign manifest with channel key (`manifest.sig`); signing UKIs for Secure Boot planned.
-8. Publish the signed release and latest pointer; see
-   [BUILD, Sign and publish](BUILD.md#sign-and-publish).
-
----
+`net-dialup/tio` 3.7 and its distfiles are pinned in the overlay. Image checks retain FTDI, CP210x,
+PL2303, CH341 and CDC ACM drivers; Gentoo udev grants device access through dialout. Module and
+firmware retention is configured in `build/build.conf`; VLAN and bridge nftables support is built
+into the kernel.
 
 ## 7. Install, update, roll back, recover
 
 ### 7.1 Install
 
-From Convergent USB disk carrying one release, or as disk image (README, Install). Partition, create
-LUKS and Btrfs, write slot A, install systemd-boot and slot A's UKI, register boot entry (physical
-install only) (and removable-media path), create owner's account. Disk image also carries guest
-images; first boot creates guests. No network needed. *(Planned:* in Setup Mode, enrolling owner's
-keys and option ROM hashes, otherwise checking them; stick as recovery path when nothing on laptop
-boots.*)*
+The installer partitions/encrypts state, writes A, installs systemd-boot/UKI and removable path,
+registers physical-install boot entry and creates the owner. Disk images also carry guests for
+network-free setup. Swap starts before Incus; disk swap mounts its subvolume at
+`/var/lib/convergent/swap`. Firmware key/option-ROM enrollment is planned. Commands: [USAGE,
+Install](USAGE.md#install).
 
-Install configuration and capacity checks: [USAGE, Install](USAGE.md#install). Installer seeds
-`/var` and writes small runtime settings. OpenRC starts swap before Incus. Disk swap uses a separate
-top-level Btrfs subvolume, mounted under `/var/lib/convergent/swap`, so release snapshots skip its
-active file ([Btrfs swapfile constraints](https://btrfs.readthedocs.io/en/latest/Swapfile.html)).
+`guests init` generates management keys, TLS credentials and shared CARP password on the laptop; TLS
+credentials and the CARP password persist under `/var/lib/convergent/guests/` across replacements;
+images contain none of these or SSH host keys. Read-only FAT16 CVSEED supplies each guest's
+credentials once. Host checks application, pins fw/WAN SSH keys from Incus console, checks health
+and detaches the disk. Svc receives a mounted seed and has no SSH. Seedless firewalls keep
+CARP/dependent services off; Alpine guests stop credential-dependent services.
 
-`guests init` creates management key, TLS credentials and one shared CARP password on laptop.
-`/var/lib/convergent/guests/` keeps last two across guest replacements. Images hold none of them,
-nor SSH host keys. Each guest gets only its own credentials on read-only FAT16 disk labelled
-`CVSEED`; it records once it applied them, then ignores disk. Host checks that record, pins fw's and
-wan's first SSH host keys from Incus console, checks health and detaches disk (svc has no SSH; Incus
-mounts its seed). Without seed, fw keeps CARP and dependent daemons off, and Alpine guests keep
-credential-dependent services stopped, so fw build's seedless smoke boot leaves release
-unpersonalised.
-
-First boot starts fw1, fw2, wan and svc together; their pinning and checks still run one at a time,
-in order. Service certificates (`server`, `incus-server`, `incus-client`) with at most 30 days
-remaining renew during the next successful guest apply after all browsers close. They are reissued
-from their existing keys and the CA, installing new trust before consumers restart.
+Infrastructure starts together; pinning/checks remain sequential. Service certificates server,
+incus-server and incus-client renew with at most 30 days left on the next successful guest apply
+with browsers closed, reusing keys/CA and installing trust before consumers restart.
 
 ### 7.2 Update
 
-1. Take release from `fetch-release` (URL in image) or USB stick. Check signature against image's
-   key and every hash. The signed `latest` may be at most five minutes ahead of the clock; over 30
-   days old, it is reported as stale, not refused. Refused: update from slot not yet marked good
-   (would overwrite only good one), and any release not newer than highest ever marked good (kept on
-   state volume, so rollback by hand does not reopen way to older releases).
-2. Write image to inactive slot; read back and verify.
-3. Install its UKI with boot counter: systemd-boot gives it three tries.
-4. Reboot. Initramfs snapshots `/var` cold before anything starts.
-5. After health checks pass (no service crashed; default runlevel running; from boot runlevel host
-   firewall, USBGuard, audit and AppArmor running; Incus answering; guest firewalls, wan, svc and
-   session: planned), slot is marked good and becomes default. Order: record highest release, drop
-   boot counter, then name release good, so crash at any point is safe. Every boot runs checks. On
-   counted boot, initramfs arms 180-second hardware watchdog, fed for ten minutes, then left to
-   reset board. Passing checks disarms it, even after feeding stopped. Release already good disarms
-   it before checks.
+1. Verify the release signature against the embedded key and all hashes. Signed latest more than
+   five minutes ahead is refused; over 30 days old warns. Host writes require a good booted slot
+   and a release newer than booted/highest-good IDs, protecting the only good slot and preventing
+   old releases after manual rollback.
+2. Write inactive slot, read back and verify; install its UKI with three tries.
+3. Reboot and cold-snapshot var before daemons start.
+4. Bless after host health checks: no crashed services, default runlevel running, boot-runlevel
+   firewall/USBGuard/audit/AppArmor running and Incus answering. Guest/session gates are planned.
+   Record highest, remove boot counter, then record good, so interruptions stay safe.
+5. Each boot checks health. Counted boots use the 180-second watchdog, fed for ten minutes from
+   the feeder's start, then left armed. Passing checks disarms it even after feeding stops;
+   already-good releases disarm before checks.
 
-Releases carry guest images and profiles in signed `guests.manifest` and, for Remmina,
-`remmina.manifest`. Signed `latest` binds their hashes; the separate Remmina sidecar preserves
-compatibility with older guest readers. The host manifest is unchanged.
-Guest identity is SHA256SUMS plus delivered profiles. Delivery and
-application: [USAGE, Releases and guests](USAGE.md#releases-and-guests). Host-only releases remain
-valid.
+Signed latest binds guests.manifest and separate remmina.manifest hashes; the latter preserves
+older readers. Host manifests remain unchanged; host-only releases are valid. Guest identity is
+SHA256SUMS plus profiles. Delivery/retry/staleness: [USAGE](USAGE.md#releases-and-guests).
 
-Guests update only on host slot already marked good, one at a time, each after snapshots of custom
-state volumes. The guest is rebuilt in place from the release image; the image it ran on stays in
-the store until the checks pass, so a failed or interrupted update rebuilds it from that image,
-re-seeds it and restores the snapshots (wan's saved networks wait in host state meanwhile). Last
-three state snapshots per volume kept. Remmina snapshots only `remmina-state`, never `share`.
-With unchanged topology, firewalls update one at a
-time: fw2 first, checked (CARP state, pfsync, pf ruleset hash, resolution and short traffic soak
-through it), then failover to it, then fw1. Firewall failing checks returns to previous image before
-other is touched. Replacement seeds checkpointed DHCP leases; after `guests update fw`, host pushes
-stored blocklist and records (`dns-push local`, when a blocklist is stored). New wan takes old one's
-saved Wi-Fi networks, read in userspace from copy of old disk's partition (debugfs as unprivileged
-user; keeping only the iwd network files `.psk`, `.open` and `.8021x` files). Old disk never
-mounted. Browser updates keep both def/int backups until both replacements pass, then advance image
-for new tmp instances, including portal mode. Failed replacement restores both browsers and shared
-profiles, except during one-time role migration below.
+Guest replacements require a good host and serialize operations. Snapshot custom state before
+rebuilding in place; retain the old image until checks pass. Failure/interruption rebuilds/reseeds
+the old image and restores snapshots; keep three snapshots/volume. Remmina excludes share.
 
-A topology change stops both firewalls and rebuilds both roots under a durable journal;
-failure restores both old images before either boots. Work access stays closed until topology
-validation passes. Recovery: [RECOVERY 4](RECOVERY.md#4-guests-init-or-guests-update-stopped).
+With unchanged topology, replace fw2, check CARP/pfsync/rules/DNS/traffic, fail over, then replace
+fw1. Failure restores the target before touching its peer. Reseed DHCP leases and push stored DNS
+when available. Topology changes stop both firewalls under a durable journal; failure restores both
+roots before either boots. Work stays closed until validation.
+[Recovery](RECOVERY.md#4-guests-init-or-guests-update-stopped).
 
-Browser update (also through `guests apply`, or init recovery) renames `web` to `def` and `admin` to
-`int`, with state volumes. Under `browser-update.lock`, stops old containers, preserves profile
-snapshots in `profiles.before`, and durably records new profiles in `browser.rename` before renaming
-anything. Retries check which old objects remain; conflicting old/new names are refused. Instances
-get new profiles and keep state volumes, including bookmarks and logins. Rename journal rolls
-forward: `profiles_restore` leaves it intact, and browser launches stay blocked until both image
-replacements pass. Existing `pending` journal still restores failed replacements. `browser.ready`
-commits image alias, removes unused old profiles and clears both profile and rename journals. `web`
-and `admin` networks and firewall addresses do not change.
+WAN networks are extracted from the old partition in userspace by unprivileged debugfs, keeping
+only iwd .psk/.open/.8021x files; never mount the old disk. Browser replacement keeps both def/int
+backups until both pass, then advances the tmp alias. Failure restores both and shared profiles.
 
-Firmware updates use signed capsules only, applied from menu *(planned)*.
+Legacy web/admin objects migrate to def/int under browser-update.lock. profiles.before and durable
+browser.rename precede renames; conflicts refuse migration. State/bookmarks/logins persist. The
+rename journal rolls forward; pending replacement failures roll back. browser.ready commits the
+alias, prunes unused profiles and clears journals only after both replacements pass. Launches stay
+blocked until completion; network names/addresses remain web/admin. Signed firmware capsules/menu
+updates are planned.
 
 ### 7.3 Roll back
 
-- **Automatic:** slot that fails three tries (including hang caught by watchdog after passphrase) is
-  skipped. Previous slot boots; initramfs selects its `/var`, so Incus database matches its Incus
-  version.
-- **By hand, after slot was marked good:** boot menu offers previous slot. Its `/var` predates
-  update, so changes since then roll back with it. Guests are not rolled back; they stay as they
-  are. *(Planned:* menu warns before booting, and refuses when guests were updated in between.*)*
-- `/home` is never rolled back. *(Planned:* its own snapshots, daily for week and weekly for a
-  month.*)*
+Three failed counted boots skip the new slot; post-unlock hangs can consume tries via watchdog.
+The previous slot selects its matching var/Incus database. Manual rollback also reverts var changes;
+guest pool contents remain current, so guest updates can make old metadata incompatible. A menu
+warning/block is planned. Home never rolls back; automatic home snapshots are planned.
 
 ### 7.4 Recovery and backups
 
-- **Keys:** second LUKS passphrase, recovery key, kept offline with LUKS header backup and Secure
-  Boot key backup on encrypted media. *(Planned:* menu reminder to refresh header backup after any
-  keyslot change.*)*
-- **Backups:** contents and exclusions: [USAGE, Backups](USAGE.md#backups).
-- **Recovery:** each slot UKI's recovery profile, standalone rescue entry (section 5.2), and
-  RECOVERY.md's numbered recipes for failures known so far. Each failure found on laptop adds one.
-  *(Planned:* restoring guest snapshot, restore tool for backups.*)*
+Keep a second LUKS passphrase, recovery key and header backup offline on encrypted media, with
+future Secure Boot key backups. Header-refresh reminders and a backup restore tool are planned.
+Commands: [RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup);
+backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOVERY](RECOVERY.md).
 
----
 ## 8. Observability
 
-- **Release evidence:** `fetch-release check` verifies channel-signed advisory sidecars for the
-  installed/latest releases, including release binding, schema, clock and prior generation.
-  It atomically publishes node_exporter metrics for svc's existing scrape. Missing or invalid
-  status is unknown, including pruned releases; no laptop notification is sent. Operator scans:
-  [BUILD, Advisory status](BUILD.md#daily-advisory-status).
-- **Network evidence:** minute collectors publish CARP labels and expected counts, parent-interface
-  bytes, Unbound recursion mean/SERVFAIL, radio signal/bitrate and observed association changes
-  without SSID/BSSID labels. WAN RTT/loss samples the existing firewall-to-WAN probe once a minute;
-  it does not measure Internet reachability or change demotion timing.
-- **Packet evidence:** `pflog_stream` forwards logged packet headers over existing TLS syslog,
-  capped at five packets/second/node with suppression summaries; local pflogd stays enabled, and
-  `fw-facts` reports whether it is running (`convergent_pflogd_up`) and whether it is suspended
-  (`convergent_pflogd_suspended`).
-  Rankings count samples, not all drops. `sys firewall capture` holds a shared guest lock and
-  captures on the selected coherent MASTER with time, packet, snaplen and transfer limits;
-  owner-opened files stay under `~/captures`, without continuous upload.
+- **Exporters, monitoring self-metrics:** 30 seconds; bounded collectors/series and var/host
+  selectors, PSI/diskstats
+- **Incus:** 60 seconds; seven CPU/memory/network/disk resource families
+- **facts:** Boot; minute NTS/audit; hourly storage/scrub/qgroups; daily NVMe/certificates, failed
+  daily retries hourly; virtio absence expected
+- **observe:** Minute rule API, ages, guest pressure/update phases, host DNS; verified HTTPS to
+  `example.com` only through running def's network namespace, never starts a guest or affects
+  recovery
+- **Firewall/WAN:** Minute CARP labels/counts, parent traffic, Unbound recursion/SERVFAIL, radio
+  signal/bitrate/roams without SSID/BSSID labels; sampled transit RTT/loss
+- **check:** After boot/update and daily; failed scans retry after five minutes; minute status
+  probes
+- **Rules:** Path/DNS 30 seconds; monitoring/capacity/logs/security-time one minute;
+  boot/certificates/NVMe/scrub five minutes
 
-- **Metrics:** node_exporter and bounded VM/VL/vmalert/vmauth self-metrics scrape at 30s;
-  Incus at 60s, retaining seven resource families. Retention stays 14 days without dedup.
-  The host exporter uses an explicit collector set, bounded `/var`/`host` filesystem/interface
-  selectors, and PSI/diskstats diagnostics. `facts` publishes boot evidence, minute NTS/audit,
-  hourly Btrfs/scrub/qgroups and daily NVMe/certificates; failed daily work retries hourly.
-  Explicit NVMe capability makes virtio absence normal. `tools/observe` reads rule evaluation
-  health, guest cgroup pressure and update phases, and tests host DNS each minute. Verified HTTPS to example.com is observed only
-  through an already-running def network namespace; closed def is expected absence, not failure.
-  Host/WAN outbound policy stays closed; no guest is started for probing. It never participates in firewall recovery. Every verdict has source-age evidence;
-  recent scrapes alone cannot make old textfiles healthy.
-- **Logs:** VictoriaLogs receives syslog over TLS from the host, firewalls and wan, including
-  forwarded host audit records. Minute sender heartbeats detect lost delivery. svc forwards local
-  warnings to VL over loopback UDP (no replay while VL is down); stream labels use remote_ip/app_name. Retention: seven days or 4 GiB, within a 6 GiB volume quota.
-  Authentication, audit and firewall logging stay enabled. USBGuard uses LinuxAudit, so device
-  decisions reach audit.log and the existing audit syslog forwarder. Local messages keep
-  authentication and selected security programs below warning level. Dashboards take each record's
-  host from the sending connection's address; app name and message stay the sender's claims. Guest
-  update summaries and failures go to syslog. Slot bless records exhausted-newer-slot fallback. The
-  minute status probe logs observed firewall takeovers only when the last known coherent master
-  changes.
-  Incus UI unlock/setup/revoke uses this buffered path. Native lifecycle/request events enter
-  loopback UDP 1514; only identity, protocol, action/resource or method/path are forwarded,
-  with query strings removed. Bodies, commands and tokens are excluded; daemon debug stays off.
-  An administrator controlling svc can alter these logs.
-- **Alerts:** vmalert evaluates path/DNS at 30s, monitoring/capacity/logs at 1m and
-  boot/certificate/NVMe/scrub at 5m. Zero alerts requires healthy, recent rule API evidence. The status bar shows counts, or "unknown"
-  when svc does not answer. Grafana shows details. Rules carried from Archer and adapted:
+Metrics retain 14 days without dedup. Recent scrapes cannot make old textfiles healthy. Closed def
+means no HTTPS evidence, not failure; WAN probes measure transit, not Internet reachability.
+
+VictoriaLogs receives host/firewall/WAN TLS syslog plus host audit, with minute sender heartbeats.
+Svc local warnings use loopback UDP without replay. Retention is seven days or 4 GiB within a 6-GiB
+quota. Bounded host buffering covers svc outages. Authentication/audit/firewall logging remains
+enabled; USBGuard LinuxAudit flows through audit syslog. Local messages also retain selected
+security/auth records below warning.
+
+Log stream fields are `remote_ip` and `app_name`; dashboard host identity comes from the connection;
+app/message remain sender claims. Guest updates, bless/fallback and observed coherent-master changes
+are logged; minute probes miss brief transitions. Incus UI setup/unlock/revoke uses the buffered
+path; native events enter loopback UDP 1514 with identity/protocol/action/resource or method/path
+only, queries stripped. No bodies, commands, tokens or daemon debug. A svc administrator or
+compromised host can alter svc logs.
+
+pflog_stream forwards sampled logged packet headers over TLS, capped at five/second/node with
+suppression summaries. Local pflogd stays enabled; `convergent_pflogd_up` and
+`convergent_pflogd_suspended` report running/suspended state. Rankings
+count samples, not all drops. On-demand capture holds a shared guest lock and bounds time, packets,
+snaplen and transfer; no continuous upload. [Commands](USAGE.md#release-and-network-evidence).
+
+fetch-release check verifies signed advisory status for installed/latest releases, including schema,
+release, clock and prior generation, then atomically publishes metrics. Missing/invalid/pruned
+status is unknown; no notification. Builder operation: [BUILD](BUILD.md#daily-advisory-status).
+
+Zero alerts requires fresh healthy rule API evidence; unavailable svc yields unknown bar counts.
+Implemented rules: `guests/svc/rootfs/etc/vmalert/alerts.yaml`.
 
 | Area | Alerts |
 |---|---|
-| Path | FirewallDown, CarpSplit (both masters or none), CarpFlapping, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, WanReservedLeak, UpstreamOverlap |
+| Path | FirewallDown, CarpSplit (both masters or none), CarpFlapping, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, UpstreamOverlap |
 | DNS | ResolverDown, ResolverStale, BlocklistStale |
-| Compartments | GuestStopped, GuestRestarted *(planned)*, ServiceDown, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected |
-| Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, IncusPoolHigh |
-| Currency | ReleaseOld, GuestImageOld, GuestReleaseEOL |
+| Compartments | GuestStopped, ServiceDown |
+| Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh |
 | Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, AuditRecordsLost, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
 | Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale, RuleEvaluationUnhealthy, ObservationStale, MonitoringWriteErrors, MonitoringReadOnly, MonitoringSignalsMissing, per-sender log heartbeat |
 
-*(Planned:* WanReservedLeak, PassthroughDeviceMissing, HostNetdevUnexpected, GuestRouteInjected,
-IncusPoolHigh, ReleaseOld, GuestImageOld, GuestReleaseEOL; the rest are in
-`guests/svc/rootfs/etc/vmalert/alerts.yaml`.*)*
+Planned: GuestRestarted, WanReservedLeak, PassthroughDeviceMissing, HostNetdevUnexpected,
+GuestRouteInjected, IncusPoolHigh, ReleaseOld, GuestImageOld and GuestReleaseEOL.
 
-- **Dashboards:** Overview health strip and linked alert explanations; Network connectivity,
-  DNS/radio, firewall readiness and traffic; Guests health matrix and lifecycle; Host storage and
-  hardware; Security boot/checker, Release/CVE and events; Monitoring collection/evaluation/log
-  delivery and resource cost. Stdlib generators in `guests/svc/dashboards` own the shipped JSON.
-  Diagnostics/Incus accounting are collapsed; missing evidence is unknown. Explore preserves time.
-  See the dashboard README for offline/live checks and remaining collection boundaries.
-- **Checker:** runs after every boot, update and daily. It compares the running system with the
-  accepted release (verity, pf ruleset hashes, Incus settings and the temporary browser's profile,
-  writable `/etc` entries, autostart and SUID inventories, radio VFIO binding, device ownership,
-  CARP on both firewalls) and checks host and internal guest state. Upstream connectivity is
-  excluded; `check status` polls Wi-Fi separately. Results feed the CheckerFailed and CheckerStale
-  alerts.
-
----
+The checker compares verity, firewall hashes, Incus/tmp profiles, writable etc, autostart/SUID
+inventories, VFIO/device ownership and CARP against an accepted release; upstream connectivity is
+excluded. Results feed CheckerFailed/Stale. [Baseline commands](USAGE.md#health-and-alerts).
+Dashboard generators own shipped JSON in `guests/svc/dashboards`; its README describes checks and
+collection boundaries. [Operator views](USAGE.md#health-and-alerts).
 
 ## 9. Daily use
 
-[USAGE.md](USAGE.md) covers daily use. Design points:
+[USAGE](USAGE.md) owns controls. Implementation constraints:
 
-- **Status bar:** [USAGE, The bar](USAGE.md#the-bar). Probe deadlines and cache expiry use monotonic
-  uptime; cached alert and input results become unknown after 180 seconds.
-- **Displays:** profile keys hash sorted make/model/serial triples. A Sway output/tick subscriber
-  maps identities to current connectors; layout-only events do not reapply profiles. A separate
-  rollback worker and exit traps restore the previous layout unless the owner confirms. A session
-  lock serializes hotplug, saves and previews. If original screens vanish during rollback, remaining
-  screens are enabled as fallback. Profiles are data, never sourced as shell or Sway configuration.
-  Controls and defaults: [USAGE, The sys tool](USAGE.md#the-sys-tool).
-- **Power and camera state:** root writes choices under `/var/lib/convergent/power` and
-  `/var/lib/convergent/devices/camera`, which follow the per-release `/var` snapshot. The boot/AC
-  handler serializes updates, publishes the successfully applied CPU profile under `/run`, and
-  restores optional charge and thermal choices. Charge start is five percentage points below end;
-  write order keeps a valid pair. Absent sysfs controls are skipped. Dell's separate `charge_types`
-  control selects Custom for a limit and Standard for off, when present. Writing thresholds alone
-  does not activate them. Sysfs values are read back after writes. It also retries camera probing
-  once after state is mounted. Modprobe install gates on the video core and retained camera
-  controllers deny loading unless the choice is `on`. `on` loads UVC and matching Intel PCI camera
-  drivers at once. `off` denies new loads before trying to unload existing drivers, without force.
-  Busy drivers cause an error and `CAM!`. USBGuard approval is independent. Camera drivers must stay
-  modules in the laptop kernel; verify this and the actual camera and controller IDs on the laptop.
-  Meeting compartments and screen sharing remain deferred.
-- **Locking:** [USAGE, Power and locking](USAGE.md#power-and-locking).
-- **Menu (`sys`):** each action prints its commands; bemenu stays the quick picker. Syntax and menu:
-  [USAGE, The sys tool](USAGE.md#the-sys-tool).
-- **Screenshots:** libnotify supplies `notify-send`; mako's stock or owner-configured look applies.
-  Keys and output: [USAGE, Keys](USAGE.md#keys) and [The sys tool](USAGE.md#the-sys-tool).
-- **Touchpad:** changes preserve other touchpad choices and the keyboard and output includes.
-  Controls, saved settings and hardware limits: [USAGE, The sys tool](USAGE.md#the-sys-tool).
-- **Microphone:** the Sway session retries muting until the default PipeWire source appears or the
-  session ends. Separate Sway bindings enforce the mic key's behaviour while locked. Other sources
-  and later default-source changes are not automatically muted. Controls, login behaviour and
-  indicator: [USAGE, The sys tool](USAGE.md#the-sys-tool).
-- **Bluetooth:** `AutoEnable=false`; picker output must match a listed row. Power, pairing,
-  validation and confirmation: [USAGE, Devices](USAGE.md#devices).
-- **Captive portals:** portal mode starts tmp with `--portal` and opens its two pf rules. It ends
-  when the browser closes, when turned off, or after 30 minutes. DNS reaches the active uplink's
-  resolver only in portal mode (section 3.2). The browser launcher owns activation under its session
-  lock. It closes stale rules on all three guests before any new opening; failure to close any side
-  prevents opening. The portal tool journals closure before remote changes, retries partial closures
-  each minute and records a reason for `sys portal status`. Cron and the browser session loop check
-  expiry. Remote mode checks use the minute status cache, refusing results stale for three minutes.
-  An orphaned session without a browser lock is closed after a one-minute startup allowance.
-  Each expiry refresh also closes all three sides if wan reports no usable portal resolver or
-  cannot be reached.
-- *(Planned:* owner guest actions in the menu, printing (off by default; IPP printers on the
-  upstream network for the def/tmp browsers), clipboard clearing.*)*
-
----
+- **Bar:** monotonic deadlines; input/alert caches expire after 180 seconds.
+- **Displays:** hash sorted make/model/serial sets; subscriber maps them to connectors, ignoring
+  layout-only events. Locks serialize save/hotplug/preview; worker/traps restore unconfirmed
+  layouts,
+  enabling surviving screens if originals disappear. Profiles are data, never sourced configuration.
+- **Power/camera:** root-owned choices follow per-release var snapshots. Serialized boot/AC handler
+  publishes successful CPU settings, restores optional controls and retries camera probing after
+  state mount. Sysfs writes are read back; charge writes preserve valid thresholds. Modprobe gates
+  video/controller loads unless enabled; disable records denial before non-forced unload. Busy
+  drivers leave CAM!. Camera drivers must remain modules; modules/hardware IDs need laptop
+  validation. USB approval is separate;
+  meeting/screen sharing remains deferred.
+- **Microphone:** session retries default-source mute until available; locked mic key only mutes.
+  Other sources/later default changes are not automatically muted.
+- **Bluetooth:** AutoEnable=false; picker selection must match an enumerated device.
+- **Portals:** browser lock owns activation. All three guests must close stale rules before opening.
+  Closure journal/retries survive interruption; cron/session loop enforce expiry. Cached remote
+  state older than three minutes is refused. Orphans get one minute to acquire their browser lock;
+  unavailable WAN/resolver closes all sides on refresh.
+- Owner guest menu actions, printing controls and clipboard clearing remain planned.
 
 ## 10. Security model
 
-| Threat | Defence |
+| Threat | Boundary and reason |
 |---|---|
-| Hostile network, rogue access point | Radio and Wi-Fi stack in wan, random MAC per network; host never parses Wi-Fi frames or upstream DHCP |
-| Network attacks on the host | Host accepts time from firewalls, metrics from svc, and certificate-authenticated Incus administration from int only |
-| Malicious website | Browser runs in an unprivileged container under AppArmor, on its own segment, with a restricted Wayland socket, restricted audio and no D-Bus |
-| Compromised guest | System NIC address filtering and port isolation; work VLAN MAC filtering and infrastructure anti-spoofing (section 4.1); PF routes between segments |
-| Compromised wan | Reaches only transit; firewalls trust nothing from it; no Incus agent or guest API in it |
-| Local privilege escalation on the host | Hardened kernel settings, AppArmor, sudo policy, audit records shipped off the host |
-| DMA from devices | IOMMU strict; Thunderbolt PCIe tunnels need approval where firmware asks; NVIDIA card held by vfio-pci |
-| Malicious USB device | USBGuard, default deny |
-| Tampered operating system on disk | dm-verity: a changed block fails to read; signed UKI protects the root hash *(planned)* |
-| Stolen laptop, powered off | LUKS2 with Argon2id; Secure Boot with the owner's keys *(planned)* |
-| Bad update | A/B slots, boot counting, watchdog after unlock, automatic fallback with matching `/var` |
-| Supply chain | Signed stage3 and snapshots pinned by date; releases signed per channel, stable with owner's offline key |
+| Rogue upstream | Radio/Wi-Fi/DHCP stay in wan, so host does not parse them |
+| Network attacks | Section 4.2 restricts flows; only int with a session certificate administers Incus |
+| Malicious website | Unprivileged AppArmor container, filtered network, restricted Wayland/audio and no D-Bus limit host access |
+| Compromised guest | NIC/L2 anti-spoofing and PF limit cross-segment access; same-VLAN work shares trust |
+| Compromised wan | Transit-only attachment, forced SSH, no agent/guest API; PF filters traffic |
+| Host privilege escalation | Kernel hardening, AppArmor, sudo and audit reduce exposure and record actions |
+| DMA/USB | Strict IOMMU, firmware-requested tunnel approval and USBGuard gate devices |
+| Modified disk OS | dm-verity rejects changed blocks; signed-UKI authentication of root hash planned |
+| Powered-off theft | LUKS2/Argon2id protects state; owner-key Secure Boot planned |
+| Bad update | A/B counting, watchdog and matching var permit fallback |
+| Supply chain | Signed dated inputs and channel signatures establish provenance; stable key offline |
 
-Not defended: a compromised host (it controls every compartment, both firewalls included); a
-compromised build host whose release the owner signs; an attacker with physical access while the
-laptop is unlocked; firmware below Secure Boot. Persistence stays possible in `/home`, the writable
-`/etc` entries and guest volumes. The checker watches selected files there, not guest volume
-contents. Logs ship to svc as written, so an attacker on the host cannot quietly rewrite what was
-already sent.
-
-Option ROMs: firmware's own GPU driver is part of the firmware. Add-in option ROMs (NVIDIA card,
-Thunderbolt devices) are to be allowed by exact hashes from the TPM event log *(planned)*, not by
-enrolling Microsoft's third-party certificate.
-
----
+Outside these boundaries: compromised host (controls every guest), signed malicious builder output,
+unlocked physical access and firmware below Secure Boot. Home, writable etc and guest volumes can
+persist compromise; checker coverage is selected files, not guest contents. Exact-hash option-ROM
+allowance from TPM evidence is planned instead of Microsoft's third-party certificate enrollment.
 
 ## 11. Resource budget (estimates, measured in a later phase)
 
-| Item | MiB |
+| Item | MiB estimate |
 |---|---|
-| Host: kernel, Sway, PipeWire, status bar | 700 |
+| Host kernel/session/audio/bar | 700 |
 | incusd | 200 |
-| wan (512 cap, plus QEMU overhead) | 500 |
-| fw1 + fw2 (1 GiB each, plus QEMU overhead, unbound with the blocklist) | 2 200 |
+| wan including QEMU overhead | 500 |
+| fw1 + fw2 including QEMU/Unbound | 2,200 |
 | svc | 350 |
-| Total, idle, browsers closed; excludes optional zram | about 3 950 |
+| Idle total, browsers closed, no zram | About 3,950 |
 
-On the laptop, 384 MiB firewalls ran out of memory at boot (kernel relink beside the blocklist),
-killing sshd and unbound while CARP kept the master role. Keep both firewalls at 1 GiB. Other
-limits: wan 512 MiB, svc 350 MiB (768 MiB with Grafana), def/tmp 2 GiB, int 1 GiB, tmp in portal
-mode 512 MiB. Container limits are ceilings, not idle reservations; lowering them without measured
-peaks risks OOM without proving an idle saving.
+| Configured ceiling | Limit |
+|---|---|
+| fw1, fw2 | 1 GiB each; KARL relink plus blocklist exhausted 384 MiB on the laptop |
+| wan | 512 MiB |
+| svc | 350 MiB; 768 MiB while Grafana runs |
+| def/tmp | 2 GiB; portal tmp 512 MiB |
+| int / Remmina | 1 GiB each |
+| browser-def-state / browser-int-state | 4 GiB / 512 MiB |
+| remmina-state / share | 512 MiB / 4 GiB creation default |
+
+Container ceilings are not idle reservations. Lowering limits without peak measurements risks OOM.
 
 ### 11.1 Work removed without changing sampling intervals
 
-These are work counts from the code, not measured watts or battery minutes.
+Bar caches release/layout/sensor data; status combines firewall queries and serializes WAN SSH;
+facts parses slot state in shell; power avoids redundant sysfs processes/logs. Sampling: section 8
+and [USAGE, The bar](USAGE.md#the-bar). No wattage/runtime saving is established.
 
-| Change | Expected saving |
-|---|---|
-| `tools/bar`: cache an unchanged Sway layout name | About 24 helper launches/minute (awk and grep at five-second intervals), plus repeated XKB rules-list reads; a failed Sway query invalidates the cache |
-| `tools/bar`: read the booted release once; share chip-name reads within each frame | 60 command-line reads/minute; all but one chip-name read per sensor chip per frame; temperatures read at most every 5 s; frames/clock/frequency/lock-health now 5s and inputs 10s |
-| `tools/check status`: combine CARP and portal-table reads on each firewall; serialize wan sessions | Five SSH sessions/minute instead of seven; no concurrent connection creation to the same guest within this run; four fewer remote wc processes/minute; existing pinned keys and 60-second multiplexing remain |
-| `tools/facts`: parse each slot status in shell | Four awk processes removed per boot-status attempt; boot, daily and hourly checks unchanged |
-| `tools/power`: read sysfs with shell builtins; log only changes or failures | Up to four cat processes per CPU policy removed per AC event, plus supply/config reads; duplicate events write no power log to store or forward |
-| `rootfs/etc/conf.d/node_exporter` and the `svc` scrape config: explicit host collectors and bounded self-metrics | Incus at 60s; path/DNS rules at 30s, monitoring at 1m and slow hardware/boot rules at 5m (section 8) |
-
-Status probes still run every minute, with bounded requests and one worker per guest. Portal reads
-hold the existing action lock; a busy lock, failed query or inconsistent sides yields unknown.
-Failed Incus inventory still ages out rather than publishing false down states. The WAN's three
-sequential probes share a 25-second budget plus kill grace, measured with monotonic uptime; healthy
-requests reuse one SSH connection. The bar's 180-second stale limit and WAN's forced-command
-allowlist are unchanged.
-
-No cron interval was lengthened. The minute jobs enforce portal expiry, publish fresh network facts
-or notice boot/update changes. `check auto` gates expensive successful scans to daily and failed
-scans to five minutes. Host NTS/audit run each minute; storage runs hourly and failed daily work backs off to hourly. The firewall's continuous wan-watch loop
-demotes after two lost one-second rounds and recovers after three good ones. It is a failover
-control, not merely a dashboard refresh.
+Minute probes retain bounded requests and one worker/guest. WAN's three sequential requests share 25
+seconds plus kill grace, using monotonic uptime and 60-second SSH multiplexing. Portal reads hold
+the action lock; busy/inconsistent queries yield unknown; failed Incus inventory ages out. Safety
+probes retain failover timing.
 
 ### 11.2 Proposals, not enabled
 
-| Proposal | Saving and trade-off | Recommendation |
-|---|---|---|
-| USB autosuspend except HID/audio | May idle USB devices/controllers; composite devices, approved uplinks and storage can still stall or fail on resume | Test an explicit device allowlist first, covering every interface of composite devices; keep USBGuard and HID/audio exclusions |
-| PCIe ASPM powersave policy | May reduce link idle power; resume latency and firmware/device compatibility need measurement | Keep firmware/kernel defaults until tested; never force ASPM or change IOMMU isolation |
-| SATA link PM / NVMe APST tuning | No demonstrated SATA target here; deeper NVMe states trade exit latency and device reliability for idle power | Keep driver defaults and quirks; inspect actual NVMe power states before tuning; never force APST |
-| HDA audio power saving | May idle the codec/controller; wake delay and clicks possible | Test speaker, headset, microphone and PipeWire resume first; do not apply an HDA option blindly to another audio driver |
-| Disable NMI watchdog | Removes hard-lockup detector activity but loses hard-lockup diagnostics; the boot hardware watchdog is a different mechanism | Keep it until that diagnostic loss is explicitly accepted |
-| Longer dirty writeback/expiry intervals | Can batch writes, but leaves more recent data vulnerable to sudden power loss and can increase write bursts | Keep defaults, especially for logs and guest disks; read-only root does not make writable state disposable |
-| KSM across fw1/fw2 | Possible shared-page RAM saving, at scanning CPU cost, with cross-guest deduplication side channels | Do not enable; the two firewalls stay separate trust compartments |
-| Lower CPU caps, disable turbo or stronger EPP | Can lower load power at the cost of burst response and throughput; idle savings are not established | Keep the configurable cap (`cpu_cap_khz`; none by default, set per laptop) and source-specific EPP; compare energy per task before more caps |
-| Static hugepages or different THP policy | Possible TLB benefit; reservations, fragmentation or compaction can hurt memory flexibility and latency | Keep current defaults; benchmark VM throughput and desktop tail latency first |
-| Disable mitigations or relax hardening | Possible CPU saving by removing protections | Reject; keep mitigations, strict IOMMU, lockdown, verity, audit and guest confinement |
-| Slower safety probes | Slower CARP/heal probes delay failover | Keep safety cadences; only bar, resource scrapes and slow rule groups changed (section 8) |
-| Shorter retention or suppress routine SSH/cron logs | Less disk use and query work, but less incident/debug history | Keep 14-day metrics, seven-day/4-GiB logs and auth/audit/firewall logs; only redundant power messages are suppressed at source |
-| Smaller guest limits or zram | Lower VM RAM may help, but KARL already disproved small firewalls; container caps do not reserve full size; zram adds metadata and compression work and changes OOM behaviour | Keep guest limits. Zram's old 32-GiB budget was only a plan; no enabled device here to shrink. Measure peak memory/pressure before choosing a size; do not claim a RAM saving from a documentation change |
+| Proposal | Constraint/reason |
+|---|---|
+| USB autosuspend | Test device/composite allowlists, preserving HID/audio and approved uplinks/storage |
+| ASPM, NVMe APST/SATA link PM, HDA savings | Keep defaults until latency/reliability tests; never force ASPM/APST or apply HDA options to another driver |
+| Disable NMI watchdog | Retain hard-lockup diagnostics; boot hardware watchdog is separate |
+| Longer dirty writeback | Keep defaults to avoid losing more recent state/logs on power loss |
+| KSM across firewalls | Reject deduplication side channels and scanning cost |
+| More CPU caps/turbo/EPP changes | Measure energy/task and responsiveness; current cap stays optional |
+| Hugepages/THP changes | Measure throughput/tail latency before reservations or compaction changes |
+| Relax hardening | Reject loss of mitigations, IOMMU, lockdown, verity, audit or confinement |
+| Slower safety probes | Retain failure-detection timing |
+| Shorter retention/log suppression | Preserve incident history and authentication/audit/firewall records |
+| Smaller limits/zram | Measure pressure/compression cost; zram is opt-in, not an idle saving claim |
 
-The kernel documents limits for
-[USB runtime PM](https://docs.kernel.org/driver-api/usb/power-management.html),
-[audio power saving](https://docs.kernel.org/sound/designs/powersave.html),
-[writeback intervals](https://docs.kernel.org/admin-guide/sysctl/vm.html),
-[lockup detection](https://docs.kernel.org/admin-guide/lockup-watchdogs.html) and
-[zram allocation](https://docs.kernel.org/admin-guide/blockdev/zram.html). Incus documents
-[memory ceilings](https://linuxcontainers.org/incus/docs/main/reference/instance_options/), and
-vmalert documents
-[group evaluation intervals](https://docs.victoriametrics.com/victoriametrics/vmalert/).
-
-On the laptop, compare before and after on battery with the same display brightness, radio
-connection and closed-browser workload: battery energy over a long idle window, CPU time and context
-switches, package idle residency, SSH sessions and log bytes. Also exercise layout changes, missing
-guests, portal transitions, AC changes and browser load. No laptop wattage or runtime gain has been
-measured from this checkout.
-
----
+Compare battery energy at the same brightness/radio/workload, plus CPU/context switches, idle
+residency, SSH/log counts. Exercise layouts, guest failure, portals, AC changes and browser load.
 
 ## 12. Our own code
 
-Convergent writes as little as it can:
+Scripts use OpenRC, cron, acpid and owner actions. Long-running pieces include bar, watchdog feeder,
+display subscriber, guest session supervisors, wan-watch and pflog-stream. Existing Incus, exporter
+and system tools supply underlying mechanisms. Idle CPU target for periodic host scripts/bar is
+under 1% of one core; unmeasured here.
 
-- **No daemons of our own.** Each piece is a short script started by OpenRC, cron, acpid or the
-  owner, and exits when done. The bar, watchdog feeder and Sway display-event subscriber are the
-  long-running exceptions.
-- **Existing tools first.** Nothing an exporter, Incus, OpenRC or a base-system tool already does is
-  written again.
-- **POSIX shell** where it suffices; nothing that needs a runtime of its own.
-- **A budget.** Target: the bar and every periodic script together under 1 % of one core at idle
-  (Archer's equivalents used about 12 %).
-
-| Piece | Runs | Does |
-|---|---|---|
-| `build/` | on the build host | Builds and tests a release (section 6) |
-| `install/install` | from a Convergent USB disk | Installs a release (section 7.1) |
-| `initramfs/` | at every boot | Section 5.2, step 4 |
-| `slot` | by hand; once after each boot | Writes a release to the inactive slot; after the health checks, marks the booted slot good |
-| `fetch-release` | from the menu (`sys update install`) | Downloads the newest signed release of the image's channel and hands it to `slot write` |
-| `guests` | at first boot; by hand | Creates the guests; updates one guest, or the firewall pair in order, with checks and rollback |
-| `check` | cron: after boot and updates, daily | The checker (section 8) |
-| `bar` | in the session | The status bar; asks vmalert every 30 seconds |
-| `sys` | from a key binding | The menu: one file per area in `/usr/lib/convergent/sys` |
-| `apps` | Super+d | Lists graphical apps from their desktop entries in bemenu and starts the chosen one; a failed start shows why |
-| `browser` | from the menu or a key | Starts a browser container with its restricted Wayland and audio sockets |
-| `facts` | boot, minute NTS/audit, hourly storage/daily retry | Writes host facts; archives pstore and BERT records |
-| `observe` | minute cron | Read-only Internet, rule API, guest cgroup and update phase evidence |
-| `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
-| `portal`, `devices`, `backup` | from the menu | Captive-portal mode; USB and Thunderbolt approval; the backup (section 7.4) |
-| `account` | by hand; from the menu (`sys security password`) | Changes a login password on the state volume and rebinds `/etc/shadow` |
-| `power` | at boot; acpid and udev, on AC and USB-C supply changes; sys actions | Sets CPU preference and cap, publishes profile, restores optional battery and thermal settings and camera choice |
-| `fw-facts` | cron on each firewall | Writes CARP, pf, pflogd and unbound state for node_exporter |
-
----
+| Piece | Responsibility |
+|---|---|
+| slot / fetch-release | Slot integrity, blessing, delivery (section 7) |
+| guests / browser / remote / incus-ui | Guest lifecycle and sessions (section 3) |
+| check / facts / observe / fw-facts | Checker, hardware/boot and monitoring evidence (section 8) |
+| sys / apps / notes / bar | Controls, launchers and status ([USAGE](USAGE.md)) |
+| dns-push / portal / devices | DNS activation, portal rules and device approval |
+| account / power / backup | Accounts, hardware choices and backup export |
 
 ## 13. Repository layout
 
-| Path | What |
+| Path | Content |
 |---|---|
-| `build/` | builder chroot, packages, image, sign, publish, QEMU tests, lint, advisories, disk image, diagnostics collector and scrubber (`build/diag/`) |
-| `portage/` | make.conf, USE flags, package sets, image profile, local ebuilds |
-| `rootfs/` | host files: `/etc`, `/usr/lib/convergent` (`sys` areas), health checks |
-| `initramfs/` | the dracut module: unlock, `/var` per release, watchdog |
-| `install/` | installer, shipped as `convergent-install` |
-| `tools/` | `slot`, `fetch-release`, `apps`, `guests`, `browser`, `sys`, `bar`, `check`, `backup`, `devices`, `portal`, `dns-push`, `power`, `facts`, `account` |
-| `guests/` | `fw` (OpenBSD), `wan`, `svc`, `browser` and `remmina` (Alpine) |
+| build/ | Builder, images, signing/publication, QEMU/offline checks, advisories and diagnostics |
+| portage/ | Profile, sets, flags, patches and overlay |
+| rootfs/ | Host configuration, `/usr/lib/convergent/sys` actions, health checks and lifecycle helpers |
+| initramfs/ | Unlock, state, recovery and standalone rescue modules |
+| install/install | Physical/disk-image installer, shipped as convergent-install |
+| tools/ | Runtime commands from section 12 |
+| guests/ | OpenBSD fw; Alpine wan/svc/browser/remmina builds and configuration |
 
-The guest images, as `guests init` and `guests update` read them (each directory also holds the
-`SHA256SUMS` checked first):
+Guest build inputs carry SHA256SUMS. build/guests compresses qcow2 files to .qcow2.zst for
+publication; fetch-release expands them before applying:
 
-- `RELEASE/guests/fw/`: `fw{1,2}.qcow2`, `fw{1,2}.{pf,rules}.sha256`, `segments`, `topology.sha256`.
-- `RELEASE/guests/wan/`: `wan.qcow2`, `wan-metadata.tar.xz`, `topology.sha256`.
-- `RELEASE/guests/svc/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus.yaml`.
-- `RELEASE/guests/browser/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus/{base,def,tmp,int}.yaml`.
-- `RELEASE/guests/remmina/`: `metadata.tar.gz`, `rootfs.tar.gz`, `incus.yaml`, `packages.txt`.
-
----
+- **guests/fw:** fw{1,2}.qcow2, fw{1,2}.{pf,rules}.sha256, fw{1,2}.syspatch, openbsd.version,
+  segments, topology.sha256
+- **guests/wan:** wan.qcow2, wan-metadata.tar.xz, wan.manifest, topology.sha256
+- **guests/svc:** metadata.tar.gz, rootfs.tar.gz, incus.yaml
+- **guests/browser:** metadata.tar.gz, rootfs.tar.gz, incus/{base,def,tmp,int}.yaml
+- **guests/remmina:** metadata.tar.gz, rootfs.tar.gz, incus.yaml, packages.txt
 
 ## 14. From Archer
 
-**Kept or improved:** radio in a VM; the firewall pair, with its own kernels, shared connection
-state and DNS that fails over with it; hardened kernel and lockdown (signed boot *(planned)*); IOMMU
-and DMA rules; AppArmor, audit, account and sudo policy; USBGuard; LUKS2 and offline header backups;
-NTS time; the alert set; status bar, menu, locking and power behaviour; browser modes with a
-restricted Wayland socket; the owner's Incus project and work profiles; the checker;
-recovery recipes. Stronger: verified root and A/B updates instead of package-level rollback; bound system addresses and DHCP on work VLANs; one policy point instead of firewalld zones on the host; one
-monitoring copy instead of two.
-
-**Dropped, and why:**
-
-| Archer item | Why it goes |
-|---|---|
-| BIRD and BFD routing; ActiveFirewallMismatch, BFDFlapping | CARP and pfsync replace them |
-| The WAN handover at install and its rollback | wan owns the radio from the first boot |
-| firewalld zones and policies | pf on the firewalls; nftables on the host for its own input |
-| snapper and kernel-keep | The previous slot is a complete previous system |
-| LVM thin pool and XFS tiers; ThinPoolHigh, VgFreeLow | Btrfs, with a pool quota *(planned)* |
-| Weekly host file-integrity scans; HostFilesModified, UKIChanged | dm-verity checks every block; the UKI signature is *(planned)* |
-| DHCP lease names in DNS | Built-in names come from `local-names.conf`; work DHCP does not publish guest names |
-| Second svc copy; TwinDown, PeerDown | DNS moved to the firewall pair; one monitoring copy |
-| TuneD | A small handler, run by cron at boot and on AC events, sets the same values |
-| journald and its sealing | syslog-ng shipping records off the host as they are written |
-| Developer mode, management VLAN, branch staging, re-runs, pacman hooks | The build host and signed releases replace them |
-| HTTP/3 blocking | No longer needed with the browser on its own segment |
+Current boundaries/plans: [section 10](#10-security-model). CARP/pfsync replace routing daemons;
+verity/A/B replace package rollback; Btrfs holds state; one svc collects evidence.
