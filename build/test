@@ -339,6 +339,7 @@ chroot_mount
 qemu_identity
 case $mode in guests|guests-maint|guests-update|online)
 	cp -R "$here/fixtures" "$BUILDER$work/fixtures"
+	bld gcc -O2 -static -Wall -Werror -std=c99 "$work/fixtures/pf-l2.c" -o "$work/fixtures/pf-l2-bin" || die 'pf-l2 compilation failed'
 	cp "$here/../rootfs/usr/lib/convergent/incus/shutdown" "$BUILDER$work/shutdown-original"
 	cp "$here/test" "$BUILDER$work/test"
 	(
@@ -2277,7 +2278,7 @@ EOF
 	cp "$here/test-remmina" "$var/lib/convergent/test-release/remmina-test"
 	# End Remmina lifecycle fixture.
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
-	cp -R "$here/fixtures" "$var/lib/convergent/test-release/fixtures"
+	cp -R "$BUILDER$work/fixtures" "$var/lib/convergent/test-release/fixtures"
 	cp "$here/fixtures/shutdown" "$var/lib/convergent/test-release/shutdown-test"
 	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
 	if [ "$mode" = guests-update ]; then

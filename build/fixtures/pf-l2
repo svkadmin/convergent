@@ -9,4 +9,43 @@ while read -r iface vhid parent label prefix gateway family <&3; do
     ic start "$name"
     timeout -k 1 60 sh -c 'until incus --force-local --project owner exec "$1" -- ip link set eth0 up; do sleep 1; done' sh "$name"
 done 3<"$1"
-python3 /var/lib/convergent/test-release/fixtures/pf-l2.py "$1"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+awk '$NF == "dev" || $NF == "jhn"' "$1" >"$work/rows"
+[ "$(cat /sys/class/net/work/bridge/vlan_filtering)" = 1 ] || {
+    echo 'pf-l2: VLAN filtering disabled' >&2
+    exit 1
+}
+query() { timeout 10 incus --force-local query "$1"; }
+nic() {
+    query "/1.0/instances/$1?project=owner" >"$work/instance"
+    jq -e --arg vlan "$vlan" '.expanded_devices.eth0 |
+        .vlan == $vlan and .["security.mac_filtering"] == "true"' "$work/instance" >/dev/null
+}
+pid() {
+    query "/1.0/instances/$1/state?project=owner" >"$work/state"
+    jq -er '.pid | select(type == "number" and . > 0)' "$work/state"
+}
+while read -r iface vhid parent label prefix gateway family <&3; do
+    vlan=${parent#vlan}
+    name=pf-work-l2-$vlan
+    nic "$name"
+    settings=$(jq -c '.expanded_devices.eth0 | with_entries(select(.key | startswith("security.") or startswith("vlan")))' "$work/instance")
+    printf 'CV-PF L2 NIC %s %s\n' "$name" "$settings"
+    pid "$name" >"$work/peer-$vlan"
+done 3<"$work/rows"
+while read -r iface vhid parent label prefix gateway family <&3; do
+    vlan=${parent#vlan}
+    name=pf-work-$vlan
+    nic "$name"
+    mac=$(jq -er '.expanded_config["volatile.eth0.hwaddr"]' "$work/instance")
+    sender=$(pid "$name")
+    printf '%s %s %s %s %s\n' "$vlan" "${prefix%.*}.10" "$sender" "$mac" "$(cat "$work/peer-$vlan")"
+done 3<"$work/rows" >"$work/peers"
+/var/lib/convergent/test-release/fixtures/pf-l2-bin "$work/peers"
+for name in fw1work fw2work; do
+    timeout 10 bridge -j vlan show dev "$name" >"$work/ports"
+    jq -e 'length == 1 and (.[0].vlans | length > 0) and
+        all(.[0].vlans[]; (.flags // [] | length) == 0)' "$work/ports" >/dev/null
+done

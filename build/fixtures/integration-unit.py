@@ -27,7 +27,15 @@ def module(name):
     return loaded
 
 
-module("pf-l2").selftest()
+binary = here / "pf-l2-bin"
+if binary.is_file():
+    subprocess.run([str(binary), "--selftest"], check=True)
+else:
+    with tempfile.TemporaryDirectory() as directory:
+        binary = Path(directory) / "pf-l2-bin"
+        subprocess.run(["gcc", "-O2", "-static", "-Wall", "-Werror", "-std=c99",
+                        str(here / "pf-l2.c"), "-o", str(binary)], check=True)
+        subprocess.run([str(binary), "--selftest"], check=True)
 remote = module("remmina")
 driver = (here.parent / "test").read_text()
 start = driver.index("import json, os, re, select, signal, socket, subprocess, time\n")
