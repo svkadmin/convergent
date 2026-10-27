@@ -1,0 +1,12 @@
+#!/bin/sh
+# A receiver on every installed owner VLAN makes cross-VLAN leakage observable.
+set -eu
+ic() { incus --force-local --project owner "$@" </dev/null; }
+while read -r iface vhid parent label prefix gateway family <&3; do
+    name=pf-work-l2-${parent#vlan}
+    ic init pf-browser "$name" -p pf-base -p "work-$label" -c security.protection.delete=false -c limits.memory=128MiB
+    ic config device add "$name" render none
+    ic start "$name"
+    timeout -k 1 60 sh -c 'until incus --force-local --project owner exec "$1" -- ip link set eth0 up; do sleep 1; done' sh "$name"
+done 3<"$1"
+python3 /var/lib/convergent/test-release/fixtures/pf-l2.py "$1"

@@ -1,0 +1,53 @@
+#!/bin/sh
+# The real application's session bus and the host/Cage sockets come from remmina-session.
+set -eu
+test_start=$(date +%s)
+cv_time() { echo "CV-TIME remmina-$1 $(($(date +%s) - test_start))"; }
+cv_time "$1-start"
+trap 'cv_time "$1-duration"' 0
+trap 'exit 1' HUP INT TERM
+ic() { incus --force-local --project default "$@"; }
+owner() { setpriv --reuid "$uid" --regid "$gid" --init-groups env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"; }
+app() {
+    ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina XDG_RUNTIME_DIR=/run/user/1000 \
+        WAYLAND_DISPLAY=/mnt/browser/wayland-0 GDK_BACKEND=wayland DBUS_SESSION_BUS_ADDRESS="$bus" "$@"
+}
+wait_file() {
+    tries=0
+    until [ -e "$1" ]; do tries=$((tries + 1)); [ "$tries" -lt 100 ]; sleep .1; done
+}
+case $1 in
+clipboard)
+    app sh -c 'printf "[remmina]\nname=CV clipboard\nprotocol=VNC\nserver=%s:5900\ndisableclipboard=0\nviewonly=0\n" "$1" > /home/remmina/.cv-session.remmina' sh "$base.7"
+    app remmina -c /home/remmina/.cv-session.remmina
+    wait_file "$work/connected"
+    touch "$work/send"
+    inner=/run/convergent/browser/remmina/cage/wayland-0
+    tries=0
+    until [ "$(owner env WAYLAND_DISPLAY="$inner" timeout 2 wl-paste -n 2>/dev/null || :)" = cv-remote-clipboard ]; do
+        tries=$((tries + 1)); [ "$tries" -lt 20 ]; sleep .2
+    done
+    [ "$(owner wl-paste -n)" = cv-host-clipboard ]
+    printf cv-remmina-clipboard | owner env WAYLAND_DISPLAY="$inner" wl-copy
+    wait_file "$work/received"
+    [ "$(owner wl-paste -n)" = cv-host-clipboard ]
+    ;;
+secret-loss)
+    app remmina --update-profile /home/remmina/.cv-session.remmina --set-option password=cv-before-loss
+    app grep -qx 'password=\.' /home/remmina/.cv-session.remmina
+    [ "$(app secret-tool lookup filename /home/remmina/.cv-session.remmina key password)" = cv-before-loss ]
+    ic exec remmina -- mv /usr/share/dbus-1/services/org.freedesktop.secrets.service /usr/share/dbus-1/services/org.freedesktop.secrets.service.cv-test
+    app gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.ReloadConfig
+    app sh -c 'kill $(pidof gnome-keyring-daemon)'
+    tries=0
+    until [ "$(app gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.NameHasOwner org.freedesktop.secrets)" = '(false,)' ]; do
+        tries=$((tries + 1)); [ "$tries" -lt 20 ]; sleep .2
+    done
+    app remmina --update-profile /home/remmina/.cv-session.remmina --set-option password=cv-after-loss --set-option name=CV-after-loss >"$work/save.log" 2>&1
+    app grep -qx name=CV-after-loss /home/remmina/.cv-session.remmina
+    app grep -qx password= /home/remmina/.cv-session.remmina
+    grep -q 'Secret Service unavailable; password was not saved' "$work/save.log"
+    [ "$(app gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.NameHasOwner org.freedesktop.secrets)" = '(false,)' ]
+    ;;
+*) exit 1 ;;
+esac

@@ -337,6 +337,20 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 chroot_mount
 qemu_identity
+case $mode in guests|guests-maint|guests-update|online)
+	cp -R "$here/fixtures" "$BUILDER$work/fixtures"
+	cp "$here/../rootfs/usr/lib/convergent/incus/shutdown" "$BUILDER$work/shutdown-original"
+	cp "$here/test" "$BUILDER$work/test"
+	(
+		test_start=$(date +%s)
+		cv_time integration-unit-start
+		rc=0
+		bld timeout -k 5 60 python3 "$work/fixtures/integration-unit.py" "$work/shutdown-original" || rc=$?
+		cv_time integration-unit-duration
+		exit "$rc"
+	)
+	;;
+esac
 
 attach() {
 	loop=$(losetup -fP --show "$disk")
@@ -2249,6 +2263,8 @@ EOF
 	cp "$here/test-remmina" "$var/lib/convergent/test-release/remmina-test"
 	# End Remmina lifecycle fixture.
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
+	cp -R "$here/fixtures" "$var/lib/convergent/test-release/fixtures"
+	cp "$here/fixtures/shutdown" "$var/lib/convergent/test-release/shutdown-test"
 	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
 	if [ "$mode" = guests-update ]; then
 		legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
@@ -2553,9 +2569,9 @@ case $r in
 esac
 if [ "$r" = 0 ]; then
 	# Remmina: private state, keyring and share.
-	timeout -k 10 180 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
+	timeout -k 10 480 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End Remmina.
-	timeout -k 30 3600 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	timeout -k 30 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# Real TLS, per-session NSS and orphan recovery.
 	timeout -k 30 300 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End Incus UI checks.
@@ -2595,7 +2611,7 @@ exit "$result"
 EOF
 	# Gentoo configures cronie with SPOOL_DIR=/var/spool/cron/crontabs.
 	cat >"$var/spool/cron/crontabs/root" <<'EOF'
-@reboot { . /var/lib/convergent/test-release/timing; cv_time guest-services; while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & cv_time guests-init; sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; if [ "$result" = 0 ]; then cv_time uplink-test; sh /var/lib/convergent/test-release/uplink-test || { echo "CV-UPLINK failed"; result=1; }; cv_time smoke-test; sh /var/lib/convergent/test-release/smoke-test "$result" || result=1; fi; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; cv_time guests-ready; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; } >/dev/console 2>&1
+@reboot { . /var/lib/convergent/test-release/timing; cv_time guest-services; while ! /sbin/rc-service incus status >/dev/null 2>&1; do sleep 1; done; ( while sleep 60; do for f in fw1 fw2; do echo CV-DIAG $f; timeout 20 ssh -F /etc/convergent/ssh_config $f 'ifconfig -g carp; ifconfig carp | grep -c MASTER' 2>&1; done; done ) & cv_time guests-init; sh -x /usr/local/sbin/guests init /var/lib/convergent/test-release 2>/var/log/guests-trace.log; result=$?; tail -n 25 /var/log/guests-trace.log; if [ "$result" = 0 ]; then cv_time uplink-test; sh /var/lib/convergent/test-release/uplink-test || { echo "CV-UPLINK failed"; result=1; }; cv_time smoke-test; sh /var/lib/convergent/test-release/smoke-test "$result" || result=1; fi; [ "$result" = 0 ] || { ip -4 route; ip -4 -br addr; for a in 100.80.1.1 100.80.1.2 100.80.1.3 100.80.0.1 100.80.0.2 100.80.0.10; do ping -c1 -W2 $a >/dev/null 2>&1 && echo "ping $a ok" || echo "ping $a FAIL"; done; for f in fw1 fw2; do echo "== $f"; ssh -F /etc/convergent/ssh_config $f "ifconfig carp | grep -E \"^carp|status|inet \"; route -n show -inet | grep -E \"default|100.80\" | head -n 8; pfctl -ss | grep -c . ; pfctl -sr | grep -E \"22|host\" | head -n 6" 2>&1 | cut -c1-120; done; }; /usr/local/sbin/guests status; cv_time guests-ready; sync; echo CV-GUESTS-RESULT "$result"; if [ -f /var/lib/convergent/test-release/update-test ]; then sh /var/lib/convergent/test-release/update-test "$result"; fi; timeout -k 5 240 sh /var/lib/convergent/test-release/shutdown-test prepare || echo CV-SHUTDOWN-RESULT 1; sync; /sbin/poweroff; } >/dev/console 2>&1
 EOF
 	chown 0:0 "$var/spool/cron/crontabs/root"
 	chmod 0600 "$var/spool/cron/crontabs/root"
@@ -3091,6 +3107,7 @@ work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
 guest_test = goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update")
+drain_test = goal in ("guests", "guests-maint", "guests-update", "online")
 marker = {"guests-maint": b"CV-UPDATE-RESULT", "guests-update": b"CV-UPDATE-RESULT", "online": b"CV-ONLINE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
@@ -3113,7 +3130,7 @@ qemu = subprocess.Popen([
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
     # Return each corrupt boot to the fallback counter checks.
-    (["-no-reboot"] if goal == "bless" else []) +
+    (["-no-reboot"] if goal == "bless" or drain_test else []) +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get a QEMU user-networking uplink, which the test bridges into wan as eth1.
@@ -3127,6 +3144,8 @@ continued = False
 prompted = None
 ended = "stopped"
 result = None
+drain_result = None
+drain_started = None
 
 def command(name):
     qmp.sendall(json.dumps({"execute": name}).encode() + b"\n")
@@ -3182,6 +3201,12 @@ try:
                         line, timing = timing.split(b"\n", 1)
                         if re.fullmatch(rb"CV-TIME [a-z0-9-]+ -?[0-9]+\r?", line):
                             print(line.decode().rstrip(), flush=True)
+                        if drain_test and line.rstrip() == b"CV-SHUTDOWN-ARMED":
+                            drain_started = time.monotonic()
+                            deadline = min(deadline, drain_started + 480)
+                        match = re.fullmatch(rb"CV-SHUTDOWN-RESULT ([0-9]+)\r?", line)
+                        if drain_test and match:
+                            drain_result = int(match[1])
                     timing = timing[-4096:]
                     seen = (seen + chunk)[-8192:]
                     if guest_test and result is None:
@@ -3201,7 +3226,7 @@ try:
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
             if goal == "recovery":
                 done = done and continued
-            if goal == "rescue":
+            if goal == "rescue" or drain_test:
                 done = False  # Wait for guest poweroff, not a host-initiated quit.
             if ready and not quitting and done:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
@@ -3213,6 +3238,9 @@ try:
                 ended = "blessed" if quitting else "poweroff" if powered_off else "reboot" if rebooted else "stopped"
                 if quitting and guest_test:
                     ended = f"{goal}-{result}"
+                if drain_test and powered_off and not rebooted and drain_started is not None:
+                    print(f"CV-TIME shutdown-poweroff-duration {int(time.monotonic() - drain_started)}", flush=True)
+                    ended = f"{goal}-0" if result == 0 and drain_result == 0 else f"{goal}-1"
 finally:
     if qemu.poll() is None:
         qemu.kill()
@@ -3318,6 +3346,8 @@ guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
 	case $mode in guests) budget=5400 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
+	# L2 injection (1140), real Remmina session (300), shutdown preparation/drain (720).
+	budget=$((budget + 2160))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
