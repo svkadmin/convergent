@@ -67,6 +67,11 @@ ic start remmina
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
 keyring read
 ic stop remmina --force
+if [ "$mode" = smoke ]; then
+    flock -u 8
+    timeout -k 10 300 sh /var/lib/convergent/test-release/fixtures/remmina-session 8>&-
+    flock -n 8
+fi
 if [ "$mode" = update ]; then
     source=/var/lib/convergent/test-release/guests/remmina
     cp -a "$source" "$work/broken"

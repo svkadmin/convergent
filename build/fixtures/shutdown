@@ -1,0 +1,77 @@
+#!/bin/sh
+# Instrument only the disposable host's drain; OpenRC still invokes the production stop path.
+set -eu
+release=/var/lib/convergent/test-release
+state=$release/shutdown
+ic() { timeout -k 1 10 incus --force-local --project default "$@"; }
+cv_time() { echo "CV-TIME shutdown-$1 $(($(date +%s) - test_start))"; }
+case $1 in
+prepare)
+    test_start=$(date +%s)
+    cv_time prepare-start
+    mkdir "$state"
+    echo "$test_start" >"$state/start"
+    [ -e /run/openrc/started/convergent-setup ]
+    ic query '/1.0/instances?recursion=1&project=default' >"$state/inventory"
+    for name in def int remmina; do
+        if ! jq -e --arg n "$name" 'any(.[]; .name == $n)' "$state/inventory" >/dev/null; then
+            if [ "$name" = remmina ]; then ic init candidate-remmina "$name" -p remmina
+            else ic init candidate-browser "$name" -p browser-base -p "browser-$name"; fi
+        fi
+    done
+    for name in def int remmina svc wan fw1 fw2; do
+        status=$(ic query "/1.0/instances/$name?project=default" | jq -r .status)
+        [ "$status" = Running ] || ic start "$name"
+    done
+    ic init candidate-browser tmp-98 --ephemeral -p browser-base -p browser-tmp \
+        -c environment.BROWSER_IPV4=100.80.3.98 -d eth0,ipv4.address=100.80.3.98 -d eth0,hwaddr=00:16:3e:80:03:98
+    ic config device add tmp-98 render none
+    ic start tmp-98
+    for name in wan fw2; do ic config set "$name" boot.autorestart=false user.convergent.autorestart=true; done
+    ic query '/1.0/instances?recursion=1&project=default' >"$state/before"
+    jq -e '[.[] | select(.name | test("^(def|int|remmina|tmp-98|svc|wan|fw1|fw2)$"))] |
+        length == 8 and all(.[]; .status == "Running")' "$state/before" >/dev/null
+    cp /usr/lib/convergent/incus/shutdown "$state/original"
+    awk -v check="$release/shutdown-test" '
+        {print}
+        /note "stopping \$project\/\$node"/ {
+            print "    sh " check " observe \"$project\" \"$node\" || touch " check ".failed"; start++
+        }
+        /^note "guest drain completed/ {
+            print "sh " check " finish \"$result\""; end++
+        }
+        END {if (start != 1 || end != 1) exit 1}
+    ' "$state/original" >"$state/instrumented"
+    sh -n "$state/instrumented"
+    mount --bind "$state/instrumented" /usr/lib/convergent/incus/shutdown
+    cv_time prepare-duration
+    date +%s >"$state/start"
+    echo CV-SHUTDOWN-ARMED
+    ;;
+observe|finish)
+    test_start=$(cat "$state/start")
+    if [ "$1" = observe ]; then
+        [ "$2" = default ] || exit 0
+        case $3 in def|int|remmina|tmp-98|svc|wan|fw1|fw2) ;; *) exit 0 ;; esac
+        node=$3
+    else node=finished; fi
+    snapshot=$(mktemp "$state/snapshot.XXXXXX")
+    ic query '/1.0/instances?recursion=1&project=default' >"$snapshot"
+    case $node in def|int|remmina|tmp-98) stage=1 ;; svc) stage=2 ;; wan) stage=3 ;; fw1|fw2) stage=4 ;; *) stage=5 ;; esac
+    jq -e --argjson stage "$stage" --slurpfile before "$state/before" \
+        -f "$release/fixtures/shutdown-check.jq" "$snapshot" >/dev/null || touch "$release/shutdown-test.failed"
+    echo "CV-SHUTDOWN observed $node stage=$stage"
+    [ "$1" != observe ] || echo "$node" >>"$state/events"
+    if [ "$1" = finish ]; then
+        result=$2
+        printf '%s\n' def int remmina tmp-98 svc wan fw1 fw2 | sort >"$state/expected"
+        sort "$state/events" >"$state/observed"
+        cmp "$state/expected" "$state/observed" || result=1
+        [ ! -e "$release/shutdown-test.failed" ] || result=1
+        cv_time drain-duration
+        echo "CV-SHUTDOWN-RESULT $result"
+        sync
+    fi
+    ;;
+*) exit 1 ;;
+esac

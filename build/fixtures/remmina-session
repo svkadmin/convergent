@@ -1,0 +1,103 @@
+#!/bin/sh
+# Headless owner session, production launcher, and a disposable work-network VNC peer.
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+release=/var/lib/convergent/test-release
+test_start=$(date +%s)
+cv_time() { echo "CV-TIME remmina-$1 $(($(date +%s) - test_start))"; }
+cv_time session-start
+uid=$(id -u nobody)
+gid=$(id -g nobody)
+runtime=/run/user/$uid
+display=$runtime/wayland-1 ipc=$runtime/sway-ipc.test.sock
+work=$(mktemp -d /var/tmp/remmina-session.XXXXXX)
+children= remote=
+ic() { incus --force-local --project default "$@"; }
+owner() {
+    set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs \
+        env -i PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"
+    if [ "${background:-}" = yes ]; then exec "$@"; fi
+    "$@"
+}
+cleanup() {
+    result=$?
+    trap - 0
+    trap '' HUP INT TERM
+    set +e
+    touch "$work/done"
+    ic exec remmina -- sh -c 'file=/usr/share/dbus-1/services/org.freedesktop.secrets.service; [ ! -e "$file.cv-test" ] || mv "$file.cv-test" "$file"' || result=1
+    for child in $children; do kill "$child" 2>/dev/null; done
+    for child in $children; do wait "$child" 2>/dev/null; done
+    ic stop remmina --force >/dev/null 2>&1
+    for device in wayland pipewire; do ic config device remove remmina "$device" || result=1; done
+    [ -z "$remote" ] || ic delete cv-remote --force || result=1
+    [ "$result" = 0 ] || { cat "$work"/*.log; tail -n 30 /run/convergent/browser/remmina/*.log; }
+    rm -rf "$work" "$runtime"
+    cv_time session-duration
+    exit "$result"
+}
+[ ! -e "$runtime" ]
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+wait_file() {
+    tries=0
+    until [ -e "$1" ]; do
+        tries=$((tries + 1)); [ "$tries" -lt 100 ] || return 1
+        sleep .1
+    done
+}
+install -d -o "$uid" -g "$gid" -m 0700 "$runtime"
+printf 'output HEADLESS-1 mode 1024x768\n' >"$work/sway.conf"
+chmod 755 "$work"
+chmod 644 "$work/sway.conf"
+cd /
+background=yes owner env WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 sway -c "$work/sway.conf" >"$work/sway.log" 2>&1 &
+children="$! $children"
+wait_file "$display"
+wait_file "$ipc"
+background=yes owner pipewire >"$work/pipewire.log" 2>&1 &
+children="$! $children"
+wait_file "$runtime/pipewire-0"
+printf cv-host-clipboard | owner wl-copy
+[ "$(owner wl-paste -n)" = cv-host-clipboard ]
+ic init candidate-browser cv-remote -p browser-base -c security.protection.delete=false -c limits.memory=128MiB
+remote=1
+ic config device add cv-remote render none
+ic config device add cv-remote eth0 nic network=work vlan=320 name=eth0 security.mac_filtering=true
+ic start cv-remote
+base=$(awk '$3 == "vlan320" {sub(/\.0\/26$/, "", $5); print $5}' /etc/convergent/segments)
+timeout -k 1 60 sh -c 'until incus --force-local exec cv-remote -- true; do sleep 1; done'
+ic exec cv-remote -- sh -eu -c 'sysctl -qw net.ipv4.conf.eth0.arp_ignore=0; ip link set eth0 up; ip addr add "$1.7/26" dev eth0; ip route add default via "$1.62"' sh "$base"
+pid=$(ic query '/1.0/instances/cv-remote/state?project=default' | jq -er .pid)
+nsenter -t "$pid" -n python3 "$release/fixtures/remmina.py" vnc "$base.7" "$work" >"$work/vnc.log" 2>&1 &
+server=$!; children="$server $children"
+wait_file "$work/listening"
+ic start remmina
+timeout -k 1 60 sh -c 'until incus --force-local exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
+# Provision a known encrypted keyring; the actual launcher must unlock it through Zenity.
+ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina XDG_RUNTIME_DIR=/run/user/1000 dbus-run-session -- sh -eu -c '
+    printf test | gnome-keyring-daemon --unlock --components=secrets
+    test "$(gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked)" = "(<false>,)"
+'
+ic stop remmina --force
+SUDO_UID=$uid /usr/local/sbin/browser --privileged "$display" "$ipc" remmina >"$work/launcher.log" 2>&1 &
+launcher=$!; children="$launcher $children"
+wait_file /run/convergent/browser/remmina/cage/wayland-0
+python3 "$release/fixtures/remmina.py" keyboard /run/convergent/browser/remmina/cage/wayland-0 "$work" >"$work/keyboard.log" 2>&1 &
+keyboard=$!; children="$keyboard $children"
+wait_file "$work/keyboard-ready"
+timeout -k 1 30 sh -c 'until incus --force-local exec remmina -- pidof zenity; do sleep .2; done'
+sleep 1
+touch "$work/unlock"
+timeout -k 1 30 sh -c 'until incus --force-local exec remmina -- pidof remmina; do sleep .2; done'
+kill -0 "$launcher" "$keyboard"
+bus=$(ic exec remmina -- sh -c 'pid=$(pidof remmina); tr "\000" "\n" </proc/$pid/environ' | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+[ -n "$bus" ]
+export uid gid runtime display ipc bus base work
+for test_case in clipboard secret-loss; do
+    timeout -k 5 60 sh "$release/fixtures/remmina-app" "$test_case"
+done
+wait "$server"
+kill -0 "$launcher" "$keyboard"
+echo 'CV-REMOTE real session clipboard and Secret Service loss passed'

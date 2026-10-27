@@ -244,6 +244,16 @@ DHCP
 	done
 	listen "$name" "$base.10" 8080
 done 3<"$work_rows"
+test_start=$(date +%s)
+cv_time() { echo "CV-TIME pf-l2-$1 $(($(date +%s) - test_start))"; }
+cv_time start
+while read -r iface vhid parent label prefix gateway family <&3; do
+	created="pf-work-l2-${parent#vlan} $created"
+done 3<"$work_rows"
+rc=0
+timeout -k 5 1140 sh /var/lib/convergent/test-release/fixtures/pf-l2 "$work_rows" || rc=$?
+cv_time duration
+[ "$rc" = 0 ] || exit "$rc"
 home_want=$(awk '
 function ip(s,a) {split(s,a,"."); return ((a[1]*256+a[2])*256+a[3])*256+a[4]}
 {for(i=1;i<=NF;i++){split($i,c,"/"); size=2^(32-c[2]); if(int(ip("10.0.2.100")/size)==int(ip(c[1])/size)) found=1}}
