@@ -36,7 +36,7 @@ grep -q "^define internal    = $net\$" "$here/rootfs/etc/nftables.nft" ||
 
 PACKAGES="alpine-baselayout busybox busybox-openrc busybox-mdev-openrc mdev-conf openrc mkinitfs
 	linux-lts linux-firmware-intel linux-firmware-rtl_nic wireless-regdb
-	iwd iw dbus nftables flock openssh-server openssl blkid chrony syslog-ng prometheus-node-exporter"
+	iwd iw dbus nftables flock openssh-server openssl blkid e2fsprogs chrony syslog-ng prometheus-node-exporter"
 
 work=$(mktemp -d /var/tmp/wan-build.XXXXXX)
 loop=
@@ -89,6 +89,7 @@ chroot "$mini" /sbin/apk add --no-cache qemu-img grub grub-efi
 
 inchroot() { chroot "$target" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "$@"; }
 inchroot sh -c 'command -v flock' >/dev/null || die "flock is missing after install"
+inchroot sh -c 'command -v fsck.ext4' >/dev/null || die "fsck.ext4 is missing after install"
 
 # Only what was asked for: the kernel and its firmware must be there.
 [ -e "$target/boot/vmlinuz-lts" ] || die "no /boot/vmlinuz-lts after install"
@@ -101,6 +102,8 @@ grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's d
 
 # Overlay and fill placeholders; set checkout-independent modes below.
 tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner -cf - . | tar -C "$target" -xf -
+# Alpine's sysctl service needs a regular-file override; hardening is in 90-convergent.conf.
+: >"$target/etc/sysctl.d/00-alpine.conf"
 sh "$here/../../build/networks" wan "$target"
 cp "$target/etc/convergent/topology.sha256" "$out/"
 sed -i "s|@ROOT_UUID@|$uuid|g; s|@WAN_COUNTRY@|$WAN_COUNTRY|g" "$target/boot/grub/grub.cfg" "$target/etc/fstab"

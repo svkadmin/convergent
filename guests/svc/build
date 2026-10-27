@@ -68,6 +68,8 @@ cp -R "${plugin_json%/plugin.json}/." "$plugin/"
 [ -s "$plugin/MANIFEST.txt" ] || die "plugin signature manifest missing"
 
 cp -R "$here/rootfs/." "$root/"
+# Alpine's sysctl service needs a regular-file override; namespaced keys are in 90-svc.conf.
+: >"$root/etc/sysctl.d/00-alpine.conf"
 sh "$here/../../build/networks" svc "$root"
 chmod 755 "$root/etc/init.d/"* "$root/usr/local/sbin/"*
 chroot "$root" /bin/sh -eu <<'SETUP'
@@ -92,6 +94,8 @@ chown root:grafana /etc/grafana
 chmod 750 /etc/victoria-metrics/tls /etc/victoria-logs/tls /etc/grafana
 # Package post-install scripts must not decide this image's runlevels.
 rm -rf /etc/runlevels
+# Unused package services require the absent non-container dev service.
+rm -f /etc/init.d/machine-id /etc/init.d/watchdog
 mkdir -p /etc/runlevels/sysinit /etc/runlevels/boot /etc/runlevels/default /etc/runlevels/shutdown
 rc-update add devfs sysinit
 rc-update add dmesg sysinit

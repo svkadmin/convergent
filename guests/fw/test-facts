@@ -1,0 +1,37 @@
+#!/bin/sh
+# Offline pflogd process-state fixtures, including a live but suspended child.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+sed -n '/if capture pflogd /,/^[[:space:]]*fi$/p' \
+	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/check"
+capture() { data=$sample; }
+check() {
+	ok=1
+	. "$work/check" >"$work/out"
+	[ "$ok" = "$1" ]
+	grep -qx "convergent_pflogd_up $1" "$work/out"
+	grep -qx "convergent_pflogd_suspended $2" "$work/out"
+}
+sample='pflogd: [priv] (pflogd)
+ pflogd: [running] -s 160 -i pflog0 -f /var/log/pflog (pflogd)'
+check 1 0
+sample='pflogd: [priv] (pflogd)
+pflogd: [suspended] -s 160 -i pflog0 -f /var/log/pflog (pflogd)'
+check 0 1
+sample="$sample
+pflogd: [running] -s 160 -i pflog0 -f /var/log/pflog (pflogd)"
+check 0 1
+sample='pflogd: [initializing] (pflogd)'
+check 0 0
+sample='sh -c echo pflogd: [running] -s 160'
+check 0 0
+sample=
+check 0 0
+capture() { ok=0; return 1; }
+ok=1
+. "$work/check"
+[ "$ok" = 0 ]
+echo 'fw-facts: pflogd running, suspended, absent and failed-query fixtures passed'

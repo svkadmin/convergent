@@ -17,15 +17,32 @@ echo "== forwarding"; cat /proc/sys/net/ipv4/ip_forward
 echo "== nat"; nft list chain inet wan postrouting 2>&1 | grep -E 'masquerade|counter'
 echo "== upstream dns"; cat /run/wan/resolv.* 2>/dev/null || echo none
 echo "== links"; ip -o link | cut -c 1-110
-echo "== dhcp"; ps -o pid,args | grep -E '[u]dhcpc|[d]hcpcd' || echo 'no DHCP client'
+echo "== dhcp"
+echo "Wi-Fi uses iwd's built-in DHCP client (EnableNetworkConfiguration=true)"
+ps -o pid,args | grep -E '[u]dhcpc|[d]hcpcd' || echo 'no external DHCP client'
+echo "== iwd"; rc-service iwd status 2>&1
+echo "== chrony"; timeout 5 chronyc tracking 2>&1
 echo "== ifstate"; cat /run/ifstate* 2>/dev/null || echo none
 echo "== overlap refusal"
+refused=0
 if [ -s /run/wan/refused ]; then
+	refused=1
 	awk '{print "refused interface=" $1 " subnet=" $2}' /run/wan/refused
 fi
 for record in /run/wan/dhcp-overlap.*; do
 	[ -s "$record" ] || continue
+	refused=1
 	awk -v ifc="${record##*.}" '{print "refused interface=" ifc " subnet=" $0}' "$record"
 done
-echo "Choose a non-overlapping Wi-Fi network, or move the wired adapter and retry from the host:"
-echo "sudo ssh -F /etc/convergent/ssh_config wan 'check retry'"
+if [ "$refused" = 1 ]; then
+	echo "Choose a non-overlapping Wi-Fi network, or move the wired adapter and retry from the host:"
+	echo "sudo ssh -F /etc/convergent/ssh_config wan 'check retry'"
+else
+	echo none
+fi
+echo "== local log (last 200 lines, at most 32 KiB)"
+if [ -s /var/log/wan/diag.log ] || [ -s /var/log/wan/diag.log.1 ]; then
+	cat /var/log/wan/diag.log.1 /var/log/wan/diag.log 2>/dev/null | tail -c 32768 | tail -n 200
+else
+	echo none
+fi

@@ -86,6 +86,16 @@ capture() {
 	fi
 	if rcctl check pflog_stream >/dev/null 2>&1; then up=1; else up=0; fi
 	echo "convergent_pflog_stream_up $up"
+	if capture pflogd ps -ax -o args=; then
+		printf '%s\n' "$data" | awk '
+			/^[[:space:]]*pflogd: \[running\] / {running=1}
+			/^[[:space:]]*pflogd: \[suspended\] / {suspended=1}
+			END {
+				print "convergent_pflogd_up " (running && !suspended)
+				print "convergent_pflogd_suspended " suspended+0
+				exit (!running || suspended)
+			}' || ok=0
+	fi
 	echo "convergent_fw_facts_success $ok"
 	echo "convergent_fw_facts_duration_seconds $(($(date +%s) - started))"
 } >"$tmp"

@@ -6,6 +6,19 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+sh "$repo/guests/wan/test-diag"
+sh "$repo/guests/fw/test-facts"
+# Alpine's sysctl init checks -f before skipping the vendor file.
+target=$work/sysctl
+root=$target
+mkdir -p "$target/etc/sysctl.d"
+for guest in wan svc; do
+    sed -n '/^: >"\$.*\/etc\/sysctl.d\/00-alpine.conf"$/p' "$repo/guests/$guest/build" >"$work/override"
+    [ -s "$work/override" ]
+    . "$work/override"
+    [ -f "$target/etc/sysctl.d/00-alpine.conf" ] && [ ! -s "$target/etc/sysctl.d/00-alpine.conf" ]
+    rm "$target/etc/sysctl.d/00-alpine.conf"
+done
 python3 - "$repo" "$work" <<'PY'
 import contextlib, importlib, io, json, re, subprocess, sys
 from pathlib import Path

@@ -1361,6 +1361,15 @@ cv_time maintenance-reboot
 )
 [ "$?" = 0 ] || { fw_diag; bad $LINENO; }
 cv_time dns-recovery
+# Verify the local packet archive before and after the stock OpenBSD rotation.
+for f in fw1 fw2; do
+    timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
+        /usr/local/libexec/convergent/fw-facts &&
+        grep -qx "convergent_pflogd_up 1" /var/node_exporter/textfile/convergent_fw.prom &&
+        newsyslog -F /var/log/pflog && sleep 2 &&
+        /usr/local/libexec/convergent/fw-facts &&
+        grep -qx "convergent_pflogd_up 1" /var/node_exporter/textfile/convergent_fw.prom' || { fw_diag; bad $LINENO; }
+done
 # Use a local list so stopped-daemon recovery does not depend on a download.
 (
     set -e
