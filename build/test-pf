@@ -29,6 +29,7 @@ cleanup() {
 			[ ! -f /run/cv-pf-$p.pid ] || { kill "$(cat /run/cv-pf-$p.pid)" && rm /run/cv-pf-$p.pid; }
 		done
 	' || r=1
+	[ -z "${rem_started:-}" ] || ic stop remmina --force || r=1
 	for name in $created; do ic delete "$name" --force || r=1; done
 	[ -z "${work_profile:-}" ] || incus --force-local --project owner profile delete pf-base || r=1
 	[ -z "${work_image:-}" ] || incus --force-local --project owner image delete pf-browser || r=1
@@ -51,6 +52,17 @@ tcp() {
 		' sh "$2" "$3"
 	fi
 }
+# Evidence for a failed work probe: instance states, the source's view and the masters' view.
+work_diag() {
+	incus --force-local --project owner list -c ns --format csv 2>&1 | sed 's/^/CV-PF diag: /'
+	nft list chain bridge host-l2 work_gate 2>&1 | grep -E 'drop|chain' | sed 's/^/CV-PF diag gate: /'
+	ic exec "$1" -- sh -c 'ip -4 addr show eth0 | grep inet; ip -4 route; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
+		sed "s/^/CV-PF diag $1: /"
+	for f in fw1 fw2; do
+		timeout 20 /usr/bin/ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep 100.80.3; pfctl -ss | grep -c " 100.80.3"' 2>&1 |
+			sed "s/^/CV-PF diag $f: /"
+	done
+}
 probe() { # expectation source destination port [dns]
 	got=error
 	if [ "${5:-}" = dns ]; then
@@ -64,9 +76,15 @@ probe() { # expectation source destination port [dns]
 			[ "$1:$got" = allow:deny ] || break
 		done
 	else
-		got=$(tcp "$2" "$3" "$4") || got=error
+		# Right after a failover CARP and ARP settle; an expected allow gets three tries too.
+		for attempt in 1 2 3; do
+			got=$(tcp "$2" "$3" "$4") || got=error
+			[ "$1:$got" = allow:deny ] || break
+			sleep 2
+		done
 	fi
 	if [ "$got" = "$1" ]; then verdict=ok; else verdict=FAIL; result=1; fi
+	case $verdict:$2 in FAIL:pf-work-*) work_diag "$2" "$3" ;; esac
 	echo "CV-PF $verdict src=$2 dst=$3 port=$4${5:+/udp} want=$1 got=$got"
 }
 listen() {
@@ -319,7 +337,11 @@ for master in fw1 fw2; do
 				for i in $(seq 30); do grep -qx renew /run/w1-events && break; sleep 1; done
 				grep -qx renew /run/w1-events
 				cmp /run/w1-acquired /run/w1-lease
-			'
+			' || {
+				ic exec "$source" -- cat /run/w1-dhcp.log /run/w1-events 2>&1 | sed "s/^/CV-PF dhcp $source: /"
+				work_diag "$source" "$gateway"
+				exit 1
+			}
 			lease=$(ic exec "$source" -- cat /run/w1-lease)
 			address=${lease%% *}
 			mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
@@ -379,10 +401,21 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 
 
 # Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
-ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
-created="pf-remmina $created"
-ic start pf-remmina
-timeout -k 1 60 sh -c 'until incus --force-local --project default exec pf-remmina -- test -f /run/remmina-ready; do sleep 1; done'
+# The remmina profile pins the one address PF allows: reuse the installed container when there is one.
+# check auto stops a Remmina container whose supervisor lock is free; hold it as the launcher does.
+mkdir -p /run/convergent/browser
+exec 7>/run/convergent/browser/remmina.lock
+flock -w 120 7
+if ic info remmina >/dev/null 2>&1; then
+	rem=remmina
+	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
+else
+	rem=pf-remmina
+	ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
+	created="pf-remmina $created"
+	ic start pf-remmina
+fi
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/remmina-ready; do sleep 1; done' sh "$rem"
 udp_remote() {
     got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
         reply=$(printf "cv-remmina\n" | nc -u -w 2 "$1" "$2") || :
@@ -424,29 +457,29 @@ for master in fw1 fw2; do
             [ "$master" != fw1 ] || listen "$target" "$address.1" "$port"
             probe allow "$target" "$address.1" "$port"
             case $port in 22|3389|5900|5999) want=allow ;; *) want=deny ;; esac
-            probe "$want" pf-remmina "$address.1" "$port"
+            probe "$want" "$rem" "$address.1" "$port"
         done
         for port in 3389 3390 53; do
             [ "$master" != fw1 ] || ic exec "$target" -- sh -c 'nc -ulk -p "$1" -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$port"
             udp_remote allow "$target" "$address.1" "$port"
             case $port in 3389) want=allow ;; *) want=deny ;; esac
-            udp_remote "$want" pf-remmina "$address.1" "$port"
+            udp_remote "$want" "$rem" "$address.1" "$port"
         done
-        ic exec pf-remmina -- ping -c 1 -W 3 "$address.1" || result=1
+        ic exec "$rem" -- ping -c 1 -W 3 "$address.1" || result=1
         for host in 49 50 62; do
-            for port in 22 3389 5900; do probe deny pf-remmina "$address.$host" "$port"; done
-            got=$(ic exec pf-remmina -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
+            for port in 22 3389 5900; do probe deny "$rem" "$address.$host" "$port"; done
+            got=$(ic exec "$rem" -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
             [ "$got" = deny ] || result=1
         done
     done
     for destination in 100.80.3.1 100.80.1.10 100.80.2.10 100.80.4.10 100.80.0.10 10.0.2.100 1.1.1.1; do
-        for port in 22 53 80 443 8443 3389 5900; do probe deny pf-remmina "$destination" "$port"; done
+        for port in 22 53 80 443 8443 3389 5900; do probe deny "$rem" "$destination" "$port"; done
     done
-    probe deny pf-remmina 100.80.3.1 53 dns
+    probe deny "$rem" 100.80.3.1 53 dns
     [ "$master" != fw1 ] || listen pf-def 100.80.3.10 3389
     probe allow pf-def 100.80.3.10 3389
-    probe deny pf-remmina 100.80.3.10 3389
-    ic exec pf-remmina -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
+    probe deny "$rem" 100.80.3.10 3389
+    ic exec "$rem" -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
 done
 printf 'yes\n' | sys firewall undo
 w1_maintenance=
