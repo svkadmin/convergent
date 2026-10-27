@@ -1381,7 +1381,7 @@ cv_time dns-recovery
     dns-push list
     [ ! -e "$dns/pending" ]
     for f in fw1 fw2; do
-        timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'rcctl check unbound &&
+        timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'rcctl check unbound && ! grep -Eq "unbound.*(max open fds|less udp ports)" /var/log/daemon &&
             cd /var/unbound/etc && cmp blocklist.rpz.prev blocklist.rpz && cmp local-owner.conf.prev local-owner.conf'
     done
     dns-push local
