@@ -1,4 +1,4 @@
-def label: tojson;
+def lv: tojson;
 def short: type == "string" and length > 0 and length <= 256 and (explode | all(. >= 32 and . != 127));
 if length != 1 then error("expected one status document") else .[0] end |
 if .release != $release or (.generated | type) != "number" or
@@ -11,8 +11,8 @@ if .release != $release or (.generated | type) != "number" or
         (.severity == null or (.severity | short)) and (.fixed_in == null or (.fixed_in | short))) | not) or
    (all(.packages[]; (.target | short) and (.package | short) and (.version | short)) | not)
 then error("invalid advisory status") else . end |
-"cv_release_status_verified{role=\($role|label),release=\($release|label)} 1",
-"cv_release_status_generated_seconds{role=\($role|label),release=\($release|label)} \(.generated)",
-"cv_release_advisories{role=\($role|label),release=\($release|label)} \(.advisories|length)",
-(.advisories[] | "cv_release_advisory_info{role=\($role|label),release=\($release|label),target=\(.target|label),package=\(.package|label),installed_version=\(.installed_version|label),advisory=\(.advisory|label),severity=\((.severity // "unknown")|label),fixed_in=\((.fixed_in // "none")|label)} 1"),
-(.packages[] | "cv_release_package_info{role=\($role|label),release=\($release|label),target=\(.target|label),package=\(.package|label),version=\(.version|label)} 1")
+"cv_release_status_verified{role=\($role|lv),release=\($release|lv)} 1",
+"cv_release_status_generated_seconds{role=\($role|lv),release=\($release|lv)} \(.generated)",
+"cv_release_advisories{role=\($role|lv),release=\($release|lv)} \(.advisories|length)",
+(.advisories[] | "cv_release_advisory_info{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),installed_version=\(.installed_version|lv),advisory=\(.advisory|lv),severity=\((.severity // "unknown")|lv),fixed_in=\((.fixed_in // "none")|lv)} 1"),
+(.packages[] | "cv_release_package_info{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),version=\(.version|lv)} 1")
