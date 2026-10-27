@@ -267,7 +267,12 @@ timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow
 for master in fw1 fw2; do
 	if [ "$master" = fw2 ]; then
 		w1_maintenance=1
-		printf 'yes\n' | sys firewall maintenance
+		printf 'yes\n' | sys firewall maintenance || {
+			for f in fw1 fw2; do
+				timeout 20 ssh -n -F /etc/convergent/ssh_config "$f" 'rcctl check unbound dhcpd; pgrep -lf dhcpd; grep dhcpd /var/log/daemon | tail -n 8' 2>&1 | sed "s/^/CV-PF $f: /"
+			done
+			exit 1
+		}
 		ic config set fw1 boot.autorestart=false
 		w1_stopped=1
 		ic stop fw1 --force
