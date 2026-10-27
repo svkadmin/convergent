@@ -58,7 +58,8 @@ fi
 services="unbound wan_watch sshd"
 [ -f "$seed/dhcpd.hold" ] || services="$services dhcpd"
 rcctl enable $services
-rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
+dhcpd_flags=$(cat /etc/convergent/dhcpd.flags)
+rcctl set dhcpd flags $dhcpd_flags
 rcctl set syslogd flags -h -C /etc/ssl/convergent-ca.pem
 sync
 mv "$stage" /etc/convergent/seeded
