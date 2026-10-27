@@ -947,6 +947,11 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	state=$work/update-state
 	mkdir "$state"
 	touch "$state/initialized"
+	lib=$work/lib
+	mkdir "$lib"
+	: >"$lib/work-gate"
+	cp /etc/convergent/topology.sha256 "$work/"
+	die() { echo "guests: $*" >&2; exit 1; }
 	eval "$(sed -n '/^update() {/,/^}/p' /usr/local/sbin/guests | sed "s|/run/convergent/browser-update.lock|$work/browser.lock|")"
 	for fn in logger good_slot flock prepare_cleanup fw_release dns_restore verify_image stale_installed ic commit_update parallel_autostart record_installed; do
 		eval "$fn() { :; }"
@@ -2394,13 +2399,13 @@ awk '
     END {exit (copy || n != 1)}' /usr/local/sbin/browser >"$run/state-start"
 nested_test=$pool/custom/default_browser-def-state/.quota-test
 btrfs subvolume create "$nested_test"
-if (die() { echo "browser: $*" >&2; exit 1; }; role=def name=def; . "$run/state-start") >"$run/state-refusal" 2>&1; then exit 1; fi
+if (die() { echo "browser: $*" >&2; exit 1; }; role=def name=def state_volume=browser-def-state; . "$run/state-start") >"$run/state-refusal" 2>&1; then exit 1; fi
 grep -q 'nested subvolumes in browser-def-state' "$run/state-refusal"
 [ "$(ic list def --format json | jq -r '.[] | select(.name == "def") | .status')" = Stopped ]
 btrfs subvolume delete "$nested_test"
 nested_test=
 step=start
-(die() { echo "browser: $*" >&2; exit 1; }; role=def name=def; . "$run/state-start")
+(die() { echo "browser: $*" >&2; exit 1; }; role=def name=def state_volume=browser-def-state; . "$run/state-start")
 step=ready
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec def -- test -f /run/browser-ready; do sleep 1; done'
 step=state-paths
