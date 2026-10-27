@@ -10,7 +10,7 @@ state=$scratch/state work=$scratch/work
 mkdir -p "$state" "$work"
 lib=$repo/rootfs/usr/lib/convergent/incus
 . "$lib/fw-topology"
-sh "$here/networks" registry "$scratch/new"
+command sh "$here/networks" registry "$scratch/new"
 old_registry=$lib/segments
 new_registry=$scratch/new/etc/convergent/segments
 log=$scratch/events
