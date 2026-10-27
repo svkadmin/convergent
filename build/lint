@@ -32,6 +32,8 @@ scripts=
 for f in $files; do
 	case $f in rootfs/usr/lib/convergent/sys/*) scripts="$scripts $f"; continue ;; esac
 	IFS= read -r first <"$f" 2>/dev/null || continue
+	# OpenBSD rc.subr refuses any other interpreter.
+	case $f:$first in guests/fw/site/etc/rc.d/*:'#!/bin/ksh') ;; guests/fw/site/etc/rc.d/*) bad "$f: rc.d scripts need #!/bin/ksh" ;; esac
 	case $first in '#!'*sh* | '#!/sbin/openrc-run'*) scripts="$scripts $f" ;; esac
 done
 for f in $scripts; do sh -n "$f" 2>/dev/null || bad "$f: sh -n fails"; done
