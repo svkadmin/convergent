@@ -120,6 +120,13 @@ chmod 0755 "$root"/etc/init.d/convergent-* "$root"/usr/lib/convergent/health.d/*
 kver=$(ls -d "$root"/usr/src/linux-* | sed 's|.*/linux-||')
 for m in "$root"/lib/modules/*; do [ "${m##*/}" = "$kver" ] || rm -rf "$m"; done
 [ "$(echo "$kver" | wc -l)" = 1 ] || die "expected one kernel in the image, found: $kver"
+# Modules an earlier build of this kernel version left (now built in) carry a foreign signing key.
+awk '$1 == "obj" && $2 ~ "^/lib/modules/" {print $2}' "$root"/var/db/pkg/sys-kernel/gentoo-kernel-*/CONTENTS |
+	LC_ALL=C sort >"$out/modules.owned"
+grep -q '\.ko' "$out/modules.owned" || die "no module list for kernel $kver"
+(cd "$root" && find "lib/modules/$kver" -name '*.ko*' | sed 's|^|/|' | LC_ALL=C sort) |
+	LC_ALL=C comm -23 - "$out/modules.owned" | while read -r f; do echo "image: stale module $f"; rm -f "$root$f"; done
+rm -f "$out/modules.owned"
 cp "$root/usr/src/linux-$kver/arch/x86/boot/bzImage" "$out/vmlinuz"
 # The kernel as actually built: a cached package could predate build/kernel.config.
 config="$root/usr/src/linux-$kver/.config"
@@ -475,7 +482,7 @@ for slot in a b; do
 	table="vroot,,,ro,0 $((blocks * 8)) verity 1 $part $part 4096 4096 $blocks $blocks sha256 $roothash $salt 2 restart_on_error restart_on_corruption"
 	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
 		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality audit=1 audit_backlog_limit=8192" \
-		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off iTCO_wdt.heartbeat=180 quiet" \
+		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off iTCO_wdt.heartbeat=180 fbcon=nodefer quiet" \
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
