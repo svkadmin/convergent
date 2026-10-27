@@ -109,7 +109,14 @@ audit_ready() {
 }
 deadline=$(($(date +%s) + 60))
 until audit_ready; do
-    [ "$(date +%s)" -lt "$deadline" ] || { echo 'Incus audit events timed out' >&2; exit 1; }
+    [ "$(date +%s)" -lt "$deadline" ] || {
+        echo 'Incus audit events timed out' >&2
+        for want in w2-audit-fixture w2-audit-request profile-created '"event":"request"'; do
+            echo "audit $want: $(grep -c "incus-audit.*$want" /var/log/messages)" >&2
+        done
+        grep 'incus' /var/log/messages | tail -n 12 | cut -c1-300 >&2
+        exit 1
+    }
     sleep 1
 done
 if grep 'incus-audit' /var/log/messages | grep -q W2_AUDIT_SECRET; then exit 1; fi
