@@ -18,7 +18,8 @@ cleanup() {
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
-	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart; } || r=1
+	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart
+		timeout -k 5 1800 sh -c 'until command ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'; } || r=1
 	# Restore the preferred master if a work probe fails during maintenance.
 	[ -z "${w1_maintenance:-}" ] || printf 'yes\n' | sys firewall undo || r=1
 	# portal retries a node it could not reach; one retry here, as cron would.
@@ -53,11 +54,15 @@ tcp() {
 probe() { # expectation source destination port [dns]
 	got=error
 	if [ "${5:-}" = dns ]; then
-		got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
-			r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
-			# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
-			case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
-		' sh "$3") || got=error
+		# A lost datagram or a slow upstream is not a block: an expected allow gets three tries.
+		for attempt in 1 2 3; do
+			got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
+				r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
+				# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
+				case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
+			' sh "$3") || got=error
+			[ "$1:$got" = allow:deny ] || break
+		done
 	else
 		got=$(tcp "$2" "$3" "$4") || got=error
 	fi
@@ -283,6 +288,8 @@ for master in fw1 fw2; do
 			done
 			exit 1
 		}
+		# The gate keeps work open without fw1 only after it validated both nodes (check auto does this).
+		timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
 		ic config set fw1 boot.autorestart=false
 		w1_stopped=1
 		ic stop fw1 --force
@@ -341,10 +348,18 @@ if [ -n "${w1_stopped:-}" ]; then
 	timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'
 	ic config unset fw1 boot.autorestart
 	w1_stopped=
+	# check auto reopens a gate closed while fw1 booted; do what it does.
+	timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
 fi
 while read -r iface vhid parent label prefix gateway family <&3; do
 	source=pf-work-${parent#vlan}
-	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3
+	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3 || {
+		nft list chain bridge host-l2 work_gate | sed 's/^/CV-PF gate: /'
+		for f in fw1 fw2; do
+			timeout 20 ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -c MASTER; rcctl check dhcpd; grep dhcpd /var/log/daemon | tail -n 6' 2>&1 | sed "s/^/CV-PF $f: /"
+		done
+		exit 1
+	}
 	lease=$(ic exec "$source" -- cat /run/w1-lease)
 	address=${lease%% *}
 	mac=$(ic exec "$source" -- cat /sys/class/net/eth0/address)
