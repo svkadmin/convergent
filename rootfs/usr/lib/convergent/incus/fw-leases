@@ -49,6 +49,7 @@ leases_resume() {
         rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     rcctl enable dhcpd
+    rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
     rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd
 fi' || return
     done

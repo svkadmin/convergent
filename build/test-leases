@@ -48,4 +48,24 @@ cp "$work/old" "$work/live/fw1"
 cp "$work/new" "$work/live/fw2"
 leases_resume
 [ ! -e "$state/leases/held" ]
-echo 'test-leases: merge, interrupted checkpoint and replay passed'
+# fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.
+sed -n '/^services="unbound wan_watch sshd"$/,/^esac$/p' "$here/../guests/fw/site/usr/local/libexec/convergent/fw-seed" |
+	sed "s|/etc/convergent/dhcpd.flags|$work/dhcpd.flags|" >"$work/seed-services"
+grep -q 'rcctl set dhcpd' "$work/seed-services"
+echo '-y vio1 -Y 100.80.0.18 vlan320' >"$work/dhcpd.flags"
+rcctl() {
+	case $1 in
+	enable) shift; enabled="$*" ;;
+	set) case " $enabled " in *" $2 "*) flags="$*" ;; *) echo "rcctl: $2 is not enabled" >&2; return 1 ;; esac ;;
+	esac
+}
+seed=$work/seed
+mkdir "$seed"
+for hold in no yes; do
+	enabled= flags=
+	[ "$hold" = no ] || : >"$seed/dhcpd.hold"
+	(set -e; . "$work/seed-services"; echo "$enabled|$flags") >"$work/seed-$hold"
+done
+grep -qx 'unbound wan_watch sshd dhcpd|set dhcpd flags -y vio1 -Y 100.80.0.18 vlan320' "$work/seed-no"
+grep -qx 'unbound wan_watch sshd|' "$work/seed-yes"
+echo 'test-leases: merge, interrupted checkpoint, replay and held seeding passed'
