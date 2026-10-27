@@ -264,6 +264,10 @@ raises UpstreamOverlap. After moving a refused wired adapter to a safe network, 
 `sudo ssh -F /etc/convergent/ssh_config wan 'check retry'`. That retries only configured wired
 uplinks and rechecks the lease. The overlap latch clears only after a safe lease arrives.
 
+`sys wifi test` prints the retry advice only when a refusal exists. Its last part is wan's local log,
+`/var/log/wan/diag.log`: the last 200 lines, at most 32 KiB
+([RECOVERY 8](RECOVERY.md#8-where-the-logs-are)).
+
 ## Captive portals
 
 `sys portal on` starts tmp in portal mode, which owns the mode until the browser closes,
@@ -599,7 +603,8 @@ old images; work access remains closed while topology hashes differ.
 - The screen locks after 10 minutes idle by default (`idle_lock_minutes`) and when the lid closes
   (swayidle, swaylock). Display-off follows `idle_lock_minutes + 1` minutes of inactivity.
   `sys power lock` locks now. NL pauses only idle locking and display-off; manual and lid locking
-  still work.
+  still work. Browsers cannot inhibit idle locking: Sway's idle-inhibit protocol is privileged in this
+  image.
 - `power` sets the CPU energy preference and an optional clock cap for AC or battery (none by
   default; `cpu_cap_khz`). It runs at boot and on AC adapter events. By hand: `sys power ac` or
   `sys power battery` (`sudo power [ac|battery]`). Repeated events with no setting change are

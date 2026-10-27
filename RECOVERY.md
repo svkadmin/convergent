@@ -207,7 +207,8 @@ port, boot, and regenerate the policy with all trusted devices in place (README,
 
 | What | Where |
 |---|---|
-| Host warnings and errors | `/var/log/messages`; `sys logs` reads it |
+| Host warnings and errors | `/var/log/messages`; `sys logs` reads it. Failures of `check`, `facts` and `power` are logged at error severity |
+| wan warnings, kernel, Wi-Fi, DHCP and time messages | `/var/log/wan/diag.log` in wan (root only, 256 KiB, one rotation); `sys wifi test` shows its last 200 lines |
 | Release checks, boot tries | `sudo slot status`; `slot:` lines in `/var/log/messages` |
 | Self-test of this boot | `sys selftest` writes `~/selftest-YYYYmmdd-HHMMSS.txt` (PASS, FAIL or SKIP per check) |
 | Services | `rc-status -a` (all runlevels); `sudo rc-service <name> status`, `restart` |
@@ -360,8 +361,9 @@ good).
 ## 13. A kernel panic or CrashRecorded alert
 
 An oops now panics; a panic reboots after 10 seconds. After unlocking the next boot, `facts boot`
-archives built-in EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, accessible
-only to root (mode 0700). It verifies and syncs each copy before removing the firmware record. Older
+archives built-in EFI pstore records to `/var/lib/convergent/crash/<UTC-timestamp>/`, and the ACPI BERT
+record, when firmware provides one, to `/var/lib/convergent/crash/bert-<sha256>` (archived once); both
+are accessible only to root (mode 0700). It verifies and syncs each copy before removing the firmware record. Older
 archives in `/var/lib/convergent/pstore` move to `crash` on the first run. The Security dashboard
 shows archived crash counts beside checker results; `CrashRecorded` reports unacknowledged records.
 
@@ -376,7 +378,7 @@ sudo find /var/lib/convergent/crash -type f
 sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
 ```
 
-Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory
+Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory or `bert-<sha256>` file
 (`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`), then run `sudo facts boot` to refresh
 `cv_crash_records` (the archived file count). `CrashRecorded` clears when no archived files remain. Firmware must support EFI
 variable writes during a panic. An empty archive alone does not prove the last shutdown was clean.

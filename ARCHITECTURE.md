@@ -66,7 +66,7 @@ anti-spoofing, because Incus cannot combine VLANs and IP filtering.
 | Area | Design |
 |---|---|
 | Base | Gentoo, hardened profile, OpenRC, glibc |
-| Kernel | Gentoo distribution kernel, hardened, plus Convergent fragment: confidentiality lockdown; modules signed with a key that exists only during the build; no kexec, suspend or hibernation; DM, DM_INIT, DM_VERITY, EROFS and storage drivers built in; FireWire, X.25, TIPC, RDS, CAN left out; unused protocols and filesystems never loaded (`modprobe.d`; out of build *(planned)*); setuid, setgid, file capabilities stripped except sudo, su, passwd, unix_chkpwd, D-Bus helper; command-line hardening (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); no Wi-Fi driver, so host cannot take radio back |
+| Kernel | Gentoo distribution kernel, hardened, plus Convergent fragment: confidentiality lockdown; modules signed with a key that exists only during the build; no kexec, suspend or hibernation; DM, DM_INIT, DM_VERITY, EROFS and storage drivers built in; FireWire, X.25, TIPC, RDS, CAN left out; unused protocols and filesystems never loaded (`modprobe.d`; out of build *(planned)*); setuid, setgid, file capabilities stripped except sudo, su, passwd, unix_chkpwd, D-Bus helper; command-line hardening (init_on_alloc, slab_nomerge, page shuffling, stack offset randomization, no vsyscall, no debugfs); console font applied at boot (`fbcon=nodefer`); no Wi-Fi driver, so host cannot take radio back |
 | Kernel settings | One sysctl file from Archer: ptrace, perf, BPF and kernel-pointer restrictions; dmesg restricted; protected links and FIFOs; TIOCSTI and line-discipline loading off; no redirects or source routing; martians logged; reverse-path filtering; no core dumps |
 | IOMMU and DMA | `intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma`; Thunderbolt DMA protection *(planned:* verified at boot*)*; NVIDIA functions bound to vfio-pci before any driver probes them and kept powered down; Wi-Fi function must sit alone in its IOMMU group, no ACS override |
 | Mandatory access control | AppArmor enforcing; Incus generates and loads a profile per container and VM |
@@ -82,7 +82,7 @@ anti-spoofing, because Incus cannot combine VLANs and IP filtering.
 | Power | Never suspends. CPU energy preference and optional clock cap (`cpu_cap_khz`, none by default) set at boot and per power source on AC events. Runtime power management for NVIDIA GPU and audio. Optional battery charge end/start thresholds (off by default: 100/95). Optional firmware `platform_profile` selection (quiet/balanced/performance, only if offered); firmware keeps fan control. A known-noisy ACPI event masked, never the embedded controller's *(planned)* |
 | Host firewall | nftables: input only on `host` and only from listed sources (section 4.2); no forwarding |
 | Logs | syslog-ng over TLS to svc; bounded local buffer for when svc is down |
-| Crashes | `/var/lib/convergent/crash/<timestamp>/`; EFI pstore collection and panic recovery: [RECOVERY 13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert) |
+| Crashes | `/var/lib/convergent/crash/<timestamp>/`; EFI pstore and ACPI BERT collection (BERT once, as `crash/bert-<sha256>`) and panic recovery: [RECOVERY 13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert) |
 | Time | chrony, NTS from three sources, two must agree; starts without waiting for network; serves NTP to firewalls |
 | Listening on the host | chrony (UDP 123, firewalls only), node_exporter (TCP 9100, svc only), Incus metrics (TCP 8444, TLS with metrics certificate, svc only), Incus UI/API (TCP 8443, session client certificate, int only) |
 
@@ -90,8 +90,8 @@ Incus starts with `INCUS_SKIP_INSTANCE_TYPES=true`, so it never downloads instan
 
 ### 3.2 wan (VM)
 
-Alpine, LTS kernel. Owns Wi-Fi card by VFIO passthrough, joins networks with iwd, takes upstream
-address by DHCP, performs the system's only NAT.
+Alpine, LTS kernel with `e2fsprogs` for its ext4 root. Owns Wi-Fi card by VFIO passthrough, joins
+networks with iwd, takes upstream address by DHCP, performs the system's only NAT.
 
 - **Privacy on the air:** random MAC per network; regulatory country set; protected management
   frames where offered; DHCP sends no host name; no mDNS or LLMNR.
@@ -110,6 +110,8 @@ address by DHCP, performs the system's only NAT.
 - **Management:** no Incus agent or guest API; SSH from host only, on transit address, with
   OpenSSH's default (post-quantum hybrid) key exchange.
 - **Overlap:** refuses upstream lease overlapping internal range; raises alert.
+- **Local log:** wan keeps warnings and up from any program, and all kernel, iwd, DHCP and chrony
+  messages, in `/var/log/wan/diag.log` (root only; 256 KiB, one rotation). Only `wan diag` prints it.
 - **Captive portals:** portal DNS uses the selected default-route uplink's first nameserver; it
   must be IPv4 outside 100.80.0.0/16. Later usable nameservers are not tried. DNS to wan's transit
   address reaches it by NAT rule, no forwarder process. Only from portal browser, only in portal
@@ -181,7 +183,9 @@ logs. DNS does not depend on svc.
 Chromium runs in unprivileged Incus containers built from one browser image:
 
 - **def:** default browser on `web`, persistent profile volume.
-- **tmp:** ephemeral container on `web`, gone when closed; `--portal` selects captive portal mode.
+- **tmp:** ephemeral container on `web`, gone when closed; a launch first deletes stopped temporary
+  containers that a crash left behind, each only after taking its slot lock; `--portal` selects captive
+  portal mode.
 - **int:** persistent container on `admin`, only browser that reaches Grafana and the Incus UI/API.
 
 Each container gets: GPU render node (except tmp in portal mode); Wayland socket from Sway's
@@ -347,6 +351,8 @@ forwarding off. The host is never a router; the firewalls are.
   recovery restores those and both firewalls. Commit marker prevents completed push being rolled
   back during journal cleanup. `last-push` records UTC time for full and local pushes;
   weekly-download stamp stays separate.
+- **Reload:** activation and rollback reload Unbound with `unbound-control reload_keep_cache`, which
+  keeps the cache when cache sizes and thread count are unchanged (OpenBSD 7.9's Unbound 1.24.2).
 
 ---
 ## 5. Storage and boot
@@ -378,7 +384,8 @@ guests and logs filling the space `/var` and `/home` need.
    cold-snapshots it on new slot's first boot; mounts `/var` and `/home`; bind-mounts listed `/etc`
    entries after merging missing image system accounts (IDs below 1000; keeps existing entries,
    warns on ID collisions) and adding existing owner to `dialout` in group/gshadow. Mounts `/run`
-   and `/tmp` as tmpfs, arms hardware watchdog, switches to real root.
+   and `/tmp` as tmpfs, arms hardware watchdog, switches to real root. The initramfs carries the Intel
+   MEI/GSC proxy modules.
 5. OpenRC starts host, then Incus. Incus autostarts fw1, fw2, wan and svc. With priority/delay unset,
    instances use bulk startup, limited to `max(floor(CPU threads/4), 1)` concurrent starts. No start
    step needs name before firewalls' resolvers answer.
@@ -478,6 +485,11 @@ its distfile hashes for serial consoles. Image keeps and checks FTDI, CP210x, PL
 ACM drivers; Gentoo udev uses `dialout` for their device nodes. MC's terminal-background skin is set
 via env.d; Files and Notes controls: [USAGE, Keys](USAGE.md#keys).
 
+`portage/patches/<category>/<package>/` holds patches applied to Gentoo packages. A patched package is
+always compiled, never taken from a binary package, and rebuilt when any patch changes, since its
+version stays the same. The only patch now makes Sway's idle inhibition privileged, so a browser cannot
+stop the auto-lock.
+
 Channels and promotion: [BUILD, Status](BUILD.md#status).
 
 Version fields and release ordering: [BUILD, Build a release](BUILD.md#build-a-release).
@@ -497,7 +509,8 @@ Release is built in these steps (commands in [BUILD.md](BUILD.md#build-a-release
 2. Build `@convergent` and owner's `@convergent-apps` sets into staging root, from binaries where
    possible.
 3. Copy `rootfs/` from this repository over it.
-4. Use staged kernel to build initramfs, EROFS image, dm-verity tree and UKIs.
+4. Use staged kernel to build initramfs, EROFS image, dm-verity tree and UKIs. Kernel modules not owned
+   by `gentoo-kernel` are dropped before `depmod`.
 5. Write manifest: release ID, semantic version, kernel version, root hash, file hashes.
 6. Build guest images, each in own build: wan (Alpine), fw (OpenBSD), svc (Alpine), browser and Remmina
    (Alpine).
@@ -628,7 +641,9 @@ Firmware updates use signed capsules only, applied from menu *(planned)*.
   without SSID/BSSID labels. WAN RTT/loss samples the existing firewall-to-WAN probe once a minute;
   it does not measure Internet reachability or change demotion timing.
 - **Packet evidence:** `pflog_stream` forwards logged packet headers over existing TLS syslog,
-  capped at five packets/second/node with suppression summaries; local pflogd stays enabled.
+  capped at five packets/second/node with suppression summaries; local pflogd stays enabled, and
+  `fw-facts` reports whether it is running (`convergent_pflogd_up`) and whether it is suspended
+  (`convergent_pflogd_suspended`).
   Rankings count samples, not all drops. `sys firewall capture` holds a shared guest lock and
   captures on the selected coherent MASTER with time, packet, snaplen and transfer limits;
   owner-opened files stay under `~/captures`, without continuous upload.
@@ -878,13 +893,13 @@ Convergent writes as little as it can:
 | `sys` | from a key binding | The menu: one file per area in `/usr/lib/convergent/sys` |
 | `apps` | Super+d | Lists graphical apps from their desktop entries in bemenu and starts the chosen one; a failed start shows why |
 | `browser` | from the menu or a key | Starts a browser container with its restricted Wayland and audio sockets |
-| `facts` | boot, minute NTS/audit, hourly storage/daily retry | Writes host facts; archives pstore records |
+| `facts` | boot, minute NTS/audit, hourly storage/daily retry | Writes host facts; archives pstore and BERT records |
 | `observe` | minute cron | Read-only Internet, rule API, guest cgroup and update phase evidence |
 | `dns-push` | weekly; by hand | Downloads, validates and pushes the blocklist and the owner's records to both firewalls |
 | `portal`, `devices`, `backup` | from the menu | Captive-portal mode; USB and Thunderbolt approval; the backup (section 7.4) |
 | `account` | by hand; from the menu (`sys security password`) | Changes a login password on the state volume and rebinds `/etc/shadow` |
 | `power` | at boot; acpid and udev, on AC and USB-C supply changes; sys actions | Sets CPU preference and cap, publishes profile, restores optional battery and thermal settings and camera choice |
-| `fw-facts` | cron on each firewall | Writes CARP, pf and unbound state for node_exporter |
+| `fw-facts` | cron on each firewall | Writes CARP, pf, pflogd and unbound state for node_exporter |
 
 ---
 
@@ -892,7 +907,7 @@ Convergent writes as little as it can:
 
 | Path | What |
 |---|---|
-| `build/` | builder chroot, packages, image, sign, publish, QEMU tests, lint, advisories, disk image |
+| `build/` | builder chroot, packages, image, sign, publish, QEMU tests, lint, advisories, disk image, diagnostics collector and scrubber (`build/diag/`) |
 | `portage/` | make.conf, USE flags, package sets, image profile, local ebuilds |
 | `rootfs/` | host files: `/etc`, `/usr/lib/convergent` (`sys` areas), health checks |
 | `initramfs/` | the dracut module: unlock, `/var` per release, watchdog |

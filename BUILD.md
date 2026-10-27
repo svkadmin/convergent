@@ -49,7 +49,10 @@ build/packages          # compile or fetch the image's packages (--pretend to pr
 build/image             # the release, named by UTC time: YYYYMMDDHHMM
 ```
 
-Bump `VERSION` in `build/build.conf` each release, using semantic versions (`0.1.4` for this
+`build/packages` compiles patched packages from `portage/patches/` itself, never from binary packages,
+and rebuilds them when any patch changes.
+
+Bump `VERSION` in `build/build.conf` each release, using semantic versions (`0.1.5` for this
 release; `major.minor.patch`, optionally `-rcN`). `/usr/lib/convergent/version`, per-slot
 `CONVERGENT_VERSION`, boot titles, signed manifest and owner status carry it. The timestamp release
 ID still names artifacts, orders the boot menu (`IMAGE_VERSION`) and drives A/B updates and rollback
@@ -194,7 +197,10 @@ The command signs and uploads `advisories.json` and its signature beside each re
 records release, generation time, package versions and advisories, including exceptions.
 Failed/incomplete scans leave the previous result unchanged and return failure. These mutable
 sidecars are excluded from identical-release comparisons. Coverage is GLSA, Alpine secdb and
-OpenBSD errata; laptops show verification/freshness in Grafana without sending notifications.
+OpenBSD errata. The daily status and the weekly report also name a newer Zabbly `lts-7.0` build of
+`incus-ui-canonical` than the pinned `www-apps/incus-ui` (InRelease signed by key
+4EFC590696CB15B87C73A3AD82CC8797C838DCFD); the publish gate does not check it. Laptops show
+verification/freshness in Grafana without sending notifications.
 
 ## Test in QEMU
 
@@ -234,6 +240,12 @@ new profiles, and removal of old names/journals must pass. They check signed onl
 configured, after a successful uplink. They also run the booted selftest checks as root. Only
 release, verity, nested and audit failures gate the test.
 
+All guest modes (`--guests`, `--guests-maint`, `--guests-update`, `--online`) also inject L2 frames on
+the work networks (`build/test-pf`, `build/fixtures/pf-l2`), run a real Remmina session through the
+production launcher (`build/fixtures/remmina-session`), and check ordered shutdown
+(`build/fixtures/shutdown`). The drain must stop browsers, Remmina and the temporary container first,
+then svc, wan and both firewalls, keep the autorestart holds, and end in the guest's poweroff.
+
 `build/test --rescue <release>` boots the shipped rescue UKI in the existing QEMU/OVMF console
 driver with both slots empty. It unlocks, checks the menu, selects power off, and checks that UKI
 names, content and blessing state are unchanged. The `build/test --rescue` mode leaves USB writes,
@@ -244,8 +256,10 @@ password reset, next-slot selection and log export for separate testing.
 `build/image` checks AppArmor profile syntax. `build/lint` checks dashboard JSON drift.
 `build/test --guests-update` checks every metric panel query against real svc scrapes, allowing
 explicitly optional hardware and quiet alerts, every LogsQL target, and that forged hostnames cannot
-move log records to another host. `build/test-debug` checks diagnostic output authentication
-offline.
+move log records to another host. `build/test-debug` checks diagnostic output authentication offline.
+`build/test-diag` checks the collector in `build/diag/` (system data only: personal log lines, serial
+numbers, MAC and most IP addresses are removed) and the error severity of check, facts and power
+failures, also offline.
 
 Run `build/lint` before a push. On tracked files it checks shell syntax, shellcheck (when
 installed), leaked secrets or session and scratch paths, and CRLF line endings. It also checks that
@@ -264,7 +278,7 @@ Offline feature checks (also run by `build/lint`; require `python3`, `jq` and Op
 | `sh build/test --networks` | Work configuration and rendering |
 | `sh build/test-topology` | Firewall pair journal replay |
 | `sh build/test --remmina-unit` | Keyring handling and artifact paths |
-| `sh build/test --observability` | Status ingestion, capture, parsers and dashboards |
+| `sh build/test --observability` | Status ingestion, capture, parsers, dashboards, wan diagnostics and pflogd state |
 | `sh build/test-incus-ui --offline` | UI credential and session fixtures |
 
 `--guests`, `--guests-maint` and `--guests-update` exercise live PF/session/lifecycle checks;
