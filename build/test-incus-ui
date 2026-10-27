@@ -96,8 +96,8 @@ ic config trust list --format json | jq -e 'any(.[]; .name == "browser-int-ui" a
 [ "$(api --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 200 ]
 # Audit: fixtures catch secret leakage; native events catch wire-format and log-level drift.
-logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"lifecycle","metadata":{"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}}'
-logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- '{"type":"logging","metadata":{"message":"Handling API request","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}}'
+logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: lifecycle log: {"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}'
+logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: logging log: {"message":"Handling API request","level":"debug","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}'
 ic profile create w2-audit-native
 ic profile delete w2-audit-native
 fp=$(openssl x509 -in "$work/client.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr A-F a-f)
