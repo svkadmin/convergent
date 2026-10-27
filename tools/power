@@ -12,7 +12,8 @@ bat_epp=power
 cpu=/sys/devices/system/cpu/cpufreq
 ps=/sys/class/power_supply
 
-die() { logger -t power "$*"; echo "power: $*" >&2; exit 1; }
+die() { logger -p user.err -t power "$*" 2>/dev/null || :; echo "power: $*" >&2; exit 1; }
+trap 'status=$?; [ "$status" = 0 ] || logger -p user.err -t power "handler failed (status $status)" 2>/dev/null || :' 0
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # Mains/USB-C online, or no battery, means AC.
@@ -41,7 +42,9 @@ write_failed() {
 	offline=0
 	case $1 in "$cpu"/policy*/*) policy_online "${1%/*}" || offline=1 ;; esac
 	[ "$offline" = 0 ] || message="$message; policy now offline"
-	logger -t power "$message"
+	severity=user.err
+	[ "$offline" = 0 ] || severity=user.notice
+	logger -p "$severity" -t power "$message" 2>/dev/null || :
 	echo "power: $message" >&2
 	[ "$offline" = 1 ] || rc=1
 	return 1
@@ -190,5 +193,7 @@ if [ ! -e /run/convergent-camera-restored ]; then
 fi
 
 # Duplicate AC events need no log write; changes and failures still do.
-[ "$changed:$rc" = 0:0 ] || logger -t power "$src: energy preference $epp, clock cap $cap kHz, status $rc"
+severity=user.notice
+[ "$rc" = 0 ] || severity=user.err
+[ "$changed:$rc" = 0:0 ] || logger -p "$severity" -t power "$src: energy preference $epp, clock cap $cap kHz, status $rc" 2>/dev/null || :
 exit "$rc"

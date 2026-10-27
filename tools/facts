@@ -12,7 +12,7 @@ efi=/sys/firmware/efi/efivars
 efi_guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
 cert=/var/lib/incus/server.crt
 
-die() { logger -t facts "$*"; echo "facts: $*" >&2; exit 1; }
+die() { logger -p user.err -t facts "$*" 2>/dev/null || :; echo "facts: $*" >&2; exit 1; }
 log() { logger -t facts "$*"; }
 usage() { echo "usage: facts boot | daily | nts | auto" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
@@ -24,7 +24,7 @@ exec 9>"$run/facts.lock"
 buf=
 ok=1
 m() { printf '%s\n' "$*" >>"$buf"; }
-bad() { ok=0; log "$*"; }
+bad() { ok=0; logger -p user.err -t facts "$*" 2>/dev/null || :; }
 
 # Publish NAME.prom with cv_collector_success{collector}.
 publish() {
@@ -34,7 +34,7 @@ publish() {
 	buf=
 }
 
-trap 'rm -f "$buf"' EXIT
+trap 'rm -f "$buf"' 0
 
 new_buf() { buf=$(mktemp "$out/.facts.XXXXXX") || die "could not write in $out"; ok=1; }
 
@@ -128,6 +128,19 @@ fact_pstore() {
 		fi
 	done
 	[ -z "$dst" ] || rmdir "$dst" 2>/dev/null || log "crash records archived in $dst"
+	bert=/sys/firmware/acpi/tables/data/BERT
+	if [ -r "$bert" ]; then
+		copy=$(mktemp "$arch/.bert.XXXXXX") || { bad 'cannot create BERT archive'; umask 022; return; }
+		if cat "$bert" >"$copy" && hash=$(sha256sum <"$copy"); then
+			target=$arch/bert-${hash%% *}
+			if [ -e "$target" ]; then
+				cmp -s "$copy" "$target" || bad 'BERT archive differs'
+			else
+				mv "$copy" "$target" && sync || bad 'cannot archive BERT'
+			fi
+		else bad 'cannot read BERT'; fi
+		rm -f "$copy"
+	fi
 	umask 022
 	m "cv_crash_records $(find "$arch" -type f | wc -l)"
 }
