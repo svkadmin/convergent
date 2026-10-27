@@ -37,7 +37,8 @@ if [ "$1" = flush ]; then echo open >"$GATE_FIXTURE/verdict"
 else cat >/dev/null; echo closed >"$GATE_FIXTURE/verdict"; fi
 NFT
 printf '#!/bin/sh\nexit 0\n' >"$work/bin/flock"
-chmod +x "$work/bin/ssh" "$work/bin/nft" "$work/bin/flock"
+cp "$work/bin/flock" "$work/bin/logger"
+chmod +x "$work/bin/ssh" "$work/bin/nft" "$work/bin/flock" "$work/bin/logger"
 for node in wan fw1 fw2; do echo expected >"$work/$node.hash"; done
 echo MASTER >"$work/fw1.role"
 echo BACKUP >"$work/fw2.role"
@@ -60,7 +61,21 @@ echo MASTER >"$work/fw2.role"
 if sh "$work/gate"; then exit 1; fi
 echo BACKUP >"$work/fw2.role"
 sh "$work/gate"
+# Nobody answers (timeouts): a validated gate keeps its state, an unvalidated one closes.
+touch "$work/fw1.down" "$work/fw2.down"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+touch "$work/wan.down"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = open ]
+sh "$work/gate" close
+rm "$work/wan.down"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ]
+rm "$work/fw1.down" "$work/fw2.down"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ]
 mkdir "$work/state/fw.topology"
 if sh "$work/gate"; then exit 1; fi
 [ ! -e "$work/gate.valid" ]
-echo 'test-work-gate: standby outage, invalidation, mismatch and split MASTER passed'
+echo 'test-work-gate: standby outage, unanswered probes, invalidation, mismatch and split MASTER passed'
