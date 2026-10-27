@@ -9,7 +9,7 @@ undo	End maintenance demotion	root'
 firewall_state() { echo 'fw1 / fw2: CARP, PF, DNS'; }
 firewall_rsh() {
 	host=$1; shift
-	run timeout 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$host" "$@" 9>&- 8>&-
+	run timeout "${FIREWALL_SSH_TIMEOUT:-30}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$host" "$@" 9>&- 8>&-
 }
 firewall_mutate() (
 	# Keep host locks until SSH/timeout returns, even if sys is killed.
