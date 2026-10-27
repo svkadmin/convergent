@@ -54,11 +54,15 @@ tcp() {
 probe() { # expectation source destination port [dns]
 	got=error
 	if [ "${5:-}" = dns ]; then
-		got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
-			r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
-			# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
-			case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
-		' sh "$3") || got=error
+		# A lost datagram or a slow upstream is not a block: an expected allow gets three tries.
+		for attempt in 1 2 3; do
+			got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
+				r=0; timeout 4 nslookup codeberg.org "$1" >/dev/null 2>&1 || r=$?
+				# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
+				case $r in 0) echo allow ;; 1|124|143) echo deny ;; *) exit 2 ;; esac
+			' sh "$3") || got=error
+			[ "$1:$got" = allow:deny ] || break
+		done
 	else
 		got=$(tcp "$2" "$3" "$4") || got=error
 	fi
