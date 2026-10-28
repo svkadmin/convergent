@@ -23,7 +23,8 @@ rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@" 9>&- 8>&- 7>&
 close_src() {
 	_closed=0
 	for _f in $fws; do
-		rsh "$_f" "pfctl -t blocklist_src -T flush" >/dev/null || _closed=1
+		# Flows the table admitted meanwhile end with it, as the update source's cleanup does.
+		rsh "$_f" "pfctl -t blocklist_src -T flush && pfctl -q -k label -k blocklist" >/dev/null || _closed=1
 	done
 	[ "$_closed" = 0 ] || return 1
 	src_open=
@@ -271,9 +272,12 @@ awk "$domain"'
 awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" '
 	BEGIN {
 		print "$ORIGIN blocklist.rpz."
-		while ((getline d < allow) > 0) ok[d]=ok["*." d]=1
+		while ((getline d < allow) > 0) { ok[d]=ok["*." d]=1; under[++n]="." d }
 	}
-	!($1 in ok) { print }
+	# An exception covers its subdomains: an entry at or beneath it goes too, or that exact name would still win.
+	{ name=$1; sub(/\.$/, "", name); keep=!(name in ok)
+	  for (i=1; keep && i<=n; i++) if (substr(name, length(name)-length(under[i])+1) == under[i]) keep=0 }
+	keep { print }
 	END {
 		for (d in ok) print d " CNAME rpz-passthru."
 		print probe " A " addr

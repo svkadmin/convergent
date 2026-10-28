@@ -92,8 +92,8 @@ firewall failures from host kernel failures.
 - **CARP:** One VHID/segment; fw1 skew 0, fw2 skew 100; `net.inet.carp.preempt=1`; unicast carppeer
   avoids bridge multicast dependence
 - **pfsync:** Sync link with defer preserves established connections across failover
-- **wan-watch:** rc.d service demotes wanwatch by 128 if Unbound disappears or two probe rounds
-  fail; three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
+- **wan-watch:** rc.d service demotes wanwatch by 128 after two lost rounds, a round being a WAN
+  probe or a one-second local DNS answer (a hung Unbound counts); three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
   passes. Group counter survives watcher restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover
@@ -112,7 +112,9 @@ Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 The minute checker restarts a firewall after three minutes of failed checks only if its peer is
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
 restart, permits three attempts/hour, and is inhibited by guest journals, maintenance and shutdown.
-Attempts appear in syslog and the checker report.
+A QEMU Incus can no longer read is killed by its own pid file, once its command line names the
+instance, then started; a guest replacement stops such a VM the same way. Attempts appear in
+syslog and the checker report.
 
 On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then firewalls, with
 20 seconds per guest for graceful stop before forcing. Autorestart is held during stopping; previous
@@ -213,7 +215,10 @@ VLANs. DHCP synchronizes over vio1; replacement checkpoints and reseeds leases.
 `build/networks` renders topology into each image. `/etc/convergent/segments` lists CARP interfaces,
 VHIDs, parents, labels, prefixes, gateways and families; carp.awk checks exact membership/coherent
 roles. Work opens after host, WAN and both firewall hashes agree with a healthy MASTER. An already
-validated topology can keep serving without its standby.
+validated topology can keep serving without its standby; a node answering with PF disabled closes
+it at once, two masters close it without discarding validation, and the checker reconciles it only
+while no guest operation holds the guests lock. Replacements receive the stored DNS policy before
+promotion.
 
 ### 4.2 Flows
 
@@ -510,7 +515,8 @@ compromised host can alter svc logs.
 
 pflog_stream forwards sampled logged packet headers over TLS, capped at five/second/node with
 suppression summaries. Local pflogd stays enabled; `convergent_pflogd_up` and
-`convergent_pflogd_suspended` report running/suspended state. Rankings
+`convergent_pflogd_suspended` report running/suspended state, and fw-facts moves a suspended
+pflogd's archive (pflogd never reopens a torn one by itself) to `pflog.bad` and signals it. Rankings
 count samples, not all drops. On-demand capture holds a shared guest lock and bounds time, packets,
 snaplen and transfer; no continuous upload. [Commands](USAGE.md#release-and-network-evidence).
 

@@ -21,6 +21,14 @@ FNR == NR {
 	if (first == "") first=$2
 	if ($2 != first && mode != "metrics" && mode != "status") bad=1
 }
+# A live VIP must be the registry's gateway with its prefix's mask; fixtures without inet lines pass on roles alone.
+/^[ \t]+inet / {
+	if (iface ~ /^carp[0-9]+$/ && (iface in vhid)) {
+		split(net[iface], pr, "/"); m=0
+		for (i=0;i<32;i++) m=m*2+(i<pr[2])
+		if ($2 != gateway[iface] || $4 != sprintf("0x%08x", m)) bad=1
+	}
+}
 /^Status: Enabled/ {pf=1}
 /^pfsync0:.*RUNNING/ {sync=1}
 /defer: on/ {defer=1}

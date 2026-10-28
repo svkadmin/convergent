@@ -27,6 +27,30 @@ awk -f "$lib/leases.awk" "$work/old" "$work/merged" >"$work/replay"
 cmp "$work/merged" "$work/replay"
 sed '$d' "$work/old" >"$work/torn"
 if awk -f "$lib/leases.awk" "$work/torn" >/dev/null; then exit 1; fi
+# A released address reassigned later: the newer assignment wins over the old, longer reservation in any file.
+cat >"$work/moved" <<'LEASES'
+lease 100.80.32.51 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 12:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+lease 100.80.32.51 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 09:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+lease 100.80.32.51 {
+  starts 1 2026/10/26 09:00:00 UTC;
+  ends 1 2026/10/26 10:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:03;
+}
+LEASES
+for order in "$work/moved $work/new" "$work/new $work/moved"; do
+	# shellcheck disable=SC2086
+	awk -f "$lib/leases.awk" $order >"$work/actual"
+	[ "$(grep -c '^lease 100.80.32.51 ' "$work/actual")" = 1 ]
+	grep -q '00:16:3e:00:00:03' "$work/actual"
+done
 state=$work/state
 mkdir -p "$state" "$work/live"
 cp "$work/old" "$work/live/fw1"
@@ -59,7 +83,16 @@ seed_remove() { :; }
 image_alias() { :; }
 seed_start() { :; }
 fw_release() { :; }
-ic() { echo "$*" >>"$work/mutations"; }
+# A frozen target: Incus cannot force it off, so rollback ends its QEMU by the verified pid file before rebuilding.
+eval "$(sed -n '/^force_stop() {/,/^}/p' "$here/../tools/guests")"
+eval "$(sed -e "s|/run/incus|$work/incus|g" -e "s|/proc/|$work/proc/|g" "$lib/firewall-heal")"
+mkdir -p "$work/incus/fw1" "$work/proc/4242"
+echo 4242 >"$work/incus/fw1/qemu.pid"
+printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name fw1 -uuid x -pidfile "$work/incus/fw1/qemu.pid" >"$work/proc/4242/cmdline"
+kill() { echo "kill $*" >>"$work/mutations"; killed=1; }
+retry() { "$@"; }
+stopped() { [ -n "${killed:-}" ] || ! running "$1"; }
+ic() { echo "$*" >>"$work/mutations"; [ "$scenario:$1" != frozen:stop ]; }
 fw_check() { [ "$scenario" != topology ] && [ -e "$work/dhcp.$1" ]; }
 carp() { [ "$scenario" != carp ]; }
 rebuild_root() {
@@ -78,7 +111,7 @@ rsh() {
     *) return 1 ;;
     esac
 }
-for scenario in held unheld topology carp resume-failed peer-down; do
+for scenario in held frozen unheld topology carp resume-failed peer-down; do
     mkdir -p "$state/leases"
     touch "$state/leases/held" "$state/leases/quiesced" "$state/known_hosts.before"
     rm -f "$work/dhcp.fw1" "$work/dhcp.fw2"
@@ -87,8 +120,12 @@ for scenario in held unheld topology carp resume-failed peer-down; do
     [ "$scenario" != unheld ] || rm "$state/leases/held"
     echo 'fw1 test-rebuild old-image' >"$state/pending"
     : >"$work/mutations"
+    killed=
     if rollback; then
-        [ "$scenario" = held ]
+        [ "$scenario" = held ] || [ "$scenario" = frozen ]
+        grep -qx 'stop fw1 --force' "$work/mutations"
+        [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
+        [ "$scenario" = frozen ] || ! grep -q '^kill ' "$work/mutations"
         grep -qx rebuild "$work/mutations"
         [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
     else

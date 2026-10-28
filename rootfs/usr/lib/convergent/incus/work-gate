@@ -4,13 +4,14 @@ set -eu
 lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
 valid=/run/convergent/work-gate.valid
+# The drop rule first; a stalled syslog must not delay it. keep: a transient verdict leaves validation in place.
 close_gate() {
-	[ ! -f "$valid" ] || logger -t work-gate "work access closed: $1" 2>/dev/null || :
-	rm -f "$valid"
 	nft -f - <<'NFT'
 flush chain bridge host-l2 work_gate
 add rule bridge host-l2 work_gate drop
 NFT
+	[ ! -f "$valid" ] || timeout -k 1 5 logger -t work-gate "work access closed: $1" 5>&- 2>/dev/null || :
+	[ "${2:-}" = keep ] || rm -f "$valid"
 }
 # A node that cannot answer is no evidence of a mismatch: a validated gate keeps its state.
 undecided() {
@@ -32,15 +33,20 @@ for node in fw1 fw2; do
 		continue
 	fi
 	[ "$actual" = "$expected" ] || { close_gate "$node topology differs"; exit 1; }
+	# Every answer carries PF's own verdict: a node forwarding without PF closes the gate at once.
+	live=$(remote "$node" 'ifconfig; pfctl -si; rcctl check unbound >/dev/null && unbound-control status >/dev/null && echo CV-UNBOUND-OK; :') ||
+		{ missing=$((missing + 1)); continue; }
+	printf '%s\n' "$live" | grep -q '^Status: Enabled' || { close_gate "$node PF not enabled"; exit 1; }
 	# A booting or failing-over node has CARP states in flux: count it as missing, not as a mismatch.
-	if live=$(remote "$node" 'set -e; rcctl check unbound >/dev/null; unbound-control status >/dev/null; ifconfig; pfctl -si') &&
+	if printf '%s\n' "$live" | grep -qx CV-UNBOUND-OK &&
 		role=$(printf '%s\n' "$live" | awk -v health=1 -f "$lib/carp.awk" /etc/convergent/segments -); then
 		[ "$role" != master ] || masters=$((masters + 1))
 	else
 		missing=$((missing + 1))
 	fi
 done
-[ "$masters" -le 1 ] || { close_gate 'two masters'; exit 1; }
+# Two answers seconds apart can both say MASTER across a failover: closed now, reopened once one remains.
+[ "$masters" -le 1 ] || { close_gate 'two masters' keep; exit 1; }
 [ "$masters" = 1 ] || [ "$missing" = 0 ] || undecided 'no firewall answered as master'
 [ "$masters" = 1 ] || { close_gate 'no master'; exit 1; }
 if [ "$missing" != 0 ]; then

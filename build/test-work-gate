@@ -12,10 +12,11 @@ export PATH=$work/bin:$PATH
 sh "$here/networks" registry "$work/registry"
 lib=$repo/rootfs/usr/lib/convergent/incus
 sed -e "s|^lib=.*|lib=$lib|" -e "s|^state=.*|state=$work/state|" \
-    -e "s|/run/convergent/work-gate|$work/gate|g" \
-    -e "s|/etc/convergent/topology.sha256|$work/expected|g" \
-    -e "s|/etc/convergent/segments|$work/registry/etc/convergent/segments|g" "$lib/work-gate" >"$work/gate"
+	-e "s|/run/convergent/work-gate|$work/gate|g" \
+	-e "s|/etc/convergent/topology.sha256|$work/expected|g" \
+	-e "s|/etc/convergent/segments|$work/registry/etc/convergent/segments|g" "$lib/work-gate" >"$work/gate"
 echo expected >"$work/expected"
+# down: no answer; unhealthy: answers without a working resolver; pfdown: answers with PF disabled.
 cat >"$work/bin/ssh" <<'SSH'
 #!/bin/sh
 while [ "$#" -gt 2 ]; do shift; done
@@ -24,17 +25,22 @@ node=$1 cmd=$2
 case $cmd in
 *topology*|*expected*) cat "$GATE_FIXTURE/$node.hash" ;;
 *)
-    [ ! -f "$GATE_FIXTURE/$node.unhealthy" ] || exit 1
     role=$(cat "$GATE_FIXTURE/$node.role")
     awk -v role="$role" '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: " role " carpdev " $3 " vhid " $2}' "$GATE_FIXTURE/registry/etc/convergent/segments"
-    printf 'Status: Enabled\npfsync0: flags=41<UP,RUNNING>\n defer: on\n'
+    if [ -f "$GATE_FIXTURE/$node.pfdown" ]; then echo 'Status: Disabled'; else echo 'Status: Enabled'; fi
+    printf 'pfsync0: flags=41<UP,RUNNING>\n defer: on\n'
+    [ -f "$GATE_FIXTURE/$node.unhealthy" ] || echo CV-UNBOUND-OK
     ;;
 esac
 SSH
+# The exact transactions: an open gate is a flushed chain, a closed one a flush plus the drop rule.
 cat >"$work/bin/nft" <<'NFT'
 #!/bin/sh
-if [ "$1" = flush ]; then echo open >"$GATE_FIXTURE/verdict"
-else cat >/dev/null; echo closed >"$GATE_FIXTURE/verdict"; fi
+if [ "$*" = 'flush chain bridge host-l2 work_gate' ]; then echo open >"$GATE_FIXTURE/verdict"; exit 0; fi
+[ "$*" = '-f -' ] || exit 1
+[ "$(cat)" = 'flush chain bridge host-l2 work_gate
+add rule bridge host-l2 work_gate drop' ] || exit 1
+echo closed >"$GATE_FIXTURE/verdict"
 NFT
 printf '#!/bin/sh\nexit 0\n' >"$work/bin/flock"
 cp "$work/bin/flock" "$work/bin/logger"
@@ -57,8 +63,29 @@ if sh "$work/gate"; then exit 1; fi
 [ ! -e "$work/gate.valid" ]
 echo expected >"$work/fw2.hash"
 sh "$work/gate"
+# A standby whose resolver is down is missing, not a mismatch; one that answers without PF closes the gate.
+touch "$work/fw2.unhealthy"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+rm "$work/fw2.unhealthy"
+touch "$work/fw2.pfdown"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+rm "$work/fw2.pfdown"
+sh "$work/gate"
+touch "$work/fw1.pfdown"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+rm "$work/fw1.pfdown"
+sh "$work/gate"
+# Two masters close the gate but keep validation: a failover seen half-way reopens once one remains.
 echo MASTER >"$work/fw2.role"
 if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ] && [ -e "$work/gate.valid" ]
+touch "$work/fw1.down"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ]
+rm "$work/fw1.down"
 echo BACKUP >"$work/fw2.role"
 sh "$work/gate"
 # Nobody answers (timeouts): a validated gate keeps its state, an unvalidated one closes.
@@ -78,4 +105,4 @@ sh "$work/gate"
 mkdir "$work/state/fw.topology"
 if sh "$work/gate"; then exit 1; fi
 [ ! -e "$work/gate.valid" ]
-echo 'test-work-gate: standby outage, unanswered probes, invalidation, mismatch and split MASTER passed'
+echo 'test-work-gate: standby outage, unanswered probes, PF disabled, two masters, invalidation and mismatch passed'

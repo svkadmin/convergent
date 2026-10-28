@@ -42,6 +42,8 @@ table bridge host-l2 {
 		ibrname "work" ether type vlan vlan type 8021ad drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ip saddr @work_infra drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } arp saddr ip @work_infra drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type 0x8035 drop comment "RARP carries ARP replies past the ARP rules"
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type 0x8035 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ip protocol 112 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } udp sport 67 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip ip saddr @work_infra drop

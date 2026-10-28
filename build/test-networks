@@ -64,13 +64,15 @@ EOF
 		cmp "$fw/etc/convergent/topology.sha256" "$work/$topology/$kind/etc/convergent/topology.sha256"
 	done
 	[ "$(awk -v mode=count -f "$parser" "$registry")" = "$(grep -vc '^#' "$registry")" ]
-	awk '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: MASTER carpdev " $3 " vhid " $2 " advskew 0"}' "$registry" >"$work/live"
+	awk 'function mask(p,  a, i, m) {split(p, a, "/"); m=0; for (i=0;i<32;i++) m=m*2+(i<a[2]); return sprintf("0x%08x", m)}
+		$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: MASTER carpdev " $3 " vhid " $2 " advskew 0"
+		print " inet " $6 " netmask " mask($5) " broadcast 0.0.0.0"}' "$registry" >"$work/live"
 	[ "$(awk -f "$parser" "$registry" "$work/live")" = master ]
 	sed 's/MASTER/BACKUP/g' "$work/live" >"$work/backup"
 	[ "$(awk -f "$parser" "$registry" "$work/backup")" = backup ]
 	for filter in '/^carp5:/d' 's/^carp5:/carp4:/' 's/vhid 7 /vhid 17 /' \
 		's/carpdev vlan320/carpdev vio7/' 's/MASTER carpdev vlan320/BACKUP carpdev vlan320/' \
-		's/MASTER/INIT/' '$d'; do
+		's/MASTER/INIT/' '/carpdev vio6 /d' 's/inet 100.80.1.1 /inet 100.80.1.2 /' 's/netmask 0xfffffff0/netmask 0xffffff00/'; do
 		sed "$filter" "$work/live" >"$work/bad"
 		if awk -f "$parser" "$registry" "$work/bad"; then echo "accepted CARP corruption $filter" >&2; exit 1; fi
 	done
@@ -89,11 +91,22 @@ EOF
 		grep -Fq "carppeer $base.@WORKPEER@" "$fw/etc/hostname.$iface"
 		grep -Fq "block in log quick on $parent to 100.80.0.0/16" "$fw/etc/pf.conf"
 	done <"$registry"
-	! grep -E '@(WORK|HOME)_[A-Z_]+@' "$fw/etc/pf.conf" "$work/$topology/wan/etc/nftables.nft" "$work/$topology/host/etc/nftables.rules"
+	if grep -E '@(WORK|HOME)_[A-Z_]+@' "$fw/etc/pf.conf" "$work/$topology/wan/etc/nftables.nft" "$work/$topology/host/etc/nftables.rules"; then exit 1; fi
 done
-! cmp -s "$work/default/fw/etc/convergent/topology.sha256" "$work/changed/fw/etc/convergent/topology.sha256"
+if cmp -s "$work/default/fw/etc/convergent/topology.sha256" "$work/changed/fw/etc/convergent/topology.sha256"; then exit 1; fi
 # The baseline registry still certifies an old pair during coordinated rollback.
 awk '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: MASTER carpdev " $3 " vhid " $2}' "$repo/rootfs/usr/lib/convergent/incus/segments" >"$work/legacy"
 awk -f "$parser" "$repo/rootfs/usr/lib/convergent/incus/segments" "$work/legacy" >/dev/null
 if awk -f "$parser" "$registry" "$work/legacy"; then exit 1; fi
-echo 'test-networks: schema, rendering and CARP corruption fixtures passed'
+# dns-push: an allowed domain also lifts the source's explicit blocks beneath it (USAGE: exceptions include subdomains).
+dns=$work/dns
+mkdir "$dns"
+echo example.org >"$dns/allow"
+printf '%s\n' 'ads.example.org CNAME .' '*.ads.example.org CNAME .' 'notexample.org CNAME .' 'other.net CNAME .' >"$dns/list.raw"
+sed -n '/^awk -v allow=/,/list\.raw/p' "$repo/tools/dns-push" >"$dns/render"
+(work=$dns selftest=probe.test selftest_addr=127.0.0.2; . "$dns/render")
+grep -qx 'notexample.org CNAME .' "$dns/blocklist.rpz"
+grep -qx 'other.net CNAME .' "$dns/blocklist.rpz"
+grep -qx 'example.org CNAME rpz-passthru.' "$dns/blocklist.rpz"
+if grep -q 'ads.example.org' "$dns/blocklist.rpz"; then exit 1; fi
+echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures passed'

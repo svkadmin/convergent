@@ -29,12 +29,12 @@ fi
 ic start remmina
 timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
 ic exec remmina -- sh -eu -c '
-    ! command -v chromium
-    ! test -e /dev/dri/renderD128
+    if command -v chromium; then exit 1; fi
+    test ! -e /dev/dri/renderD128
     test ! -s /etc/resolv.conf
     mountpoint -q /share
     mountpoint -q /home/remmina
-    ! command -v cage
+    if command -v cage; then exit 1; fi
     command -v remmina
     command -v gnome-keyring-daemon
     command -v secret-tool
@@ -58,7 +58,7 @@ keyring() {
         if [ "$1" = store ]; then printf cv-test-secret | secret-tool store --label=CV-REMOTE test convergent; fi
         test "$(secret-tool lookup test convergent)" = cv-test-secret
         test "$(od -An -tx1 -N16 "$HOME/.local/share/keyrings/login.keyring" | tr -d " \n")" = 476e6f6d654b657972696e670a0d000a
-        ! grep -a -q cv-test-secret "$HOME/.local/share/keyrings/login.keyring"
+        if grep -a -q cv-test-secret "$HOME/.local/share/keyrings/login.keyring"; then exit 1; fi
     ' sh "$1"
 }
 keyring store

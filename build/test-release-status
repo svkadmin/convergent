@@ -62,7 +62,7 @@ for fault in tampered wrong-key missing missing-signature replay; do
     for role in installed latest; do
         grep -q "cv_release_status_verified{role=\"$role\".*} 0$" "$work/metrics/release.prom"
     done
-    ! grep -q 'cv_release_advisory_info\|cv_release_package_info\|cv_release_status_generated_seconds' "$work/metrics/release.prom"
+    if grep -q 'cv_release_advisory_info\|cv_release_package_info\|cv_release_status_generated_seconds' "$work/metrics/release.prom"; then exit 1; fi
     cmp "$work/cache/42.json" "$work/accepted-42"
     cmp "$work/cache/43.json" "$work/accepted-43"
     [ -z "$(find "$work/metrics" -name '.release.*' -print)" ]
@@ -73,5 +73,5 @@ grep -q 'cv_release_status_generated_seconds{role="installed",release="42"} 1001
 cmp "$work/cache/42.json" "$work/source/42/advisories.json"
 release_metrics 0
 grep -qx 'cv_release_check_success 0' "$work/metrics/release.prom"
-! grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"
+if grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"; then exit 1; fi
 echo 'observability: real signed ingestion, cache, publication and replay fixtures passed'

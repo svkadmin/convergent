@@ -61,7 +61,7 @@ awk -f "$here/diag/smart.awk" "$work/smart" | awk -f "$here/diag/scrub.awk" >"$w
 printf '\000\000\000\000\000\000\000\000\000\000\000\000\004\000\000\000\001\000\000\000ABCD' >"$work/record"
 od -An -v -tu1 "$work/record" | awk -f "$here/diag/bert.awk" | awk -f "$here/diag/scrub.awk" >"$work/bert-summary"
 grep -q 'BERT record=1 severity=fatal data_bytes=4 raw_bytes=0' "$work/bert-summary"
-! grep -q ABCD "$work/bert-summary"
+if grep -q ABCD "$work/bert-summary"; then die 'BERT summary leaks raw bytes'; fi
 if printf '0 0 0' | awk -f "$here/diag/bert.awk" >/dev/null; then die 'accepted short BERT'; fi
 arch=$work/crash
 mkdir "$arch"

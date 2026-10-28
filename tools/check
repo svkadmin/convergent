@@ -158,7 +158,12 @@ if [ "${1:-}" = auto ]; then (
     flock -n 7 || exit 0
     . /usr/lib/convergent/incus/firewall-heal
     firewall_heal >"$state/.firewall-heal" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$state/.firewall-heal"
-    sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$state/.firewall-heal"
+    # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
+    exec 8>/run/convergent/guests.lock
+    if flock -s -n 8; then
+        sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$state/.firewall-heal"
+    else echo 'SELF-HEAL work access left as is: a guest operation is running' >>"$state/.firewall-heal"; fi
+    exec 8>&-
     mv "$state/.firewall-heal" "$state/firewall-heal" || die 'cannot publish self-heal report'
     if [ -f "$state/last" ]; then
         sed '/^SELF-HEAL /d' "$state/last" >"$state/.last"

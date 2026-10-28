@@ -1,12 +1,13 @@
-# Preserve the longest reservation from either allocator, including an earlier checkpoint.
-/^lease [0-9.]+ \{$/ {address=$2; record=$0 "\n"; expires=""; next}
+# The latest assignment wins (a released address may have moved on); among equal starts, the longest reservation.
+/^lease [0-9.]+ \{$/ {address=$2; record=$0 "\n"; starts=""; expires=""; next}
 address != "" {
     record=record $0 "\n"
+    if ($1 == "starts") starts=$3 " " $4
     if ($1 == "ends") expires=$3 " " $4
     if ($0 ~ /^}/) {
         if (expires == "") {bad=1; exit}
-        if (!(address in expiry) || expires >= expiry[address]) {
-            expiry[address]=expires; leases[address]=record
+        if (!(address in expiry) || starts > began[address] || (starts == began[address] && expires >= expiry[address])) {
+            began[address]=starts; expiry[address]=expires; leases[address]=record
         }
         address=""
     }

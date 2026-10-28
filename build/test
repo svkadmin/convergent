@@ -620,14 +620,17 @@ cv_time maintenance-fixtures
 sh -eu <<'HEAL' || bad $LINENO
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
-mkdir -p "$work/run" "$work/state/guests"
+mkdir -p "$work/run" "$work/state/guests" "$work/proc"
 sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" \
-    -e "s|/proc/uptime|$work/uptime|g" /usr/lib/convergent/incus/firewall-heal >"$work/heal"
+    -e "s|/proc/|$work/proc/|g" -e "s|/run/incus|$work/incus|g" /usr/lib/convergent/incus/firewall-heal >"$work/heal"
 . "$work/heal"
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
 flock() { [ "$busy" = 0 ]; }
 timeout() { shift 3; "$@"; }
+sleep() { :; }
+# A killed QEMU is one Incus reports STOPPED afterwards.
+kill() { echo "kill $*" >>"$work/calls"; test_status=STOPPED; }
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
@@ -642,13 +645,21 @@ ssh() {
     echo ' defer: on'
 }
 incus() {
-    # unknown: a frozen QEMU's monitor makes the state query time out.
-    if [ "$4" = list ]; then [ "$test_status" != unknown ] || return 1; echo "$5,$test_status"; return; fi
+    # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does.
+    case $2:${4:-} in
+    query:*) [ "$test_status" != unknown ] || return 1; printf '{"status":"%s"}\n' "$test_status"; return ;;
+    *:list) [ "$test_status" != unknown ] && [ "${list_slow:-0}" = 0 ] || return 1; echo "$test_status"; return ;;
+    esac
     echo "$*" >>"$work/calls"
-    [ "$4:$failed" != restart:1 ]
+    case ${4:-}:${5:-} in
+    config:set) touch "$work/held" ;;
+    config:get) [ ! -f "$work/held" ] || echo true ;;
+    config:unset) [ "${unset_failed:-0}" = 0 ] || return 1; rm -f "$work/held" ;;
+    restart:*) [ "$failed" = 0 ] ;;
+    esac
 }
 # A refused restart (unknown state) exits the healer early, as check auto tolerates.
-tick() { echo "$1.00 0" >"$work/uptime"; firewall_heal >"$work/report" || [ "$test_status" = unknown ]; }
+tick() { echo "$1.00 0" >"$work/proc/uptime"; firewall_heal >"$work/report" || [ "$test_status" = unknown ]; }
 attempts() { grep -c 'default restart fw2 --force' "$work/calls" || :; }
 : >"$work/calls"
 [ "$(heal_probe fw1)" = master ]
@@ -712,7 +723,88 @@ for scenario in unknown peer-down inhibited; do
     [ "$scenario" != unknown ] || grep -q 'restart refused: unknown Incus state' "$work/run/firewall-heal/event"
     rm -f "$work/run/guests-stopping"
 done
-echo 'test-firewall-heal: restart gates, limits and unknown state passed'
+# A hung QEMU is killed only when its pid file and command line both name this instance.
+qemu() {
+    mkdir -p "$work/proc/$1" "$work/incus/fw2"
+    printf '%s\n' "$1" >"$work/incus/fw2/qemu.pid"
+    printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name "$2" -uuid x -pidfile "$3" >"$work/proc/$1/cmdline"
+}
+for scenario in hung foreign-name foreign-pidfile gone; do
+    rm -rf "$work/run/firewall-heal" "$work/proc/4242" "$work/incus"
+    test_status=unknown test_peer=MASTER
+    qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
+    case $scenario in
+    foreign-name) qemu 4242 wan "$work/incus/fw2/qemu.pid" ;;
+    foreign-pidfile) qemu 4242 fw2 "$work/incus/wan/qemu.pid" ;;
+    gone) rm -r "$work/proc/4242" ;;
+    esac
+    : >"$work/calls"
+    for t in 1000 1060 1120 1180; do tick "$t"; done
+    if [ "$scenario" = hung ]; then
+        printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+            'kill -KILL 4242' '--force-local --project default start fw2' \
+            '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
+        cmp "$work/calls" "$work/expected"
+        grep -q 'restart completed' "$work/run/firewall-heal/event"
+    else
+        [ ! -s "$work/calls" ]
+        grep -q 'restart refused: unknown Incus state' "$work/run/firewall-heal/event"
+    fi
+done
+# A list that merely times out on a loaded host is answered by the state query: no kill for a slow QEMU.
+rm -rf "$work/run/firewall-heal"
+test_status=RUNNING list_slow=1 test_peer=MASTER
+qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
+: >"$work/calls"
+for t in 1000 1060 1120 1180; do tick "$t"; done
+printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+    '--force-local --project default restart fw2 --force' \
+    '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+list_slow=0
+# A restart Incus could not drive on a QEMU that still names this instance: killed and started instead.
+rm -rf "$work/run/firewall-heal"
+failed=1
+: >"$work/calls"
+for t in 1000 1060 1120 1180; do tick "$t"; done
+printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+    '--force-local --project default restart fw2 --force' 'kill -KILL 4242' '--force-local --project default start fw2' \
+    '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+failed=0
+# A hold the healer could not clear is released once the node is healthy again.
+rm -rf "$work/run/firewall-heal"
+unset_failed=1 test_status=RUNNING
+for t in 1000 1060 1120 1180; do tick "$t"; done
+grep -q 'hold could not be cleared' "$work/run/firewall-heal/event"
+[ -f "$work/held" ] && [ -f "$work/run/firewall-heal/fw2.hold" ]
+unset_failed=0 test_target=BACKUP
+: >"$work/calls"
+tick 1240
+grep -q 'config unset fw2' "$work/calls"
+[ ! -f "$work/held" ] && [ ! -f "$work/run/firewall-heal/fw2.hold" ]
+grep -q 'autorestart hold released' "$work/run/firewall-heal/event"
+test_target=down
+# guests' stop_guest ends a VM the same way once Incus can neither stop nor force it.
+eval "$(sed -n '/^stop_guest() {/,/^}/p; /^force_stop() {/,/^}/p' /usr/local/sbin/guests)"
+autorestart_hold() { :; }
+ic() { echo "ic $*" >>"$work/calls"; return 1; }
+retry() { echo "retry $*" >>"$work/calls"; [ "$test_status" = STOPPED ]; }
+for scenario in hung foreign-name; do
+    rm -rf "$work/proc/4242" "$work/incus"
+    test_status=unknown
+    case $scenario in hung) qemu 4242 fw2 "$work/incus/fw2/qemu.pid" ;; *) qemu 4242 wan "$work/incus/fw2/qemu.pid" ;; esac
+    : >"$work/calls"
+    if [ "$scenario" = hung ]; then
+        stop_guest fw2 2>/dev/null
+        printf '%s\n' 'ic stop fw2 --timeout 60' 'ic stop fw2 --force' 'kill -KILL 4242' 'retry stopped fw2' >"$work/expected"
+    else
+        if stop_guest fw2 2>/dev/null; then exit 1; fi
+        printf '%s\n' 'ic stop fw2 --timeout 60' 'ic stop fw2 --force' 'retry stopped fw2' >"$work/expected"
+    fi
+    cmp "$work/calls" "$work/expected"
+done
+echo 'test-firewall-heal: restart gates, limits, unknown state, hung QEMU and guest stop passed'
 HEAL
 sh -eu <<'DRAIN' || bad $LINENO
 fixture=$(mktemp -d)
@@ -1235,8 +1327,8 @@ cv_time firewall-self-heal
     . /usr/lib/convergent/incus/firewall-heal
     fw_pid() { timeout -k 1 5 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
     fwssh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@"; }
-    broken= inhibited=
-    trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
+    broken= inhibited= frozen=
+    trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
     [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]
     before=$(fw_pid fw2)
@@ -1256,6 +1348,26 @@ cv_time firewall-self-heal
     grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     grep -q '^SELF-HEAL .*fw2' /var/lib/convergent/check/firewall-heal
+    rm /run/convergent/guests-stopping
+    inhibited=
+    # A QEMU that stops answering Incus: the checker kills it by its pid file and starts it again
+    # (after the 600 s grace of the restart above, then 180 s of failed probes).
+    before=$(fw_pid fw2)
+    frozen=$before
+    kill -STOP "$before"
+    deadline=$(($(date +%s) + 1200))
+    until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
+    frozen=
+    if kill -0 "$before" 2>/dev/null; then exit 1; fi
+    [ -e /run/convergent/guests-stopping ] || { touch /run/convergent/guests-stopping; inhibited=1; }
+    deadline=$(($(date +%s) + 1800))
+    until [ "$(heal_probe fw2)" = backup ]; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
+    grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
+    [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     rm /run/convergent/guests-stopping
     inhibited=
     # With both firewalls failing there is no healthy MASTER to fall back on: no attempt, no restart.
@@ -3166,7 +3278,10 @@ run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
 guest_test = goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update")
 drain_test = goal in ("guests", "guests-maint", "guests-update", "online")
-marker = {"guests-maint": b"CV-UPDATE-RESULT", "guests-update": b"CV-UPDATE-RESULT", "online": b"CV-ONLINE-RESULT", "desktop": b"CV-DESKTOP-RESULT", "update": b"CV-UPDATE-SIG-RESULT"}.get(goal, b"CV-GUESTS-RESULT")
+# The guest flows print two verdicts (PF smoke, then the update flow); both must be 0.
+markers = {"guests-maint": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "guests-update": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
+           "online": [b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
+verdicts = {}
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 path = f"{work}/qmp.sock"
@@ -3268,9 +3383,12 @@ try:
                     timing = timing[-4096:]
                     seen = (seen + chunk)[-8192:]
                     if guest_test and result is None:
-                        match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
-                        if match:
-                            result = int(match[1])
+                        for marker in markers:
+                            match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
+                            if match and marker not in verdicts:
+                                verdicts[marker] = int(match[1])
+                        if len(verdicts) == len(markers):
+                            result = max(verdicts.values())
                     # Releases before 2026-10-18 print "Convergent passphrase".
                     if prompted is None and b"assphrase [" in seen:
                         prompted = time.monotonic()

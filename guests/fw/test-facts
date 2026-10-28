@@ -8,12 +8,23 @@ trap 'exit 1' HUP INT TERM
 sed -n '/if capture pflogd /,/^[[:space:]]*fi$/p' \
 	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/check"
 capture() { data=$sample; }
+# The archive repair: exactly a suspended pflogd gets its archive moved aside and a HUP.
+mv() { echo "mv $*" >>"$work/repair"; }
+pkill() { echo "pkill $*" >>"$work/repair"; }
+logger() { :; }
 check() {
 	ok=1
+	: >"$work/repair"
 	. "$work/check" >"$work/out"
 	[ "$ok" = "$1" ]
 	grep -qx "convergent_pflogd_up $1" "$work/out"
 	grep -qx "convergent_pflogd_suspended $2" "$work/out"
+	if [ "$2" = 1 ]; then
+		grep -qx 'mv /var/log/pflog /var/log/pflog.bad' "$work/repair"
+		grep -q '^pkill -HUP .* -x pflogd$' "$work/repair"
+	else
+		[ ! -s "$work/repair" ]
+	fi
 }
 sample='pflogd: [priv] (pflogd)
  pflogd: [running] -s 160 -i pflog0 -f /var/log/pflog (pflogd)'

@@ -12,6 +12,7 @@ sed -e "s|/usr/lib/convergent/incus|$repo/rootfs/usr/lib/convergent/incus|g" \
     "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" >"$scratch/heal"
 sed -n "/^sh -eu <<'HEAL'/,/^HEAL$/p" "$here/test" | sed '1d;$d' |
     sed -e "s|/usr/lib/convergent/incus/firewall-heal|$scratch/heal|g" \
+        -e "s|/usr/local/sbin/guests|$repo/tools/guests|g" \
         -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/fixture"
 sh -n "$scratch/fixture"
 sh -eu "$scratch/fixture"

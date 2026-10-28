@@ -114,7 +114,7 @@ for role in remmina def; do
     fi
 done
 grep -qx '    source: /run/convergent/browser/remmina/cage/wayland-0' "$here/../guests/remmina/incus.yaml"
-! grep -q 'cage\|WLR_BACKENDS' "$here/../guests/remmina/rootfs/usr/local/bin/remmina-launch"
+if grep -q 'cage\|WLR_BACKENDS' "$here/../guests/remmina/rootfs/usr/local/bin/remmina-launch"; then exit 1; fi
 echo 'CV-REMOTE unit host Cage socket boundary ok'
 
 if command -v jq >/dev/null 2>&1; then

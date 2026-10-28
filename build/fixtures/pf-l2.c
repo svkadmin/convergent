@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { IP, ARP, DHCP, CARP, IPV6, MAC, MAX_PEERS = 4094 };
+enum { IP, ARP, RARP, DHCP, CARP, IPV6, MAC, MAX_PEERS = 4094 };
 struct tag { unsigned tpid, vid; };
 struct peer { int vlan, pid, receiver; uint8_t source[4], mac[6]; };
 static struct peer peers[MAX_PEERS];
@@ -24,7 +24,7 @@ static int npeers, ninfra, current, sender, count, offline;
 static int timing;
 static double started;
 static uint64_t fixture_hash = UINT64_C(14695981039346656037);
-static const char *kinds[] = { "ip", "arp", "dhcp", "carp", "ipv6", "mac" };
+static const char *kinds[] = { "ip", "arp", "rarp", "dhcp", "carp", "ipv6", "mac" };
 
 static void require(int ok, const char *message)
 {
@@ -75,10 +75,11 @@ static size_t frame(uint8_t *packet, const uint8_t *mac, const uint8_t *source,
         put16(packet + offset, tags[i].tpid);
         put16(packet + offset + 2, tags[i].vid);
     }
-    put16(packet + offset, kind == ARP ? 0x0806 : kind == IPV6 ? 0x86dd : 0x0800);
+    /* RARP frames carry the ARP wire format; OpenBSD feeds their replies to the ARP cache too. */
+    put16(packet + offset, kind == ARP ? 0x0806 : kind == RARP ? 0x8035 : kind == IPV6 ? 0x86dd : 0x0800);
     offset += 2;
     p = packet + offset;
-    if (kind == ARP) {
+    if (kind == ARP || kind == RARP) {
         put16(p, 1);
         put16(p + 2, 0x0800);
         p[4] = 6;
@@ -257,7 +258,7 @@ static void check(const char *label, int kind, const struct tag *tags, int ntags
         for (int i = 0; i < ntags; i++, offset += 4)
             require(get16(packet + offset) == tags[i].tpid &&
                     get16(packet + offset + 2) == tags[i].vid, label);
-        if (kind != ARP && kind != IPV6)
+        if (kind != ARP && kind != RARP && kind != IPV6)
             require(checksum(packet + offset + 2, 20) == 0, label);
         hash_fixture((const uint8_t *)label, strlen(label) + 1);
         hash_fixture(packet, length);
@@ -290,7 +291,7 @@ static void cases(void)
     for (int tagged = 0; tagged < 2; tagged++) {
         const char *name = tagged ? "tagged" : "native";
         for (int i = 0; i < ninfra; i++) {
-            for (int kind = IP; kind <= ARP; kind++) {
+            for (int kind = IP; kind <= RARP; kind++) {
                 snprintf(label, sizeof(label), "%s-%s-%u.%u.%u.%u", name, kinds[kind],
                          infra[i][0], infra[i][1], infra[i][2], infra[i][3]);
                 blocked(label, kind, tags, tagged, infra[i]);
@@ -339,9 +340,9 @@ int main(int argc, char **argv)
         inet_pton(AF_INET, "100.80.32.62", infra[0]);
         ninfra = 1;
         cases();
-        require(count == 33, "case count");
-        /* Original Python frames and labels, with the live spoofed MAC. */
-        require(fixture_hash == UINT64_C(0x7b7066e88bea1d11), "packet fixture bytes");
+        require(count == 35, "case count");
+        /* Original Python frames and labels, with the live spoofed MAC and the RARP cases. */
+        require(fixture_hash == UINT64_C(0x3e21f1fbcd06ba6e), "packet fixture bytes");
         puts("CV-PF L2 packet fixtures passed");
         return 0;
     }

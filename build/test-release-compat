@@ -38,7 +38,7 @@ gm=$bundle/guests.manifest
 . "$work/paths"
 . "$work/identities"
 [ "$(wc -l <"$dir/guest-ids")" = 4 ]
-! grep -q remmina "$gm"
+if grep -q remmina "$gm"; then exit 1; fi
 grep -q '^guest remmina ' "$bundle/remmina.manifest"
 cp "$gm" "$work/incompatible"
 cat "$bundle/remmina.manifest" >>"$work/incompatible"

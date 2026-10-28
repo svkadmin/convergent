@@ -16,6 +16,7 @@ applying= recovering= rebuilding= polling=
 step=setup
 . "$lib/fw-topology"
 . "$lib/fw-leases"
+. "$lib/firewall-heal"
 
 fail() { [ -n "$polling" ] || logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
@@ -144,7 +145,7 @@ rollback() {
             esac
             case $guest in fw1|fw2) leases_hold || return ;; esac
             autorestart_hold "$guest" || return
-            if running "$guest"; then ic stop "$guest" --force || return; fi
+            stopped "$guest" || force_stop "$guest" || return
             seed_remove "$guest" || return
             rebuild_root "$guest" "$image" || return
             image_alias "$guest" "$image" || return
@@ -628,8 +629,14 @@ stop_guest() {
     autorestart_hold "$1" || return
     ic stop "$1" --timeout 60 && return
     echo "guests: graceful stop failed; forcing $1 off; inspect with incus --force-local --project default console $1 --show-log" >&2
-    # A guest that halted late is stopping on its own: then the force has nothing left to do.
-    ic stop "$1" --force || retry stopped "$1"
+    force_stop "$1"
+}
+# A guest that halted late is stopping on its own: then the force has nothing left to do.
+# A VM whose monitor no longer answers Incus: end its QEMU by its own pid file, as the checker does.
+force_stop() {
+    ic stop "$1" --force && return
+    case $1 in fw1|fw2|wan) if pid=$(heal_qemu "$1"); then kill -KILL "$pid" || :; fi ;; esac
+    retry stopped "$1"
 }
 start_guest() {
     # The previous QEMU may hold the VFIO group for a moment after its guest stopped.
@@ -929,7 +936,8 @@ replace() {
     case $guest in fw1|fw2) leases_hold ;; esac
     autorestart_hold "$guest"
     if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
-        running "$guest" && stop_guest "$guest"
+        # Only a positively stopped guest skips the stop: a frozen or unreadable one goes through it.
+        stopped "$guest" || stop_guest "$guest"
         seed_remove "$guest"
         replace_root
         return
@@ -944,7 +952,7 @@ replace() {
     [ -n "$image" ] && ic query "/1.0/images/$image" >/dev/null || die "the image $guest runs on is gone; a failed update could not be undone"
     [ -n "$pending" ] || cp "$keys/known_hosts" "$state/known_hosts.before"
     prep_start=no
-    if running "$guest"; then prep_start=yes; fi
+    stopped "$guest" || prep_start=yes
     printf '%s %s %s\n' "$guest" "$snap" "$prep_start" >"$work/preparing"
     sync
     mv "$work/preparing" "$state/preparing"
@@ -1095,7 +1103,10 @@ rebuild() {
     else
         [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
         if ! carp "$peer" MASTER; then
-            running "$1" || die "$peer must be MASTER on all registered segments before rebuilding $1"
+            if stopped "$1"; then die "$peer must be MASTER on all registered segments before rebuilding $1"; fi
+            # The peer takes over only with coherent CARP (MASTER or BACKUP) on every registered segment.
+            rsh "$peer" ifconfig >"$work/carp" && awk -v mode=status -f "$lib/carp.awk" /etc/convergent/segments "$work/carp" >/dev/null ||
+                die "$peer must be MASTER or BACKUP on every registered segment before $1 stops"
             starting=$1
             stop_guest "$1"
             retry carp "$peer" MASTER || die "$peer did not take over all registered segments"
@@ -1110,6 +1121,7 @@ rebuild() {
         touch "$state/fw.rebuilt"
         sync
         fw_check "$1"
+        dns_restore
         retry pair "$peer" "$1"
     fi
     fw_release
@@ -1299,6 +1311,8 @@ update() {
         replace fw2
         retry pair fw1 fw2
         fw_check fw2
+        # DNS policy (blocklist, owner records) before the replacement can be promoted.
+        dns_restore
         backup_soak
         touch "$state/fw.handoff"
         sync
@@ -1315,6 +1329,7 @@ ifconfig -g handoff carpdemote 128'
         commit_update
         replace fw1
         fw_check fw1
+        dns_restore
         retry pair fw2 fw1
         fw_release
         retry pair fw1 fw2

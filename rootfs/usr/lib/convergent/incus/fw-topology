@@ -6,7 +6,7 @@ topology_hold() {
         ic config set "$node" boot.autostart=false boot.autorestart=false || return
     done
     for node in fw1 fw2; do
-        if running "$node"; then locked ic stop "$node" --force || return; fi
+        stopped "$node" || locked force_stop "$node" || return
         stopped "$node" || return
     done
 }
@@ -155,6 +155,7 @@ topology_update() {
     for node in fw1 fw2; do seed_start "$node"; done
     leases_resume
     for node in fw1 fw2; do fw_check "$node" release; done
+    dns_restore
     retry pair fw1 fw2
     soak fw1 fw2
     touch "$state/fw.topology/committed"
