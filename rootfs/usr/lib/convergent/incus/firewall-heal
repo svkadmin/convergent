@@ -82,16 +82,17 @@ firewall_heal() (
         # Keep the lock until bounded mutators finish, including after a checker termination.
         (
             trap '' HUP INT TERM
-            status=$(timeout -k 1 10 incus --force-local --project default list "$node" --format csv -c ns 9>&- 8>&- 7>&-) || status=
+            # A loaded host answers slowly; a refusal costs an attempt and the grace.
+            status=$(timeout -k 1 30 incus --force-local --project default list "$node" --format csv -c ns 9>&- 8>&- 7>&-) || status=
             case $status in
             "$node,RUNNING") set -- restart "$node" --force ;;
             "$node,STOPPED") set -- start "$node" ;;
             *) heal_note "$node restart refused: unknown Incus state"; exit 1 ;;
             esac
-            if timeout -k 1 10 incus --force-local --project default config set "$node" \
+            if timeout -k 1 30 incus --force-local --project default config set "$node" \
                 boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- &&
                 timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; then
-                if timeout -k 1 10 incus --force-local --project default config unset "$node" \
+                if timeout -k 1 30 incus --force-local --project default config unset "$node" \
                     boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&-; then
                     heal_note "$node restart completed; awaiting health probes"
                 else heal_note "$node restarted but autorestart hold could not be cleared"; fi
