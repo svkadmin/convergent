@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run the maintenance fixture offline with the production healer and registry.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' 0
+trap 'exit 1' HUP INT TERM
+sh "$here/networks" registry "$scratch/registry"
+sed -e "s|/usr/lib/convergent/incus|$repo/rootfs/usr/lib/convergent/incus|g" \
+    -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" \
+    "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" >"$scratch/heal"
+sed -n "/^sh -eu <<'HEAL'/,/^HEAL$/p" "$here/test" | sed '1d;$d' |
+    sed -e "s|/usr/lib/convergent/incus/firewall-heal|$scratch/heal|g" \
+        -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/fixture"
+sh -n "$scratch/fixture"
+sh -eu "$scratch/fixture"

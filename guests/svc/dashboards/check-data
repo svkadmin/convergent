@@ -1,9 +1,10 @@
 #!/bin/sh
-# check-data <dashboards-dir> [base-url]: run on the host after real scrapes, through svc's query
+# check-data <dashboards-dir> [base-url] [guests]: run after real scrapes, through svc's query
 # proxy; optional exempts emptiness, never query errors.
 set -eu
 dir=${1:?dashboards directory}
 base=${2:-http://100.80.2.10:9428}
+case ${3:-} in ''|guests) ;; *) echo 'dashboards: unknown fixture' >&2; exit 1 ;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 # A just-restarted svc or a failover in progress drops a request now and then: three tries.
@@ -22,9 +23,13 @@ transfer() {
     printf 'data-urlencode = "query=%s"\nurl = "%s"\noutput = "%s"\n' \
         "$(quote "$1")" "$(quote "$2")" "$(quote "$3")"
 }
-jq -r '.title as $d | .panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
+jq -r --arg fixture "${3:-}" '.uid as $uid | .title as $d | .panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
-    [$d, $p, .refId, (.cvOptional // "required"), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
+    [$d, $p, .refId, (.cvOptional //
+        if $fixture == "guests" and
+            (
+             ($uid == "cv-security" and $p == "Boot evidence" and (.expr | contains(" and on() "))))
+        then "guest fixture: no firmware boot evidence in QEMU" else "required" end), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
 [ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }
 fail=0; count=0; empty=0
 while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do

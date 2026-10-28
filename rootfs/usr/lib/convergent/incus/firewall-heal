@@ -86,7 +86,8 @@ firewall_heal() (
             case $status in
             "$node,RUNNING") set -- restart "$node" --force ;;
             "$node,STOPPED") set -- start "$node" ;;
-            *) heal_note "$node restart refused: unknown Incus state"; exit 1 ;;
+            # A hung or frozen QEMU hides its state from Incus; a forced restart still ends the process.
+            *) set -- restart "$node" --force ;;
             esac
             if timeout -k 1 10 incus --force-local --project default config set "$node" \
                 boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- &&

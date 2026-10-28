@@ -44,7 +44,7 @@ leases_resume() {
     [ -f "$state/leases/held" ] || return 0
     rm -f "$state/leases/quiesced" && sync || return
     lease_waiting=
-    for lease_node in fw1 fw2; do
+    for lease_node in ${1:-fw1 fw2}; do
         running "$lease_node" || { lease_waiting=1; continue; }
         rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
@@ -53,6 +53,7 @@ if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; the
     rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd
 fi' || return
     done
-    [ -z "$lease_waiting" ] || return 0
+    # A peer-only recovery keeps the hold until both allocators have resumed.
+    [ -z "$lease_waiting" ] && [ "$#" = 0 ] || return 0
     rm -f "$state/leases/held" && sync
 }

@@ -14,6 +14,8 @@ for dependency in python3 jq openssl; do
 done
 sh build/test --networks || bad 'networks selftest failed'
 sh build/test-topology || bad 'topology selftest failed'
+sh build/test-leases || bad 'leases selftest failed'
+sh build/test-firewall-heal || bad 'firewall self-heal selftest failed'
 sh build/test --remmina-unit || bad 'Remmina selftest failed'
 sh build/test --observability || bad 'observability selftest failed'
 sh build/test-incus-ui --offline || bad 'Incus UI selftest failed'
