@@ -25,7 +25,7 @@ heal_note() {
 # The state as Incus reads it: a loaded host answers the second query late, a hung QEMU neither.
 heal_state() {
     status=$(timeout -k 1 30 incus --force-local --project default list "$1" --format csv -c s 9>&- 8>&- 7>&-) ||
-        status=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state" 9>&- 8>&- 7>&- | jq -r .status) || return 1
+        status=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- | jq -r .status) || return 1
     [ -n "$status" ] || return 1
     printf '%s\n' "$status" | tr '[:lower:]' '[:upper:]'
 }
