@@ -24,8 +24,11 @@ heal_note() {
 }
 # The state as Incus reads it: a loaded host answers the second query late, a hung QEMU neither.
 heal_state() {
-    status=$(timeout -k 1 30 incus --force-local --project default list "$1" --format csv -c s 9>&- 8>&- 7>&-) ||
+    if rows=$(timeout -k 1 30 incus --force-local --project default list "$1" --format csv -c ns 9>&- 8>&- 7>&-); then
+        status=$(printf '%s\n' "$rows" | awk -F, -v name="$1" '$1 == name {print $2}')
+    else
         status=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- | jq -r .status) || return 1
+    fi
     [ -n "$status" ] || return 1
     printf '%s\n' "$status" | tr '[:lower:]' '[:upper:]'
 }
@@ -44,9 +47,12 @@ heal_qemu() {
 }
 # Identity checked again right before the signal. Incus sees the exit, cleans up and reports STOPPED.
 heal_kill() {
+    if heal_probe "$1" >/dev/null; then return 1; fi
+    [ "$(heal_probe "$2")" = master ] && heal_allowed || return 1
     pid=$(heal_qemu "$1") || return 1
-    heal_note "$1 QEMU $pid no longer answers Incus; killed for a restart"
+    [ "$pid" = "$3" ] || return 1
     kill -KILL "$pid" || return 1
+    heal_note "$1 QEMU $pid no longer answers Incus; killed for a restart"
     for wait in 1 2 3 4 5 6 7 8 9 10 11 12; do
         sleep 5
         [ "$(heal_state "$1")" != STOPPED ] || return 0
@@ -58,7 +64,8 @@ heal_unhold() (
     heal_allowed || exit 0
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
-    if [ "$(timeout -k 1 30 incus --force-local --project default config get "$1" user.convergent.autorestart 9>&- 8>&- 7>&-)" = true ]; then
+    held=$(timeout -k 1 30 incus --force-local --project default config get "$1" user.convergent.autorestart 9>&- 8>&- 7>&-) || exit 1
+    if [ "$held" = true ]; then
         timeout -k 1 30 incus --force-local --project default config unset "$1" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- || exit 1
         heal_note "$1 autorestart hold released"
     fi
@@ -125,11 +132,12 @@ firewall_heal() (
         # Keep the lock until bounded mutators finish, including after a checker termination.
         (
             trap '' HUP INT TERM
+            original_pid=$(heal_qemu "$node") || original_pid=
             status=$(heal_state "$node") || status=
             case $status in
             RUNNING|FROZEN) set -- restart "$node" --force ;;
             STOPPED) set -- start "$node" ;;
-            *) heal_qemu "$node" >/dev/null || { heal_note "$node restart refused: unknown Incus state"; exit 1; }
+            *) [ -n "$original_pid" ] || { heal_note "$node restart refused: unknown Incus state"; exit 1; }
                set -- kill ;;
             esac
             # A frozen monitor answers config changes only after its 10 s QMP timeout.
@@ -142,7 +150,7 @@ firewall_heal() (
                 if heal_qemu "$node" >/dev/null; then set -- kill; else set -- failed; fi
             fi
             if [ "$1" = kill ]; then
-                heal_kill "$node" && timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- || set -- failed
+                heal_kill "$node" "$peer" "$original_pid" && timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- || set -- failed
             fi
             [ "$1" != failed ] || { heal_note "$node restart failed or timed out; autorestart hold retained"; exit 1; }
             if timeout -k 1 30 incus --force-local --project default config unset "$node" \

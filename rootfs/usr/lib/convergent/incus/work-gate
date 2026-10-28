@@ -34,8 +34,12 @@ for node in fw1 fw2; do
 	fi
 	[ "$actual" = "$expected" ] || { close_gate "$node topology differs"; exit 1; }
 	# Every answer carries PF's own verdict: a node forwarding without PF closes the gate at once.
-	live=$(remote "$node" 'ifconfig; pfctl -si; rcctl check unbound >/dev/null && unbound-control status >/dev/null && echo CV-UNBOUND-OK; :') ||
-		{ missing=$((missing + 1)); continue; }
+	answered=1
+	live=$(remote "$node" 'ifconfig; pfctl -si; timeout -k 1 5 sh -c "rcctl check unbound >/dev/null && unbound-control status >/dev/null" && echo CV-UNBOUND-OK; :') || answered=0
+	if printf '%s\n' "$live" | awk '/^Status:/ && $2 != "Enabled" {bad=1} END {exit !bad}'; then
+		close_gate "$node PF not enabled"; exit 1
+	fi
+	[ "$answered" = 1 ] || { missing=$((missing + 1)); continue; }
 	printf '%s\n' "$live" | grep -q '^Status: Enabled' || { close_gate "$node PF not enabled"; exit 1; }
 	# A booting or failing-over node has CARP states in flux: count it as missing, not as a mismatch.
 	if printf '%s\n' "$live" | grep -qx CV-UNBOUND-OK &&

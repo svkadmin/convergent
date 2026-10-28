@@ -25,9 +25,11 @@ node=$1 cmd=$2
 case $cmd in
 *topology*|*expected*) cat "$GATE_FIXTURE/$node.hash" ;;
 *)
+    case $cmd in *'timeout -k 1 5 sh -c'*) ;; *) echo 'resolver check is not bounded' >&2; exit 2 ;; esac
     role=$(cat "$GATE_FIXTURE/$node.role")
     awk -v role="$role" '$1 !~ /^#/ {print $1 ": flags=41<UP,RUNNING>"; print " carp: " role " carpdev " $3 " vhid " $2}' "$GATE_FIXTURE/registry/etc/convergent/segments"
     if [ -f "$GATE_FIXTURE/$node.pfdown" ]; then echo 'Status: Disabled'; else echo 'Status: Enabled'; fi
+    [ ! -f "$GATE_FIXTURE/$node.hung" ] || exit 124
     printf 'pfsync0: flags=41<UP,RUNNING>\n defer: on\n'
     [ -f "$GATE_FIXTURE/$node.unhealthy" ] || echo CV-UNBOUND-OK
     ;;
@@ -77,6 +79,13 @@ touch "$work/fw1.pfdown"
 if sh "$work/gate"; then exit 1; fi
 [ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
 rm "$work/fw1.pfdown"
+sh "$work/gate"
+# Partial PF output survives a hung resolver or failed transport.
+touch "$work/fw1.pfdown" "$work/fw1.hung"
+if sh "$work/gate"; then exit 1; fi
+[ "$(cat "$work/verdict")" = closed ]
+[ ! -e "$work/gate.valid" ]
+rm "$work/fw1.pfdown" "$work/fw1.hung"
 sh "$work/gate"
 # Two masters close the gate but keep validation: a failover seen half-way reopens once one remains.
 echo MASTER >"$work/fw2.role"

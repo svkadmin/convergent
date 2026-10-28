@@ -93,6 +93,7 @@ kill() { echo "kill $*" >>"$work/mutations"; killed=1; }
 retry() { "$@"; }
 stopped() { [ -n "${killed:-}" ] || ! running "$1"; }
 ic() { echo "$*" >>"$work/mutations"; [ "$scenario:$1" != frozen:stop ]; }
+timeout() { [ "$*" = '-k 5 60 incus --force-local --project default stop fw1 --force' ] || return 1; ic stop fw1 --force; }
 fw_check() { [ "$scenario" != topology ] && [ -e "$work/dhcp.$1" ]; }
 carp() { [ "$scenario" != carp ]; }
 rebuild_root() {
@@ -125,7 +126,7 @@ for scenario in held frozen unheld topology carp resume-failed peer-down; do
         [ "$scenario" = held ] || [ "$scenario" = frozen ]
         grep -qx 'stop fw1 --force' "$work/mutations"
         [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
-        [ "$scenario" = frozen ] || ! grep -q '^kill ' "$work/mutations"
+        if [ "$scenario" != frozen ] && grep -q '^kill ' "$work/mutations"; then exit 1; fi
         grep -qx rebuild "$work/mutations"
         [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
     else

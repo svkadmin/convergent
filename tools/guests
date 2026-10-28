@@ -83,8 +83,14 @@ retry() {
     done
     polling=
 }
-running() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Running ]; }
-stopped() { [ "$(ic query "/1.0/instances/$1/state" | jq -r .status)" = Stopped ]; }
+running() {
+    guest_state=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- 6>&-) || return 1
+    [ "$(printf '%s\n' "$guest_state" | jq -r .status)" = Running ]
+}
+stopped() {
+    guest_state=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- 6>&-) || return 1
+    [ "$(printf '%s\n' "$guest_state" | jq -r .status)" = Stopped ]
+}
 autorestart_hold() {
     # Mark in the same update; imports and renames keep ownership of the override.
     ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
@@ -634,7 +640,7 @@ stop_guest() {
 # A guest that halted late is stopping on its own: then the force has nothing left to do.
 # A VM whose monitor no longer answers Incus: end its QEMU by its own pid file, as the checker does.
 force_stop() {
-    ic stop "$1" --force && return
+    timeout -k 5 60 incus --force-local --project default stop "$1" --force 9>&- 8>&- 7>&- 6>&- && return
     case $1 in fw1|fw2|wan) if pid=$(heal_qemu "$1"); then kill -KILL "$pid" || :; fi ;; esac
     retry stopped "$1"
 }
