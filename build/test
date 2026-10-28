@@ -2082,6 +2082,11 @@ done
 [ "$dash" = 0 ] || {
     bad $LINENO
     for f in fw1 fw2; do timeout 20 ssh -F /etc/convergent/ssh_config "$f" 'ls -l /var/node_exporter/textfile; head -n 3 /var/node_exporter/textfile/convergent_fw.prom' 2>&1 | sed "s/^/CV-$f facts /"; done
+    # Rules never evaluated or failing keep cv_rules_healthy at 0 (all Overview verdicts empty).
+    curl -qfsS --noproxy '*' --max-time 10 http://100.80.2.10:8880/api/v1/rules |
+        jq -r '.data.groups[] | .name as $g | .rules[] | select((.lastEvaluation | startswith("0001")) or .health != "ok") |
+            "CV-RULES \($g) \(.name) health=\(.health) last=\(.lastEvaluation) err=\(.lastError // "" | .[:160])"' | head -n 20
+    ic exec svc -- sh -c 'grep vmalert /var/log/messages | tail -n 8' | cut -c1-200 | sed 's/^/CV-VMALERT /'
     # Why: each scrape target's last error, and the routed paths svc -> host and wan.
     ic exec svc -- wget -q -T 10 -O - 'http://127.0.0.1:8428/api/v1/targets?state=active' |
         jq -r '.data.activeTargets[] | "CV-TARGET \(.labels.job) \(.labels.node) \(.health) \(.lastError)"'
