@@ -100,7 +100,6 @@ pass in quick on $parent inet proto { tcp udp } from $prefix to $gateway port 53
 pass in quick on $parent inet proto icmp from $prefix to $gateway icmp-type echoreq keep state
 block in log quick on $parent to self
 block in log quick on $parent to <work_infra>
-pass in quick on $parent inet from $prefix to <work_$family> keep state (source-track rule, max-src-states 2000)
 block in log quick on $parent to 100.80.0.0/16
 pass in quick on $parent inet from $prefix to <home_lan> keep state (source-track rule, max-src-states 2000)
 pass in quick on $parent inet from $prefix to ! <nonpublic> keep state (source-track rule, max-src-states 2000)
