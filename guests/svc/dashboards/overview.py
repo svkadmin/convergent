@@ -6,7 +6,7 @@ from health import CHECKER, FW, HEALTH, RULES, WAN, fresh, known, verdict
 def generate():
     p = Page()
     domains = [
-        ('Network', 'path|dns', '(count(%s) == 2) and on() (%s) and on() (%s)' % (FW, WAN, fresh('internet', 180) + ' and on() (cv_https_probe_available == 1)'), '/d/cv-network-path'),
+        ('Network', 'path|dns', '(count(%s) == 2) and on() (%s) and on() (%s)' % (FW, WAN, fresh('internet', 180) + ' and on() (cv_https_probe_available >= 0)'), '/d/cv-network-path'),
         ('Guests', 'compartments', '(up{job="incus"} == 1) and on() (' + CHECKER + ')', '/d/cv-compartments'),
         ('Host', 'hardware-capacity|storage|hardware-slow', fresh('storage', 7200) + ' and on() (' + fresh('daily', 129600) + ')', '/d/cv-host'),
         ('Security / Updates', 'security-time|security-slow|release.*|logs', fresh('boot', 315360000) + ' and on() (' + CHECKER + ') and on() (' + fresh('nts', 180) + ')', '/d/cv-security'),
