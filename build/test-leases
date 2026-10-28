@@ -48,6 +48,55 @@ cp "$work/old" "$work/live/fw1"
 cp "$work/new" "$work/live/fw2"
 leases_resume
 [ ! -e "$state/leases/held" ]
+# Replay must resume only the held peer before health, then checkpoint again before rebuilding.
+eval "$(sed -n '/^rollback() {/,/^}/p' "$here/../tools/guests")"
+keys=$work/keys
+mkdir "$keys"
+fail() { echo "$*" >&2; return 1; }
+volumes() { :; }
+autorestart_hold() { :; }
+seed_remove() { :; }
+image_alias() { :; }
+seed_start() { :; }
+fw_release() { :; }
+ic() { echo "$*" >>"$work/mutations"; }
+fw_check() { [ "$scenario" != topology ] && [ -e "$work/dhcp.$1" ]; }
+carp() { [ "$scenario" != carp ]; }
+rebuild_root() {
+    [ -e "$state/leases/held" ] && [ -e "$state/leases/quiesced" ] || return 1
+    [ ! -e "$work/dhcp.fw1" ] && [ ! -e "$work/dhcp.fw2" ] || return 1
+    echo rebuild >>"$work/mutations"
+}
+rsh() {
+    case $2 in
+    *'rcctl disable dhcpd'*) rm -f "$work/dhcp.$1"; cat "$work/live/$1" ;;
+    *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;;
+    *'rcctl enable dhcpd'*)
+        [ "$1" = fw2 ] && [ "$scenario" != resume-failed ] || return 1
+        touch "$work/dhcp.$1"
+        ;;
+    *) return 1 ;;
+    esac
+}
+for scenario in held unheld topology carp resume-failed peer-down; do
+    mkdir -p "$state/leases"
+    touch "$state/leases/held" "$state/leases/quiesced" "$state/known_hosts.before"
+    rm -f "$work/dhcp.fw1" "$work/dhcp.fw2"
+    cp "$work/new" "$work/live/fw2"
+    [ "$scenario" != peer-down ] || rm "$work/live/fw2"
+    [ "$scenario" != unheld ] || rm "$state/leases/held"
+    echo 'fw1 test-rebuild old-image' >"$state/pending"
+    : >"$work/mutations"
+    if rollback; then
+        [ "$scenario" = held ]
+        grep -qx rebuild "$work/mutations"
+        [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
+    else
+        [ "$scenario" != held ]
+        [ -e "$state/pending" ] && [ ! -s "$work/mutations" ]
+    fi
+done
+echo 'test-leases: held peer replay, fresh checkpoint and failed safety gates passed'
 # fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.
 sed -n '/^services="unbound wan_watch sshd"$/,/^esac$/p' "$here/../guests/fw/site/usr/local/libexec/convergent/fw-seed" |
 	sed "s|/etc/convergent/dhcpd.flags|$work/dhcpd.flags|" >"$work/seed-services"

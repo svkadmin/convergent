@@ -68,14 +68,14 @@ probe() { # expectation source destination port [dns]
 	if [ "${5:-}" = dns ]; then
 		# A lost datagram or a slow upstream is not a block: an expected allow gets three tries.
 		for attempt in 1 2 3; do
-			got=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
+			got=$(timeout -k 1 15 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c '
 				r=0; out=$(timeout 4 nslookup codeberg.org "$1" 2>&1) || r=$?
 				# Any answer (even SERVFAIL while upstream is slow) proves the path; silence is a block.
 				# BusyBox timeout execs nslookup: expiry is SIGTERM (143), not GNU 124.
 				case $r in
 				0) echo allow ;;
 				124|143) echo deny ;;
-				1) if printf "%s\n" "$out" | grep -qiE "timed out|no servers could be reached|refused"\|no servers could be reached\|refused"; then echo deny; else echo allow; fi ;;
+				1) if printf "%s\n" "$out" | grep -qiE "timed out|no servers could be reached|refused"; then echo deny; else echo allow; fi ;;
 				*) exit 2 ;;
 				esac
 			' sh "$3") || got=error

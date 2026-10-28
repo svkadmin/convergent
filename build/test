@@ -642,7 +642,8 @@ ssh() {
     echo ' defer: on'
 }
 incus() {
-    if [ "$4" = list ]; then echo "$5,$test_status"; return; fi
+    # unknown: a frozen QEMU's monitor makes the state query time out.
+    if [ "$4" = list ]; then [ "$test_status" != unknown ] || return 1; echo "$5,$test_status"; return; fi
     echo "$*" >>"$work/calls"
     [ "$4:$failed" != restart:1 ]
 }
@@ -699,6 +700,20 @@ grep -q 'inhibited by guests lock' "$work/report"
 busy=0 failed=0 test_status=STOPPED
 tick 6420
 grep -q 'default start fw2$' "$work/calls"
+# Incus cannot read a frozen or hung QEMU's state: a forced restart ends it, under the same gates.
+for scenario in unknown peer-down inhibited; do
+    rm -f "$work/run/firewall-heal/"*
+    test_status=unknown test_peer=MASTER
+    case $scenario in peer-down) test_peer=down ;; inhibited) touch "$work/run/guests-stopping" ;; esac
+    : >"$work/calls"
+    for t in 1000 1060 1120 1180; do tick "$t"; done
+    if [ "$scenario" = unknown ]; then
+        [ "$(attempts)" = 1 ]
+        grep -q 'default restart fw2 --force$' "$work/calls"
+    elif [ -s "$work/calls" ]; then exit 1; fi
+    rm -f "$work/run/guests-stopping"
+done
+echo 'test-firewall-heal: restart gates, limits and frozen QEMU passed'
 HEAL
 sh -eu <<'DRAIN' || bad $LINENO
 fixture=$(mktemp -d)
@@ -1219,9 +1234,9 @@ cv_time firewall-self-heal
 (
     set -e
     . /usr/lib/convergent/incus/firewall-heal
-    fw_pid() { incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
-    frozen1= frozen2=
-    trap '[ -z "$frozen1" ] || kill -CONT "$frozen1" 2>/dev/null || :; [ -z "$frozen2" ] || kill -CONT "$frozen2" 2>/dev/null || :' 0
+    fw_pid() { timeout -k 1 5 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
+    frozen1= frozen2= inhibited=
+    trap '[ -z "$frozen1" ] || kill -CONT "$frozen1" 2>/dev/null || :; [ -z "$frozen2" ] || kill -CONT "$frozen2" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
     [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]
     frozen2=$(fw_pid fw2)
@@ -1230,11 +1245,15 @@ cv_time firewall-self-heal
     while :; do
         [ "$(date +%s)" -lt "$deadline" ]
         [ "$(heal_probe fw1)" = master ]
-        current=$(fw_pid fw2) || current=0
-        if [ "$current" != 0 ] && [ "$current" != "$frozen2" ]; then break; fi
+        if [ ! -d "/proc/$frozen2" ]; then
+            current=$(fw_pid fw2) || current=0
+            if [ "$current" != 0 ] && [ "$current" != "$frozen2" ]; then break; fi
+        fi
         sleep 5
     done
     frozen2=
+    # Once recovery replaces QEMU, protect its nested boot from a second heal attempt.
+    [ -e /run/convergent/guests-stopping ] || { touch /run/convergent/guests-stopping; inhibited=1; }
     deadline=$(($(date +%s) + 1800))
     until [ "$(heal_probe fw2)" = backup ]; do
         [ "$(date +%s)" -lt "$deadline" ]
@@ -1244,13 +1263,17 @@ cv_time firewall-self-heal
     grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     grep -q '^SELF-HEAL .*fw2' /var/lib/convergent/check/firewall-heal
+    [ -z "$inhibited" ] || rm /run/convergent/guests-stopping
+    inhibited=
     # With both guests unresponsive, no new attempt or replacement QEMU is allowed.
     cp /run/convergent/firewall-heal/attempts "$release/heal-attempts"
     frozen1=$(fw_pid fw1) frozen2=$(fw_pid fw2)
     kill -STOP "$frozen1" "$frozen2"
     deadline=$(($(date +%s) + 240))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        [ "$(fw_pid fw1)" = "$frozen1" ] && [ "$(fw_pid fw2)" = "$frozen2" ]
+        for pid in "$frozen1" "$frozen2"; do
+            grep -q '^State:[[:space:]]*T[[:space:]]' "/proc/$pid/status"
+        done
         cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
         sleep 5
     done
@@ -2034,15 +2057,27 @@ ic image list --format json >"$release/images" || bad $LINENO
 jq -e --arg fp "$before" 'any(.[]; .fingerprint == $fp and any(.aliases[]; .name == "candidate-svc"))' "$release/images" >/dev/null || bad $LINENO
 jq -e --arg fp "$broken" 'any(.[]; .fingerprint == $fp and (.aliases | length) == 0)' "$release/images" >/dev/null || bad $LINENO
 cv_time dashboard-checks
-# The host's facts and checker now (cron skipped the checker during guest work), then two scrapes.
+(
+bad() { echo "CV-UPDATE-FAIL line $1"; exit 1; }
+created=
+trap '[ -z "$created" ] || { ic config set def security.protection.delete=false && ic delete def; }' 0
+trap 'exit 1' HUP INT TERM
+# Smoke cleanup removed def; a stopped instance supplies explicit HTTPS unavailability.
+incus --force-local query '/1.0/instances?recursion=1&project=default' >"$release/dashboard-instances" || exit 1
+if ! jq -e 'any(.[]; .name == "def")' "$release/dashboard-instances" >/dev/null; then
+    ic init candidate-browser def -p browser-base -p browser-def || exit 1
+    created=1
+fi
 /usr/local/sbin/facts boot >/dev/null 2>&1 || bad $LINENO
 /usr/local/sbin/check auto >/dev/null 2>&1 || :
-sleep 65
-# A replaced guest's facts can take another collector cycle: three tries, a minute apart.
+/usr/local/sbin/observe || exit 1
+# Allow multiple post-restart samples for rate/increase queries before asserting data.
+sleep 125
+# After an svc replacement, rule health and facts take collector cycles: six tries, a minute apart.
 dash=1
-for try in 1 2 3; do
-    sh "$release/dashboard-check" "$release/dashboards" && { dash=0; break; }
-    [ "$try" = 3 ] || sleep 60
+for try in 1 2 3 4 5 6; do
+    sh "$release/dashboard-check" "$release/dashboards" http://100.80.2.10:9428 guests && { dash=0; break; }
+    [ "$try" = 6 ] || sleep 60
 done
 [ "$dash" = 0 ] || {
     bad $LINENO
@@ -2055,6 +2090,8 @@ done
     ip -4 route get 100.80.2.10; nft list ruleset 2>&1 | grep -c .
     for f in fw1 fw2; do timeout 20 ssh -F /etc/convergent/ssh_config "$f" 'pfctl -si | grep -E "current entries|match|state-mismatch"; pfctl -sr | grep -E "9100|8444" | head -n 4' 2>&1 | sed "s/^/CV-$f /"; done
 }
+exit "$dash"
+) || bad $LINENO
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:8880/health >/dev/null || bad $LINENO
 curl -qfsS --noproxy '*' --max-time 5 http://100.80.2.10:9428/health >/dev/null || bad $LINENO
 timeout 5 openssl s_client -connect 100.80.2.10:6514 -CAfile "$state/tls/ca.crt" \
@@ -2110,24 +2147,35 @@ status=$?
 echo CV-UPDATE status "$status"
 [ "$status" = 0 ] || bad $LINENO
 cv_time firewall-no-peer
+pair_ok() {
+    for f in fw1 fw2; do
+        case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
+        timeout -k 1 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig 2>/dev/null |
+            awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || return 1
+    done
+}
+(
+bad() { echo "CV-UPDATE-FAIL line $1"; exit 1; }
+inhibited=
+trap '[ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
+trap 'exit 1' HUP INT TERM
+# Keep the minute healer out of this controlled reboot, including its nested boot recovery.
+if [ ! -e /run/convergent/guests-stopping ]; then
+    touch /run/convergent/guests-stopping || exit 1
+    inhibited=1
+fi
 # A peer that cannot take over: the rebuild gives up after GUEST_BOOT_TIMEOUT and restarts fw1.
 awk '{print} $0 == "carp() {" {print "    [ \"$1\" != fw2 ] || return 1"}' /usr/local/sbin/guests >"$release/guests-no-peer"
 GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/guests-rebuild-no-peer.log
 code=$?
 echo CV-REBUILD no-peer "$code"
 [ "$code" = 1 ] && grep -q '^+ start_guest fw1$' /var/log/guests-rebuild-no-peer.log || { tail -n 15 /var/log/guests-rebuild-no-peer.log; bad $LINENO; }
-pair_ok() {
-    for f in fw1 fw2; do
-        case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
-        timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig 2>/dev/null |
-            awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || return 1
-    done
-}
-deadline=$(($(date +%s) + 1500))
+deadline=$(($(date +%s) + 1800))
 until pair_ok; do
-    [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+    [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; exit 1; }
     sleep 10
 done
+) || bad $LINENO
 cv_time firewall-rebuild-interruptions
 # Kill before the handoff marker, after rebuilding, and after rollback hands back to fw1.
 for step in journal rebuilt; do
