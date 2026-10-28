@@ -239,7 +239,7 @@ host/svc/web/admin/guests/work except Remmina.
 | int | svc | TCP 3000 | Grafana |
 | int | host | TCP 8443 | Session-certificate Incus administration |
 | Remmina | Work clients, excluding nodes/gateways | TCP 22, 3389, 5900–5999; UDP 3389; ICMP echo | Remote access; all else blocked |
-| work | Same-family work | IPv4 | Cross-VLAN traffic; other families/system segments blocked |
+| work | Own VLAN only (L2) | IPv4 | Other work VLANs (same family or not) and system segments blocked |
 | work | Public Internet; configured home prefixes | IPv4 | Work egress and explicit RFC1918 access |
 | work | Local gateway | ICMP echo | Gateway check |
 | work ↔ firewalls | Work VLAN | UDP 68 ↔ 67; firewall echo to clients | DHCP |
