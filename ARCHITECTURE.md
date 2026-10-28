@@ -299,7 +299,7 @@ gateway is allowed on host, svc, web, admin, guests and work, except from Remmin
 | admin (int) | svc | Grafana 3000 | Dashboards |
 | admin (int) | host | TCP 8443, session client certificate | Incus UI/API administration |
 | web (Remmina) | work guests, excluding firewall nodes and gateways | TCP 22, 3389, 5900–5999; UDP 3389; ICMP echo | Remote desktops and SSH; all other Remmina traffic blocked |
-| work guests | same-family work guests | IPv4 | Cross-VLAN work traffic; other families and system segments blocked |
+| work guests | own VLAN only (L2, no firewall) | IPv4 | Every other work VLAN, family or not, and system segments blocked |
 | work guests | internet; configured home LAN prefixes | IPv4 | Public egress; explicit RFC1918 home access |
 | work guests | local gateway | ICMP echo | Gateway check |
 | work clients ↔ firewalls | work VLAN | UDP 68 ↔ 67; firewall ICMP echo to clients | DHCP |

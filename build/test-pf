@@ -277,22 +277,38 @@ home_want=$(awk '
 function ip(s,a) {split(s,a,"."); return ((a[1]*256+a[2])*256+a[3])*256+a[4]}
 {for(i=1;i<=NF;i++){split($i,c,"/"); size=2^(32-c[2]); if(int(ip("10.0.2.100")/size)==int(ip(c[1])/size)) found=1}}
 END {print found ? "allow" : "deny"}' /etc/convergent/home-lan)
+# The remmina profile pins the one address PF allows: reuse the installed container when there is one.
+# check auto stops a Remmina container whose supervisor lock is free; hold it as the launcher does.
+mkdir -p /run/convergent/browser
+exec 7>/run/convergent/browser/remmina.lock
+flock -w 120 7
+if ic info remmina >/dev/null 2>&1; then
+	rem=remmina
+	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
+else
+	rem=pf-remmina
+	ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
+	created="pf-remmina $created"
+	ic start pf-remmina
+fi
+timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/remmina-ready; do sleep 1; done' sh "$rem"
 # Keep one TCP connection open across the CARP transition and hard loss of fw1.
-flow_source=pf-work-320
+# Remmina is the one source PF lets into another work VLAN: the flow crosses the firewall.
+flow_source=$rem
 flow_target=pf-work-330
 flow_address=$(awk '$3 == "vlan330" {sub(/\.0\/26$/, ".10", $5); print $5}' "$work_rows")
-ic exec "$flow_target" -- sh -c 'nc -lk -s "$1" -p 8081 -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$flow_address"
+ic exec "$flow_target" -- sh -c 'nc -lk -s "$1" -p 5999 -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$flow_address"
 ic exec "$flow_source" -- sh -c '
     { echo before; while [ ! -f /run/pf-flow-continue ]; do sleep 1; done; echo after; sleep 30; } |
-        nc "$1" 8081 >/run/pf-flow-replies 2>/run/pf-flow-error &
+        nc "$1" 5999 >/run/pf-flow-replies 2>/run/pf-flow-error &
 ' sh "$flow_address"
 for i in $(seq 30); do ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies && break; sleep 1; done
 ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies
 for i in $(seq 30); do
-    timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:8081" && break
+    timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:5999" && break
     sleep 1
 done
-timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:8081"
+timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:5999"
 for master in fw1 fw2; do
 	if [ "$master" = fw2 ]; then
 		w1_maintenance=1
@@ -356,7 +372,8 @@ for master in fw1 fw2; do
 		probe deny "$source" 100.80.4.10 80
 		while read -r other ov op ol onet og ofamily <&4; do
 			[ "$other" != "$iface" ] || continue
-			if [ "$family" = "$ofamily" ]; then want=allow; else want=deny; fi
+			# Each VLAN is isolated: another work VLAN is never reachable, same domain or not.
+			want=deny
 			probe "$want" "$source" "${onet%.0/26}.10" 8080
 		done 4<"$work_rows"
 	done 3<"$work_rows"
@@ -397,21 +414,6 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 
 
 # Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
-# The remmina profile pins the one address PF allows: reuse the installed container when there is one.
-# check auto stops a Remmina container whose supervisor lock is free; hold it as the launcher does.
-mkdir -p /run/convergent/browser
-exec 7>/run/convergent/browser/remmina.lock
-flock -w 120 7
-if ic info remmina >/dev/null 2>&1; then
-	rem=remmina
-	[ "$(ic list remmina -c s --format csv)" = RUNNING ] || { rem_started=1; ic start remmina; }
-else
-	rem=pf-remmina
-	ic init candidate-remmina pf-remmina -p remmina -c limits.memory=256MiB -c security.protection.delete=false
-	created="pf-remmina $created"
-	ic start pf-remmina
-fi
-timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- test -f /run/remmina-ready; do sleep 1; done' sh "$rem"
 # Delivery, not echo: BusyBox nc (1.10 mode) has no -k, and a UDP listener binds to its first peer.
 udp_remote() {
     ic exec "$target" -- sh -c 'rm -f /run/cv-udp; timeout 6 nc -lu -p "$1" </dev/null >/run/cv-udp 2>/dev/null &' sh "$4"
