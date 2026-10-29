@@ -6,7 +6,7 @@ from health import CHECKER, FW, HEALTH, RULES, WAN, fresh, known, verdict
 def generate():
     p = Page()
     domains = [
-        ('Network', 'path|dns', '(count(%s) == 2) and on() (%s) and on() (%s)' % (FW, WAN, fresh('internet', 180) + ' and on() (cv_https_probe_available >= 0)'), '/d/cv-network-path'),
+        ('Network', 'path|dns', '(count(%s) == 2) and on() (%s) and on() (%s)' % (FW, WAN, fresh('internet', 180) + ' and on() (cv_https_probe_available == 1)'), '/d/cv-network-path'),
         ('Guests', 'compartments', '(up{job="incus"} == 1) and on() (' + CHECKER + ')', '/d/cv-compartments'),
         ('Host', 'hardware-capacity|storage|hardware-slow', fresh('storage', 7200) + ' and on() (' + fresh('daily', 129600) + ')', '/d/cv-host'),
         ('Security / Updates', 'security-time|security-slow|release.*|logs', fresh('boot', 315360000) + ' and on() (' + CHECKER + ') and on() (' + fresh('nts', 180) + ')', '/d/cv-security'),
@@ -15,7 +15,7 @@ def generate():
         value = verdict(groups, gate)
         if name == 'Security / Updates':
             release = '(max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800) and (max(cv_release_check_timestamp_seconds) <= time() + 60) and (count(cv_release_status_verified == 1) == 2) and (min(cv_release_status_generated_seconds) > time() - 172800)'
-            value = 'clamp_max((' + value + ') + on() (max(cv_release_advisories) > bool 0), 2) and on() (' + release + ')'
+            value = 'clamp_max((' + value + ') + on() (2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))) + on() (max(cv_release_advisories) > bool 0), 2) and on() (' + release + ')'
         panel = known(p.stat(name, [target(value, name)], grid(i * 5, 0, 4 if i == 4 else 5, 3),
                        'OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.', mappings=HEALTH))
         panel['links'] = [{'title': name, 'url': url + '?${__url_time_range}'}]
@@ -26,7 +26,7 @@ def generate():
            'Seconds since measurement, not scrape. Rules/Internet expire after 3m; checker after 36h.', unit='s')
     alerts = p.table('Active alerts - explanations', [target('(time() - cv_alert_active_since_seconds) and on() (' + RULES + ')',
                      optional='Empty only means healthy when the firing-alert count is zero.')], grid(0, 6, 24, 8),
-                    ['severity', 'alertname', 'node', 'project', 'name', 'object', 'summary', 'dashboard'], ['active for'],
+                    ['severity', 'alertname', 'exported_node', 'project', 'name', 'object', 'summary', 'dashboard'], ['active for'],
                     'vmalert API summary and onset; duration includes pending time. Dashboard links retain time. An unhealthy evaluator hides the table; Monitoring has evaluation errors.',
                     [ov('active for', unit='s'), ov('alertname', links=[{'title': 'Evidence / recovery', 'url': '${__data.fields.dashboard}?${__url_time_range}&var-project=${__data.fields.project}&var-name=${__data.fields.name}'}])])
     alerts['options']['sortBy'] = [{'displayName': 'severity', 'desc': False}]

@@ -7,6 +7,11 @@ base=${2:-http://100.80.2.10:9428}
 case ${3:-} in ''|guests) ;; *) echo 'dashboards: unknown fixture' >&2; exit 1 ;; esac
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+def_stopped=false
+if [ "${3:-}" = guests ]; then
+    timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' >"$work/instances" || exit 1
+    def_stopped=$(jq -er 'select(type == "array") | all(.[]; .name != "def" or .status != "Running") | tostring' "$work/instances") || exit 1
+fi
 # A just-restarted svc or a failover in progress drops a request now and then: three tries.
 curl() { for try in 1 2 3; do command curl "$@" && return 0; [ "$try" = 3 ] || sleep 5; done; return 1; }
 quote() {
@@ -23,14 +28,16 @@ transfer() {
     printf 'data-urlencode = "query=%s"\nurl = "%s"\noutput = "%s"\n' \
         "$(quote "$1")" "$(quote "$2")" "$(quote "$3")"
 }
-jq -r --arg fixture "${3:-}" '.uid as $uid | .title as $d | .panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
+jq -r --arg fixture "${3:-}" --argjson def_stopped "$def_stopped" '.uid as $uid | .title as $d | .panels[] | recurse(.panels[]?) | (.title | if . == "" then "(untitled)" else . end) as $p | .targets[]? |
     select(.datasource.uid == "metrics") |
     [$d, $p, .refId, (.cvOptional //
         if $fixture == "guests" and
             (
              ($uid == "cv-security" and $p == "Boot evidence" and (.expr | contains(" and on() "))) or
              ($uid == "cv-overview" and $p == "Security / Updates"))
-        then "guest fixture: no firmware boot evidence or online release status in QEMU" else "required" end), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
+        then "guest fixture: no firmware boot evidence or online release status in QEMU"
+        elif $fixture == "guests" and $def_stopped and $uid == "cv-overview" and $p == "Network"
+        then "guest fixture: def is not running; HTTPS evidence unavailable" else "required" end), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
 [ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }
 fail=0; count=0; empty=0
 while IFS="$(printf '\t')" read -r dashboard panel ref optional expr; do
@@ -101,10 +108,12 @@ done <"$work/logs" 3<"$work/status"
 nodes='{"100.80.1.10":"host","100.80.2.2":"fw1","100.80.2.3":"fw2","100.80.0.10":"wan","127.0.0.1":"svc"}'
 rows=$(jq -nr --argjson nodes "$nodes" '[($nodes | keys[], "100.80.3.10") as $ip |
     {remote_ip:$ip, hostname:"fw1", app_name:"kernel", _msg:"carp0: BACKUP -> MASTER", _stream:"{hostname=\"fw1\"}"},
-    {remote_ip:$ip, hostname:"host", app_name:"sudo", _msg:"COMMAND=/bin/true", _stream:"{hostname=\"host\"}"}]
+    {remote_ip:$ip, hostname:"host", app_name:"sudo", _msg:"COMMAND=/bin/true", _stream:"{hostname=\"host\"}"}] +
+    ["identity", "usb", "guestkeys", "routine" | {remote_ip:"100.80.1.10", hostname:"host", app_name:"sudo",
+        _msg:("type=SYSCALL msg=audit(1:1) COMMAND=/bin/true key=\"" + . + "\""), _stream:"{hostname=\"host\"}"}]
     | map(tojson) | join(") | union rows(")')
 for page in network-path security; do
-    expected=2; [ "$page" != security ] || expected=7
+    expected=2; [ "$page" != security ] || expected=10
     expr=$(jq -r '.panels[] | recurse(.panels[]?) | select(.type == "logs") | .targets[].expr' "$dir/$page.json")
     : >"$work/identity"
     if ! curl -qsS --fail-with-body --output "$work/identity" --noproxy '*' --max-time 10 -G \

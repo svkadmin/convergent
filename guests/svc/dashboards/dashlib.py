@@ -68,7 +68,8 @@ SECURITY_EVENTS = (INFRA + ' AND ('
                    'OR _msg:~' + json.dumps('apparmor="(DENIED|ALLOWED)"|type=(USER_DEVICE|1137) ') + ' '
                    'OR (app_name:~"^usbguard(-daemon)?$" AND _msg:~"(?i)allow|block|reject|denied") '
                    'OR _msg:~"key=.(identity|usb|guestkeys)." OR app_name:in("incus-audit","slot","fetch-release","guests","convergent-watchdog","sys-firewall") '
-                   'OR (' + FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND ' + QUIET +
+                   'OR (' + FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> MASTER")) AND (' + QUIET +
+                   ' OR _msg:~"key=.(identity|usb|guestkeys).")' +
                    ' | replace (' + json.dumps('apparmor="ALLOWED"') + ', ' +
                    json.dumps('apparmor="ALLOWED" [complain]') + ')')
 ACTIONABLE = '(' + ERRORS + ') OR (' + SECURITY + ') OR (' + FW_CHANGES + ')'

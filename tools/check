@@ -98,8 +98,9 @@ if [ "${1:-}:$#" = status:1 ]; then
     kib=0
     for f in /sys/fs/cgroup/lxc.payload.*/memory.current; do
         [ -r "$f" ] && read -r bytes <"$f" || continue
-        file=$(awk '$1 == "file" {print $2; exit}' "${f%/*}/memory.stat" 2>/dev/null) || file=0
-        kib=$((kib + (bytes - ${file:-0}) / 1024))
+        cache=$(awk '$1 == "file" {file=$2} $1 == "shmem" {shmem=$2}
+            END {printf "%.0f\n", file-shmem}' "${f%/*}/memory.stat" 2>/dev/null) || cache=0
+        kib=$((kib + (bytes - ${cache:-0}) / 1024))
     done
     for pid in $(pgrep -x qemu-system-x86 2>/dev/null); do
         grep -q lxc.payload "/proc/$pid/cgroup" 2>/dev/null && continue
@@ -196,8 +197,10 @@ trap 'exit 1' HUP INT TERM
 ok=1
 date -u '+%FT%TZ' >"$work/report"
 # The management endpoint must never widen or replace the metrics listener.
-[ "$(incus --force-local config get core.https_address)" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
-[ "$(incus --force-local config get core.metrics_address)" = 100.80.1.10:8444 ] || bad 'Incus metrics listener differs'
+address=$(timeout -k 1 30 incus --force-local config get core.https_address) &&
+    [ "$address" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
+address=$(timeout -k 1 30 incus --force-local config get core.metrics_address) &&
+    [ "$address" = 100.80.1.10:8444 ] || bad 'Incus metrics listener differs'
 /usr/local/sbin/incus-ui --audit 9>&- 8>&- 7>&- || bad 'Incus trust differs from metrics and unlocked int session'
 [ ! -f "$state/firewall-heal" ] || cat "$state/firewall-heal" >>"$work/report"
 [ "$net_ok" = 1 ] || bad 'host network repair failed (default route or sysctls)'
@@ -299,11 +302,11 @@ suid() {
 }
 autostart 2>>"$work/report" || bad 'autostart scan failed'
 suid 2>>"$work/report" || bad 'SUID scan failed'
-incus --force-local list --all-projects --fast --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
-incus --force-local query '/1.0/profiles/browser-tmp?project=default' >"$work/browser-tmp.raw" 2>>"$work/report" || bad 'browser-tmp profile query failed'
+timeout -k 1 30 incus --force-local list --all-projects --fast --format json >"$work/instances" 2>>"$work/report" || bad 'Incus settings query failed'
+timeout -k 1 30 incus --force-local query '/1.0/profiles/browser-tmp?project=default' >"$work/browser-tmp.raw" 2>>"$work/report" || bad 'browser-tmp profile query failed'
 jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
     {config, devices}' "$work/browser-tmp.raw" >"$work/browser-tmp" || bad 'browser-tmp profile unreadable'
-incus --force-local query '/1.0/profiles/remmina?project=default' >"$work/remmina-profile.raw" 2>>"$work/report" || bad 'Remmina profile query failed'
+timeout -k 1 30 incus --force-local query '/1.0/profiles/remmina?project=default' >"$work/remmina-profile.raw" 2>>"$work/report" || bad 'Remmina profile query failed'
 jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
     {config, devices}' "$work/remmina-profile.raw" >"$work/remmina-profile" || bad 'Remmina profile unreadable'
 incus_limits() {
@@ -378,7 +381,7 @@ setup=$(od -An -tu1 -j4 -N1 "$efi/SetupMode-$guid" 2>>"$work/report" | tr -d ' \
 [ "$sb:$setup" = 1:0 ] || bad 'Secure Boot disabled or unverifiable'
 grep -q '\[confidentiality\]' /sys/kernel/security/lockdown 2>>"$work/report" || bad 'confidentiality lockdown absent'
 
-guests status >"$work/guests" 2>>"$work/report" || bad 'guest inventory failed'
+timeout -k 1 30 guests status >"$work/guests" 2>>"$work/report" || bad 'guest inventory failed'
 for node in fw1 fw2 wan svc; do
     grep -qx "$node running" "$work/guests" || bad "$node is not running"
 done

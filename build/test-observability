@@ -6,6 +6,56 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Run the checker's reads with successful and timed-out replies, including partial output.
+sed -n '/^# The management endpoint/,/^\/usr\/local\/sbin\/incus-ui/ {
+    /^\/usr\/local\/sbin\/incus-ui/d; p;
+}' "$repo/tools/check" >"$work/reads"
+sed -n '/^\(timeout -k 1 30 \)\{0,1\}incus --force-local \(list \|query \)/p;
+    /^\(timeout -k 1 30 \)\{0,1\}guests status /p' "$repo/tools/check" >>"$work/reads"
+sh -n "$work/reads"
+(
+    bad() { failures=$((failures + 1)); }
+    incus() {
+        case $* in
+        *core.https_address) echo 100.80.1.10:8443 ;;
+        *core.metrics_address) echo 100.80.1.10:8444 ;;
+        *) echo '[]' ;;
+        esac
+    }
+    guests() { echo 'svc running'; }
+    timeout() {
+        [ "$1:$2:$3" = '-k:1:30' ] || exit 1
+        shift 3
+        echo read >>"$work/timeouts"
+        "$@"
+        return "$reply"
+    }
+    for reply in 0 124; do
+        : >"$work/timeouts"
+        failures=0
+        . "$work/reads"
+        [ "$(wc -l <"$work/timeouts")" = 6 ]
+        if [ "$reply" = 0 ]; then [ "$failures" = 0 ]; else [ "$failures" = 6 ]; fi
+    done
+)
+sed -n '/^    kib=0$/,/^    for pid / { /^    for pid /d; p; }' "$repo/tools/check" |
+    sed "s|/sys/fs/cgroup|$work/cgroup|g" >"$work/memory"
+sh -n "$work/memory"
+mkdir -p "$work/cgroup/lxc.payload.def"
+echo 10240 >"$work/cgroup/lxc.payload.def/memory.current"
+for shared in 0 4096; do
+    printf 'file 8192\nanon 2048\nshmem %s\n' "$shared" >"$work/cgroup/lxc.payload.def/memory.stat"
+    . "$work/memory"
+    [ "$kib" = "$((2 + shared / 1024))" ]
+done
+echo 17179869184 >"$work/cgroup/lxc.payload.def/memory.current"
+printf 'file 12884901888\nshmem 8589934592\n' >"$work/cgroup/lxc.payload.def/memory.stat"
+. "$work/memory"
+[ "$kib" = 12582912 ]
+rm "$work/cgroup/lxc.payload.def/memory.stat"
+. "$work/memory"
+[ "$kib" = 16777216 ]
+echo 'observability: bounded checker reads and shared memory fixtures passed'
 sh "$repo/guests/wan/test-diag"
 sh "$repo/guests/fw/test-facts"
 # Alpine's sysctl init checks -f before skipping the vendor file.
@@ -20,7 +70,7 @@ for guest in wan svc; do
     rm "$target/etc/sysctl.d/00-alpine.conf"
 done
 python3 - "$repo" "$work" <<'PY'
-import contextlib, importlib, io, json, re, subprocess, sys
+import contextlib, importlib, io, json, re, shlex, shutil, subprocess, sys
 from pathlib import Path
 repo, work = map(Path, sys.argv[1:])
 source = (repo / 'build/advisories').read_text().split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
@@ -69,6 +119,32 @@ assert subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], capture
 sys.path.insert(0, str(repo / 'guests/svc/dashboards'))
 network = importlib.import_module('network').generate()
 security = importlib.import_module('security').generate()
+overview = importlib.import_module('overview').generate()
+panels = {p['title']: p for p in overview['panels']}
+assert 'cv_https_probe_available == 1' in panels['Network']['targets'][0]['expr']
+assert '2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))' in panels['Security / Updates']['targets'][0]['expr']
+columns = panels['Active alerts - explanations']['transformations'][1]['options']['includeByName']
+assert columns['exported_node'] and 'node' not in columns
+dashlib = importlib.import_module('dashlib')
+assert 'AND (' + dashlib.QUIET + ' OR _msg:~"key=.(identity|usb|guestkeys).")' in dashlib.SECURITY_EVENTS
+if shutil.which('jq'):
+    check_data = (repo / 'guests/svc/dashboards/check-data').read_text()
+    gate = check_data.split('def_stopped=false\n', 1)[1].split('# A just-restarted', 1)[0]
+    query = check_data.split('--argjson def_stopped "$def_stopped" \'', 1)[1].split("' \"$dir/\"", 1)[0]
+    for fixture, state, optional in [('guests', 'Stopped', True), ('guests', 'Running', False), ('', 'Stopped', False)]:
+        mocks = 'timeout() { shift 3; "$@"; }; incus() { printf \'%s\\n\' \'[{"name":"def","status":"' + state + '"}]\'; };\n'
+        result = subprocess.run(['sh', '-s', '--', 'unused', 'unused', fixture],
+                                input='set -eu\nwork=' + shlex.quote(work.as_posix()) + '\ndef_stopped=false\n' + mocks + gate + '\necho "$def_stopped"\n',
+                                text=True, capture_output=True, check=True)
+        rows = subprocess.run(['jq', '-r', '--arg', 'fixture', fixture, '--argjson', 'def_stopped', result.stdout.strip(), query],
+                              input=json.dumps(overview), text=True, capture_output=True, check=True).stdout
+        fields = next(line.split('\t') for line in rows.splitlines() if line.split('\t')[1] == 'Network')
+        assert (fields[3] != 'required') == optional
+        if optional:
+            assert 'def is not running' in fields[3]
+        assert all(line.split('\t')[3] == 'required' for line in rows.splitlines() if line.split('\t')[1] in ('Guests', 'Host', 'Monitoring'))
+else:
+    print('observability: SKIP dashboard guest-state fixtures (jq is unavailable)')
 for dash in (network, security):
     assert len({p['id'] for p in dash['panels']}) == len(dash['panels'])
     for i, p in enumerate(dash['panels']):
