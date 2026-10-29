@@ -855,7 +855,8 @@ qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
 force_stop fw2
 grep -qx 'kill -KILL 4242' "$work/calls"
 grep -qx 'retry stopped fw2' "$work/calls"
-eval "$(sed -n '/^running() {/,/^}/p; /^stopped() {/,/^}/p' /usr/local/sbin/guests)"
+eval "$(sed -n '/^running() {/,/^}/p; /^stopped() {/,/^}/p; /^probe() (/,/^)/p' /usr/local/sbin/guests)"
+polling=
 if running fw2; then exit 1; fi
 if stopped fw2; then exit 1; fi
 [ "$(wc -l <"$work/bounds")" = 3 ]
@@ -938,6 +939,110 @@ stop_one() {
 eval "$(sed -n '/^result=0/,/^note /p' /usr/lib/convergent/incus/shutdown | sed '$d')"
 awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1}' "$work/drained"
 DRAIN
+# Guest recovery guards; debugfs diagnostics can accompany a successful exit.
+sh -eu <<'GUEST_GUARDS' || bad $LINENO
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+die() { echo "$*" >&2; exit 1; }
+eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p' /usr/local/sbin/guests)"
+mkdir -p "$work/wan-read/out" "$work/iwd"
+setpriv() { shift 4; "$@"; }
+ulimit() { case "$*" in '-f 128'|'-f 2048') ;; *) return 1 ;; esac; }
+debugfs() {
+    echo 'debugfs 1.47.3 (8-Jul-2025)' >&2
+    case $2 in
+    'ls -p /var/lib') cat "$work/parent" ;;
+    'ls -p <5>')
+        cat "$work/list"
+        [ "$sample" != list-error ] || echo 'ls: Directory block checksum does not match directory block' >&2 ;;
+    'dump <6> out/profile')
+        echo dump >>"$work/dumps"
+        case $sample in
+        missing) return 0 ;;
+        short) printf ab >out/profile ;;
+        *) printf abc >out/profile ;;
+        esac
+        [ "$sample" != dump-error ] || echo 'dump: Input/output error while reading ext2 file' >&2 ;;
+    *) return 1 ;;
+    esac
+    return 0
+}
+dots() { printf '/5/040700/0/0/.//\n/4/040755/0/0/..//\n'; }
+for sample in good empty absent oversized count total list-error dump-error missing short malformed; do
+    rm -f "$work/dumps" "$work/wan-read/out/profile" "$work/iwd/"*
+    dots >"$work/parent"
+    [ "$sample" = absent ] || printf '/5/040700/0/0/iwd//\n' >>"$work/parent"
+    dots >"$work/list"
+    case $sample in
+    empty|absent) ;;
+    oversized) printf '/6/100600/0/0/test.psk/65537/\n' >>"$work/list" ;;
+    count) awk 'BEGIN {for (i=1; i<=257; i++) print "/6/100600/0/0/" i ".psk/3/"}' >>"$work/list" ;;
+    total) awk 'BEGIN {for (i=1; i<=65; i++) print "/6/100600/0/0/" i ".psk/65536/"}' >>"$work/list" ;;
+    malformed) echo '/6/100600/0/0/broken' >>"$work/list" ;;
+    *) printf '/6/100600/0/0/C V.psk/3/\n' >>"$work/list" ;;
+    esac
+    # Never traverse subdirectories, follow symlinks, or dump unapproved names.
+    printf '/7/040700/0/0/nested//\n/8/120777/0/0/link.psk/10/\n/9/100600/0/0/cache/999999/\n' >>"$work/list"
+    if (wan_extract) >"$work/out" 2>"$work/err"; then
+        case $sample in good|empty|absent) ;; *) die "accepted $sample" ;; esac
+    else
+        case $sample in good|empty|absent) cat "$work/err"; die "rejected $sample" ;; esac
+    fi
+    case $sample in
+    good) [ "$(cat "$work/iwd/C V.psk")" = abc ] && [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
+    empty|absent|oversized|count|total|list-error|malformed) [ ! -e "$work/dumps" ] ;;
+    *) [ ! -e "$work/iwd/C V.psk" ] ;;
+    esac
+done
+# Both rollback mutations retain the updater locks.
+sed -n '/^rollback() {/,/^}/p' /usr/local/sbin/guests >"$work/rollback"
+for op in restore delete; do
+    grep -Fqx "            locked ic storage volume snapshot $op default \"\$volume\" \"\$snap\" || return" "$work/rollback"
+done
+# Replay the interrupted pair before any startup; reject invalid saved pairs first.
+eval "$(sed -n '/^init_server() {/,/^}/p; /^init_done()/p' /usr/local/sbin/guests | sed 's/rc-service /rc_service /g; s/start-stop-daemon /start_stop_daemon /g')"
+sed -n '/^init() {/,/^    autorestart_clear$/p' /usr/local/sbin/guests | sed '$d; s/rc-service /rc_service /g' >"$work/init-head"
+printf '}\n' >>"$work/init-head"
+. "$work/init-head"
+state=$work/state tls=$work/tls
+mkdir -p "$state/init" "$tls" "$work/release"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+    -subj /CN=test -keyout "$tls/incus-server.key" -out "$tls/incus-server.crt" >/dev/null 2>&1
+cp "$tls/incus-server.crt" "$tls/ca.crt"
+cp "$tls/incus-server.key" "$tls/good.key"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/other.key" >/dev/null 2>&1
+sync() { :; }
+install() { printf 'install %s\n' "${3##*/}" >>"$work/events"; }
+retry() { echo ready >>"$work/events"; }
+start_stop_daemon() { echo fallback >>"$work/events"; [ "$sample" != stop-error ]; }
+for sample in valid mismatched missing unjournaled completed stop-error; do
+    rm -f "$state/init/server" "$state/init/preseed" "$work/events"
+    cp "$tls/good.key" "$tls/incus-server.key"
+    (cd "$work/release" && pwd) >"$state/init/release"
+    [ "$sample" = unjournaled ] || touch "$state/init/preseed"
+    case $sample in
+    mismatched) cp "$tls/other.key" "$tls/incus-server.key" ;;
+    missing) rm "$tls/incus-server.key" ;;
+    completed) touch "$state/init/server" ;;
+    esac
+    rc_service() { echo "$2" >>"$work/events"; [ "$sample:$2" != stop-error:stop ]; }
+    if (init "$work/release") >"$work/out" 2>"$work/err"; then
+        case $sample in valid|unjournaled|completed) ;; *) die "accepted certificate $sample" ;; esac
+    else
+        case $sample in valid|unjournaled|completed) cat "$work/err"; die "rejected certificate $sample" ;; esac
+    fi
+    case $sample in
+    valid)
+        printf 'stop\ninstall incus-server.key\ninstall incus-server.crt\nstart\nready\nstatus\nready\n' >"$work/expected"
+        cmp "$work/expected" "$work/events"
+        [ -f "$state/init/server" ] ;;
+    mismatched|missing) [ ! -e "$work/events" ] && [ ! -e "$state/init/server" ] ;;
+    stop-error) printf 'stop\nfallback\n' >"$work/expected"; cmp "$work/expected" "$work/events" ;;
+    *) printf 'status\nready\n' >"$work/expected"; cmp "$work/expected" "$work/events" ;;
+    esac
+done
+echo 'CV-GUEST recovery guards ok'
+GUEST_GUARDS
 # Polling must keep transient failures out of stderr and syslog.
 (
     set -e
@@ -947,6 +1052,7 @@ DRAIN
     logger() { printf '%s\n' "$*" >>"$work/logged"; }
     sleep() { :; }
     autorestart_hold() { :; }
+    force_stop() { ic stop "$1" --force; }
     attempts=0
     seed_applied() {
         attempts=$((attempts + 1))
@@ -980,6 +1086,39 @@ DRAIN
     ic() { fail 'forced stop failed'; }
     if stop_guest wan 2>"$work/err"; then exit 1; fi
     grep -q 'forced stop failed' "$work/err"
+    # A read-only client ignoring TERM must still release the retry budget.
+    eval "$(sed -n '/^probe() (/,/^)/p; /^ic() {/,/^}/p; /^seed_applied() {/,/^}/p' /usr/local/sbin/guests)"
+    cat >"$work/hung" <<'PROBE'
+#!/bin/sh
+trap '' TERM
+echo started >"$1"
+while :; do sleep 1; done
+PROBE
+    incus() { echo mutator >>"$work/events"; }
+    timeout() {
+        case "$*" in
+        '-k 1 '*|'-s KILL 1 '*) ;;
+        *) return 1 ;;
+        esac
+        [ "$3" -le 2 ] || { touch "$work/budget-invalid"; return 1; }
+        [ "$4 $5 $6 $7 $8 $9" = 'incus --force-local --project default exec svc' ] || return 1
+        command timeout "$1" "$2" "$3" sh "$work/hung" "$work/probed"
+    }
+    GUEST_SVC_TIMEOUT=3
+    begin=$(date +%s)
+    if retry seed_applied svc 2>"$work/err"; then exit 1; fi
+    [ "$(($(date +%s) - begin))" -le 5 ]
+    [ ! -e "$work/budget-invalid" ]
+    [ -f "$work/probed" ]
+    grep -q 'seed_applied svc timed out after 3s' "$work/err"
+    # Even an exhausted polling budget must never timeout a storage mutator.
+    polling=1 deadline=0
+    ic storage volume snapshot restore default svc-metrics test
+    ic storage volume snapshot delete default svc-metrics test
+    [ "$(wc -l <"$work/events")" -eq 2 ]
+    if ic query /1.0; then exit 1; fi
+    [ "$(wc -l <"$work/events")" -eq 2 ]
+    polling=
     rm -rf "$work"
 )
 [ "$?" = 0 ] || bad $LINENO
@@ -1803,7 +1942,7 @@ wan_wifi() (
         n=0
         until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done
     }
-    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
+    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
     trap 'code=$?; unmount_root || exit 1; rm -rf "$work";
         running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
     trap 'exit 1' HUP INT TERM
