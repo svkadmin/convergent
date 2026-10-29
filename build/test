@@ -343,8 +343,7 @@ map=cvtest-$$
 mkdir -p "$BUILDER/test"
 exec 7>"$BUILDER$work.lock"
 flock -n 7 || die "the same test is already running"
-work=$(mktemp -d "$BUILDER$work.XXXXXX")
-work=${work#"$BUILDER"}
+rm -rf "${BUILDER:?}$work"
 mkdir -p "$BUILDER$work/esp"
 disk="$BUILDER$work/disk.img"
 esp="$BUILDER$work/esp"
