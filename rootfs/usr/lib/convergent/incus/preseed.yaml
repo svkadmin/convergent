@@ -50,8 +50,7 @@ profiles:
     devices: {}
   - name: fw
     config:
-      # CARP adverts, pf logging and the boot relink starved on one vCPU.
-      limits.cpu: "2"
+      limits.cpu: "1"
       # Every boot relinks the kernel (KARL) beside unbound's blocklist: 384 MiB ran out.
       limits.memory: 1GiB
       security.secureboot: "false"
