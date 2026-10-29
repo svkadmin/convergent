@@ -1366,10 +1366,11 @@ cv_time maintenance-reboot
     grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
     fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
     ic restart fw1 --timeout 120 || { fw1_state "restart failed ($?)"; exit 1; }
-    # Wait for OpenBSD's boot relinking: libraries before sshd, kernel after.
-    deadline=$(($(date +%s) + 1800))
+    # Wait for OpenBSD's boot relinking: libraries before sshd, kernel after. A one-vCPU firewall
+    # three hypervisors deep took 15 min to the login prompt and relinked its kernel for 15 more.
+    deadline=$(($(date +%s) + 3600))
     until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound && ! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fw1_state 'boot or unbound not ready 30 minutes after the restart'; exit 1; }
+        [ "$(date +%s)" -lt "$deadline" ] || { fw1_state 'boot or unbound not ready 60 minutes after the restart'; exit 1; }
         sleep 5
     done
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
