@@ -87,6 +87,7 @@ trap 'die interrupted' HUP INT TERM
 
 ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "terminal closed"; }
 secret() {
+	while :; do
 	if [ -n "$image_install" ]; then
 		# Echo off before the prompt: a fast sender would otherwise be shown.
 		if [ -n "$tty_mode" ]; then run stty -echo <&3; printf '%s: ' "$1" >&2; fi
@@ -95,8 +96,7 @@ secret() {
 		case $pass in *"$cr"*) die "the $1 has a carriage return (a Windows line ending)" ;; esac
 		[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
 		[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
-		return
-	fi
+	else
 	run stty -echo <&3
 	ask "$1: "
 	pass=$answer
@@ -111,6 +111,18 @@ Repeat $1: "
 	[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
 	[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
 	again=
+	fi
+	if [ "$1" = 'LUKS passphrase' ]; then
+		case $pass in *[!\ -~]*)
+			pass= again=
+			[ -z "$image_install" ] || die 'Use only printable ASCII for the LUKS passphrase (space through ~).'
+			echo 'Use only printable ASCII for the LUKS passphrase (space through ~).' >&3
+			continue
+			;;
+		esac
+	fi
+	break
+	done
 }
 cr=$(printf '\r')
 

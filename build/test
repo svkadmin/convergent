@@ -260,6 +260,35 @@ if [ "${1:-}" = --install-options ]; then
 	if (install_target) >/dev/null 2>&1; then die "accepted unsupported auto target"; fi
 	lsblk() { return 1; }
 	if (install_target) >/dev/null 2>&1; then die "accepted failed disk enumeration"; fi
+	(
+	export LC_ALL=C
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	sed -n '/^secret()/,/^cr=/p' "$here/../install/install" >"$work/secret"
+	sh -n "$work/secret"
+	. "$work/secret"
+	run() { "$@"; }
+	stty() { :; }
+	ask() { IFS= read -r answer <&4 || die 'terminal closed'; }
+	good=' ASCII ~ passphrase '
+	for bytes in '\001' '\037' '\177' '\200' '\377' '\303\251'; do
+		badpass=$(printf 'passphrase-%b' "$bytes")
+		printf '%s\n' "$badpass" >"$work/input"
+		if (image_install=1 tty_mode=; secret 'LUKS passphrase' 3<"$work/input") 2>"$work/error"; then
+			die 'accepted untypeable LUKS passphrase'
+		fi
+		grep -q 'Use only printable ASCII' "$work/error"
+		printf '%s\n' "$badpass" "$badpass" "$good" "$good" >"$work/input"
+		(image_install= tty_mode=saved; secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt";
+			[ "$pass" = "$good" ] && [ -z "$again" ]) || die 'LUKS retry failed'
+		grep -q 'Use only printable ASCII' "$work/prompt"
+	done
+	printf '%s\n' "$good" >"$work/input"
+	(image_install=1 tty_mode=; secret 'LUKS passphrase' 3<"$work/input"; [ "$pass" = "$good" ])
+	# The desktop owner's password has no initramfs keymap restriction.
+	printf '%s\n' "$badpass" >"$work/input"
+	(image_install=1 tty_mode=; secret 'Owner password' 3<"$work/input"; [ "$pass" = "$badpass" ])
+	)
 	echo 'test: install options passed'
 	exit 0
 fi
@@ -314,7 +343,8 @@ map=cvtest-$$
 mkdir -p "$BUILDER/test"
 exec 7>"$BUILDER$work.lock"
 flock -n 7 || die "the same test is already running"
-rm -rf "${BUILDER:?}$work"
+work=$(mktemp -d "$BUILDER$work.XXXXXX")
+work=${work#"$BUILDER"}
 mkdir -p "$BUILDER$work/esp"
 disk="$BUILDER$work/disk.img"
 esp="$BUILDER$work/esp"
@@ -3490,15 +3520,18 @@ run_vm() {
 	limit=300
 	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=7200 ;; guests-update) memory=8192 cpus=8; limit=10800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
+	# ESXi + nested KVM stale-translation bug: 1.4% per boot with 4 vCPUs, 0 with 1.
+	for boot_try in 1 2; do
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
 	[ "$remaining" -le "$limit" ] || remaining=$limit
-	log="$BUILDER$work/console-$runs.log"
-	ln -sfn "console-$runs.log" "$BUILDER$work/console.log"
+	log="$BUILDER$work/console-$runs-$boot_try.log"
+	ln -sfn "${log##*/}" "$BUILDER$work/console.log"
 	echo "test: boot $runs ($mode), console: $log"
 	cv_time "boot-$runs-start"
 	# chroot execs Python, so the cleanup trap can reap its QEMU child.
 	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
+		CVTEST_LOG="$work/${log##*/}" \
 		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" CVTEST_CPUS="$cpus" CVTEST_QEMU_ID="$qemu_id" \
 		chroot "$BUILDER" python3 - <<'EOF' &
 import json, os, re, select, signal, socket, subprocess, time
@@ -3564,7 +3597,7 @@ try:
                 raise RuntimeError("QEMU did not open QMP")
             time.sleep(0.05)
     streams = [qemu.stdout, qmp]
-    with open(f"{work}/console-{run}.log", "wb") as log:
+    with open(os.environ["CVTEST_LOG"], "xb") as log:
         # Drain both streams after exit; the last read may contain the verdict.
         while streams:
             left = deadline - time.monotonic()
@@ -3612,6 +3645,9 @@ try:
                             drain_result = int(match[1])
                     timing = timing[-4096:]
                     seen = (seen + chunk)[-8192:]
+                    if b"init[1]: segfault" in seen or b"Kernel panic - not syncing: Attempted to kill init" in seen:
+                        ended = "nested-crash"
+                        break
                     if guest_test and result is None:
                         for marker in markers:
                             match = re.search(rb"(?:^|\n)" + marker + rb" ([0-9]+)\r?\n", seen)
@@ -3626,6 +3662,8 @@ try:
                         qemu.stdin.write(b"3\n"); qemu.stdin.flush(); continued = True
                     if goal == "rescue" and sent and not continued and b"Rescue choice: " in seen:
                         qemu.stdin.write(b"7\n"); qemu.stdin.flush(); continued = True
+            if ended == "nested-crash":
+                break
             # A second after the prompt: under load a passphrase typed at once was lost.
             if not sent and prompted is not None and time.monotonic() - prompted >= 1:
                 qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
@@ -3638,7 +3676,7 @@ try:
                 # Both completion paths sync in the guest; quit flushes QEMU's disk writes.
                 command("quit")
                 quitting = True
-        if ended != "timeout":
+        if ended not in ("timeout", "nested-crash"):
             qemu.wait(timeout=max(0.1, deadline - time.monotonic()))
             if qemu.returncode == 0:
                 ended = "blessed" if quitting else "poweroff" if powered_off else "reboot" if rebooted else "stopped"
@@ -3651,7 +3689,7 @@ finally:
     if qemu.poll() is None:
         qemu.kill()
     qemu.wait()
-    with open(f"{work}/console-{run}.log", "ab") as log:
+    with open(os.environ["CVTEST_LOG"], "ab") as log:
         log.write(qemu.stdout.read())
     qmp.close()
     with open(f"{work}/ended-{run}", "w") as result:
@@ -3659,15 +3697,22 @@ finally:
 print(f"test: VM ended: {ended}")
 EOF
 	driver=$!
-	if wait "$driver"; then
-		driver=''
-	else
-		driver=''
+	driver_ok=1
+	wait "$driver" || driver_ok=0
+	driver=''
+	if grep -qF -e 'init[1]: segfault' -e 'Kernel panic - not syncing: Attempted to kill init' "$log"; then
+		[ "$boot_try" = 1 ] || die "nested PID 1 crash; see $log"
+		echo "CV-TEST nested PID 1 crash; rerunning boot $runs"
+		continue
+	fi
+	if [ "$driver_ok" != 1 ]; then
 		case $goal in guests*) return 1 ;; esac
 		die "QEMU driver failed; see $log"
 	fi
 	ended=$(cat "$BUILDER$work/ended-$runs")
 	cv_time "boot-$runs-end"
+	break
+	done
 }
 
 blessed() {

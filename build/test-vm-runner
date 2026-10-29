@@ -1,0 +1,94 @@
+#!/bin/sh
+# Run the boot retry loop with a controlled driver; no root or KVM needed.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' 0
+trap 'exit 1' HUP INT TERM
+export fixture
+sed -n '/^# One directory per test:/,/^disk=/p' "$here/test" | sed '$d' >"$fixture/work-dir"
+sh -n "$fixture/work-dir"
+(
+    BUILDER=$fixture release=42 mode=boot
+    flock() { :; }
+    . "$fixture/work-dir"
+    first=$work
+    echo crashed >"$BUILDER$work/console-1-1.log"
+    . "$fixture/work-dir"
+    [ "$work" != "$first" ] && [ "$(cat "$BUILDER$first/console-1-1.log")" = crashed ]
+)
+sed -n '/^run_vm()/,/^blessed()/p' "$here/test" | sed '$d' >"$fixture/run-vm"
+sh -n "$fixture/run-vm"
+cat >"$fixture/driver-check" <<'EOF'
+set -eu
+die() { echo "$*" >&2; exit 1; }
+cv_time() { :; }
+. "$fixture/run-vm"
+BUILDER= work=$fixture/$mode-$scenario
+mkdir "$work"
+pass=fixture qemu_id=1:1 runs=0
+deadline=$(($(date +%s) + 60))
+chroot() {
+    cat >/dev/null
+    echo "$CVTEST_RUN $CVTEST_GOAL" >>"$work/calls"
+    n=$(wc -l <"$work/calls")
+    [ ! -e "$CVTEST_LOG" ] || exit 91
+    echo blessed >"$work/ended-$CVTEST_RUN"
+    case $scenario:$n in
+    once:1 | twice:* | driver-crash:1) printf '%s\n' "$signature" >"$CVTEST_LOG" ;;
+    other:*) echo 'Kernel panic - not syncing: unrelated failure' >"$CVTEST_LOG"; echo timeout >"$work/ended-$CVTEST_RUN" ;;
+    *) echo 'release 42 is good' >"$CVTEST_LOG" ;;
+    esac
+    case $scenario in driver-fail | driver-crash) return 1 ;; esac
+}
+run_vm "$goal"
+[ "$runs" = 1 ]
+case $scenario in
+once)
+    [ "$(wc -l <"$work/calls")" = 2 ]
+    [ "$(cat "$work/calls")" = "1 $goal
+1 $goal" ]
+    grep -qF "$signature" "$work/console-1-1.log"
+    [ "$(readlink "$work/console.log")" = console-1-2.log ]
+    run_vm "$goal"
+    [ "$runs" = 2 ] && [ "$(wc -l <"$work/calls")" = 3 ]
+    grep -qF "$signature" "$work/console-1-1.log"
+    [ "$(readlink "$work/console.log")" = console-2-1.log ]
+    ;;
+other) [ "$ended" = timeout ] && [ "$(wc -l <"$work/calls")" = 1 ] ;;
+*) exit 92 ;;
+esac
+EOF
+sh -n "$fixture/driver-check"
+for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to kill init'; do
+    export signature
+    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update online desktop update; do
+        goal=$mode
+        case $mode in boot | fallback | interrupt | corrupt) goal=bless ;; esac
+        export mode goal
+        for scenario in once twice other driver-fail driver-crash; do
+            export scenario
+            # Reuse the fixture path for the second signature only.
+            work=$fixture/$mode-$scenario
+            if [ -d "$work" ]; then mv "$work" "$work.first"; fi
+            rc=0
+            sh "$fixture/driver-check" >"$fixture/output" 2>&1 || rc=$?
+            case $scenario in
+            once | other) [ "$rc" = 0 ] || { cat "$fixture/output"; exit 1; } ;;
+            *) [ "$rc" != 0 ] ;;
+            esac
+            case $scenario in
+            once | twice | driver-crash)
+                [ "$(grep -c '^CV-TEST nested PID 1 crash; rerunning boot 1$' "$fixture/output")" = 1 ]
+                [ -f "$work/console-1-1.log" ] && [ -f "$work/console-1-2.log" ]
+                ;;
+            *) if grep -q '^CV-TEST nested PID 1 crash' "$fixture/output"; then exit 1; fi ;;
+            esac
+            case $scenario in
+            twice | driver-crash) [ "$(wc -l <"$work/calls")" = 2 ] ;;
+            driver-fail) [ "$(wc -l <"$work/calls")" = 1 ] ;;
+            esac
+        done
+    done
+done
+echo 'test-vm-runner: unique consoles, bounded crash retries and other failures passed'
