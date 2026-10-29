@@ -56,10 +56,11 @@ tcp() {
 work_diag() {
 	incus --force-local --project owner list -c ns --format csv 2>&1 | sed 's/^/CV-PF diag: /'
 	nft list chain bridge host-l2 work_gate 2>&1 | grep -E 'drop|chain' | sed 's/^/CV-PF diag gate: /'
-	ic exec "$1" -- sh -c 'ip -4 addr show eth0 | grep inet; ip -4 route; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
+	ic exec "$1" -- sh -c 'ip -4 addr show eth0 | grep inet; ip -4 route; ip neigh; ping -c 1 -W 2 "$1" >/dev/null && echo ping ok || echo ping failed' sh "$2" 2>&1 |
 		sed "s/^/CV-PF diag $1: /"
+	# PF's view of the destination: its states, source limits and mismatch counters, and the allocator's log.
 	for f in fw1 fw2; do
-		timeout 20 /usr/bin/ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep 100.80.3; pfctl -ss | grep -c " 100.80.3"' 2>&1 |
+		timeout 20 /usr/bin/ssh -n -F /etc/convergent/ssh_config "$f" 'ifconfig carp | grep -E "^carp|status"; arp -an | grep "100.80.3\|'"$2"'"; pfctl -ss | grep -c " 100.80.3"; pfctl -ss | grep "'"$2"'"; pfctl -sS; pfctl -si | grep -E "state-mismatch|state-insert|state-limit|src-limit"; grep dhcpd /var/log/daemon | tail -n 6' 2>&1 |
 			sed "s/^/CV-PF diag $f: /"
 	done
 }
@@ -90,7 +91,7 @@ probe() { # expectation source destination port [dns]
 		done
 	fi
 	if [ "$got" = "$1" ]; then verdict=ok; else verdict=FAIL; result=1; fi
-	case $verdict:$2 in FAIL:pf-work-*) work_diag "$2" "$3" ;; esac
+	case $verdict:$2 in FAIL:pf-work-*|FAIL:remmina|FAIL:pf-remmina) work_diag "$2" "$3" ;; esac
 	echo "CV-PF $verdict src=$2 dst=$3 port=$4${5:+/udp} want=$1 got=$got"
 }
 listen() {
