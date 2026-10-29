@@ -138,7 +138,7 @@ groups:
         labels: {severity: warning}
         annotations: {summary: 'Host kernel tainted', dashboard: '/d/cv-security'}
       - alert: ClockOffsetHigh
-        expr: (abs(node_timex_offset_seconds{node=~"host|wan"}) > 0.1) or (abs(node_time_seconds{job="node"} - timestamp(node_time_seconds{job="node"})) > 2)
+        expr: (abs(node_timex_offset_seconds{node=~"host|wan"}) > 0.1) or (node_timex_sync_status{node=~"host|wan"} == 0) or (abs(node_time_seconds{job="node"} - timestamp(node_time_seconds{job="node"})) > 2)
         for: 5m
         labels: {severity: warning}
         annotations: {summary: 'Clock offset high on {{ $labels.node }}', dashboard: '/d/cv-security'}

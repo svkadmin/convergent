@@ -33,9 +33,9 @@ fi
 for ifc in $UP_IFS; do
 	[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
 	if [ ! -e "/sys/class/net/$ifc" ]; then
-		# Drop ifup's remembered state so a replug starts a new DHCP client.
+		# Drop ifup's remembered state and its route refusal: a replug starts a new DHCP client.
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
-		rm -f "$d/link.$ifc"
+		rm -f "$d/link.$ifc" "$d/dhcp-overlap.$ifc"
 		continue
 	fi
 	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
