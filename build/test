@@ -1069,17 +1069,45 @@ GUEST_GUARDS
     [ -z "$polling" ] && grep -q 'wrong seed ID' "$work/err" || exit 1
     grep -q 'wrong seed ID' "$work/logged"
     grep -q 'seed_applied svc timed out after 0s' "$work/err"
-    ic() {
-        case $1 in console) seq 1 25 ;; stop) [ "${3:-}" = --force ] || fail 'stop timed out' ;; esac
-    }
     pin() { fail 'no host key announcement'; }
     boot_timeout=0
-    for node in fw1 fw2 wan; do
-        if retry pin "$node" 2>"$work/err"; then exit 1; fi
-        [ -z "$polling" ] && [ "$(grep -c '^[0-9]' "$work/err")" = 20 ] || exit 1
-        grep -q 'guests: next:' "$work/err"
+    (
+        # Diagnostics get their own bound through the real ic/probe path.
+        eval "$(sed -n '/^ic() {/,/^}/p; /^probe() (/,/^)/p' /usr/local/sbin/guests)"
+        date() { echo 100; }
+        healthy() { fail 'health check failed'; }
+        timeout() {
+            printf '%s\n' "$*" >"$work/console-bound"
+            [ "$1 $2 $3" = '-k 1 14' ] || return 1
+            shift 3
+            "$@"
+        }
+        incus() {
+            printf '%s\n' "$*" >"$work/console-call"
+            [ "$sample" != expired ] || return 124
+            seq 1 25
+        }
+        for sample in ready expired; do
+            for check in pin seed_applied healthy; do
+                for node in fw1 fw2 wan; do
+                    rm -f "$work/console-bound" "$work/console-call"
+                    if retry "$check" "$node" 2>"$work/err"; then exit 1; else [ "$?" = 1 ]; fi
+                    [ -z "$polling" ]
+                    grep -Fxq -- "-k 1 14 incus --force-local --project default console $node --show-log" "$work/console-bound"
+                    grep -Fxq -- "--force-local --project default console $node --show-log" "$work/console-call"
+                    if [ "$sample" = ready ]; then
+                        [ "$(grep -c '^[0-9]' "$work/err")" = 20 ]
+                    else
+                        if grep -q '^[0-9]' "$work/err"; then exit 1; fi
+                    fi
+                    grep -q "$check $node timed out after 0s" "$work/err"
+                    grep -q 'guests: next:' "$work/err"
+                done
+            done
+        done
         grep -q 'no host key announcement' "$work/logged"
-    done
+    )
+    ic() { [ "${3:-}" = --force ] || fail 'stop timed out'; }
     stop_guest wan 2>"$work/err"
     if grep -q '^[0-9]' "$work/err"; then exit 1; fi
     grep -q 'incus --force-local --project default console wan --show-log' "$work/err"
