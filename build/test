@@ -1380,7 +1380,7 @@ cv_time firewall-self-heal
 (
     set -e
     . /usr/lib/convergent/incus/firewall-heal
-    fw_pid() { timeout -k 1 5 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
+    fw_pid() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
     fwssh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@"; }
     broken= inhibited= frozen=
     trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
@@ -3317,9 +3317,9 @@ TITLE=Recovery' --cmdline "@$work/recovery-cmdline" --os-release '' --output "$w
 
 run_vm() {
 	goal=${1:-bless}
-	memory=4096
+	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192; limit=5400 ;; guests-maint | online) memory=8192; limit=7200 ;; guests-update) memory=8192; limit=10800 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=7200 ;; guests-update) memory=8192 cpus=8; limit=10800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	remaining=$((deadline - $(date +%s)))
 	[ "$remaining" -gt 0 ] || die "total boot time expired"
@@ -3330,7 +3330,7 @@ run_vm() {
 	cv_time "boot-$runs-start"
 	# chroot execs Python, so the cleanup trap can reap its QEMU child.
 	CVTEST_PASS="$pass" CVTEST_WORK="$work" CVTEST_RUN="$runs" CVTEST_TIMEOUT="$remaining" \
-		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" CVTEST_QEMU_ID="$qemu_id" \
+		CVTEST_GOAL="$goal" CVTEST_MEMORY="$memory" CVTEST_CPUS="$cpus" CVTEST_QEMU_ID="$qemu_id" \
 		chroot "$BUILDER" python3 - <<'EOF' &
 import json, os, re, select, signal, socket, subprocess, time
 
@@ -3355,7 +3355,7 @@ def interrupted(signum, frame):
 for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(sig, interrupted)
 qemu = subprocess.Popen([
-    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", "4", "-m", os.environ["CVTEST_MEMORY"],
+    "qemu-system-x86_64", "-enable-kvm", "-machine", "q35", "-cpu", "host", "-smp", os.environ["CVTEST_CPUS"], "-m", os.environ["CVTEST_MEMORY"],
     "-run-with", "user=" + os.environ["CVTEST_QEMU_ID"],
     "-sandbox", "on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
