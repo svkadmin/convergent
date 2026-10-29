@@ -178,7 +178,7 @@ else
     flock -n 8 || die "$role is already open; close it before reopening"
 fi
 run=/run/convergent/browser/$name
-children= active= grafana= portal= browser= capture=
+children= active= grafana= portal= browser= capture= cage= cage_capture=
 cleanup() {
     result=$?
     trap - 0
@@ -202,7 +202,19 @@ cleanup() {
         [ -n "$browser" ] || kill "$capture" 2>/dev/null
         wait "$capture" 2>/dev/null
     fi
-    for child in $children; do kill "$child" 2>/dev/null; done
+    for child in $children; do
+        # Cage precedes its collector; let EOF flush the retained diagnostics.
+        [ "$child" = "$cage_capture" ] || kill "$child" 2>/dev/null
+        case $child in "$cage"|"$cage_capture")
+            attempts=0
+            while kill -0 "$child" 2>/dev/null && [ "$attempts" -lt 50 ]; do
+                sleep .1
+                attempts=$((attempts + 1))
+            done
+            kill -KILL "$child" 2>/dev/null
+            wait "$child" 2>/dev/null ;;
+        esac
+    done
     for child in $children; do wait "$child" 2>/dev/null; done
     if [ "$result" != 0 ]; then
         for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" >&2; done
