@@ -90,11 +90,27 @@ else
 fi
 
 # Exercise the launcher's host/inner socket selection and command boundary.
+(
 sed -n '/^wayland_socket=/,/^# The container first:/p' "$here/../tools/browser" | sed '$d' >"$work/sockets"
 sed -n '/^background=yes owner way-secure /,/^# Only the Pulse socket /p' "$here/../tools/browser" | sed '$d' >"$work/providers"
+sh -n "$work/sockets"
+sh -n "$work/providers"
 install() { for path do :; done; mkdir -p "$path"; }
-owner() { printf '%s\n' "$*" >>"$run/providers"; }
-wait_socket() { wait "$2"; printf '%s\n' "$1" >>"$run/waits"; }
+owner() {
+    printf '%s\n' "$*" >>"$run/providers"
+    case $* in *' cage')
+        dd if=/dev/zero bs=1048576 count=2 2>/dev/null || exit 1
+        printf 'drained\n' || exit 1
+        touch "$run/drained" ;;
+    esac
+}
+wait_socket() {
+    wait "$2"
+    printf '%s\n' "$1" >>"$run/waits"
+    printf 'socket %s\n' "$1" >>"$run/order"
+}
+chown() { printf 'chown %s\n' "$*" >>"$run/order"; }
+chmod() { printf 'chmod %s\n' "$*" >>"$run/order"; }
 for role in remmina def; do
     run=$work/launch-$role name=$role uid=1000 gid=1000 children=
     mkdir -p "$run/sockets" "$run/state"
@@ -106,13 +122,32 @@ for role in remmina def; do
     if [ "$role" = remmina ]; then
         [ "$wayland_socket" = "$run/cage/wayland-0" ]
         [ "$outer_socket" = "$run/state/wayland-host" ]
-        grep -Fxq "env XDG_RUNTIME_DIR=$run/cage WAYLAND_DISPLAY=$outer_socket WLR_BACKENDS=wayland WLR_RENDERER=pixman prlimit --fsize=1048576:1048576 cage" "$run/providers"
+        grep -Fxq "env XDG_RUNTIME_DIR=$run/cage WAYLAND_DISPLAY=$outer_socket WLR_BACKENDS=wayland WLR_RENDERER=pixman cage" "$run/providers"
         [ "$(wc -l <"$run/waits")" = 2 ]
+        printf 'socket %s\nsocket %s\nchown root %s/cage\nchmod 0710 %s/cage\n' \
+            "$outer_socket" "$wayland_socket" "$run" "$run" >"$run/expected"
+        cmp "$run/expected" "$run/order"
+        wait "$cage_capture"
+        [ -f "$run/drained" ] && [ "$(wc -c <"$run/cage.log")" = 1048576 ]
+        [ "$(tail -c 8 "$run/cage.log")" = drained ]
     else
         [ "$wayland_socket" = "$run/sockets/wayland-0" ] && [ "$outer_socket" = "$wayland_socket" ]
         [ "$(wc -l <"$run/providers")" = 1 ]
     fi
 done
+)
+
+# The actual Pulse command must set both soft and hard address-space limits.
+(
+    run=$work/pulse runtime=/run/user/1000 children=
+    mkdir "$run"
+    owner() { printf '%s\n' "$*" >"$run/command"; }
+    sed -n '/^background=yes owner env PIPEWIRE_REMOTE=/,/^audio=\$!/p' "$here/../tools/browser" >"$work/audio"
+    sh -n "$work/audio"
+    . "$work/audio"
+    wait "$audio"
+    grep -Fq 'prlimit --as=1073741824:1073741824 --fsize=1048576:1048576 /usr/libexec/convergent/pipewire-pulse' "$run/command"
+)
 grep -qx '    source: /run/convergent/browser/remmina/cage/wayland-0' "$here/../guests/remmina/incus.yaml"
 if grep -q 'cage\|WLR_BACKENDS' "$here/../guests/remmina/rootfs/usr/local/bin/remmina-launch"; then exit 1; fi
 echo 'CV-REMOTE unit host Cage socket boundary ok'

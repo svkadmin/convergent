@@ -30,19 +30,21 @@ ic() { echo "$*" >>"$work/grafana-calls"; }
 incus_ui=
 . "$work/grafana"
 grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
-# Reap only stopped tmp browsers with a free slot lock, rechecking after locking.
+# Reap tmp orphans with a free slot lock, rechecking identity after locking.
 (
     sed -n '/^reap_tmp() (/,/^)/p' "$repo/tools/browser" |
         sed "s|/run/convergent/browser|$work/locks|g" >"$work/reap"
+    sh -n "$work/reap"
     . "$work/reap"
     mkdir "$work/locks"
     cat >"$work/instances" <<'EOF'
 [
   {"name":"tmp-20","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
-  {"name":"tmp-21","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-21","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-22","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-portal","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-23","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-26","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-24","status":"Stopped","type":"virtual-machine","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-25","status":"Stopped","type":"container","profiles":["default"]},
   {"name":"def","status":"Stopped","type":"container","profiles":["browser-base","browser-def"]},
@@ -50,24 +52,73 @@ grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
 ]
 EOF
     instances_json() {
+        [ -z "${stale:-}" ] || [ "${locked:-}" = "$stale" ] || return 1
         cat "$work/instances"
-        sed 's/"name":"tmp-22","status":"Stopped"/"name":"tmp-22","status":"Running"/' \
-            "$work/instances" >"$work/next"
+        jq 'map(if .name == "tmp-22" then .profiles = ["default"] else . end)' "$work/instances" >"$work/next"
         mv "$work/next" "$work/instances"
     }
     flock() {
         [ "$*" = '-n 7' ]
+        locked=$stale
         echo attempt >>"$work/lock-attempts"
         [ "$(wc -l <"$work/lock-attempts")" != 2 ]
     }
-    ic() { echo "$*" >>"$work/reaped"; }
+    ic() {
+        [ "$locked" = "$2" ] || return 1
+        echo "$*" >>"$work/reaped"
+        case $* in
+        'stop tmp-23 --force') jq 'map(select(.name != "tmp-23"))' "$work/instances" >"$work/next" ;;
+        'stop tmp-26 --force') jq 'map(if .name == "tmp-26" then .status = "Stopped" else . end)' "$work/instances" >"$work/next" ;;
+        delete\ *) jq --arg n "$2" 'map(select(.name != $n))' "$work/instances" >"$work/next" ;;
+        *) return 1 ;;
+        esac
+        mv "$work/next" "$work/instances"
+    }
     reap_tmp
-    printf 'delete tmp-20\ndelete tmp-portal\n' >"$work/expected"
+    printf 'delete tmp-20\ndelete tmp-portal\nstop tmp-23 --force\nstop tmp-26 --force\ndelete tmp-26\n' >"$work/expected"
     cmp "$work/expected" "$work/reaped"
-    [ "$(wc -l <"$work/lock-attempts")" = 4 ]
+    [ "$(wc -l <"$work/lock-attempts")" = 6 ]
+    # Query/stop failures must not fall through to deletion, even in a conditional.
+    instances_json() { echo '[{"name":"tmp-20","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]}]'; }
+    ic() { echo "$*" >"$work/failed-stop"; return 1; }
+    if reap_tmp; then exit 1; fi
+    grep -qx 'stop tmp-20 --force' "$work/failed-stop"
     instances_json() { return 1; }
     if reap_tmp; then exit 1; fi
 )
+# The periodic root-only entry point takes both shared locks before sweeping.
+sed -n '/^browser_locks() {/,/^}/p; /^if \[ "${1:-}" = --reap-tmp \]/,/^fi/p' "$repo/tools/browser" |
+    sed "s|/run/convergent|$work/run|g" >"$work/sweep"
+[ -s "$work/sweep" ]
+sh -n "$work/sweep"
+for gate in open guests update stopping nonroot arguments; do
+    : >"$work/locks-taken"
+    rm -f "$work/swept" "$work/run/guests-stopping"
+    mkdir -p "$work/run"
+    [ "$gate" != stopping ] || touch "$work/run/guests-stopping"
+    rc=0
+    (
+        die() { exit 1; }
+        id() { if [ "$gate" = nonroot ]; then echo 1000; else echo 0; fi; }
+        flock() {
+            echo "$*" >>"$work/locks-taken"
+            case $gate:$* in 'guests:-s -n 9'|'update:-s -n 6') return 1 ;; esac
+        }
+        reap_tmp() { touch "$work/swept"; }
+        set -- --reap-tmp
+        [ "$gate" != arguments ] || set -- "$@" extra
+        . "$work/sweep"
+    ) || rc=$?
+    case $gate in
+    open)
+        [ "$rc" = 0 ] && [ -f "$work/swept" ] || exit 1
+        printf '%s\n' '-s -n 9' '-s -n 6' >"$work/expected"
+        cmp "$work/expected" "$work/locks-taken" ;;
+    nonroot) [ ! -e "$work/swept" ] && [ ! -s "$work/locks-taken" ] ;;
+    *) [ "$rc" != 0 ] && [ ! -e "$work/swept" ] ;;
+    esac
+done
+grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
 # Delayed events must be awaited; a permanently missing event must hit the deadline.
 sed -n '/^audit_ready() {/,/^done$/p' "$here/test-incus-ui" |
     sed "s|/var/log/messages|$work/messages|g; s/+ 60/+ 2/" >"$work/audit"
