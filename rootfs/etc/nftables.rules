@@ -40,6 +40,9 @@ table bridge host-l2 {
 		ether type 8021ad drop
 		ibrname "work" ether type vlan vlan type vlan drop
 		ibrname "work" ether type vlan vlan type 8021ad drop
+		# The bridge strips the outer tag before this hook for an access port: a tag still inside is a stacked one.
+		obrname "work" oifname != { "fw1work", "fw2work" } ether type vlan drop
+		obrname "work" oifname != { "fw1work", "fw2work" } ether type 8021ad drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ip saddr @work_infra drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } arp saddr ip @work_infra drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type 0x8035 drop comment "RARP carries ARP replies past the ARP rules"

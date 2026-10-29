@@ -92,8 +92,8 @@ firewall failures from host kernel failures.
 - **CARP:** One VHID/segment; fw1 skew 0, fw2 skew 100; `net.inet.carp.preempt=1`; unicast carppeer
   avoids bridge multicast dependence
 - **pfsync:** Sync link with defer preserves established connections across failover
-- **wan-watch:** rc.d service demotes wanwatch by 128 after two lost rounds, a round being a WAN
-  probe or a one-second local DNS answer (a hung Unbound counts); three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
+- **wan-watch:** rc.d service demotes wanwatch by 128 after two lost WAN probe rounds or ten rounds
+  without a local DNS answer (a hung Unbound, not a reload); three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
   passes. Group counter survives watcher restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover

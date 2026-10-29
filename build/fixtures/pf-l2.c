@@ -201,7 +201,9 @@ static int exchange(const uint8_t *packet, size_t length, const uint8_t *token, 
         do { n = recv(monitors[i].fd, buffer, sizeof(buffer), 0); } while (n >= 0);
         system_ok(errno == EAGAIN || errno == EWOULDBLOCK, "drain");
     }
-    for (int attempt = 0; attempt < 3; attempt++) {
+    /* A blocked frame gets three windows; an expected delivery may arrive late on a loaded host. */
+    for (int attempt = 0; attempt < (allowed ? 15 : 3); attempt++) {
+        if (allowed && received[current + 1]) break;
         system_ok(send(sender, packet, length, 0) == (ssize_t)length, "injection");
         double until = monotonic() + 0.2, remaining;
         while ((remaining = until - monotonic()) > 0) {

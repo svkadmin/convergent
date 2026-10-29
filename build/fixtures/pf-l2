@@ -43,7 +43,11 @@ while read -r iface vhid parent label prefix gateway family <&3; do
     sender=$(pid "$name")
     printf '%s %s %s %s %s\n' "$vlan" "${prefix%.*}.10" "$sender" "$mac" "$(cat "$work/peer-$vlan")"
 done 3<"$work/rows" >"$work/peers"
-/var/lib/convergent/test-release/fixtures/pf-l2-bin "$work/peers"
+/var/lib/convergent/test-release/fixtures/pf-l2-bin "$work/peers" || {
+    # The bridge rules behind a verdict, with their counters.
+    nft -a list chain bridge host-l2 forward 2>&1 | sed 's/^/CV-PF L2 nft: /'
+    exit 1
+}
 for name in fw1work fw2work; do
     timeout 10 bridge -j vlan show dev "$name" >"$work/ports"
     jq -e 'length == 1 and (.[0].vlans | length > 0) and
