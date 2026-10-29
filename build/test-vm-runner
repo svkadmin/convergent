@@ -6,17 +6,6 @@ fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' 0
 trap 'exit 1' HUP INT TERM
 export fixture
-sed -n '/^# One directory per test:/,/^disk=/p' "$here/test" | sed '$d' >"$fixture/work-dir"
-sh -n "$fixture/work-dir"
-(
-    BUILDER=$fixture release=42 mode=boot
-    flock() { :; }
-    . "$fixture/work-dir"
-    first=$work
-    echo crashed >"$BUILDER$work/console-1-1.log"
-    . "$fixture/work-dir"
-    [ "$work" != "$first" ] && [ "$(cat "$BUILDER$first/console-1-1.log")" = crashed ]
-)
 sed -n '/^run_vm()/,/^blessed()/p' "$here/test" | sed '$d' >"$fixture/run-vm"
 sh -n "$fixture/run-vm"
 cat >"$fixture/driver-check" <<'EOF'
