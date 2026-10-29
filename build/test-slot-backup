@@ -1,0 +1,152 @@
+#!/bin/sh
+# EFI and abandoned-backup fixtures; no root or virtual machines.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-slot-backup: $*" >&2; exit 1; }
+guid=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+export work guid
+sed -n '/^cleanup() {/,/^}/p; /^rescue_next() {/,/^}/p' "$repo/tools/slot" |
+    sed "s|/run/slot-next.XXXXXX|$work/next.XXXXXX|" >"$work/functions"
+sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' "$repo/tools/slot" >"$work/finish"
+cat >"$work/driver" <<'EOF'
+set -eu
+mode=$1 fault=$2
+case_root=$work/case
+vars=$case_root/vars
+esp=$case_root/esp tmp=$case_root/tmp stm=$case_root/state
+linux=EFI/Linux new=123 inactive=b mounted= oneshot=
+mkdir -p "$vars" "$esp/$linux" "$tmp" "$stm"
+die() { echo "$*" >&2; exit 1; }
+log() { echo "$*"; }
+sync() { :; }
+umount() { :; }
+vars_mount() { [ "$fault" != mount ] || die 'mount failed'; }
+esp_mount() { :; }
+ukis() { echo "$esp/$linux/convergent-123-$1+3.efi"; }
+chattr() {
+    echo "$*" >>"$case_root/flags"
+    case "$fault:$1:${2##*/}" in
+    unlock:-i:LoaderEntryOneShot-*|default:-i:LoaderEntryDefault-*|preferred:-i:LoaderEntryPreferred-*) return 1 ;;
+    protect:+i:*)
+        if [ ! -e "$case_root/retried" ]; then touch "$case_root/retried"; return 1; fi ;;
+    esac
+    case $1 in -i) command rm -f "$2.lock" ;; +i) touch "$2.lock" ;; *) exit 2 ;; esac
+}
+rm() {
+    if [ "$#" = 1 ] && [ "${1%/*}" = "$vars" ]; then
+        [ ! -e "$1.lock" ] && [ "$fault" != delete ] || return 1
+    fi
+    command rm "$@"
+}
+cat() {
+    [ "$fault" != write ] || return 1
+    [ ! -e "$vars/LoaderEntryOneShot-$guid.lock" ] || return 1
+    command cat "$@"
+}
+. "$work/functions"
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+if [ "$mode" = next ]; then
+    if [ "$fault" != absent ]; then
+        echo old >"$vars/LoaderEntryOneShot-$guid"
+        touch "$vars/LoaderEntryOneShot-$guid.lock"
+    fi
+    rescue_next a
+    rescue_next b
+else
+    echo UKI >"$tmp/uki"
+    for name in LoaderEntryDefault LoaderEntryPreferred Unrelated; do
+        echo old >"$vars/$name-$guid"
+        touch "$vars/$name-$guid.lock"
+    done
+    [ "$mode" != rescue ] || rescue_target=b
+    . "$work/finish"
+fi
+EOF
+sh -n "$work/functions"
+sh -n "$work/finish"
+sh -n "$work/driver"
+for mode in write rescue next; do
+    case $mode in
+    write) faults='none mount default preferred delete' ;;
+    rescue) faults=none ;;
+    next) faults='none absent unlock write protect' ;;
+    esac
+    for fault in $faults; do
+        rm -rf "$work/case"
+        if sh "$work/driver" "$mode" "$fault" >"$work/out" 2>"$work/error"; then
+            case $fault in none|absent) ;; *) die "accepted $mode/$fault" ;; esac
+        else
+            case $fault in none|absent) cat "$work/error"; die "failed $mode/$fault" ;; esac
+            if grep -q 'release 123 is\|next boot:' "$work/out"; then die 'reported failed operation as successful'; fi
+        fi
+        vars=$work/case/vars
+        if [ "$mode" = next ]; then
+            [ -e "$vars/LoaderEntryOneShot-$guid.lock" ] || die 'one-shot left mutable'
+            case $fault in none|absent)
+                printf '\007\000\000\000' >"$work/expected"
+                for char in c o n v e r g e n t - 1 2 3 - b . e f i; do printf '%s\000' "$char"; done >>"$work/expected"
+                printf '\000\000' >>"$work/expected"
+                cmp "$work/expected" "$vars/LoaderEntryOneShot-$guid"
+                ;; esac
+        else
+            [ -f "$vars/Unrelated-$guid.lock" ]
+            for name in LoaderEntryDefault LoaderEntryPreferred; do
+                if [ "$mode:$fault" = write:none ]; then [ ! -e "$vars/$name-$guid" ]; fi
+                if [ "$mode" = rescue ]; then [ -e "$vars/$name-$guid.lock" ]; fi
+            done
+        fi
+    done
+done
+grep -q 'inst_multiple .* chattr' "$repo/initramfs/91convergent-rescue/module-setup.sh"
+
+# Run the boot cleanup, including both locations and the legacy empty placeholder.
+sed -n '/^# As in backup:/,/^# Prepare this release/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/boot-cleanup"
+[ -s "$work/boot-cleanup" ] || die 'missing boot cleanup'
+sh -n "$work/boot-cleanup"
+state=$work/state
+mkdir -p "$state/var-1"
+btrfs() {
+    [ "$1" = subvolume ] || return 1
+    case $2 in
+    show) [ -f "$3/snapshot" ] ;;
+    delete) [ "${fault:-}" != delete ] && rm "$3/snapshot" && rmdir "$3" ;;
+    *) return 1 ;;
+    esac
+}
+for base in "$state" "$state/var-1"; do
+    mkdir -p "$base/.backup.123456/home" "$base/.backup.empty1/home"
+    touch "$base/.backup.123456/home/snapshot"
+done
+. "$work/boot-cleanup"
+for base in "$state" "$state/var-1"; do
+    [ ! -e "$base/.backup.123456" ] && [ ! -e "$base/.backup.empty1" ]
+done
+for fault in delete nonempty symlink home-link; do
+    old=$state/.backup.123456
+    mkdir -p "$old/home" "$work/keep"
+    echo keep >"$work/keep/data"
+    case $fault in
+    delete) touch "$old/home/snapshot" ;;
+    nonempty) touch "$old/home/data" ;;
+    symlink) rmdir "$old/home" "$old"; ln -s "$work/keep" "$old"; [ -L "$old" ] ;;
+    home-link) rmdir "$old/home"; ln -s "$work/keep" "$old/home"; [ -L "$old/home" ] ;;
+    esac
+    if (. "$work/boot-cleanup") 2>"$work/error"; then die "accepted cleanup $fault"; fi
+    [ -f "$work/keep/data" ]
+    rm -rf "$old"
+done
+grep -q 'inst_multiple .* rmdir ' "$repo/initramfs/90convergent/module-setup.sh"
+
+# Instance archives must exclude dependent disks; volumes are exported separately.
+sed -n '/^[[:space:]]*ic export /p' "$repo/tools/backup" >"$work/export"
+[ -s "$work/export" ]
+sh -n "$work/export"
+ic() { [ "$*" = 'export container /payload/projects/owner/instance-container.tar.gz --root-only --compression gzip' ]; }
+name=container payload=/payload project=owner
+. "$work/export"
+echo 'test-slot-backup: EFI selection, failure cleanup, boot snapshots and root-only export passed'

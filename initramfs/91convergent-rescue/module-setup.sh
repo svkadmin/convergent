@@ -8,7 +8,7 @@ installkernel() {
 }
 
 install() {
-	inst_multiple lsblk findmnt flock logger id rmdir sed grep expr stat sha256sum cut head dd cmp tar date
+	inst_multiple lsblk findmnt flock logger id rmdir sed grep expr stat sha256sum cut head dd cmp tar date chattr
 	inst_simple "$dracutsysrootdir/usr/local/sbin/slot" /sbin/slot
 	inst_simple "$moddir/parse-rescue.sh" /etc/convergent/rescue
 	[ ! -f "$dracutsysrootdir/etc/convergent/release.pub" ] ||

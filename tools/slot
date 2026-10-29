@@ -9,6 +9,7 @@ key=/etc/convergent/release.pub
 esp=
 tmp=
 mounted=
+oneshot=
 
 # Warning level: /var/log/messages keeps warnings and up; slot events are few.
 die() { logger -p user.err -t slot "$*" 2>/dev/null || :; echo "slot: $*" >&2; exit 1; }
@@ -22,9 +23,12 @@ flock -w 120 9 || die "another slot is running"
 
 # Unmount whatever this run mounted, on the way out.
 cleanup() {
+	result=$?
+	if [ -n "$oneshot" ]; then chattr +i "$oneshot" || result=1; fi
 	for d in $mounted; do umount "$d" 2>/dev/null || :; done
 	[ -z "$esp" ] || rmdir "$esp" 2>/dev/null || :
 	[ -z "$tmp" ] || rm -rf "$tmp"
+	exit "$result"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -55,6 +59,15 @@ state_mount() {   # state_mount ro|rw
 	mount -t btrfs -o "$1,subvolid=5,noatime,nodev,nosuid,noexec" /dev/mapper/cv-state "$stm" ||
 		die "the state volume did not mount"
 	mounted="$stm $mounted"
+}
+
+vars_mount() {
+	vars=/sys/firmware/efi/efivars
+	mkdir -p "$vars"
+	if ! findmnt -rn -t efivarfs "$vars" >/dev/null; then
+		mount -t efivarfs efivarfs "$vars" || die "cannot mount EFI variables"
+		mounted="$vars $mounted"
+	fi
 }
 
 # The ESP's UKIs of one slot, good or counting.
@@ -271,6 +284,14 @@ write() {
 	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
 	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
 		sync -f "$esp" && mv "$dst.new" "$dst" && sync -f "$esp" || die "could not install the UKI"
+	if [ -z "${rescue_target:-}" ]; then
+		vars_mount
+		for name in LoaderEntryDefault LoaderEntryPreferred; do
+			var=$vars/$name-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+			[ -e "$var" ] || continue
+			chattr -i "$var" && rm "$var" || die "cannot clear $name"
+		done
+	fi
 	for d in $mounted; do umount "$d" || die "could not unmount $d"; done
 	mounted=
 	log "release $new is in slot $inactive with three tries; reboot to try it"
@@ -285,20 +306,19 @@ rescue_next() {
 	entry=${1##*/}
 	entry=${entry%%+*}
 	case $entry in *.efi) ;; *) entry=$entry.efi ;; esac
-	vars=/sys/firmware/efi/efivars
-	mkdir -p "$vars"
-	if ! findmnt -rn -t efivarfs "$vars" >/dev/null; then
-		mount -t efivarfs efivarfs "$vars" || die "cannot mount EFI variables"
-		mounted="$vars $mounted"
-	fi
+	vars_mount
 	# EFI attributes, then a NUL-terminated UTF-16LE entry ID without its counter.
 	tmp=$(mktemp -d /run/slot-next.XXXXXX)
 	printf '\007\000\000\000' >"$tmp/entry"
 	case $entry in *[!a-z0-9.-]*) die "invalid entry ID" ;; esac
 	for char in $(printf '%s' "$entry" | sed 's/./& /g'); do printf '%s\000' "$char"; done >>"$tmp/entry"
 	printf '\000\000' >>"$tmp/entry"
-	cat "$tmp/entry" >"$vars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f" ||
+	oneshot=$vars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+	if [ -e "$oneshot" ]; then chattr -i "$oneshot" || die "cannot unlock the next boot entry"; fi
+	cat "$tmp/entry" >"$oneshot" ||
 		die "cannot set the next boot entry"
+	chattr +i "$oneshot" || die "cannot protect the next boot entry"
+	oneshot=
 	sync
 	log "next boot: $entry (boot counter and good state unchanged)"
 }
