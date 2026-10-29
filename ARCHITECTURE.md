@@ -604,7 +604,7 @@ allowance from TPM evidence is planned instead of Microsoft's third-party certif
 
 | Configured ceiling | Limit |
 |---|---|
-| fw1, fw2 | 1 GiB each; KARL relink plus blocklist exhausted 384 MiB on the laptop |
+| fw1, fw2 | 1 GiB and 2 vCPUs each; KARL relink plus blocklist exhausted 384 MiB on the laptop, and one vCPU missed CARP adverts under load |
 | wan | 512 MiB |
 | svc | 350 MiB; 768 MiB while Grafana runs |
 | def/tmp | 2 GiB; portal tmp 512 MiB |

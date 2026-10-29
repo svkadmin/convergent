@@ -964,11 +964,13 @@ replace() {
     mv "$work/preparing" "$state/preparing"
     sync
     if [ "$prep_start" = yes ]; then starting=$guest; stop_guest "$guest"; fi
-    # Drop a local memory pin (by hand or update fw); the fw profile carries it now.
+    # Drop local memory and CPU pins (by hand or update fw); the fw profile carries them now.
     case $guest in
     fw1|fw2)
         mem=$(ic config get "$guest" limits.memory)
-        [ -z "$mem" ] || ic config unset "$guest" limits.memory ;;
+        [ -z "$mem" ] || ic config unset "$guest" limits.memory
+        cpu=$(ic config get "$guest" limits.cpu)
+        [ -z "$cpu" ] || ic config unset "$guest" limits.cpu ;;
     esac
     for volume in $(volumes "$guest"); do locked ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
     if [ "$guest" = wan ]; then
@@ -1296,6 +1298,15 @@ update() {
                 [ -n "$mem" ] || ic config set "$node" limits.memory="$old"
             done
             ic profile set fw limits.memory=1GiB
+        fi
+        # Installs from before two vCPUs keep one per running node until replace() drops the pin.
+        old=$(ic profile get fw limits.cpu)
+        if [ "$old" != 2 ]; then
+            for node in fw1 fw2; do
+                cpu=$(ic config get "$node" limits.cpu)
+                [ -n "$cpu" ] || ic config set "$node" limits.cpu="$old"
+            done
+            ic profile set fw limits.cpu=2
         fi
         for node in fw1 fw2; do
             for suffix in qcow2 pf.sha256 rules.sha256; do
