@@ -75,6 +75,23 @@ if [ "$recovery" = 1 ]; then
 	arm_watchdog
 fi
 
+# As in backup: reclaim snapshots left by power loss before copying /var.
+remove_snapshot() {
+	[ ! -L "$1" ] && [ ! -L "$1/home" ] || return 1
+	if [ -d "$1/home" ]; then
+		if btrfs subvolume show "$1/home" >/dev/null 2>&1; then
+			btrfs subvolume delete "$1/home" || return
+		else
+			rmdir "$1/home" || return
+		fi
+	fi
+	rmdir "$1"
+}
+for old in "$state"/.backup.?????? "$state"/var-*/.backup.??????; do
+	[ -e "$old" ] || [ -L "$old" ] || continue
+	remove_snapshot "$old" || die "state: cannot remove abandoned snapshot $old"
+done
+
 # Prepare this release's /var atomically; cached policy is rebuilt once per release.
 if [ ! -d "$state/var-$release" ]; then
 	new="$state/var-$release.new"

@@ -263,7 +263,7 @@ if [ "${1:-}" = --install-options ]; then
 	echo 'test: install options passed'
 	exit 0
 fi
-for fixture in test-topology test-leases test-work-gate test-release-compat; do sh "$here/$fixture" || exit 1; done
+for fixture in test-topology test-leases test-work-gate test-release-compat test-slot-backup; do sh "$here/$fixture" || exit 1; done
 . "$here/build.conf"
 . "$here/chroot.sh"
 
@@ -3091,6 +3091,7 @@ for fault in none sync1 sync2 esp state; do
 		mkdir -p "$esp/$linux" "$stm"
 		echo UKI >"$tmp/uki"
 		mounted="$esp $stm"
+		vars_mount() { vars=$work/vars; mkdir -p "$vars"; }
 		count=0
 		sync() { [ "$1" = -f ] && [ "$2" = "$esp" ] || exit 2; count=$((count + 1)); [ "$fault" != "sync$count" ]; }
 		umount() { echo "unmount $1"; [ "$1" != "$work/$fault" ]; }

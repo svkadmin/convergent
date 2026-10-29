@@ -103,7 +103,7 @@ for project in default "$owner"; do
         jq -r '.[] | select(.type == "virtual-machine") | "instance " + .name' "$work/instances.json" >>"$payload/EXCLUDED"
         jq -r '.[] | select(.type == "container") | .name' "$work/instances.json" >"$work/instances"
         while IFS= read -r name; do
-            ic export "$name" "$payload/projects/$project/instance-$name.tar.gz" --compression gzip
+            ic export "$name" "$payload/projects/$project/instance-$name.tar.gz" --root-only --compression gzip
         done <"$work/instances"
         rm "$work/instances" "$work/instances.json"
     fi
