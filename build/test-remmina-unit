@@ -137,6 +137,68 @@ for role in remmina def; do
 done
 )
 
+# Startup failure must flush Cage's tail even while the producer is still alive.
+sed -n '/^cleanup() {/,/^}/p' "$here/../tools/browser" >"$work/cleanup"
+cat >"$work/cage-producer" <<'EOF'
+#!/bin/sh
+set -eu
+case $sample in
+term|collector) trap 'sleep .2; printf "cage shutdown diagnostic\n"; exit 0' TERM ;;
+kill) trap '' TERM ;;
+esac
+printf 'cage startup diagnostic\n'
+touch "$run/producer-ready"
+while :; do sleep .1; done
+EOF
+cat >"$work/cage-cleanup" <<'EOF'
+#!/bin/sh
+set -eu
+children= active= grafana= portal= browser= capture= cage= cage_capture=
+role=remmina name=remmina uid=1000 gid=1000
+mkdir -p "$run/sockets" "$run/state"
+. "$work/cleanup"
+trap cleanup 0
+install() { for path do :; done; mkdir -p "$path"; }
+owner() {
+    case $* in *' cage') exec sh "$work/cage-producer" ;; esac
+}
+tail() {
+    if [ "$sample:$1" = collector:-c ]; then
+        trap '' TERM
+        while :; do sleep .1; done
+    fi
+    command tail "$@"
+}
+wait_socket() {
+    [ "$2" = "$cage" ] || return 0
+    attempts=0
+    until [ -f "$run/producer-ready" ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 50 ] || exit 2
+        sleep .1
+    done
+    kill -0 "$cage"
+    kill -0 "$cage_capture"
+    # Simulate the socket timeout with the producer still running.
+    exit 1
+}
+. "$work/sockets"
+. "$work/providers"
+exit 2
+EOF
+for script in cleanup cage-producer cage-cleanup; do sh -n "$work/$script"; done
+for sample in term kill collector; do
+    run=$work/cleanup-$sample
+    export work run sample
+    rc=0
+    timeout -k 1 15 sh "$work/cage-cleanup" >"$work/cleanup.log" 2>&1 || rc=$?
+    [ "$rc" = 1 ]
+    [ ! -e "$run" ]
+    if [ "$sample" != collector ]; then grep -qx 'cage startup diagnostic' "$work/cleanup.log"; fi
+    if [ "$sample" = term ]; then grep -qx 'cage shutdown diagnostic' "$work/cleanup.log"; fi
+done
+echo 'CV-REMOTE unit live Cage cleanup ok'
+
 # The actual Pulse command must set both soft and hard address-space limits.
 (
     run=$work/pulse runtime=/run/user/1000 children=
