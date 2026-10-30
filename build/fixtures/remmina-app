@@ -4,7 +4,9 @@ set -eu
 test_start=$(date +%s)
 cv_time() { echo "CV-TIME remmina-$1 $(($(date +%s) - test_start))"; }
 cv_time "$1-start"
-trap 'cv_time "$1-duration"' 0
+# Not $1 in the trap: an exit inside a function would report the function's argument.
+name=$1
+trap 'cv_time "$name-duration"' 0
 trap 'exit 1' HUP INT TERM
 ic() { incus --force-local --project default "$@"; }
 owner() { setpriv --reuid "$uid" --regid "$gid" --init-groups env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"; }

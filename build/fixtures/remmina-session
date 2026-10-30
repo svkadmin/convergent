@@ -12,8 +12,9 @@ gid=$(id -g nobody)
 runtime=/run/user/$uid
 display=$runtime/wayland-1 ipc=$runtime/sway-ipc.test.sock
 work=$(mktemp -d /var/tmp/remmina-session.XXXXXX)
-children= remote=
-ic() { incus --force-local --project default "$@"; }
+children= remote= installed=
+# Incus 7.0.1 refuses --project with query; its URLs name the project.
+ic() { case $1 in query) incus --force-local "$@" ;; *) incus --force-local --project default "$@" ;; esac; }
 owner() {
     set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs \
         env -i PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"
@@ -26,13 +27,16 @@ cleanup() {
     trap '' HUP INT TERM
     set +e
     touch "$work/done"
+    # The launcher removes its logs on exit.
+    [ "$result" = 0 ] || tail -n 30 /run/convergent/browser/remmina/*.log 2>/dev/null
     ic exec remmina -- sh -c 'file=/usr/share/dbus-1/services/org.freedesktop.secrets.service; [ ! -e "$file.cv-test" ] || mv "$file.cv-test" "$file"' || result=1
     for child in $children; do kill "$child" 2>/dev/null; done
     for child in $children; do wait "$child" 2>/dev/null; done
     ic stop remmina --force >/dev/null 2>&1
     for device in wayland pipewire; do ic config device remove remmina "$device" || result=1; done
     [ -z "$remote" ] || ic delete cv-remote --force || result=1
-    [ "$result" = 0 ] || { cat "$work"/*.log; tail -n 30 /run/convergent/browser/remmina/*.log; }
+    [ -z "$installed" ] || rm -rf "$installed" || result=1
+    [ "$result" = 0 ] || cat "$work"/*.log
     rm -rf "$work" "$runtime"
     cv_time session-duration
     exit "$result"
@@ -69,8 +73,16 @@ ic start cv-remote
 base=$(awk '$3 == "vlan320" {sub(/\.0\/26$/, "", $5); print $5}' /etc/convergent/segments)
 timeout -k 1 60 sh -c 'until incus --force-local exec cv-remote -- true; do sleep 1; done'
 ic exec cv-remote -- sh -eu -c 'sysctl -qw net.ipv4.conf.eth0.arp_ignore=0; ip link set eth0 up; ip addr add "$1.7/26" dev eth0; ip route add default via "$1.62"' sh "$base"
+# The host has no Python: run the Remmina image's (a Remmina dependency) through its musl loader.
+py=$work/py
+mkdir "$py"
+tar -xzf "$release/guests/remmina/rootfs.tar.gz" -C "$py" --wildcards ./lib/ld-musl-x86_64.so.1 './usr/bin/python3*' \
+    './usr/lib/python3.*' './usr/lib/libpython3*' './usr/lib/libffi.so*' './usr/lib/libxkbcommon.so*'
+printf '#!/bin/sh\nPYTHONHOME=%s/usr exec %s/lib/ld-musl-x86_64.so.1 --library-path %s/usr/lib %s/usr/bin/python3 -s "$@"\n' \
+    "$py" "$py" "$py" "$py" >"$work/python3"
+chmod 755 "$work/python3"
 pid=$(ic query '/1.0/instances/cv-remote/state?project=default' | jq -er .pid)
-nsenter -t "$pid" -n python3 "$release/fixtures/remmina.py" vnc "$base.7" "$work" >"$work/vnc.log" 2>&1 &
+nsenter -t "$pid" -n "$work/python3" "$release/fixtures/remmina.py" vnc "$base.7" "$work" >"$work/vnc.log" 2>&1 &
 server=$!; children="$server $children"
 wait_file "$work/listening"
 ic start remmina
@@ -81,20 +93,34 @@ ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina XDG_RUNTIME_D
     test "$(gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked)" = "(<false>,)"
 '
 ic stop remmina --force
+# guests init from test-release records no installed bundle; the launcher requires Remmina's.
+if [ ! -e /var/lib/convergent/release-guests/guests/remmina ]; then
+    installed=/var/lib/convergent/release-guests/guests/remmina
+    mkdir -p "$installed"
+    cp "$release/guests/remmina/incus.yaml" "$installed/"
+fi
 SUDO_UID=$uid /usr/local/sbin/browser --privileged "$display" "$ipc" remmina >"$work/launcher.log" 2>&1 &
 launcher=$!; children="$launcher $children"
 wait_file /run/convergent/browser/remmina/cage/wayland-0
-python3 "$release/fixtures/remmina.py" keyboard /run/convergent/browser/remmina/cage/wayland-0 "$work" >"$work/keyboard.log" 2>&1 &
+"$work/python3" "$release/fixtures/remmina.py" keyboard /run/convergent/browser/remmina/cage/wayland-0 "$work" >"$work/keyboard.log" 2>&1 &
 keyboard=$!; children="$keyboard $children"
 wait_file "$work/keyboard-ready"
 timeout -k 1 30 sh -c 'until incus --force-local exec remmina -- pidof zenity; do sleep .2; done'
-sleep 1
+# Keys typed before Cage focuses the dialog are lost; Cage titles its host window after the focused view.
+tries=0
+until owner swaymsg -t get_tree | grep -qF '"Remote: unlock keyring (nonempty password)"'; do
+    tries=$((tries + 1)); [ "$tries" -lt 150 ]; sleep .2
+done
 touch "$work/unlock"
 timeout -k 1 30 sh -c 'until incus --force-local exec remmina -- pidof remmina; do sleep .2; done'
 kill -0 "$launcher" "$keyboard"
-bus=$(ic exec remmina -- sh -c 'pid=$(pidof remmina); tr "\000" "\n" </proc/$pid/environ' | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
+# pidof can also list a short-lived child; every one shares the session bus.
+bus=$(ic exec remmina -- sh -c 'for pid in $(pidof remmina); do tr "\000" "\n" 2>/dev/null <"/proc/$pid/environ" || :; done' |
+    sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -n 1)
 [ -n "$bus" ]
 export uid gid runtime display ipc bus base work
+# Work access opens only once the topology validates, as before the PF work matrix.
+sh /usr/lib/convergent/incus/work-gate || { echo 'CV-REMOTE work access closed'; exit 1; }
 for test_case in clipboard secret-loss; do
     timeout -k 5 60 sh "$release/fixtures/remmina-app" "$test_case"
 done

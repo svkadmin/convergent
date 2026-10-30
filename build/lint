@@ -34,6 +34,12 @@ files=$(git ls-files 2>/dev/null) || files=$(find . -type f ! -path './.git/*' |
 hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' |
 	xargs grep -nE -- '--project [^ ]+ query |query --project' 2>/dev/null) &&
 	{ printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'incus query takes its project in the URL, not --project'; }
+# Nor through an ic() that always adds --project.
+hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' | xargs grep -lI 'ic query' 2>/dev/null | xargs awk '
+	FNR == 1 {fixed = 0}
+	/^[ \t]*ic\(\) \{/ {fixed = /--project/ && !/query/}
+	fixed && /(^|[^[:alnum:]_-])ic query / {print FILENAME ":" FNR ":" $0}')
+[ -z "$hits" ] || { printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'ic() adds --project, which incus query refuses'; }
 
 # Shell: every script, init script and sourced module parses.
 scripts=
