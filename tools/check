@@ -145,7 +145,6 @@ case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|
 # Remmina: a killed supervisor must not leave an unlocked orphan running.
 if [ "${1:-}" = auto ]; then
     timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
-    timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
 fi
 # End Remmina.
 net_ok=1
@@ -174,6 +173,11 @@ if [ "${1:-}" = auto ]; then (
         touch -r "$state/last" "$state/.last" && mv "$state/.last" "$state/last" || die 'cannot update report'
     fi
 ); fi
+# After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
+# first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock.
+if [ "${1:-}" = auto ]; then
+    timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
+fi
 exec 9>/run/convergent/check.lock
 flock -n 9 || die 'another checker is running'
 if [ ! -e "$state/accepted" ] && [ -d "$state/previous" ]; then

@@ -549,6 +549,11 @@ backup_soak() {
     clear_probes
 }
 fw_release() {
+    # Probe routes exist only inside backup_soak; one a killed updater left keeps host traffic on the backup.
+    for address in 100.80.0.10 100.80.2.10; do
+        [ -z "$(ip route show "$address/32" via 100.80.1.3 dev host 2>/dev/null)" ] ||
+            ip route del "$address/32" via 100.80.1.3 dev host || return
+    done
     [ -f "$state/fw.handoff" ] || return 0
     # Removing our groups is safe after an uncertain SSH result.
     fw_mutate fw1 'set -e

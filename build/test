@@ -1418,8 +1418,11 @@ IMPORT
 	bad() { echo "$*" >>"$work/report"; ok=0; }
 	die() { echo "$*" >&2; exit 1; }
 	incus() { cat "$work/profile"; }
+	# check bounds its Incus reads; keep them on the fixture's incus().
+	timeout() { shift 3; "$@"; }
 	incus_limits() { cat "$1"; }
-	sed -n '/^incus --force-local query .*profiles\/browser-tmp/,/^incus_limits() {/ { /^incus_limits() {/d; p; }' /usr/local/sbin/check >"$work/profile-read"
+	sed -n '/^timeout -k 1 30 incus --force-local query .*profiles\/browser-tmp/,/^incus_limits() {/ { /^incus_limits() {/d; p; }' /usr/local/sbin/check >"$work/profile-read"
+	[ -s "$work/profile-read" ]
 	sed -n '/^    cp "\$work\/autostart"/p' /usr/local/sbin/check >"$work/profile-accept"
 	sed -n '/^for inventory in /,/^done$/p' /usr/local/sbin/check >"$work/profile-check"
 	for inventory in autostart suid incus; do echo '[]' >"$work/$inventory"; done
@@ -2270,6 +2273,11 @@ incus() {
     esac
     command incus "$@"
 }
+# probe() runs polled reads under timeout(1), which would bypass incus() above.
+timeout() {
+    case "$*" in *' incus --force-local --project default exec svc -- cat /var/lib/convergent/seeded') shift 3; incus "$@" ;;
+    *) command timeout "$@" ;; esac
+}
 FAULT
 awk '{print} /^        seed_start "\$guest"$/ {print "        touch /var/lib/convergent/test-release/rollback-phase; GUEST_SVC_TIMEOUT=10; die \"injected failure after seeding\""}' /usr/local/sbin/guests >>"$release/guests-seed-fail"
 rm -f "$release/rollback-phase"
@@ -2326,6 +2334,10 @@ cat >"$release/guests-unhealthy" <<'FAULT'
 incus() {
     case "$*" in *' exec svc -- wget '*) return 1 ;; esac
     command incus "$@"
+}
+timeout() {
+    case "$*" in *' incus --force-local --project default exec svc -- wget '*) shift 3; incus "$@" ;;
+    *) command timeout "$@" ;; esac
 }
 FAULT
 cat /usr/local/sbin/guests >>"$release/guests-unhealthy"
