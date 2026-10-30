@@ -120,7 +120,7 @@ bus=$(ic exec remmina -- sh -c 'for pid in $(pidof remmina); do tr "\000" "\n" 2
 [ -n "$bus" ]
 export uid gid runtime display ipc bus base work
 # Work access opens only once the topology validates, as before the PF work matrix.
-sh /usr/lib/convergent/incus/work-gate || { echo 'CV-REMOTE work access closed'; exit 1; }
+timeout -k 5 1500 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done' || { echo 'CV-REMOTE work access closed'; exit 1; }
 for test_case in clipboard secret-loss; do
     timeout -k 5 60 sh "$release/fixtures/remmina-app" "$test_case"
 done

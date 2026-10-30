@@ -256,7 +256,8 @@ for mode in off on off; do
 done
 exec 8>&-
 # Work-network matrix: each probe crosses the production trunks and PF.
-sh /usr/lib/convergent/incus/work-gate
+# The gate opens once both firewalls answer; one still relinking its kernel can take many minutes.
+timeout -k 5 1500 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
 incus --force-local --project default image copy candidate-browser local: --target-project owner --alias pf-browser
 work_image=1
 incus --force-local --project owner profile create pf-base
