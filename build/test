@@ -3533,7 +3533,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=7200 ;; guests-update) memory=8192 cpus=8; limit=10800 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=18000 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	# ESXi + nested KVM stale-translation bug: 1.4% per boot with 4 vCPUs, 0 with 1.
 	for boot_try in 1 2; do
@@ -3811,8 +3811,9 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=5400 ;; guests-update) budget=10800 ;; *) budget=7200 ;; esac
-	# L2 injection (1140), real Remmina session (300), shutdown preparation/drain (720).
+	case $mode in guests) budget=5400 ;; guests-update) budget=18000 ;; *) budget=14400 ;; esac
+	# L2 injection (1140), real Remmina session (300), shutdown preparation/drain (720); firewall relinks and
+	# work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200 past their limits.
 	budget=$((budget + 2160))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
