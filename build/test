@@ -1953,6 +1953,10 @@ sha256sum "$tls/"*.crt >"$release/tls-renewed"
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-renewed" || bad $LINENO
 cv_time firewall-update
+# A firewall still relinking its kernel froze for seconds under the update's load; let both finish first.
+for f in fw1 fw2; do
+    timeout -k 5 1500 sh -c 'until ssh -n -F /etc/convergent/ssh_config "$1" "! pgrep -f [r]eorder_kernel >/dev/null"; do sleep 10; done' sh "$f" || bad $LINENO
+done
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
