@@ -56,6 +56,118 @@ rm "$work/cgroup/lxc.payload.def/memory.stat"
 . "$work/memory"
 [ "$kib" = 16777216 ]
 echo 'observability: bounded checker reads and shared memory fixtures passed'
+# Owner inventory reads must bound partial replies and leave lock fds in the parent.
+for tool in devices remote; do
+    sed -n '/^[[:space:]]*instances\{0,1\}=$(.*incus --force-local query /p' "$repo/tools/$tool" >"$work/owner-read"
+    [ "$(wc -l <"$work/owner-read")" = 1 ]
+    sh -n "$work/owner-read"
+    for reply in 0 124; do
+        rc=0
+        cat >"$work/owner-probe" <<'OWNER'
+            exec 9>"$work/lock9" 6>"$work/lock6" 8>"$work/lock8"
+            die() { exit 1; }
+            incus() { echo '{"partial":true}'; }
+            timeout() {
+                [ "$1:$2:$3" = '-k:1:30' ] || exit 90
+                if (: >&9) 2>/dev/null; then exit 90; fi
+                if [ "$tool" = remote ]; then
+                    if (: >&6) 2>/dev/null; then exit 90; fi
+                    if (: >&8) 2>/dev/null; then exit 90; fi
+                fi
+                shift 3
+                echo bounded >"$work/bounded"
+                "$@"
+                return "$reply"
+            }
+            . "$work/owner-read"
+            echo retained >&9
+            echo retained >&6
+            echo retained >&8
+            echo continued >"$work/continued"
+OWNER
+        sh -n "$work/owner-probe"
+        export work tool reply
+        sh -eu "$work/owner-probe" || rc=$?
+        [ -f "$work/bounded" ]
+        if [ "$reply" = 0 ]; then
+            [ "$rc" = 0 ] && [ -f "$work/continued" ]
+            for fd in 9 6 8; do grep -qx retained "$work/lock$fd"; done
+        else
+            [ "$rc" != 0 ] && [ ! -e "$work/continued" ]
+        fi
+        rm -f "$work/bounded" "$work/continued"
+    done
+done
+echo 'observability: bounded owner reads and lock descriptors passed'
+# Exercise Settings' actual formatter with cache-only guest counts.
+sed -n '/^	function get(path, value) {/,/^	}'"'"' \/sys/ {
+    /^	}'"'"' \/sys/d; p;
+}' "$repo/tools/sys" | sed "s|/proc/meminfo|$work/meminfo|g" >"$work/dashboard.awk"
+echo '}' >>"$work/dashboard.awk"
+mkdir "$work/status" "$work/header"
+printf 'MemTotal: 16777216 kB\nMemFree: 1048576 kB\nMemAvailable: 8388608 kB\n' >"$work/meminfo"
+echo 'fw1=master fw2=backup' >"$work/status/topology"
+format() {
+    SYS_GUESTS=unknown SYS_DISK= awk -v st="$work/status" -v out="$work/header" \
+        -v now=1000 -v mtime="$1" -v memtime="$1" -v owner=test -v kernel=test -v blessed=good \
+        -f "$work/dashboard.awk"
+}
+echo 4194304 >"$work/status/guestmem"
+for remote in true false; do
+    printf 'true\ttrue\ttrue\ttrue\t2\t%s\n' "$remote" >"$work/status/.running"
+    format 1000
+    grep -qx 'RAM: 4.0/16.0 GiB (host)' "$work/header/header"
+    count=6
+    [ "$remote" != true ] || count=7
+    grep -qx "Guests: $count/? running; master: fw1" "$work/header/header"
+done
+echo 12582912 >"$work/status/guestmem"
+format 1000
+grep -qx 'RAM: 0.0/16.0 GiB (host)' "$work/header/header"
+for stamp in 819 1001; do
+    format "$stamp"
+    grep -qx 'RAM: ?/16.0 GiB (host)' "$work/header/header"
+    grep -qx 'Guests: ?/? running; master: ?' "$work/header/header"
+done
+for row in 'true true true true 2' 'true true true true bad false'; do
+    echo "$row" >"$work/status/.running"
+    format 1000
+    grep -qx 'Guests: ?/? running; master: fw1' "$work/header/header"
+done
+echo 'observability: Settings memory and cached guest counts passed'
+if command -v jq >/dev/null 2>&1; then
+    (
+        . "$repo/rootfs/usr/lib/convergent/sys/80-security"
+        noargs() { [ "$#" = 0 ]; }
+        cached() { echo unknown; }
+        usb_count() { echo 0; }
+        sudo() { :; }
+        od() { :; }
+        curl() { printf '%s\n' '{"status":"success","data":{"alerts":[]}}' "$rules"; }
+        for sample in fresh stale future missing malformed unhealthy; do
+            rules=$(jq -nc --arg sample "$sample" '
+                {status:"success",data:{groups:[{interval:30,rules:[{
+                    health:(if $sample == "unhealthy" then "err" else "ok" end),
+                    lastEvaluation:((now + (if $sample == "stale" then -151 elif $sample == "future" then 120 else 0 end)) | todateiso8601)
+                }]}]}} |
+                if $sample == "missing" then del(.data.groups[0].rules[0].lastEvaluation)
+                elif $sample == "malformed" then .data.groups[0].rules[0].lastEvaluation = "bad" else . end')
+            if [ "$sample" = fresh ]; then
+                [ "$(security_alert_list)" = 'No firing alerts.' ]
+                security_status >"$work/security"
+                grep -qx 'Alerts: 0 critical, 0 other firing' "$work/security"
+            else
+                if security_alert_list >"$work/security" 2>&1; then exit 1; fi
+                grep -q 'Alert evaluation failure' "$work/security"
+                security_status >"$work/security" 2>/dev/null
+                grep -qx 'Alerts: unknown' "$work/security"
+            fi
+        done
+    )
+    echo 'observability: owner alert freshness passed'
+else
+    echo 'observability: SKIP owner alert freshness (jq is unavailable)'
+fi
 sh "$repo/guests/wan/test-diag"
 sh "$repo/guests/fw/test-facts"
 # Alpine's sysctl init checks -f before skipping the vendor file.

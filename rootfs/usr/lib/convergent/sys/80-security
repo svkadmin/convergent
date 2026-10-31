@@ -24,7 +24,9 @@ security_status() {
 		select(.[0].data.alerts | type == "array") |
 		select(.[1].data.groups | type == "array") |
 		select([.[1].data.groups[].rules[]] | length > 0) |
-		select(all(.[1].data.groups[].rules[]; .health == "ok")) |
+		select(all(.[1].data.groups[]; .interval as $interval | all(.rules[];
+			.health == "ok" and ((.lastEvaluation | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $at |
+				$at <= now + 60 and now - $at < 2 * $interval + 90)))) |
 		[.[0].data.alerts[] | select(.state == "firing")] |
 		(map(select(.labels.severity == "critical")) | length) as $c |
 		"\($c) critical, \(length - $c) other firing"') || alerts=unknown
@@ -41,7 +43,9 @@ security_alert_list() {
 		select(.[0].data.alerts | type == "array") |
 		select(.[1].data.groups | type == "array") |
 		select([.[1].data.groups[].rules[]] | length > 0) |
-		select(all(.[1].data.groups[].rules[]; .health == "ok")) |
+		select(all(.[1].data.groups[]; .interval as $interval | all(.rules[];
+			.health == "ok" and ((.lastEvaluation | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $at |
+				$at <= now + 60 and now - $at < 2 * $interval + 90)))) |
 		[.[0].data.alerts[] | select(.state == "firing")] |
 		sort_by(if .labels.severity == "critical" then 0 elif .labels.severity == "warning" then 1 else 2 end, .labels.alertname) |
 		if length == 0 then "No firing alerts."

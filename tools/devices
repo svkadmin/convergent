@@ -83,7 +83,7 @@ wired() {
 	mkdir -p /run/convergent
 	exec 9>/run/convergent/guests.lock
 	flock -n 9 || die 'another guest operation is running'
-	instance=$(incus --force-local query '/1.0/instances/wan?project=default') || die 'cannot read wan'
+	instance=$(timeout -k 1 30 incus --force-local query '/1.0/instances/wan?project=default' 9>&-) || die 'cannot read wan'
 	printf '%s\n' "$instance" | jq -e '.type == "virtual-machine"' >/dev/null || die 'wan is not a VM'
 	role=$(printf '%s\n' "$instance" | jq -c '.devices["wired-uplink"] // null')
 	case ${1:-} in
