@@ -6,6 +6,10 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH LC_ALL=C
 umask 077
 die() { echo "browser: $*" >&2; exit 1; }
+send_url() {
+    printf '%s\n' "$#"
+    if [ "$#" = 1 ]; then printf '%s' "$1"; fi
+}
 
 ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
 # Name, status and type only: a full list waits on each VM for state agentless guests lack.
@@ -96,7 +100,13 @@ if [ "$(id -u)" != 0 ]; then
     # Pressed again: focus the open window instead of refusing.
     if [ $# = 1 ] && { [ "$1" = def ] || [ "$1" = int ]; } &&
         swaymsg -q "[sandbox_engine=\"^convergent\$\" sandbox_app_id=\"^$1\$\" sandbox_instance_id=\"^$1\$\"] focus" 2>/dev/null; then exit 0; fi
-    exec sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$@"
+    role=$1; shift
+    portal_mode=
+    if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=--portal; shift; fi
+    [ $# -le 1 ] || die 'expected at most one URL'
+    # Keep URLs out of sudo and root exec audit arguments.
+    send_url "$@" | sudo -- /usr/local/sbin/browser --session "$WAYLAND_DISPLAY" "$SWAYSOCK" "$role" ${portal_mode:+"$portal_mode"}
+    exit
 fi
 case ${SUDO_UID:-} in ''|0|*[!0-9]*) die 'run as the owner, not root' ;; esac
 if [ "${1:-}" = --session ]; then
@@ -105,13 +115,24 @@ if [ "${1:-}" = --session ]; then
 fi
 [ "${1:-}" = --privileged ] || die 'run as the owner in Sway'
 shift
-case $# in 3|4|5) ;; *) die 'invalid session arguments' ;; esac
+case $# in 3|4) ;; *) die 'invalid session arguments' ;; esac
 display=$1 ipc=$2 role=$3
 shift 3
 case $role in def|tmp|int|remmina) ;; *) die 'role must be def, tmp, int or remmina' ;; esac
 portal_mode=
 if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=1; shift; fi
-[ $# -le 1 ] || die 'expected at most one URL'
+[ $# = 0 ] || die 'unexpected session argument'
+# Bound direct sudo input too; preserve trailing newlines with a sentinel.
+url=$(head -c 131075 && printf '.') || die 'cannot read URL input'
+url=${url%.}
+[ "${#url}" -le 131074 ] || die 'URL input too long'
+case $url in
+    '0
+') ;;
+    '1
+'*) set -- "${url#??}" ;;
+    *) die 'invalid URL input' ;;
+esac
 if [ -n "$portal_mode" ] && [ $# = 0 ]; then
     gateway=$(/usr/local/sbin/portal gateway) || die 'cannot find the uplink gateway; give a portal URL'
     set -- "http://$gateway/"
@@ -235,7 +256,6 @@ if [ "$role" = int ]; then
         if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
             die 'stop int before unlocking an Incus session'
         fi
-        /usr/local/sbin/incus-ui --unlock 9>&- 8>&- 7>&- 6>&-
     fi
 fi
 
@@ -259,10 +279,6 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' \
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
-fi
-if [ -n "$portal_mode" ]; then
-    portal=1
-    /usr/local/sbin/portal begin || die 'cannot open portal mode'
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
@@ -356,7 +372,19 @@ until ic exec "$name" -- test -f "$ready"; do
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
 done
+# Refuse argv-only guests before opening services.
+if [ "$role" != remmina ]; then
+    # Bounded: a hostile guest can make the probe block (e.g. a FIFO launcher) while we hold the locks.
+    timeout -k 1 30 incus --force-local --project default exec "$name" -- \
+        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
+        die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+fi
+if [ -n "$portal_mode" ]; then
+    portal=1
+    /usr/local/sbin/portal begin || die 'cannot open portal mode'
+fi
 if [ -n "$incus_ui" ]; then
+    /usr/local/sbin/incus-ui --unlock 9>&- 8>&- 7>&- 6>&-
     /usr/local/sbin/incus-ui --import 9>&- 8>&- 7>&- 6>&-
 fi
 if [ "$role" = int ] && [ -z "$incus_ui" ]; then
@@ -372,8 +400,8 @@ done
 mkfifo -m 600 "$run/output"
 tail -c 65536 9>&- 8>&- 7>&- 6>&- <"$run/output" >"$run/browser.log" &
 capture=$!
-incus --force-local --project default exec "$name" --mode non-interactive --disable-stdin \
-    --user 1000 --group 1000 -- "$launcher" "$@" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
+send_url "$@" 9>&- 8>&- 7>&- 6>&- | incus --force-local --project default exec "$name" --mode non-interactive \
+    --user 1000 --group 1000 -- "$launcher" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
 browser=$!
 flock -u 9
 exec 9>&-

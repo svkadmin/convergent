@@ -5,12 +5,24 @@
 # Pulse: playback only; no recording or monitor capture.
 # Host waits for exit, stops/reaps instances, closes portal rules/Grafana.
 set -eu
+export LC_ALL=C
 umask 077
 die() { echo "browser-launch: $*" >&2; exit 1; }
 [ "$(id -u)" = 1000 ] || die "run as browser (UID 1000)"
 [ -f /run/browser-ready ] || die "role setup incomplete"
 role=$(cat /run/browser-role)
 case $role in def|tmp|int) ;; *) die "invalid role" ;; esac
+[ "$#" = 0 ] || die "URLs must arrive on stdin"
+url=$(head -c 131075 && printf '.') || die 'cannot read URL input'
+url=${url%.}
+[ "${#url}" -le 131074 ] || die 'URL input too long'
+case $url in
+    '0
+') ;;
+    '1
+'*) set -- "${url#??}" ;;
+    *) die 'invalid URL input' ;;
+esac
 case $role in
     int)
         [ "$#" -le 1 ] || die "int accepts one URL"
@@ -21,7 +33,7 @@ case $role in
         [ "$#" != 0 ] || set -- http://100.80.2.10:3000/ ;;
     *)
         for url do
-            case $url in http://*|https://*) ;; *) die "expected HTTP(S) URL" ;; esac
+            case $url in http://?*|https://?*) ;; *) die "expected HTTP(S) URL" ;; esac
         done ;;
 esac
 if [ -f /run/browser-portal ]; then

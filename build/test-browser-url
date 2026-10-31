@@ -1,0 +1,218 @@
+#!/bin/sh
+# URL bytes cross sudo, the root re-exec and Incus only on stdin.
+set -eu
+here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-browser-url: $*" >&2; exit 1; }
+check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
+sed -n '/^send_url() {/,/^}/p' "$repo/tools/browser" >"$work/send"
+sed -n '/^if \[ "$(id -u)" != 0 \]; then$/,/^fi$/p' "$repo/tools/browser" >"$work/owner"
+sed -n '/^if \[ "${1:-}" = --session \]; then$/,/^fi$/p' "$repo/tools/browser" |
+    sed 's/exec env /mock_env /' >"$work/session"
+sed -n '/^\[ "${1:-}" = --privileged \]/,/^uid=\$SUDO_UID$/p' "$repo/tools/browser" |
+    sed '$d; s|/usr/local/sbin/portal gateway|portal gateway|' >"$work/privileged"
+sed -n '/^send_url "\$@" .*| incus /,/^browser=\$!$/p' "$repo/tools/browser" >"$work/incus"
+sed -n '/^\[ "\$#" = 0 \]/,/^\[ -S \/mnt\/browser\/wayland-0 \]/p' \
+    "$repo/guests/browser/rootfs/usr/local/bin/browser-launch" |
+    sed '$d; s|\[ -f /run/browser-portal \]|[ "$portal_mode" = 1 ]|' >"$work/guest"
+for part in send owner session privileged incus guest; do check_script "$work/$part"; done
+. "$work/send"
+id() { echo 1000; }
+swaymsg() { return 1; }
+portal() { [ "$*" = gateway ]; printf '%s\n' http-gateway; }
+sudo() {
+    printf '%s\n' "$@" >"$work/sudo-args"
+    [ "$1 $2" = '-- /usr/local/sbin/browser' ] || return 1
+    shift 2
+    . "$work/session"
+}
+mock_env() {
+    printf '%s\n' "$@" >"$work/env-args"
+    [ "$#" -ge 9 ] || return 1
+    shift 5
+    . "$work/privileged"
+    send_url "$@" >"$work/host-input"
+    name=tmp-20 launcher=/usr/local/bin/browser-launch run=$work
+    . "$work/incus"
+    wait "$browser"
+}
+incus() {
+    printf '%s\n' "$@" >"$work/incus-args"
+    [ "$*" = '--force-local --project default exec tmp-20 --mode non-interactive --user 1000 --group 1000 -- /usr/local/bin/browser-launch' ] || return 1
+    cat >"$work/guest-input"
+    set --
+    . "$work/guest" <"$work/guest-input"
+    printf '%s\n' "$#" "$@" >"$work/chromium-input"
+}
+WAYLAND_DISPLAY=wayland-1 SWAYSOCK=/run/user/1000/sway.sock SUDO_UID=1000
+# Quotes, backslashes, whitespace and trailing newlines survive as data.
+token='https://example.org/login?token=SECRET&x="quoted"\path
+second line
+'
+for sample in token default grafana incus portal portal_default; do
+    (
+        case $sample in
+            token) set -- tmp "$token" ;;
+            default) set -- def ;;
+            grafana) set -- int ;;
+            incus) set -- int https://100.80.1.10:8443/ui/ ;;
+            portal) set -- tmp --portal "$token" ;;
+            portal_default) set -- tmp --portal ;;
+        esac
+        . "$work/owner"
+    )
+    for args in sudo env incus; do
+        if grep -q SECRET "$work/$args-args"; then die "URL leaked to $args"; fi
+    done
+    cmp "$work/host-input" "$work/guest-input"
+    case $sample in
+        token) printf '%s\n' 1 "$token" ;;
+        default) printf '0\n' ;;
+        grafana) printf '%s\n' 1 http://100.80.2.10:3000/ ;;
+        incus) printf '%s\n' 1 https://100.80.1.10:8443/ui/ ;;
+        portal) printf '%s\n' 2 --disable-gpu "$token" ;;
+        portal_default) printf '%s\n' 2 --disable-gpu http://http-gateway/ ;;
+    esac >"$work/expected"
+    cmp "$work/expected" "$work/chromium-input"
+done
+# Malformed input, disallowed int URLs and URLs supplied as root arguments fail closed.
+for sample in missing count unexpected empty scheme int args remmina oversized; do
+    printf '1\nhttps://example.org/?token=SECRET' >"$work/input"
+    case $sample in
+        missing) : >"$work/input" ;;
+        count) printf '2\n' >"$work/input" ;;
+        unexpected) printf '0\nhttps://example.org/' >"$work/input" ;;
+        empty) printf '1\n' >"$work/input" ;;
+        scheme) printf '1\nfile:///etc/passwd' >"$work/input" ;;
+        oversized) printf '1\nhttps://' >"$work/input"
+            head -c 131072 /dev/zero | tr '\000' x >>"$work/input" ;;
+    esac
+    rc=0
+    (
+        set -- --privileged wayland-1 /run/user/1000/sway.sock tmp
+        case $sample in
+            int) set -- --privileged wayland-1 /run/user/1000/sway.sock int ;;
+            args) set -- "$@" https://example.org/ ;;
+            remmina) set -- --privileged wayland-1 /run/user/1000/sway.sock remmina ;;
+        esac
+        . "$work/privileged" <"$work/input"
+    ) >"$work/error" 2>&1 || rc=$?
+    [ "$rc" != 0 ] || die "accepted $sample"
+    [ "$sample" != remmina ] || continue
+    rc=0
+    (
+        role=tmp portal_mode=
+        set --
+        case $sample in
+            int) role=int ;;
+            args) set -- https://example.org/ ;;
+        esac
+        . "$work/guest" <"$work/input"
+    ) >"$work/error" 2>&1 || rc=$?
+    [ "$rc" != 0 ] || die "guest accepted $sample"
+done
+(
+    set -- --privileged wayland-1 /run/user/1000/sway.sock remmina
+    printf '0\n' >"$work/input"
+    . "$work/privileged" <"$work/input"
+    [ "$#" = 0 ]
+)
+# An argv-only installed guest must fail before portal, unlock/import or Grafana.
+sed -n '/^# Refuse argv-only guests /,/^\[ -z "\$portal_mode" \]/p' "$repo/tools/browser" |
+    sed 's|/usr/local/sbin/incus-ui|service_call|g; s|/usr/local/sbin/portal begin|service_call begin|' >"$work/services"
+check_script "$work/services"
+guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
+sed '/^\[ "\$#" = 0 \]/,/^esac$/d' "$guest" >"$work/argv-only"
+check_script "$work/argv-only"
+for version in current old missing; do
+    for mode in def tmp portal grafana incus remmina; do
+        : >"$work/services-called"
+        rc=0
+        (
+            role=$mode name=$mode portal_mode= incus_ui=
+            case $mode in
+                portal) role=tmp portal_mode=1 ;;
+                grafana) role=int ;;
+                incus) role=int incus_ui=1 ;;
+            esac
+            launcher=$guest
+            case $version in old) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; esac
+            service_call() { printf '%s\n' "$*" >>"$work/services-called"; }
+            portal_on() { return 0; }
+            ic() {
+                if [ "$1" = exec ] && [ "$2" = "$name" ]; then
+                    [ "$3" = -- ] || return 1
+                    shift 3
+                    "$@"
+                else
+                    service_call "$@"
+                fi
+            }
+            # The bounded probe runs incus through timeout; forward both to the ic mock.
+            timeout() { shift 3; "$@"; }
+            incus() { [ "$1 $2 $3" = '--force-local --project default' ] && shift 3; ic "$@"; }
+            . "$work/services"
+        ) >"$work/error" 2>&1 || rc=$?
+        if [ "$version" = current ] || [ "$mode" = remmina ]; then
+            [ "$rc" = 0 ] || die "rejected $version $mode"
+            case $mode in
+                portal) grep -qx begin "$work/services-called" ;;
+                incus) printf '%s\n' --unlock --import >"$work/expected"
+                    cmp "$work/expected" "$work/services-called" ;;
+                grafana) grep -qx 'exec svc -- rc-service grafana start' "$work/services-called" ;;
+                *) [ ! -s "$work/services-called" ] ;;
+            esac
+        else
+            [ "$rc" != 0 ] && [ ! -s "$work/services-called" ] || die "opened $version $mode"
+            grep -q 'run sys update install' "$work/error"
+        fi
+    done
+done
+# A hostile guest can stall the probe: it must stay bounded.
+grep -q 'timeout -k 1 30 incus --force-local --project default exec "\$name" --' "$work/services" ||
+    die 'compatibility probe is unbounded'
+# Guard placement matters: no earlier service opening may bypass it.
+awk '/^# Refuse argv-only guests / {guard = NR}
+    /\/usr\/local\/sbin\/portal begin|\/usr\/local\/sbin\/incus-ui --unlock|rc-service grafana start/ {
+        if (!guard || NR <= guard) exit 1
+    }' "$repo/tools/browser"
+# A full pipe must not leave its writer holding session lock descriptors.
+(
+    sed 's/^send_url()/write_url()/' "$work/send" >"$work/write"
+    check_script "$work/write"
+    . "$work/write"
+    closed() {
+        for fd in 6 7 8 9; do
+            if (eval ": >&$fd") 2>/dev/null; then die "inherited lock $fd"; fi
+        done
+    }
+    send_url() {
+        closed
+        : >"$work/writer-ready"
+        write_url "$@"
+        : >"$work/writer-done"
+    }
+    incus() {
+        closed
+        attempts=0
+        until [ -f "$work/writer-ready" ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 50 ] || die 'writer did not start'
+            sleep .1
+        done
+        [ ! -e "$work/writer-done" ] || die 'writer did not block'
+        cat >"$work/blocked-input"
+    }
+    exec 6>"$work/lock6" 7>"$work/lock7" 8>"$work/lock8" 9>"$work/lock9"
+    name=tmp-20 launcher=/usr/local/bin/browser-launch run=$work
+    set -- "https://example.org/$(head -c 131000 /dev/zero | tr '\000' x)"
+    . "$work/incus"
+    wait "$browser"
+    [ -f "$work/writer-done" ]
+    write_url "$@" >"$work/expected"
+    cmp "$work/expected" "$work/blocked-input"
+)
+echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions and writer locks passed'

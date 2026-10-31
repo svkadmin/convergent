@@ -6,6 +6,7 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+sh "$here/test-browser-url"
 # The default portal URL uses the same uplink as portal_lan.
 sed -n '/^net_of() {/,/^}/p; /^upstream_net() {/,/^}/p' "$repo/tools/portal" >"$work/portal-net"
 [ -s "$work/portal-net" ]
@@ -62,7 +63,16 @@ for sample in default unavailable empty invalid extra local normal; do
         local) set -- --portal 'http://192.168.1.1/login?a=1&b=2' ;;
         normal) set -- ;;
         esac
-        . "$work/portal-args"
+        if [ "${1:-}" = --portal ]; then
+            shift
+            printf '%s\n' "$#" >"$work/url-input"
+            if [ "$#" != 0 ]; then printf '%s' "$1" >>"$work/url-input"; fi
+            [ "$#" -le 1 ] || exit 1
+            set -- --portal
+        else
+            printf '0\n' >"$work/url-input"
+        fi
+        . "$work/portal-args" <"$work/url-input"
         case $sample in
         default)
             [ "$#" = 1 ] && [ "$1" = 'http://192.168.1.1/' ] || exit 1
