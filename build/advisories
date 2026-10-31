@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import re
+import signal
 import subprocess
 import sys
 import tarfile
@@ -388,7 +389,7 @@ def incus_ui_latest(work):
         generated = incus_ui_generation(verified.stdout, int(dt.datetime.now(dt.timezone.utc).timestamp()))
         floor = work.parent / 'zabbly.generated'
         with (work.parent / 'zabbly.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             previous = floor.read_text().strip() if floor.exists() else '0'
             require(re.fullmatch(r'[0-9]+', previous) and generated >= int(previous), 'Zabbly Date regressed')
             pending = floor.with_suffix('.generated.new')
@@ -432,6 +433,19 @@ def incus_ui_selftest():
                 dt.datetime.fromtimestamp(now - 1, dt.timezone.utc)) + '\n' + release
             require(incus_ui_latest(work) == version, 'initial UI generation')
             verified.stdout = dated
+            with (work.parent / 'zabbly.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                signal.alarm(5)  # Bound a blocking-lock regression.
+                try:
+                    incus_ui_latest(work)
+                except BlockingIOError:
+                    pass
+                else:
+                    raise ValueError('contended UI lock was accepted')
+                finally:
+                    signal.alarm(0)
+                require((work.parent / 'zabbly.generated').read_text().strip() == str(now - 1),
+                        'contended UI lock changed floor')
             require(incus_ui_latest(work) == version, 'verified UI index')
             require('--import' in run.call_args_list[0].args[0] and '--decrypt' in run.call_args.args[0] and
                     run.call_args.kwargs['check'], 'UI signature verification is not required')
