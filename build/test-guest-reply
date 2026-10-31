@@ -119,6 +119,27 @@ for module in 10-wifi 14-firewall; do
 done
 # firewall_role reads the host registry: the firewall is asked only for ifconfig, and a hostile
 # reply never reaches awk's argument list.
+(
+    awk() {
+        # Refuse unexpected operands before a regression could open /dev/zero.
+        [ "$#" = 6 ] && [ "$5" = /etc/convergent/segments ] || {
+            echo unsafe >"$scratch/role-operand"; return 1;
+        }
+        command awk "$1" "$2" "$3" "$repo/rootfs/usr/lib/convergent/incus/carp.awk" \
+            "$scratch/registry/etc/convergent/segments" "$6"
+    }
+    firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; cat "$reply"; }
+    for sample in good device; do
+        : >"$scratch/role-calls"
+        case $sample in
+        good) cp "$here/fixtures/firewall-reply" "$reply" ;;
+        device) printf '/dev/zero\n' >"$reply" ;;
+        esac
+        if firewall_role fw1 MASTER; then [ "$sample" = good ]; else [ "$sample" = device ]; fi
+        [ "$(cat "$scratch/role-calls")" = ifconfig ]
+        [ ! -e "$scratch/role-operand" ]
+    done
+)
 : >"$scratch/role-calls"
 firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; printf '%s\n' "-eBEGIN{system(\"touch $scratch/pwned\")}"; }
 firewall_role fw1 MASTER >/dev/null 2>&1 || :

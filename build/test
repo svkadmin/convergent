@@ -1126,6 +1126,63 @@ stop_one() {
 eval "$(sed -n '/^result=0/,/^note /p' /usr/lib/convergent/incus/shutdown | sed '$d')"
 awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1}' "$work/drained"
 DRAIN
+# Failed WAN mounts must leave cleanup able to detach before rollback.
+sh -eu <<'WAN_MOUNT' || bad $LINENO
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+pool=$work/pool
+mkdir -p "$pool/virtual-machines/wan"
+touch "$pool/virtual-machines/wan/root.img"
+for function in wan_mount unmount_root; do
+    sed -n "/^$function() {/,/^}/p" /usr/local/sbin/guests >"$work/$function"
+    [ -s "$work/$function" ]; sh -n "$work/$function"; . "$work/$function"
+done
+die() { echo "$*" >&2; exit 1; }
+running() { return 1; }
+mkdir() { echo mkdir >>"$work/events"; [ "$fault" != mkdir ]; }
+losetup() {
+    if [ "$1" = -d ]; then
+        [ "$2" = /dev/loop-fixture ] || return 1
+        echo detach >>"$work/events"
+    else
+        echo losetup >>"$work/events"
+        [ "$fault" != losetup ] || return 1
+        echo /dev/loop-fixture
+    fi
+}
+retry() { echo partition >>"$work/events"; [ "$fault" != partition ]; }
+mount() { echo mount >>"$work/events"; [ "$fault" != mount ]; }
+umount() { echo umount >>"$work/events"; [ "$fault" != umount ]; }
+for fault in mkdir losetup partition mount none umount; do
+    mounted= loop= code=0
+    : >"$work/events"
+    wan_mount || code=$?
+    case $fault in
+    none|umount) [ "$code" = 0 ] && [ "$mounted" = 1 ] ;;
+    *) [ "$code" != 0 ] && [ -z "$mounted" ] ;;
+    esac
+    case $fault in
+    mkdir|losetup) [ -z "$loop" ] ;;
+    *) [ "$loop" = /dev/loop-fixture ] ;;
+    esac
+    if [ "$fault" = umount ]; then
+        if unmount_root; then exit 1; fi
+        [ "$mounted" = 1 ] && [ "$loop" = /dev/loop-fixture ]
+    else
+        unmount_root
+        [ -z "$mounted$loop" ]
+    fi
+    case $fault in
+    mkdir) expected='mkdir' ;;
+    losetup) expected='mkdir losetup' ;;
+    partition) expected='mkdir losetup partition detach' ;;
+    mount) expected='mkdir losetup partition mount detach' ;;
+    none) expected='mkdir losetup partition mount umount detach' ;;
+    umount) expected='mkdir losetup partition mount umount' ;;
+    esac
+    [ "$(tr '\n' ' ' <"$work/events")" = "$expected " ]
+done
+WAN_MOUNT
 # Guest recovery guards; debugfs diagnostics can accompany a successful exit.
 sh -eu <<'GUEST_GUARDS' || bad $LINENO
 . /usr/lib/convergent/guest-reply.sh

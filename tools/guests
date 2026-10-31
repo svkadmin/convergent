@@ -1034,10 +1034,10 @@ EOF
 wan_mount() {
     running wan && die 'refusing to mount a running wan disk'
     [ -f "$pool/virtual-machines/wan/root.img" ] || die 'unexpected Incus Btrfs VM disk layout'
-    mkdir -p "$work/root"
-    loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img")
-    retry test -b "${loop}p2"
-    mount -t ext4 -o nodev,nosuid,noexec "${loop}p2" "$work/root" 9>&- 8>&- 7>&- 6>&-
+    mkdir -p "$work/root" || return
+    loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img") || return
+    retry test -b "${loop}p2" || return
+    mount -t ext4 -o nodev,nosuid,noexec "${loop}p2" "$work/root" 9>&- 8>&- 7>&- 6>&- || return
     mounted=1
 }
 prune() {
