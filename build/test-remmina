@@ -95,13 +95,14 @@ EOF
     sed '/for volume in $(volumes "$guest"); do locked ic storage volume snapshot create /r '"$work/mutate" \
         /usr/local/sbin/guests >"$work/updater"
     sh -n "$work/updater"
-    if sh "$work/updater" update remmina "$work/broken" >"$work/update.log" 2>&1; then
+    if sh -x "$work/updater" update remmina "$work/broken" >"$work/update.log" 2>&1; then
         cat "$work/update.log"; echo 'CV-REMOTE corrupt image accepted'; exit 1
     fi
-    grep -q CV-REMOTE-MUTATED "$work/update.log" && grep -q 'restoring remmina/' "$work/update.log" ||
-        { tail -n 40 "$work/update.log"; exit 1; }
-    test "$(ic config get remmina volatile.base_image)" = "$before"
-    test ! -e /var/lib/convergent/guests/pending
+    # The rollback itself has failed ("cannot restore remmina/...; pending journal retained"): show its trace.
+    grep -q CV-REMOTE-MUTATED "$work/update.log" && grep -q 'restoring remmina/' "$work/update.log" &&
+        test "$(ic config get remmina volatile.base_image)" = "$before" && test ! -e /var/lib/convergent/guests/pending ||
+        { { grep -v '^++' "$work/update.log" | sed -n '/^+ rollback$/,/cannot restore/p' | tail -n 60 | grep . ||
+            tail -n 40 "$work/update.log"; } | sed 's/^/CV-REMOTE-LOG /'; exit 1; }
     ic start remmina
     timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
     ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share-new /share/.cv-share'
