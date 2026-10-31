@@ -498,8 +498,10 @@ Metrics retain 14 days without dedup. Recent scrapes cannot make old textfiles h
 means no HTTPS evidence, not failure; WAN probes measure transit, not Internet reachability.
 
 VictoriaLogs receives host/firewall/WAN TLS syslog plus host audit, with minute sender heartbeats.
-Svc local warnings use loopback UDP without replay. Retention is seven days or 4 GiB within a 6-GiB
-quota. Bounded host buffering covers svc outages. Authentication/audit/firewall logging remains
+Svc local warnings use loopback UDP without replay. Retention is seven days with a 2 GiB pruning
+threshold within a 6-GiB quota; size pruning preserves the newest two daily partitions. Metrics have
+no total-size retention cap. Host qgroup usage alerts above 85%; filesystem free-space guards do not
+see quotas. Bounded host buffering covers svc outages. Authentication/audit/firewall logging remains
 enabled; USBGuard LinuxAudit flows through audit syslog. Local messages also retain selected
 security/auth records below warning.
 

@@ -7,10 +7,11 @@ no_new_privs=true
 command=/usr/bin/victoria-logs
 command_user=vmlogs:vmlogs
 directory=/var/lib/victoria-logs
-# Apply a hard 6GiB volume quota in addition to retention limits.
+# Size pruning keeps the newest two days; statfs cannot see the 6GiB quota.
 command_args="-httpListenAddr=127.0.0.1:9428
     -storageDataPath=/var/lib/victoria-logs -retentionPeriod=7d
-    -retention.maxDiskSpaceUsageBytes=4GiB
+    -retention.maxDiskSpaceUsageBytes=2GiB
+    -storage.minFreeDiskSpaceBytes=1GiB
     -memory.allowedBytes=24MiB -search.maxConcurrentRequests=1
     -search.maxQueryDuration=10s -search.maxQueryTimeRange=7d
     -syslog.listenAddr.tcp=100.80.2.10:6514 -syslog.tls -syslog.tlsMinVersion=TLS13

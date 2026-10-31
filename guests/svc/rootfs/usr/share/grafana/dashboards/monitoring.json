@@ -1243,7 +1243,7 @@
         "w": 24,
         "h": 8
       },
-      "description": "svc local syslog is forwarded over loopback UDP to VictoriaLogs and retained for 7d / 4 GiB threshold. RAM ring remains the fallback while VL is down; UDP is not durable.",
+      "description": "svc local syslog is forwarded over loopback UDP to VictoriaLogs and retained for 7d / 2 GiB threshold. RAM ring remains the fallback while VL is down; UDP is not durable.",
       "datasource": {
         "type": "victoriametrics-logs-datasource",
         "uid": "logs"
@@ -1757,7 +1757,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "Metrics: 14d, no dedup. Logs: 7d / 4 GiB threshold, 6 GiB quota. Quota usage is on Host. No remote paging or durable svc log queue; sender heartbeats detect loss of delivery, not queue depth. Measure idle/admin-browser memory and GC on the rig before changing budgets."
+        "content": "Metrics: 7d, no dedup. Logs: 7d / 2 GiB threshold, 6 GiB quota. Quota usage is on Host. No remote paging or durable svc log queue; sender heartbeats detect loss of delivery, not queue depth. Measure idle/admin-browser memory and GC on the rig before changing budgets."
       }
     }
   ],

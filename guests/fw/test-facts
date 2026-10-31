@@ -5,13 +5,25 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
-sed -n '/if capture pflogd /,/^[[:space:]]*fi$/p' \
+sed -n '/if capture pflogd /,/^	fi$/p' \
 	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/check"
+[ -s "$work/check" ]
 sh -n "$work/check"
+grep -qxF '	:filesize-cur=1M:\' "$here/site/etc/login.conf.d/pflogd"
+grep -qxF '	:filesize-max=1M:\' "$here/site/etc/login.conf.d/pflogd"
+grep -qxF '	:coredumpsize=0:\' "$here/site/etc/login.conf.d/pflogd"
 capture() { data=$sample; }
-# The archive repair: exactly a suspended pflogd gets its archive moved aside and a HUP.
-mv() { echo "mv $*" >>"$work/repair"; }
-pkill() { echo "pkill $*" >>"$work/repair"; }
+# Stop before rotating, then start only if rotation succeeded.
+size=24
+fail=
+stat() { echo "$size"; }
+rcctl() { echo "rcctl $*" >>"$work/repair"; [ "$fail" != "$1" ]; }
+rm() {
+	if [ "$*" = '-f /var/log/pflog.bad' ]; then
+		echo "rm $*" >>"$work/repair"; [ "$fail" != discard ]
+	else command rm "$@"; fi
+}
+newsyslog() { echo "newsyslog $*" >>"$work/repair"; [ "$fail" != rotate ]; }
 logger() { :; }
 check() {
 	ok=1
@@ -20,9 +32,10 @@ check() {
 	[ "$ok" = "$1" ]
 	grep -qx "convergent_pflogd_up $1" "$work/out"
 	grep -qx "convergent_pflogd_suspended $2" "$work/out"
-	if [ "$2" = 1 ]; then
-		grep -qx 'mv /var/log/pflog /var/log/pflog.bad' "$work/repair"
-		grep -q '^pkill -HUP .* -x pflogd$' "$work/repair"
+	if [ "$1" = 0 ] || [ "$size" -ge 1048576 ]; then
+		printf '%s\n' 'rcctl stop pflogd' 'rm -f /var/log/pflog.bad' \
+			'newsyslog -F /var/log/pflog' 'rcctl start pflogd' >"$work/expected"
+		cmp "$work/expected" "$work/repair"
 	else
 		[ ! -s "$work/repair" ]
 	fi
@@ -30,6 +43,22 @@ check() {
 sample='pflogd: [priv] (pflogd)
  pflogd: [running] -s 160 -i pflog0 -f /var/log/pflog (pflogd)'
 check 1 0
+size=1048576
+check 1 0
+for fail in stop discard rotate start; do
+	ok=1
+	: >"$work/repair"
+	. "$work/check" >"$work/out"
+	[ "$ok" = 0 ]
+	case $fail in
+	stop) [ "$(wc -l <"$work/repair")" = 1 ] ;;
+	discard) [ "$(wc -l <"$work/repair")" = 2 ] ;;
+	rotate) [ "$(wc -l <"$work/repair")" = 3 ] ;;
+	start) [ "$(wc -l <"$work/repair")" = 4 ] ;;
+	esac
+done
+fail=
+size=24
 sample='pflogd: [priv] (pflogd)
 pflogd: [suspended] -s 160 -i pflog0 -f /var/log/pflog (pflogd)'
 check 0 1
@@ -78,7 +107,7 @@ unbound-control() {
 	[ "$1" != status ] || return 0
 	printf 'total.num.queries=1\ntotal.num.cachehits=0\nnum.answer.rcode.SERVFAIL=0\nnum.answer.rcode.NXDOMAIN=0\ntotal.recursion.time.avg=0.01\n'
 }
-stat() { echo 2000000000; }
+stat() { if [ "$2" = %z ]; then echo 24; else echo 2000000000; fi; }
 netstat() { printf 'Name Mtu Network Address Ibytes Obytes\nvio0 1500 <Link> aa:bb 123 456\n'; }
 ps() { echo 'pflogd: [running] -s 160'; }
 SH

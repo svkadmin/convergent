@@ -7,12 +7,13 @@ no_new_privs=true
 command=/usr/bin/victoria-metrics
 command_user=vmmetrics:vmmetrics
 directory=/var/lib/victoria-metrics
+# statfs only sees host free space, not the 2GiB quota: 14 days fit it; the qgroup alert warns before it fills.
 command_args="-httpListenAddr=127.0.0.1:8428
     -storageDataPath=/var/lib/victoria-metrics -retentionPeriod=14d
     -memory.allowedBytes=32MiB -search.maxMemoryPerQuery=8MiB
     -search.maxConcurrentRequests=2 -search.maxQueryDuration=10s
     -storage.maxHourlySeries=25000 -storage.maxDailySeries=50000
-    -storage.minFreeDiskSpaceBytes=256MiB
+    -storage.minFreeDiskSpaceBytes=512MiB
     -promscrape.config=/etc/victoria-metrics/scrape.yaml
     -promscrape.maxScrapeSize=4MiB"
 export GOMEMLIMIT=80MiB GOMAXPROCS=1
