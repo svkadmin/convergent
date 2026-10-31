@@ -145,7 +145,7 @@ for role in remmina def; do
     if [ "$role" = remmina ]; then
         [ "$wayland_socket" = "$run/cage/wayland-0" ]
         [ "$outer_socket" = "$run/state/wayland-host" ]
-        grep -Fxq "env XDG_RUNTIME_DIR=$run/cage WAYLAND_DISPLAY=$outer_socket WLR_BACKENDS=wayland WLR_RENDERER=pixman cage" "$run/providers"
+        grep -Fxq "env XDG_RUNTIME_DIR=$run/cage WAYLAND_DISPLAY=$outer_socket WLR_BACKENDS=wayland WLR_RENDERER=pixman prlimit --as=2147483648:2147483648 cage" "$run/providers"
         [ "$(wc -l <"$run/waits")" = 2 ]
         printf 'socket %s\nsocket %s\nchown root %s/cage\nchmod 0710 %s/cage\n' \
             "$outer_socket" "$wayland_socket" "$run" "$run" >"$run/expected"

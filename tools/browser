@@ -285,9 +285,10 @@ if [ "$role" = remmina ]; then
     # Keep a bounded tail, draining even after the retention cap.
     tail -c 1048576 9>&- 8>&- 7>&- 6>&- <"$run/cage-output" >"$run/cage.log" &
     cage_capture=$!
+    # 2 GiB conservative address-space ceiling; session peaks have not been measured.
     background=yes owner env XDG_RUNTIME_DIR="$run/cage" WAYLAND_DISPLAY="$outer_socket" \
         WLR_BACKENDS=wayland WLR_RENDERER=pixman \
-        cage >"$run/cage-output" 2>&1 &
+        prlimit --as=2147483648:2147483648 cage >"$run/cage-output" 2>&1 &
     cage=$!; children="$children $cage $cage_capture"
     wait_socket "$wayland_socket" "$cage" "$run/cage.log"
     chown root "$run/cage"
