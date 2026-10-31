@@ -85,7 +85,7 @@ seed_start() { :; }
 fw_release() { :; }
 # A frozen target: Incus cannot force it off, so rollback ends its QEMU by the verified pid file before rebuilding.
 eval "$(sed -n '/^force_stop() {/,/^}/p' "$here/../tools/guests")"
-eval "$(sed -e "s|/run/incus|$work/incus|g" -e "s|/proc/|$work/proc/|g" "$lib/firewall-heal")"
+eval "$(sed -e "s|/usr/lib/convergent/guest-reply.sh|$here/../rootfs/usr/lib/convergent/guest-reply.sh|" -e "s|/run/incus|$work/incus|g" -e "s|/proc/|$work/proc/|g" "$lib/firewall-heal")"
 mkdir -p "$work/incus/fw1" "$work/proc/4242"
 echo 4242 >"$work/incus/fw1/qemu.pid"
 printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name fw1 -uuid x -pidfile "$work/incus/fw1/qemu.pid" >"$work/proc/4242/cmdline"

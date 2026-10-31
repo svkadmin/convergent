@@ -127,7 +127,7 @@ for cert in server incus-server incus-client; do
         mkdir -p "$state/init" "$scratch/release" "$scratch/incus"
         printf '%s\n' "$scratch/release" >"$state/init/release"
         touch "$state/init/preseed"
-        scratch=$scratch sh -eu "$scratch/init-recover" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'saved server recovery'; }
+        (export scratch; sh -eu "$scratch/init-recover") >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'saved server recovery'; }
         [ -f "$state/init/server" ]
         cmp "$tls/incus-server.crt" "$scratch/incus/server.crt"
     else

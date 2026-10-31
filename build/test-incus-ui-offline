@@ -11,6 +11,8 @@ sed -n '/^net_of() {/,/^}/p; /^upstream_net() {/,/^}/p' "$repo/tools/portal" >"$
 [ -s "$work/portal-net" ]
 sh -n "$work/portal-net"
 . "$work/portal-net"
+# The fixture answers directly; production bounds the reply with guest_reply.
+guest_reply() { shift; "$@"; }
 net=100.80
 rsh() {
     [ "$*" = 'wan diag' ] || return 1
