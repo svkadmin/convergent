@@ -79,7 +79,7 @@ $restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _fa
 	fi
 	[ "$_failed" = 0 ] || return 1
 	if [ -e "$state/pending" ] && [ -d "$state/cache.before" ]; then
-		for file in list.rpz list.refreshed; do
+		for file in list.rpz list.refreshed list.source; do
 			if [ -f "$state/cache.before/$file" ]; then
 				cp "$state/cache.before/$file" "$state/$file.new" && mv "$state/$file.new" "$state/$file" || return 1
 			else rm -f "$state/$file" || return 1; fi
@@ -151,6 +151,7 @@ validate() {
 		$1 == "$TTL" && NF == 2 && $2 ~ /^[0-9]+$/ { ttl++; next }
 		$0 ~ /^@/ && $1 == "@" && $2 == "SOA" && NF == 9 && $3 == "localhost." && $4 == "root.localhost." {
 			for (i=5; i<=9; i++) if ($i !~ /^[0-9]+$/) exit 1
+			if ($5 > 4294967295) exit 1
 			soa++; next
 		}
 		$0 ~ /^[ \t]/ && $1 == "NS" && NF == 2 && $2 == "localhost." { ns++; next }
@@ -163,6 +164,12 @@ validate() {
 		{ exit 1 }
 		END { if (ttl != 1 || soa != 1 || ns != 1 || n < '"$BLOCKLIST_MIN_DOMAINS"') exit 1 }
 	' "$work/list.raw" || die "invalid or undersized RPZ"
+}
+rpz_serial() {
+	awk '$1 == "@" && $2 == "SOA" {
+		if ($5 !~ /^[0-9]+$/ || $5 > 4294967295) exit 1
+		serial=$5; n++
+	} END { if (n != 1) exit 1; printf "%.0f\n", serial }' "$1"
 }
 domain='
 function isdom(s, n, i, a) {
@@ -277,7 +284,7 @@ if [ "$mode" = local ]; then cp "$state/list.rpz" "$work/list.raw"; else downloa
 validate
 # Keep source age beside the cache, outside the payload size cap and retry stamp.
 source_refreshed=
-if [ "$mode" = local ]; then
+if [ "$mode" = local ] || [ -f "$state/list.rpz" ]; then
 	[ ! -f "$state/list.refreshed" ] || source_refreshed=$(cat "$state/list.refreshed")
 	# Recovery removes an uncertain legacy stamp.
 	if [ ! -e "$state/list.refreshed" ]; then
@@ -290,8 +297,19 @@ if [ "$mode" = local ]; then
 		esac
 	fi
 	case $source_refreshed in *[!0-9]*) die "invalid source timestamp" ;; esac
-else
-	source_refreshed=$(date +%s)
+fi
+if [ "$mode" != local ]; then
+	serial=$(rpz_serial "$work/list.raw") || die "invalid source serial"
+	if [ -f "$state/list.rpz" ] && { [ ! -f "$state/list.source" ] ||
+		[ "$(cat "$state/list.source")" = "$BLOCKLIST_URL" ]; }; then
+		previous=$(rpz_serial "$state/list.rpz") || die "invalid cached serial"
+		# RFC 1982: half the serial space is ambiguous; wrap can advance.
+		delta=$(( (serial - previous + 4294967296) % 4294967296 ))
+		[ "$delta" -lt 2147483648 ] || die "blocklist serial regressed"
+		[ "$delta" = 0 ] || source_refreshed=$(date +%s)
+	else
+		source_refreshed=$(date +%s)
+	fi
 fi
 : >"$work/allow.in"
 [ ! -f "$state/allow" ] || cp "$state/allow" "$work/allow.in"
@@ -334,7 +352,7 @@ for fw in $fws; do
 done
 # Journal both firewalls before activation.
 mkdir "$state/cache.before"
-for file in list.rpz list.refreshed; do
+for file in list.rpz list.refreshed list.source; do
 	[ ! -f "$state/$file" ] || cp "$state/$file" "$state/cache.before/$file"
 done
 sync
@@ -362,6 +380,10 @@ cp "$work/list.raw" "$state/list.rpz.new"
 mv "$state/list.rpz.new" "$state/list.rpz"
 printf '%s\n' "$source_refreshed" >"$state/list.refreshed.new"
 mv "$state/list.refreshed.new" "$state/list.refreshed"
+if [ "$mode" != local ]; then
+	printf '%s\n' "$BLOCKLIST_URL" >"$state/list.source.new"
+	mv "$state/list.source.new" "$state/list.source"
+fi
 [ "$mode" = local ] || date +%s >"$state/stamp"
 sync
 date -u '+%Y-%m-%dT%H:%M:%SZ' >"$state/last-push.new"

@@ -73,6 +73,21 @@ status 1001 "$work/key"
 release_metrics 1
 grep -q 'cv_release_status_generated_seconds{role="installed",release="42"} 1001' "$work/metrics/release.prom"
 cmp "$work/cache/42.json" "$work/source/42/advisories.json"
+# Legacy cached generations survive a latest-pointer rollback and pruning.
+rm "$work/cache/43.generated"
+latest=42
+release_metrics 1
+[ ! -e "$work/cache/43.json" ]
+[ "$(cat "$work/cache/43.generated")" = 1001 ]
+latest=43
+status 1000 "$work/key"
+release_metrics 1
+grep -q 'cv_release_status_verified{role="latest",release="43"} 0$' "$work/metrics/release.prom"
+[ ! -e "$work/cache/43.json" ]
+status 1002 "$work/key"
+release_metrics 1
+grep -q 'cv_release_status_verified{role="latest",release="43"} 1$' "$work/metrics/release.prom"
+[ "$(cat "$work/cache/43.generated")" = 1002 ]
 release_metrics 0
 grep -qx 'cv_release_check_success 0' "$work/metrics/release.prom"
 if grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"; then exit 1; fi

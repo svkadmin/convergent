@@ -207,14 +207,15 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     state=$dns/state
     rdir=$dns/remote
     mkdir "$state" "$rdir"
-    sed -n '/^# Keep source age/,/^fi$/p' "$repo/tools/dns-push" >"$dns/stamp-source"
+    sed -n '/^# Keep source age/,/^: >"\$work\/allow.in"/ { /^: >/d; p; }' "$repo/tools/dns-push" >"$dns/stamp-source"
     sed -n '/^# Journal both firewalls/,/^for fw / { /^for fw /d; p; }' "$repo/tools/dns-push" >"$dns/journal"
     sed -n '/^cp "\$work\/list.raw"/,/^sync$/p' "$repo/tools/dns-push" >"$dns/cache"
     sed -n '/^restore=/,/^rollback() / { /^rollback() /d; p; }' "$repo/tools/dns-push" >"$dns/restore"
     sed -n '/^rollback() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/rollback"
     sed -n '/^validate() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/validate"
+    sed -n '/^rpz_serial() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/serial"
     sed -n "/^domain='/,/^}'$/p" "$repo/tools/dns-push" >"$dns/domain"
-    for part in render stamp-source journal cache restore rollback validate domain; do
+    for part in render stamp-source journal cache restore rollback validate serial domain; do
         [ -s "$dns/$part" ]
         sh -n "$dns/$part"
     done
@@ -222,6 +223,7 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     . "$dns/rollback"
     . "$dns/domain"
     . "$dns/validate"
+    . "$dns/serial"
     die() { echo "test-networks: $*" >&2; exit 1; }
     date() { echo 2000000; }
     sync() { :; }
@@ -231,6 +233,7 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     selftest=probe.test selftest_addr=127.0.0.2
     # A near-cap full push must leave a cache that passes local validation.
     BLOCKLIST_MAX_BYTES=16777216 BLOCKLIST_MIN_DOMAINS=1
+    BLOCKLIST_URL=https://fixture.invalid/list
     awk -v cap="$BLOCKLIST_MAX_BYTES" 'BEGIN {
         base="$TTL 60\n@ SOA localhost. root.localhost. 1 2 3 4 5\n NS localhost.\nother.net CNAME .\n"
         printf "%s", base
@@ -262,14 +265,14 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
         grep -q 'RPZ size outside limits' "$dns/error"
     done
     # Strip untrusted source metadata; exactly this successful download sets age.
-    printf 'other.net CNAME .\n; convergent-source-refreshed-seconds 1\n ; convergent-source-refreshed-seconds 2\n' >"$dns/list.raw"
+    printf '@ SOA localhost. root.localhost. 2 2 3 4 5\nother.net CNAME .\n; convergent-source-refreshed-seconds 1\n ; convergent-source-refreshed-seconds 2\n' >"$dns/list.raw"
     mode=full
     . "$dns/stamp-source"
     . "$dns/render"
     [ "$(grep -c convergent-source-refreshed-seconds "$dns/blocklist.rpz")" = 1 ]
     grep -qx '; convergent-source-refreshed-seconds 2000000' "$dns/blocklist.rpz"
     # A local push must retain old age even when the retry stamp is newer.
-    printf 'old.net CNAME .\n' >"$state/list.rpz"
+    printf '@ SOA localhost. root.localhost. 1 2 3 4 5\nold.net CNAME .\n' >"$state/list.rpz"
     echo 1000 >"$state/list.refreshed"
     echo 1999999 >"$state/stamp"
     cp "$state/list.rpz" "$dns/list.raw"
@@ -282,13 +285,15 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     : >"$rdir/local-owner.conf.prev"
     . "$dns/journal"
     mode=full
-    echo 'new.net CNAME .' >"$dns/list.raw"
+    BLOCKLIST_URL=https://other.invalid/list
+    printf '@ SOA localhost. root.localhost. 0 2 3 4 5\nnew.net CNAME .\n' >"$dns/list.raw"
     . "$dns/stamp-source"
     . "$dns/render"
     cp "$dns/blocklist.rpz" "$rdir/blocklist.rpz"
     . "$dns/cache"
     grep -qx 'new.net CNAME .' "$state/list.rpz"
     [ "$(cat "$state/list.refreshed")" = 2000000 ]
+    [ "$(cat "$state/list.source")" = "$BLOCKLIST_URL" ]
     remote_ok=0
     if rollback; then exit 1; fi
     [ -f "$state/pending" ] && [ -d "$state/cache.before" ]
@@ -297,6 +302,8 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     [ ! -e "$state/stamp" ] && [ ! -e "$state/pending" ]
     grep -qx 'old.net CNAME .' "$state/list.rpz"
     [ "$(cat "$state/list.refreshed")" = 1000 ]
+    [ "$(cat "$state/list.source")" = https://fixture.invalid/list ]
+    [ "$(rpz_serial "$state/list.rpz")" = 1 ]
     grep -qx '; convergent-source-refreshed-seconds 1000' "$rdir/blocklist.rpz"
     # A committed update retains the new cache; a failed first push leaves none.
     . "$dns/journal"
@@ -305,12 +312,14 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     rollback
     grep -qx 'new.net CNAME .' "$state/list.rpz"
     [ "$(cat "$state/list.refreshed")" = 2000000 ]
+    [ "$(cat "$state/list.source")" = "$BLOCKLIST_URL" ]
     [ ! -e "$state/cache.before" ]
-    rm "$state/list.rpz" "$state/list.refreshed"
+    rm "$state/list.rpz" "$state/list.refreshed" "$state/list.source"
     . "$dns/journal"
     . "$dns/cache"
     rollback
     [ ! -e "$state/list.rpz" ] && [ ! -e "$state/list.refreshed" ]
+    [ ! -e "$state/list.source" ]
     # A legacy cache without source metadata stays unknown on local publication.
     echo 'other.net CNAME .' >"$dns/list.raw"
     mode=local
@@ -361,5 +370,35 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     echo invalid >"$state/list.refreshed"
     if (. "$dns/stamp-source") >"$dns/error" 2>&1; then die 'accepted invalid source timestamp'; fi
     grep -q 'invalid source timestamp' "$dns/error"
+    # Replays retain age; serial wrap advances, but backward/ambiguous serials fail.
+    rm "$state/list.refreshed"
+    mode=full
+    rpz() { printf '$TTL 60\n@ SOA localhost. root.localhost. %s 2 3 4 5\n NS localhost.\nother.net CNAME .\n' "$1"; }
+    rpz 4294967295 >"$state/list.rpz"
+    echo 1000 >"$state/list.refreshed"
+    for serial in 4294967295 0 1; do
+        rpz "$serial" >"$dns/list.raw"
+        validate
+        . "$dns/stamp-source"
+        if [ "$serial" = 4294967295 ]; then
+            [ "$source_refreshed" = 1000 ]
+        else
+            [ "$source_refreshed" = 2000000 ]
+        fi
+    done
+    for serial in 4294967294 2147483647; do
+        rpz "$serial" >"$dns/list.raw"
+        validate
+        if (. "$dns/stamp-source") >"$dns/error" 2>&1; then die 'accepted regressing serial'; fi
+        grep -q 'blocklist serial regressed' "$dns/error"
+        [ "$(rpz_serial "$state/list.rpz")" = 4294967295 ]
+        [ "$(cat "$state/list.refreshed")" = 1000 ]
+    done
+    rpz 4294967296 >"$dns/list.raw"
+    if (validate) >"$dns/error" 2>&1; then die 'accepted oversized serial'; fi
+    rpz 4294967295 >"$dns/list.raw"
+    : >"$state/list.refreshed"
+    . "$dns/stamp-source"
+    [ -z "$source_refreshed" ]
 )
 echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
