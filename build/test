@@ -3578,6 +3578,7 @@ CHECK
 t getent passwd greetd
 t sh -c '[ "$(stat -c "%U:%G %a" /var/log/btmp)" = "root:utmp 600" ]'
 t sh -c '[ "$(sysctl -n kernel.panic)" = 10 ] && [ "$(sysctl -n kernel.panic_on_oops)" = 1 ]'
+t [ ! -e /proc/sys/net/mptcp ]
 t grep -q ' 2 restart_on_error restart_on_corruption"' /proc/cmdline
 t sh -c 'dmsetup table vroot | grep -Eq " verity .* 2 (restart_on_error restart_on_corruption|restart_on_corruption restart_on_error)"'
 t sh -eu <<'CHECK'

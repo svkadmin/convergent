@@ -43,7 +43,7 @@ cannot combine VLANs with IP filtering. Routing policy is in section 4.
 | Area | Implementation and reason |
 |---|---|
 | Base | Gentoo hardened profile, OpenRC, glibc; systemd-utils supplies boot tools |
-| Kernel | Gentoo kernel plus `build/kernel.config`: confidentiality lockdown, enforced module signatures with an ephemeral build key, built-in verity/EROFS/storage/KVM; no kexec, suspend, hibernation, host Wi-Fi, FireWire, X.25, TIPC, RDS or CAN |
+| Kernel | Gentoo kernel plus `build/kernel.config`: confidentiality lockdown, enforced module signatures with an ephemeral build key, built-in verity/EROFS/storage/KVM; no kexec, suspend, hibernation, host Wi-Fi, FireWire, X.25, SCTP, MPTCP, TIPC, RDS or CAN |
 | Image trimming | Unused modules/filesystems removed or blocked; setuid/setgid retained only for sudo, su, passwd, unix_chkpwd and the D-Bus helper; all file capabilities removed |
 | Command line | `init_on_alloc`, `slab_nomerge`, page/stack randomization, no vsyscall/debugfs; fbcon=nodefer applies the console font at boot |
 | Kernel interfaces | Restricted ptrace, perf, BPF, pointers and dmesg; protected links/FIFOs; no TIOCSTI, automatic line disciplines, redirects, source routing or core dumps; martian-packet logging; strict reverse-path filtering |
