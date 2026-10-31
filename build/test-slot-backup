@@ -9,6 +9,104 @@ trap 'exit 1' HUP INT TERM
 die() { echo "test-slot-backup: $*" >&2; exit 1; }
 guid=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
 export work guid
+# Grafana's restored database must keep both secrets, including future seeds.
+sed -n '/^# Keep Grafana/,/^done$/p' "$repo/tools/backup" |
+    sed "s|/var/lib/convergent/guests/tls/|$work/tls/|" >"$work/backup-secrets"
+[ -s "$work/backup-secrets" ] || die 'missing Grafana backup'
+sed -n '/^# Restore Grafana secrets\.$/,/^# Grafana secrets restored\.$/p' "$repo/RECOVERY.md" |
+    sed -e "s|state=/var/lib/convergent/guests|state=$work/host|" \
+        -e "s|/etc/grafana/|$work/svc/|g" >"$work/restore-secrets"
+[ -s "$work/restore-secrets" ] || die 'missing Grafana restore recipe'
+sh -n "$work/backup-secrets"
+sh -n "$work/restore-secrets"
+(
+    umask 077
+    mkdir -p "$work/tls" "$work/svc" "$work/host/tls" "$work/host/seeds"
+    for secret in admin-password secret-key; do
+        printf 'original-%s\n' "$secret" >"$work/tls/$secret"
+    done
+    install() { [ "$1:$2" = -m:600 ] || exit 1; command install "$@"; }
+    for fault in none missing empty; do
+        payload=$work/payload-$fault
+        mkdir "$payload"
+        case $fault in
+        missing) mv "$work/tls/secret-key" "$work/saved-key" ;;
+        empty) : >"$work/tls/secret-key" ;;
+        esac
+        if [ "$fault" = none ]; then
+            (set -e; . "$work/backup-secrets")
+            for secret in admin-password secret-key; do
+                cmp "$work/tls/$secret" "$payload/grafana-secrets/$secret"
+            done
+        else
+            if payload=$payload sh -eu "$work/backup-secrets" 2>/dev/null; then die "accepted $fault secret"; fi
+        fi
+    done
+    mv "$work/saved-key" "$work/tls/secret-key"
+    backup=$work/payload-none
+    export backup
+    cat >"$work/restore-driver" <<'RESTORE'
+    install() { [ "$1:$2" = -m:600 ] || exit 1; command install "$@"; }
+    ic() {
+        case $* in
+        'config device show svc') if [ "$fault" = attached ]; then echo 'seed:'; fi ;;
+        'start svc'|'exec svc -- rc-service grafana stop') echo "$*" >>"$work/restore-events" ;;
+        'exec svc -- sh -eu -c '*)
+            shift 6
+            printf '%s\n' "$1" >"$work/install-secret"
+            sh -n "$work/install-secret"
+            (
+                chown() { [ "$1" = root:grafana ] || exit 1; }
+                chmod() { [ "$1" = 640 ] || exit 1; command chmod "$@"; }
+                set -- "$3"
+                . "$work/install-secret"
+            ) ;;
+        *) exit 1 ;;
+        esac
+    }
+    losetup() {
+        [ "$*" = "-j $work/host/seeds/svc.img" ] || exit 1
+        if [ "$fault" = loop ]; then echo /dev/loop0; fi
+    }
+    sync() { :; }
+    . "$work/restore-secrets"
+RESTORE
+    sh -n "$work/restore-driver"
+    for fault in none uncached attached loop missing; do
+        for secret in admin-password secret-key; do
+            echo fresh >"$work/host/tls/$secret"
+            echo fresh >"$work/svc/$secret"
+        done
+        touch "$work/host/seeds/svc.img" "$work/host/seeds/svc.sha256" "$work/host/seeds/svc.id"
+        [ "$fault" != uncached ] || rm "$work/host/seeds/svc.img" "$work/host/seeds/svc.sha256"
+        : >"$work/restore-events"
+        [ "$fault" != missing ] || mv "$backup/grafana-secrets/secret-key" "$work/saved-key"
+        if fault=$fault sh -eu "$work/restore-driver" >"$work/restore-output" 2>&1; then result=0
+        else result=$?; fi
+        if [ "$fault" = none ] || [ "$fault" = uncached ]; then
+            [ "$result" = 0 ] || { cat "$work/restore-output"; exit 1; }
+            for secret in admin-password secret-key; do
+                cmp "$backup/grafana-secrets/$secret" "$work/host/tls/$secret"
+                cmp "$backup/grafana-secrets/$secret" "$work/svc/$secret"
+            done
+            [ ! -e "$work/host/seeds/svc.img" ]
+            [ ! -e "$work/host/seeds/svc.sha256" ]
+            [ -f "$work/host/seeds/svc.id" ]
+            printf 'start svc\nexec svc -- rc-service grafana stop\n' >"$work/expected"
+            cmp "$work/expected" "$work/restore-events"
+        else
+            [ "$result" != 0 ] || die "accepted restore fault: $fault"
+            [ ! -s "$work/restore-events" ]
+            [ -f "$work/host/seeds/svc.img" ]
+            for secret in admin-password secret-key; do
+                grep -qx fresh "$work/host/tls/$secret"
+                grep -qx fresh "$work/svc/$secret"
+            done
+        fi
+        [ "$fault" != missing ] || mv "$work/saved-key" "$backup/grafana-secrets/secret-key"
+    done
+)
+echo 'test-slot-backup: Grafana backup and restore secrets passed'
 sed -n '/^cleanup() {/,/^}/p; /^rescue_next() {/,/^}/p' "$repo/tools/slot" |
     sed "s|/run/slot-next.XXXXXX|$work/next.XXXXXX|" >"$work/functions"
 sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' "$repo/tools/slot" >"$work/finish"
