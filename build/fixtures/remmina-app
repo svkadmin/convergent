@@ -23,13 +23,19 @@ clipboard)
     app sh -c 'printf "[remmina]\nname=CV clipboard\nprotocol=VNC\nserver=%s:5900\ndisableclipboard=0\nviewonly=0\n" "$1" > /home/remmina/.cv-session.remmina' sh "$base.7"
     app remmina -c /home/remmina/.cv-session.remmina
     wait_file "$work/connected"
+    # Remmina's VNC plugin drops clipboard changes within 1 s of the connection's start or of its
+    # last remote update (anti-loopback); the owner's copies are seconds apart.
+    sleep 2
     touch "$work/send"
     inner=/run/convergent/browser/remmina/cage/wayland-0
     tries=0
     until [ "$(owner env WAYLAND_DISPLAY="$inner" timeout 2 wl-paste -n 2>/dev/null || :)" = cv-remote-clipboard ]; do
-        tries=$((tries + 1)); [ "$tries" -lt 20 ]; sleep .2
+        # Seen after 4.5 s under nested QEMU; allow 20 s.
+        tries=$((tries + 1)); [ "$tries" -lt 40 ]; sleep .5
     done
     [ "$(owner wl-paste -n)" = cv-host-clipboard ]
+    sleep 2
+    # Copy in another Cage client; focus returns to the session window, which then sends it.
     printf cv-remmina-clipboard | owner env WAYLAND_DISPLAY="$inner" wl-copy
     wait_file "$work/received"
     [ "$(owner wl-paste -n)" = cv-host-clipboard ]

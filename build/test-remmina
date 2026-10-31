@@ -69,7 +69,8 @@ keyring read
 ic stop remmina --force
 if [ "$mode" = smoke ]; then
     flock -u 8
-    timeout -k 10 300 sh /var/lib/convergent/test-release/fixtures/remmina-session 8>&-
+    # Up to 1500 s for the work gate, then the session.
+    timeout -k 10 1800 sh /var/lib/convergent/test-release/fixtures/remmina-session 8>&-
     flock -n 8
 fi
 if [ "$mode" = update ]; then

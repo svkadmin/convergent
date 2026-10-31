@@ -142,7 +142,8 @@ if __name__ == "__main__":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind((sys.argv[2], 5900))
             listener.listen(1)
-            listener.settimeout(60)
+            # Remmina connects after its container, keyring unlock and launcher start.
+            listener.settimeout(180)
             (state / "listening").touch()
             with listener.accept()[0] as client:
                 vnc(client, state)

@@ -73,6 +73,9 @@ ic start cv-remote
 base=$(awk '$3 == "vlan320" {sub(/\.0\/26$/, "", $5); print $5}' /etc/convergent/segments)
 timeout -k 1 60 sh -c 'until incus --force-local exec cv-remote -- true; do sleep 1; done'
 ic exec cv-remote -- sh -eu -c 'sysctl -qw net.ipv4.conf.eth0.arp_ignore=0; ip link set eth0 up; ip addr add "$1.7/26" dev eth0; ip route add default via "$1.62"' sh "$base"
+# Work access opens only once the topology validates, as before the PF work matrix.
+# Wait before the helpers start: the VNC peer and the keyboard have fixed lifetimes.
+timeout -k 5 1500 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done' || { echo 'CV-REMOTE work access closed'; exit 1; }
 # The host has no Python: run the Remmina image's (a Remmina dependency) through its musl loader.
 py=$work/py
 mkdir "$py"
@@ -119,8 +122,6 @@ bus=$(ic exec remmina -- sh -c 'for pid in $(pidof remmina); do tr "\000" "\n" 2
     sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p' | head -n 1)
 [ -n "$bus" ]
 export uid gid runtime display ipc bus base work
-# Work access opens only once the topology validates, as before the PF work matrix.
-timeout -k 5 1500 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done' || { echo 'CV-REMOTE work access closed'; exit 1; }
 for test_case in clipboard secret-loss; do
     timeout -k 5 60 sh "$release/fixtures/remmina-app" "$test_case"
 done

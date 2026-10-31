@@ -3021,8 +3021,8 @@ case $r in
 *) result=1 ;;
 esac
 if [ "$r" = 0 ]; then
-	# Remmina: private state, keyring and share.
-	timeout -k 10 480 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
+	# Remmina: private state, keyring and share; its session waits up to 1500 s for the work gate.
+	timeout -k 10 2000 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End Remmina.
 	timeout -k 30 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# Real TLS, per-session NSS and orphan recovery.
@@ -3821,9 +3821,10 @@ guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
 	case $mode in guests) budget=5400 ;; guests-update) budget=18000 ;; *) budget=14400 ;; esac
-	# L2 injection (1140), real Remmina session (300), shutdown preparation/drain (720); firewall relinks and
-	# work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200 past their limits.
-	budget=$((budget + 2160))
+	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
+	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
+	# past their limits.
+	budget=$((budget + 3660))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
 	run_vm "$mode" || vm_ok=0
