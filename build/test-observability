@@ -6,6 +6,7 @@ repo=${here%/build}
 # CheckerFailed must name the existing sys handler.
 grep -qF 'Inspect sys security check and' "$repo/guests/svc/dashboards/security.py"
 grep -qF 'Inspect sys security check and' "$repo/guests/svc/rootfs/usr/share/grafana/dashboards/security.json"
+sh "$here/test-observe-privileges"
 sh "$here/test-check-status"
 sh "$here/test-guest-reply"
 work=$(mktemp -d)
@@ -98,7 +99,14 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
     vmalert=http://100.80.2.10:8880 now=100000 tmp=$work/rules
     noargs() { [ "$#" = 0 ]; }; cached() { echo unknown; }; usb_count() { echo 0; }
     sudo() { :; }; od() { :; }; logger() { :; }; fail() { return 1; }; probe() { "$@"; }
+    setpriv() (
+        [ "$1:$2:$3:$4" = '--reuid=65534:--regid=65534:--clear-groups:--no-new-privs' ] || exit 90
+        shift 4
+        dropped=yes
+        "$@"
+    )
     curl() {
+        [ "$reader" != observe ] || [ "${dropped:-}" = yes ] || exit 90
         printf '%s\n' "$@" >"$work/curl-args"
         case " $* " in *' --max-filesize 1048576 '*) ;; *) exit 90 ;; esac
         case " $* " in *' --max-time 8 '*|*' -m 4 '*|*' --max-time 5 '*) ;; *) exit 90 ;; esac
@@ -114,7 +122,8 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
             [ "$1" = --fsize=1048576 ] || exit 90
             shift
         fi
-        [ "$1:$2" = '--:jq' ] || exit 90
+        if [ "$reader" = observe ]; then expected_command=setpriv; else expected_command=jq; fi
+        [ "$1:$2" = "--:$expected_command" ] || exit 90
         echo limited >"$work/limited"
         [ "$fault" != limit ] || return 1
         shift
@@ -128,6 +137,7 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
         "$@"
     }
     jq() {
+        [ "$reader" != observe ] || [ "${dropped:-}" = yes ] || exit 90
         [ -s "$work/limited" ] && [ -s "$work/parser-timeout" ] || exit 90
         cat >/dev/null
         echo parsed >"$work/parsed"
@@ -181,6 +191,8 @@ if command -v jq >/dev/null 2>&1 && command -v prlimit >/dev/null 2>&1; then
         now=100000 tmp=$work/rules
         logger() { :; }
         curl() { cat "$work/reply"; }
+        # Privilege ordering is covered above; keep these parser fixtures rootless.
+        setpriv() { shift 4; "$@"; }
         rm() {
             [ ! -f "$tmp.rules" ] || [ "$(wc -c <"$tmp.rules")" -le 1048576 ] || exit 1
             command rm "$@"

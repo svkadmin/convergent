@@ -11,7 +11,7 @@ ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
 # Name, status and type only: a full list waits on each VM for state agentless guests lack.
 instances_json() { incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
 owner() {
-    set -- setpriv --reuid "$uid" --regid "$gid" --init-groups --pdeathsig TERM --no-new-privs env -i \
+    set -- setpriv --reuid "$uid" --regid "$gid" "${owner_groups:---init-groups}" --pdeathsig TERM --no-new-privs env -i \
         PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" \
         XDG_CONFIG_HOME=/nonexistent XDG_STATE_HOME="$run/state" \
         WAYLAND_DISPLAY="$display" SWAYSOCK="$ipc" "$@"
@@ -286,7 +286,7 @@ if [ "$role" = remmina ]; then
     tail -c 1048576 9>&- 8>&- 7>&- 6>&- <"$run/cage-output" >"$run/cage.log" &
     cage_capture=$!
     # 2 GiB conservative address-space ceiling; session peaks have not been measured.
-    background=yes owner env XDG_RUNTIME_DIR="$run/cage" WAYLAND_DISPLAY="$outer_socket" \
+    background=yes owner_groups=--clear-groups owner env XDG_RUNTIME_DIR="$run/cage" WAYLAND_DISPLAY="$outer_socket" \
         WLR_BACKENDS=wayland WLR_RENDERER=pixman \
         prlimit --as=2147483648:2147483648 cage >"$run/cage-output" 2>&1 &
     cage=$!; children="$children $cage $cage_capture"

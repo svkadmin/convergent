@@ -5,6 +5,24 @@ here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Cage alone drops supplementary groups; the owner keeps its primary GID.
+sed -n '/^owner() {/,/^}/p' "$here/../tools/browser" >"$work/owner"
+[ -s "$work/owner" ]; sh -n "$work/owner"
+(
+    . "$work/owner"
+    uid=1000 gid=1001 runtime=/run/user/1000 run=/run/convergent/browser/remmina
+    display=restricted ipc=unused
+    setpriv() { printf '%s\n' "$@" >"$work/credentials"; }
+    for groups in --init-groups --clear-groups; do
+        owner_groups=$groups owner true
+        grep -qx -- "$groups" "$work/credentials"
+        grep -qx -- --no-new-privs "$work/credentials"
+        sed -n '1,4p' "$work/credentials" >"$work/ids"
+        printf '%s\n' --reuid 1000 --regid 1001 >"$work/expected-ids"
+        cmp "$work/ids" "$work/expected-ids"
+    done
+)
+echo 'CV-REMOTE unit Cage credentials ok'
 # The compile guard must stop before cmake if encryption survived patching.
 sed -n "/^chroot .*<<'COMPILE'/,/^COMPILE$/p" "$here/../guests/remmina/build" |
     sed '1d;$d' >"$work/compile-body"
@@ -141,6 +159,7 @@ install() { for path do :; done; mkdir -p "$path"; }
 owner() {
     printf '%s\n' "$*" >>"$run/providers"
     case $* in *' cage')
+        [ "${owner_groups:-}" = --clear-groups ] || exit 1
         dd if=/dev/zero bs=1048576 count=2 2>/dev/null || exit 1
         printf 'drained\n' || exit 1
         touch "$run/drained" ;;
