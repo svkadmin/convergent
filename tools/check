@@ -167,10 +167,13 @@ if [ "${1:-}" = auto ]; then (
     exec 8>&-
     mv "$state/.firewall-heal" "$state/firewall-heal" || die 'cannot publish self-heal report'
     if [ -f "$state/last" ]; then
-        sed '/^SELF-HEAL /d' "$state/last" >"$state/.last"
-        cat "$state/firewall-heal" >>"$state/.last"
         # Keep the full scan's timestamp: minute recovery must not postpone or stale its checks.
-        touch -r "$state/last" "$state/.last" && mv "$state/.last" "$state/last" || die 'cannot update report'
+        sed '/^SELF-HEAL /d' "$state/last" >"$state/.last" &&
+            cat "$state/firewall-heal" >>"$state/.last" &&
+            touch -r "$state/last" "$state/.last" && mv "$state/.last" "$state/last" || {
+                rm -f "$state/.last"
+                die 'cannot update report'
+            }
     fi
 ); fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps

@@ -38,13 +38,13 @@ def generate():
     p.timeseries('Guest pressure', [target('rate(cv_guest_pressure_seconds_total[4m])', '{{name}} {{resource}} {{scope}}')],
                  grid(12, 34, 12, 7), 'percentunit', 'Cgroup PSI total stall seconds per second; some/full scope remains distinct.')
     p.logs('Monitoring errors', '(remote_ip:="127.0.0.1" AND severity:in("0","1","2","3","4")) OR (' + ERRORS + ' AND app_name:in("facts","observe","syslog-ng"))',
-           grid(0, 41, 24, 8), 'svc local syslog is forwarded over loopback UDP to VictoriaLogs and retained for 7d / 4 GiB threshold. RAM ring remains the fallback while VL is down; UDP is not durable.')
+           grid(0, 41, 24, 8), 'svc local syslog is forwarded over loopback UDP to VictoriaLogs and retained for 7d / 2 GiB threshold. RAM ring remains the fallback while VL is down; UDP is not durable.')
     p.stat('Retained log window / storage headroom', [target('time() - vl_storage_log_min_timestamp_seconds', 'oldest log age', optional='No logs have been stored yet.'),
                  target('vm_free_disk_space_bytes', 'metrics filesystem free'), target('vl_free_disk_space_bytes', 'logs filesystem free')], grid(0,49,24,3),
                  'Effective oldest retained record, not a retention guarantee. Filesystem free space does not replace qgroup headroom on Host.',
                  overrides=[ov('oldest log age',unit='s'),ov('metrics filesystem free',unit='bytes'),ov('logs filesystem free',unit='bytes')])
     p.timeseries('Ingestion / query failures', [target('sum by(__name__,service) (increase({__name__=~"vm_rows_ignored_total|vl_rows_dropped_total|vm_http_request_errors_total|vm_request_errors_total|vmauth_http_request_errors_total"}[5m]))', '{{__name__}} {{service}}', optional='Some failure counters are created only after the first error; required read-only and process metrics remain checked.')], grid(0,52,24,7), 'short', 'Rejected samples, logs and query/proxy errors; do not interpret missing lazily-created counters as proof of health.')
-    p.footer(59, 'Metrics: 14d, no dedup. Logs: 7d / 4 GiB threshold, 6 GiB quota. Quota usage is on Host. No remote paging or durable svc log queue; sender heartbeats detect loss of delivery, not queue depth. Measure idle/admin-browser memory and GC on the rig before changing budgets.')
+    p.footer(59, 'Metrics: 7d, no dedup. Logs: 7d / 2 GiB threshold, 6 GiB quota. Quota usage is on Host. No remote paging or durable svc log queue; sender heartbeats detect loss of delivery, not queue depth. Measure idle/admin-browser memory and GC on the rig before changing budgets.')
     p.table('Native collectors - result and cost', [target('node_scrape_collector_success'), target('node_scrape_collector_duration_seconds')],
             grid(0,0,24,7), ['node','collector'], ['success','duration'], 'Exporter collector failures alert even when HTTP scraping succeeds.', [ov('success',mappings=OK),ov('duration',unit='s')])
     p.timeseries('Go GC pause cost', [target('rate(go_gc_duration_seconds_sum{node="svc"}[5m]) / rate(go_gc_duration_seconds_count{node="svc"}[5m])', '{{job}} {{service}}', optional='No GC cycles yet produces an undefined mean.')],

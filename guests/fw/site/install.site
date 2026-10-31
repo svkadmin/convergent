@@ -47,6 +47,11 @@ chmod 0640 /etc/convergent/pf.guests
 chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
 chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch /usr/local/libexec/convergent/fw-seed
 
+# Keep the inherited rotation budget in sync with pflogd's 1MiB cap.
+awk '$1 == "/var/log/pflog" {n++; if ($3 != 3 || $6 != "ZB") bad=1}
+    END {exit (n != 1 || bad)}' /etc/newsyslog.conf || die 'unexpected pflog archive budget'
+cap_mkdb /etc/login.conf
+
 # Nobody sits at a firewall's console: a failed preen repairs with -y and reboots, as -p does after fixing root.
 sed -i 's/echo "Automatic file system check failed; help!"/echo "Automatic file system check failed; repairing."; fsck -y "$@"; case $? in 0|4) echo Rebooting...; reboot ;; *) false ;; esac/' /etc/rc
 grep -qF 'fsck -y "$@"; case $? in 0|4) echo Rebooting...; reboot ;; *) false ;; esac' /etc/rc || die '/etc/rc has no unattended fsck repair'

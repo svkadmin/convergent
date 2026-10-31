@@ -102,10 +102,14 @@ capture() {
 				print "convergent_pflogd_suspended " suspended+0
 				exit (!running || suspended)
 			}' || ok=0
-		# pflogd never moves a torn archive (a forced stop leaves one) aside: a suspended pflogd gets a fresh one.
-		! printf '%s\n' "$data" | grep -q '^[[:space:]]*pflogd: \[suspended\] ' ||
-			{ mv /var/log/pflog /var/log/pflog.bad && pkill -HUP -u root -U root -t - -x pflogd &&
-				logger -t fw-facts 'pflog archive moved to pflog.bad; pflogd reopened'; } || :
+		# The filesize cap can suspend or kill the writer; never reopen a capped/torn file.
+		if ! printf '%s\n' "$data" | grep -q '^[[:space:]]*pflogd: \[running\] ' ||
+		    printf '%s\n' "$data" | grep -q '^[[:space:]]*pflogd: \[suspended\] ' ||
+		    [ "$(stat -f %z /var/log/pflog 2>/dev/null)" -ge 1048576 ]; then
+			rcctl stop pflogd >/dev/null && rm -f /var/log/pflog.bad &&
+				newsyslog -F /var/log/pflog && rcctl start pflogd >/dev/null &&
+				logger -t fw-facts 'pflog archive rotated; pflogd restarted' || ok=0
+		fi
 	fi
 	echo "convergent_fw_facts_success $ok"
 	echo "convergent_fw_facts_duration_seconds $(($(date +%s) - started))"

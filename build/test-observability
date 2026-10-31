@@ -6,6 +6,96 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Quotas stay in userspace; the alert reads actual qgroup usage, not statfs.
+[ ! -e "$repo/portage/patches/sys-kernel/gentoo-kernel/0001-btrfs-qgroup-statfs.patch" ]
+for service in logs metrics; do
+    sed -n '/^command_args=/,/"$/p' "$repo/guests/svc/rootfs/etc/init.d/victoria-$service" >"$work/args"
+    [ -s "$work/args" ]
+    sh -n "$work/args"
+    . "$work/args"
+    printf '%s\n' $command_args >"$work/flags"
+    grep -qxF -- '-retentionPeriod=14d' "$work/flags"
+    if [ "$service" = logs ]; then
+        grep -qxF -- '-retention.maxDiskSpaceUsageBytes=2GiB' "$work/flags"
+        grep -qxF -- '-storage.minFreeDiskSpaceBytes=1GiB' "$work/flags"
+    else
+        grep -qxF -- '-storage.minFreeDiskSpaceBytes=512MiB' "$work/flags"
+    fi
+done
+sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage storage/ {
+    /^[[:space:]]*publish storage storage/d; p;
+}' "$repo/tools/facts" >"$work/volumes"
+[ -s "$work/volumes" ]
+sh -n "$work/volumes"
+(
+    bad() { ok=0; }
+    btrfs() {
+        case $* in
+        'inspect-internal rootid '*) echo 123 ;;
+        'qgroup show --raw -r '*)
+            [ "$sample" != unavailable ] || return 1
+            echo 'qgroupid rfer excl max_rfer'
+            echo '0/999 999 999 1000'
+            echo "0/123 $used 0 $limit"
+            ;;
+        *) return 1 ;;
+        esac
+    }
+    for sample in low boundary high malformed unavailable; do
+        used=850 limit=1000 ok=1
+        case $sample in low) used=849 ;; high) used=851 ;; malformed) limit=none ;; esac
+        buf=$work/volumes.prom
+        : >"$buf"
+        . "$work/volumes"
+        case $sample in
+        malformed|unavailable) [ "$ok" = 0 ] && [ ! -s "$buf" ] ;;
+        *)
+            [ "$ok" = 1 ]
+            : >"$work/expected"
+            for volume in svc-metrics svc-logs svc-grafana; do
+                printf 'cv_volume_used_bytes{volume="%s"} %s\ncv_volume_limit_bytes{volume="%s"} 1000\n' \
+                    "$volume" "$used" "$volume" >>"$work/expected"
+            done
+            cmp "$work/expected" "$buf"
+            ;;
+        esac
+    done
+)
+sed -n '/- alert: VolumeQuotaHigh/{n;p;n;p;}' \
+    "$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml" >"$work/quota-rule"
+grep -qx '        expr: cv_volume_used_bytes / cv_volume_limit_bytes > 0.85' "$work/quota-rule"
+grep -qx '        for: 10m' "$work/quota-rule"
+echo 'observability: svc qgroup collection and high-usage alert assertions passed'
+# Failed self-heal appends must preserve the complete report and its scan time.
+sed -n '/^    if \[ -f "\$state\/last" \]; then$/,/^    fi$/p' "$repo/tools/check" >"$work/report-update"
+[ -s "$work/report-update" ]
+sh -n "$work/report-update"
+mkdir "$work/report-state"
+for failed in sed cat touch mv none; do
+    (
+        state=$work/report-state
+        printf 'complete scan\nSELF-HEAL old\n' >"$state/last"
+        touch -t 200101010000 "$state/last"
+        cp -p "$state/last" "$work/previous"
+        echo 'SELF-HEAL new' >"$state/firewall-heal"
+        die() { exit 1; }
+        sed() { if [ "$failed" = sed ]; then echo partial; return 1; fi; command sed "$@"; }
+        cat() { if [ "$failed" = cat ]; then echo partial; return 1; fi; command cat "$@"; }
+        touch() { [ "$failed" != touch ] && command touch "$@"; }
+        mv() { [ "$failed" != mv ] && command mv "$@"; }
+        if (set +e; . "$work/report-update"); then
+            [ "$failed" = none ]
+            printf 'complete scan\nSELF-HEAL new\n' >"$work/expected"
+            cmp "$work/expected" "$state/last"
+        else
+            [ "$failed" != none ]
+            cmp "$work/previous" "$state/last"
+        fi
+        [ ! -e "$state/.last" ]
+        [ "$(stat -c %Y "$state/last")" = "$(stat -c %Y "$work/previous")" ]
+    )
+done
+echo 'observability: failed report writes preserve last and mtime'
 # Scrub evidence and its missing-record grace survive short boots.
 sed -n '/^[[:space:]]*uuid=$(findmnt/,/^[[:space:]]*for volume / {
     /^[[:space:]]*for volume /d; p;
