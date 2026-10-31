@@ -265,6 +265,11 @@ fi
 if [ "${1:-}" = --install-options ]; then
 	[ $# = 1 ] || exit 1
 	die() { echo "test: $*" >&2; exit 1; }
+	# Install and release instructions match the enforced inputs.
+	for doc in BUILD.md USAGE.md; do
+		grep -qF 'LUKS passphrase must use printable ASCII (space through `~`)' "$here/../$doc"
+	done
+	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
 	sh "$here/../tools/config-get" --selftest
 	. "$here/../install/options.sh"
 	# 100 GiB minus the release partitions and GPT/alignment.

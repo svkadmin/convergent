@@ -74,7 +74,7 @@ Use `CONVERGENT_CONFIG` on the builder or `convergent-install --config /path/con
 /path/release` on USB. Keys/defaults: `config.example.yaml`. No secrets, including comments. The
 validated copy is saved at `/var/lib/convergent/config.yaml`, unused at runtime. Enter passwords
 interactively; build/stick also accepts stdin: owner password, then LUKS passphrase. Both require
-12–256 bytes.
+12–256 bytes; the LUKS passphrase must use printable ASCII (space through `~`).
 
 ```yaml
 install:
@@ -295,7 +295,9 @@ or grant suitable ACLs. Detach when finished. Resize the volume in Incus UI if n
 `sys wifi` controls wan over SSH; iwd roams between known networks. `sys wifi connect` offers
 scanned SSIDs/security/signal, then asks `Passphrase (empty for a known or open network):`. `sys
 wifi connect 'SSID with spaces'` skips selection; `sys wifi hidden` asks for an unscanned name.
-Credentials stay in wan. Scan completion polls for 15 seconds after initiation; initiation/results
+Credentials are stored in wan; replacement also stages root-only copies on encrypted host storage,
+which can remain until recovery or cleanup completes.
+Scan completion polls for 15 seconds after initiation; initiation/results
 have separate timeouts. Failures propagate with guidance; association without IPv4 reports DHCP
 failure.
 
@@ -458,8 +460,10 @@ manifest signatures: verify the release yourself first.
 
 `sys selftest` authenticates sudo once and writes ~/selftest-YYYYmmdd-HHMMSS.txt with bounded
 PASS/FAIL/SKIP checks. `sys debug` (Logs → debug, beta only) shows a signed diagnostic's
-purpose/expiry and asks before root execution. Expired/replayed requests fail. Limit: five minutes,
-8 MiB output; script failure status is preserved, timeout 124 or forced-kill 137. The printed
+purpose/expiry and asks before root execution. Expired requests fail. Replay rejection applies to
+the current `/var` history; rollback can permit a still-valid diagnostic again, with fresh consent.
+Limit: five minutes, 8 MiB output; script failure status is preserved, timeout 124 or forced-kill 137.
+The printed
 root-only `/var/lib/convergent/debug/<id>.txt` can be read with `sudo less` before a second yes
 permits encrypted, laptop-signed upload. `sudo debug key` prints the laptop public key. Builder
 commands: [BUILD, Diagnostics](BUILD.md#diagnostics). Crash handling: [RECOVERY

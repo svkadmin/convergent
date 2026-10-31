@@ -4,6 +4,12 @@ set -eu
 umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
+# Credential claims include clock recovery and replacement staging.
+grep -qF 'renews CA/service certificates that are not yet valid or expire within 30 days, reusing their keys' "$repo/ARCHITECTURE.md"
+for doc in ARCHITECTURE.md USAGE.md; do
+    grep -qF 'stages root-only copies on encrypted host storage' "$repo/$doc"
+    tr '\n' ' ' <"$repo/$doc" | grep -qE 'can remain until recovery or cleanup[[:space:]]+completes'
+done
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' 0
 trap 'exit 1' HUP INT TERM

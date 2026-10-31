@@ -3,6 +3,9 @@
 set -eu
 umask 077
 here=$(cd "$(dirname "$0")" && pwd)
+# Replay history rolls back with /var; expiry and owner consent still apply.
+grep -qF 'Expired requests fail. Replay rejection applies to' "$here/../USAGE.md"
+grep -qF 'the current `/var` history; rollback can permit a still-valid diagnostic again, with fresh consent.' "$here/../USAGE.md"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM

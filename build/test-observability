@@ -257,6 +257,7 @@ for service in logs metrics; do
         grep -qxF -- '-storage.minFreeDiskSpaceBytes=1GiB' "$work/flags"
     else
         grep -qxF -- '-storage.minFreeDiskSpaceBytes=512MiB' "$work/flags"
+        grep -qF "Metrics: $days, no dedup." "$repo/guests/svc/dashboards/monitoring.py"
     fi
 done
 sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage storage/ {

@@ -70,8 +70,10 @@ NAT. A passed-through USB Ethernet adapter provides the optional wired uplink vi
 
 - Random MAC per network, regulatory country, protected management frames where offered; no DHCP
   hostname, mDNS or LLMNR, to reduce upstream identification.
-- Credentials arrive over SSH stdin and stay in wan; replies are sanitized. The host checks Wi-Fi
-  IPv4 six times, five seconds apart after association. Saved networks survive replacement.
+- Credentials arrive over SSH stdin and are stored in wan; replies are sanitized. Replacement also
+  stages root-only copies on encrypted host storage, which can remain until recovery or cleanup
+  completes. The host checks Wi-Fi IPv4 six times, five seconds apart after association. Saved
+  networks survive replacement.
 - No Incus agent/guest API; host-only SSH on transit uses OpenSSH's default key exchange.
 - Upstream output allows DHCP; transit output allows replies/syslog. Input allows management,
   metrics and firewall probes. Private forwarding is limited by section 4.2.
@@ -419,9 +421,9 @@ Host verifies application, pins fw/WAN SSH keys from Incus console, checks healt
 disk. Svc uses a mounted seed without SSH. Seedless firewalls keep CARP/dependent services off;
 Alpine guests stop credential-dependent services.
 
-Infrastructure starts together; pinning/checks remain sequential. Service certificates server,
-incus-server and incus-client renew with at most 30 days left on the next successful guest apply
-with browsers closed, reusing keys/CA and installing trust before consumers restart.
+Infrastructure starts together; pinning/checks remain sequential. With browsers closed, guest apply
+renews CA/service certificates that are not yet valid or expire within 30 days, reusing their keys
+and installing trust before consumers restart.
 
 ### 7.2 Update
 

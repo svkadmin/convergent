@@ -37,7 +37,7 @@ build/image             # UTC release ID: YYYYMMDDHHMM
 ```
 
 Patched packages compile and rebuild on patch changes. Bump VERSION in `build/build.conf` per
-release (currently 0.1.5): major.minor.patch, optional -rcN. Version appears
+release: major.minor.patch, optional -rcN. Version appears
 in /usr/lib/convergent/version, CONVERGENT_VERSION, boot titles, manifest and status; timestamp ID
 names artifacts, orders IMAGE_VERSION and controls updates/rollback.
 
@@ -56,7 +56,8 @@ build/stick <release> $g <out.img> [size]          # default 30G
 zstd -T0 <out.img>
 ```
 
-Stick asks for owner password then LUKS passphrase, 12–256 bytes each. Owner selection:
+Stick asks for owner password then LUKS passphrase, 12–256 bytes each.
+The LUKS passphrase must use printable ASCII (space through `~`). Owner selection:
 CONVERGENT_INSTALL_OWNER, owner_login, then prompt. It installs on a loop device and
 prints SHA-256. Images contain the owner's account: never publish them.
 
