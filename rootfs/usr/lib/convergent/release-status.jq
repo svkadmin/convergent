@@ -9,10 +9,12 @@ if .release != $release or (.generated | type) != "number" or
    (all(.advisories[]; (.target | short) and (.package | short) and
         (.installed_version | short) and (.advisory | short) and
         (.severity == null or (.severity | short)) and (.fixed_in == null or (.fixed_in | short))) | not) or
-   (all(.packages[]; (.target | short) and (.package | short) and (.version | short)) | not)
+   (all(.packages[]; (.target | short) and (.package | short) and (.version | short) and
+        (.advisory_coverage == null or (.advisory_coverage == "UNKNOWN" and (.repository | short)))) | not)
 then error("invalid advisory status") else . end |
 "cv_release_status_verified{role=\($role|lv),release=\($release|lv)} 1",
 "cv_release_status_generated_seconds{role=\($role|lv),release=\($release|lv)} \(.generated)",
 "cv_release_advisories{role=\($role|lv),release=\($release|lv)} \(.advisories|length)",
 (.advisories[] | "cv_release_advisory_info{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),installed_version=\(.installed_version|lv),advisory=\(.advisory|lv),severity=\((.severity // "unknown")|lv),fixed_in=\((.fixed_in // "none")|lv)} 1"),
-(.packages[] | "cv_release_package_info{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),version=\(.version|lv)} 1")
+(.packages[] | "cv_release_package_info{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),version=\(.version|lv)} 1"),
+(.packages[] | select(.advisory_coverage == "UNKNOWN") | "cv_release_package_advisory_coverage_unknown{role=\($role|lv),release=\($release|lv),target=\(.target|lv),package=\(.package|lv),version=\(.version|lv),repository=\(.repository|lv)} 1")

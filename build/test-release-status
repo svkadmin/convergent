@@ -34,10 +34,11 @@ sed -e "s|/var/lib/node_exporter|$work/metrics|g" \
 status() {
     for release in 42 43; do
         mkdir -p "$work/source/$release"
-        printf '{"release":"%s","generated":%s,"advisories":[{"target":"wan","package":"openssl","installed_version":"1","advisory":"CVE-test","severity":null,"fixed_in":"2"}],"packages":[{"target":"host","package":"kernel","version":"6"}]}\n' \
-            "$release" "$1" >"$work/source/$release/advisories.json"
-        openssl pkeyutl -sign -inkey "$2" -rawin -in "$work/source/$release/advisories.json" \
-            -out "$work/source/$release/advisories.json.sig"
+        printf '{"release":"%s","generated":%s,"advisories":[{"target":"wan","package":"openssl","installed_version":"1","advisory":"CVE-test","severity":null,"fixed_in":"2"}],"packages":[{"target":"host","package":"kernel","version":"6"},{"target":"svc","package":"victoria-logs","version":"1.52.1-r0","advisory_coverage":"UNKNOWN","repository":"edge/testing"}]}\n' \
+            "$release" "$1" >"$work/source/$release/advisories-v2.json"
+        digest=$(sha256sum <"$work/source/$release/advisories-v2.json" | cut -d' ' -f1)
+        openssl pkeyutl -sign -inkey "$2" -rawin -in "$work/source/$release/advisories-v2.json" \
+            -out "$work/source/$release/advisories-v2.json.$digest.sig"
     done
 }
 status 1000 "$work/key"
@@ -46,23 +47,25 @@ for role in installed latest; do
     grep -q "cv_release_status_verified{role=\"$role\".*} 1$" "$work/metrics/release.prom"
     grep -q "cv_release_advisory_info{role=\"$role\"" "$work/metrics/release.prom"
     grep -q "cv_release_package_info{role=\"$role\"" "$work/metrics/release.prom"
+    grep -q "cv_release_package_advisory_coverage_unknown{role=\"$role\".*target=\"svc\",package=\"victoria-logs\",version=\"1.52.1-r0\",repository=\"edge/testing\"} 1$" "$work/metrics/release.prom"
 done
+[ "$(grep -c '^cv_release_package_advisory_coverage_unknown{' "$work/metrics/release.prom")" = 2 ]
 cp "$work/cache/42.json" "$work/accepted-42"
 cp "$work/cache/43.json" "$work/accepted-43"
 for fault in tampered wrong-key missing missing-signature replay; do
     status 1001 "$work/key"
     case $fault in
-    tampered) for release in 42 43; do printf ' ' >>"$work/source/$release/advisories.json"; done ;;
+    tampered) for release in 42 43; do printf ' ' >>"$work/source/$release/advisories-v2.json"; done ;;
     wrong-key) status 1001 "$work/wrong-key" ;;
-    missing) rm "$work/source/"*/advisories.json ;;
-    missing-signature) rm "$work/source/"*/advisories.json.sig ;;
+    missing) rm "$work/source/"*/advisories-v2.json ;;
+    missing-signature) rm "$work/source/"*/advisories-v2.json.*.sig ;;
     replay) status 999 "$work/key" ;;
     esac
     release_metrics 1
     for role in installed latest; do
         grep -q "cv_release_status_verified{role=\"$role\".*} 0$" "$work/metrics/release.prom"
     done
-    if grep -q 'cv_release_advisory_info\|cv_release_package_info\|cv_release_status_generated_seconds' "$work/metrics/release.prom"; then exit 1; fi
+    if grep -q 'cv_release_advisory_info\|cv_release_package_\|cv_release_status_generated_seconds' "$work/metrics/release.prom"; then exit 1; fi
     cmp "$work/cache/42.json" "$work/accepted-42"
     cmp "$work/cache/43.json" "$work/accepted-43"
     [ -z "$(find "$work/metrics" -name '.release.*' -print)" ]
@@ -70,7 +73,7 @@ done
 status 1001 "$work/key"
 release_metrics 1
 grep -q 'cv_release_status_generated_seconds{role="installed",release="42"} 1001' "$work/metrics/release.prom"
-cmp "$work/cache/42.json" "$work/source/42/advisories.json"
+cmp "$work/cache/42.json" "$work/source/42/advisories-v2.json"
 release_metrics 0
 grep -qx 'cv_release_check_success 0' "$work/metrics/release.prom"
 if grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"; then exit 1; fi

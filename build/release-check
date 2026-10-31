@@ -1,4 +1,4 @@
-# Sourced with dir, release, pub, CHANNEL and die set by the caller.
+# Sourced with here, dir, release, pub, CHANNEL and die set by the caller.
 # Preserve the trust configuration installed by this image.
 public_key=$(openssl pkey -pubin -in "$pub" -pubout) || die "invalid public key $pub"
 fingerprint=$(printf '%s\n' "$public_key" | sha256sum | cut -d' ' -f1)
@@ -16,3 +16,4 @@ for f in slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
 		END {exit bad || hashes != 1 || sizes != 1}
 	' "$dir/manifest" || die "manifest needs one checksum and accurate size for $f"
 done
+. "$here/inventory-check"

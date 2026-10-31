@@ -20,7 +20,8 @@ src=$2
 [ -f "$dir/manifest" ] || die "no manifest in $dir"
 [ ! -e "$dir/guests.manifest" ] && [ ! -e "$dir/remmina.manifest" ] || die "guest manifest already exists"
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
-case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
+case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
+[ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
 [ ! -e "$dir/guests" ] && [ ! -L "$dir/guests" ] || die "guests already exists in $dir"
 # Complete or absent: a failure removes what this run made.
 finished=

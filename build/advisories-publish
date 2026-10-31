@@ -32,19 +32,20 @@ root = ET.parse(sys.argv[1]).getroot()
 ns = {'s': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 if root.findtext('s:IsTruncated', namespaces=ns) != 'false':
     raise ValueError('incomplete bucket listing')
-ids, guests = set(), set()
+ids, guests, remmina = set(), set(), set()
 for key in root.findall('s:Contents/s:Key', ns):
-    match = re.fullmatch(re.escape(sys.argv[2]) + r'/([0-9]{1,12})/manifest', key.text or '')
+    match = re.fullmatch(re.escape(sys.argv[2]) + r'/([^/]+)/(manifest|guests\.manifest|remmina\.manifest)', key.text or '')
     if match:
-        ids.add(match[1])
-    match = re.fullmatch(re.escape(sys.argv[2]) + r'/([0-9]{1,12})/guests.manifest', key.text or '')
-    if match:
-        guests.add(match[1])
+        if not re.fullmatch(r'0|[1-9][0-9]{0,11}', match[1]):
+            raise ValueError('invalid release id')
+        {'manifest': ids, 'guests.manifest': guests, 'remmina.manifest': remmina}[match[2]].add(match[1])
+if not remmina <= guests <= ids:
+    raise ValueError('orphan guest manifest')
 for release in sorted(ids):
-    print(release, int(release in guests))
+    print(release, int(release in guests), int(release in remmina))
 PY
 failed=0
-while read -r release has_guests; do
+while read -r release has_guests has_remmina; do
 	[ -n "$release" ] || continue
 	dir=$BUILDER/releases/$release
 	# A retained signed inventory is checked against the exact published manifests.
@@ -55,10 +56,12 @@ while read -r release has_guests; do
 		for f in guests.manifest guests.manifest.sig; do s3 -o "$work/$f" "$ep/$CHANNEL/$release/$f"; done
 		verify "$work/guests.manifest" && cmp -s "$dir/guests.manifest" "$work/guests.manifest" || die "$release: guest manifest mismatch"
 		(cd "$dir" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die "$release: guest payload mismatch"
-		if [ -f "$dir/remmina.manifest" ]; then
+		if [ "$has_remmina" = 1 ]; then
 			for f in remmina.manifest remmina.manifest.sig; do s3 -o "$work/$f" "$ep/$CHANNEL/$release/$f"; done
 			verify "$work/remmina.manifest" && cmp -s "$dir/remmina.manifest" "$work/remmina.manifest" || die "$release: Remmina manifest mismatch"
 			(cd "$dir" && grep -E '^[0-9a-f]{64}  ' remmina.manifest | sha256sum -c --quiet -) || die "$release: Remmina payload mismatch"
+		else
+			[ ! -e "$dir/remmina.manifest" ] && [ ! -e "$dir/guests/remmina" ] || die "$release: unpublished Remmina inventory"
 		fi
 	else
 		[ ! -e "$dir/guests.manifest" ] && [ ! -e "$dir/guests" ] || die "$release: published guest inventory is missing"
@@ -71,6 +74,10 @@ while read -r release has_guests; do
 	[ "$(stat -c %s "$work/advisories.json")" -le 1048576 ] || die 'status exceeds 1 MiB'
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$work/advisories.json" -out "$work/advisories.json.sig"
 	verify "$work/advisories.json" || die 'signing key does not match channel'
+	digest=$(sha256sum <"$work/advisories.json" | cut -d' ' -f1)
+	s3 -o /dev/null -T "$work/advisories.json.sig" "$ep/$CHANNEL/$release/advisories-v2.json.$digest.sig"
+	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$work/advisories.json" "$ep/$CHANNEL/$release/advisories-v2.json"
+	# Legacy readers still fetch the original pair.
 	for f in advisories.json.sig advisories.json; do
 		s3 -o /dev/null -H 'Cache-Control: no-store' -T "$work/$f" "$ep/$CHANNEL/$release/$f"
 	done

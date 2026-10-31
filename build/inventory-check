@@ -1,0 +1,6 @@
+# Sourced with dir and die set; only image creation may bind the inventory.
+manifest_sum=$(sha256sum <"$dir/manifest" | cut -d' ' -f1)
+awk -v digest="$manifest_sum" '
+	$1 == "manifest" {n++; if (NF != 2 || $2 != digest) bad=1}
+	END {exit bad || n != 1}
+' "$dir/packages" || die 'package inventory does not match the host manifest; rebuild the image'

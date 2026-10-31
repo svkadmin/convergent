@@ -29,6 +29,8 @@ mkdir -p "$mini/apks"
 alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc openrc ifupdown-ng ca-certificates
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "bootstrap is not Alpine 3.24" ;; esac
 alpine_apk update
+mkdir -p "$root/etc/convergent"
+: >"$root/etc/convergent/apk-imports"
 while read -r name repository version sha rest; do
     case $name in ''|'#'*) continue ;; esac
     if alpine_apk search --exact --quiet "$name" | grep -q .; then
@@ -45,6 +47,7 @@ while read -r name repository version sha rest; do
         [ "$(sha256sum <"$mini/apks/$name-$version.apk" | cut -d' ' -f1)" = "$sha" ] ||
             die "$name $version does not match its pinned sha256"
         alpine_apk add "/apks/$name-$version.apk"
+        printf '%s %s edge/%s\n' "$name" "$version" "$repository" >>"$root/etc/convergent/apk-imports"
     fi
 done <"$here/packages"
 

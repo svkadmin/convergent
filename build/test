@@ -35,6 +35,7 @@ fi
 if [ "${1:-}" = --observability ] && [ "$#" = 1 ]; then exec sh "$here/test-observability"; fi
 # End observability.
 if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
+	sh "$here/test-publish"
 	(
 	die() { echo "test: $*" >&2; exit 1; }
 	work=$(mktemp -d)
@@ -50,7 +51,8 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	printf 'UPDATE_URL=https://example.test/beta\n' >"$root/etc/convergent/update.conf"
 	for f in slot.img convergent-42-a.efi convergent-42-b.efi; do printf '%s\n' "$f" >"$dir/$f"; done
 	# Keep offline fixtures independent of host keys and bucket credentials.
-	sed -n '/^# 6\. The manifest:/,/^# Signed separately:/p' "$here/image" >"$work/image-check"
+	packages='package app-test/example-1 0'
+	sed -n '/^# 6\. The manifest:/,/^\[ ! -f "\$keys/p' "$here/image" | sed '$d' >"$work/image-check"
 	. "$work/image-check"
 	cp "$dir/manifest" "$work/manifest"
 	cp "$dir/provenance" "$work/provenance"
@@ -58,13 +60,38 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	sed -n '/^awk -v r="\$release" /,/malformed manifest/p' "$here/../install/install" >"$work/manifest-check"
 	. "$work/manifest-check"
 	sed -n '/^guests=none$/,/latest does not match the guest bundle/p' "$here/publish" >"$work/guests-check"
-	sed -n '/^keys_of()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
+	sed -n '/^publish_legacy()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
 	refuse() {
 		if (. "$1") >"$work/log" 2>&1; then die "accepted $2"; fi
 		grep -q "$3" "$work/log" || { cat "$work/log" >&2; die "wrong refusal for $2"; }
 	}
 	gate=$here/release-check
 	(. "$gate")
+	mkdir "$work/keys"
+	cp "$pub" "$work/keys/beta.pub"
+	sed -n '/^openssl pkeyutl -verify/,/^cache=/p' "$here/advisories" | sed '$d' |
+		sed "s|/etc/convergent/keys/|$work/keys/|" >"$work/scan-binding"
+	cp "$dir/packages" "$work/packages"
+	for fault in missing duplicate swapped; do
+		case $fault in
+		missing) sed '/^manifest /d' "$work/packages" >"$dir/packages" ;;
+		duplicate) cat "$work/packages" "$work/packages" >"$dir/packages" ;;
+		swapped) sed 's/^manifest .*/manifest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' "$work/packages" >"$dir/packages" ;;
+		esac
+		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/packages" -out "$dir/packages.sig"
+		openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$dir/packages" -sigfile "$dir/packages.sig" >/dev/null
+		refuse "$gate" "$fault inventory binding" 'inventory does not match'
+		(release=$dir; refuse "$work/scan-binding" "$fault scan inventory binding" 'inventory does not match')
+	done
+	cp "$work/packages" "$dir/packages"
+	for producer in image sign publish guests; do
+		sed -n '/^case \$release in/p; /^\[ "${#release}" -le 12 \]/p' "$here/$producer" >"$work/id-check"
+		for release in 0 42 999999999999; do (. "$work/id-check"); done
+		for release in '' 00 00042 20261031123456 1000000000000 4x; do
+			refuse "$work/id-check" "$producer release $release" 'invalid release'
+		done
+	done
+	release=42
 	rm "$dir/provenance"
 	refuse "$gate" 'missing provenance' 'embedded release key or update channel'
 	cp "$work/provenance" "$dir/provenance"
@@ -119,9 +146,12 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	for f in manifest guests.manifest latest; do
 		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/$f" -out "$dir/$f.sig"
 	done
-	ep=$work/bucket latest=42
+	ep=$work/bucket latest=42 latest_path=latest-v2
+	latest_sig=latest-v2.$(sha256sum <"$dir/latest" | cut -d' ' -f1).sig
 	mkdir -p "$ep/beta/42"
 	for f in $files; do cp "$dir/$f" "$ep/beta/42/$f"; done
+	cp "$dir/latest" "$ep/beta/$latest_path"
+	cp "$dir/latest.sig" "$ep/beta/$latest_sig"
 	cp "$dir/latest" "$dir/latest.sig" "$ep/beta/"
 	objects=$(for f in $files; do printf '%s beta/42/%s\n' "$(stat -c %s "$dir/$f")" "$f"; done)
 	s3() { [ "$#" = 3 ] && [ "$1" = -o ] || die 'unexpected bucket mutation'; cp "$3" "$2"; }
@@ -472,7 +502,7 @@ make_broken_svc() {
 test_guest_delivery() {
 	delivery=$BUILDER$work/delivery
 	mkdir -p "$delivery/build" "$delivery/keys" "$delivery/release"
-	cp "$here/guests" "$here/sign" "$here/release-check" "$here/build.conf" "$delivery/build/"
+	cp "$here/guests" "$here/sign" "$here/release-check" "$here/inventory-check" "$here/build.conf" "$delivery/build/"
 	chmod 0755 "$delivery/build/sign"
 	# Test signing uses its own key; the build host's channel key may be offline.
 	sed -i "s|^keys=.*|keys=$delivery/keys|" "$delivery/build/guests"
@@ -482,7 +512,7 @@ test_guest_delivery() {
 	# The release's provenance names the build key; this test signs with its own.
 	pk=$(openssl pkey -pubin -in "$delivery/keys/$CHANNEL.pub" -pubout)
 	printf 'release-key %s\nupdate-channel %s\n' "$(printf '%s\n' "$pk" | sha256sum | cut -d' ' -f1)" "$CHANNEL" >"$delivery/release/provenance"
-	for f in manifest slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
+	for f in manifest packages slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
 		cp --reflink=auto "$BUILDER/releases/$release/$f" "$delivery/release/"
 	done
 	sh "$delivery/build/guests" "$delivery/release" "$guests"

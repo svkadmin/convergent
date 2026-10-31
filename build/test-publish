@@ -1,0 +1,249 @@
+#!/bin/sh
+# Production commit and retention paths against a local bucket.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-publish: $*" >&2; exit 1; }
+dir=$work/release ep=$work/bucket CHANNEL=beta release=42
+export work dir ep CHANNEL release
+mkdir -p "$dir" "$ep/beta/42" "$work/pointer"
+openssl genpkey -algorithm ed25519 -out "$work/key"
+openssl pkey -in "$work/key" -pubout -out "$work/pub"
+cat >"$work/stub" <<'SH'
+set -eu
+die() { echo "$*" >&2; exit 1; }
+calls=0
+s3() {
+    input= output=
+    while [ "$#" -gt 1 ]; do
+        case $1 in -T) input=$2; shift ;; -o) output=$2; shift ;; esac
+        shift
+    done
+    if [ -z "$input" ]; then cp "$1" "$output"; return; fi
+    calls=$((calls + 1))
+    printf '%s\n' "$1" >>"$work/uploads"
+    [ "$calls" != "${FAIL_AT:-0}" ] || return 1
+    cp "$input" "$1.tmp"
+    mv "$1.tmp" "$1"
+}
+SH
+sed -n '/^publish_legacy()/,/^keys_of()/p' "$here/publish" | sed '$d' >>"$work/stub"
+for path in beta/latest beta/latest.sig beta/42/advisories.json beta/42/advisories.json.sig; do
+    printf 'legacy\n' >"$ep/$path"
+done
+for publisher in publish advisories-publish; do
+    if [ "$publisher" = publish ]; then
+        sed -n '/^# The document is the sole commit/,/^echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        document=$dir/latest remote=$ep/beta/latest-v2 legacy=$ep/beta/latest
+    else
+        sed -n '/^[[:space:]]*digest=/,/^[[:space:]]*echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        document=$work/advisories.json remote=$ep/beta/42/advisories-v2.json legacy=$ep/beta/42/advisories.json
+    fi
+    [ -s "$work/commit" ] || die 'missing production commit'
+    if [ "$publisher" = publish ]; then
+        printf 'release 41\nsigned %s\nguests none\n' "$(date +%s)" >"$document"
+    else
+        printf '{"release":"42","generated":999,"advisories":[],"packages":[]}\n' >"$document"
+    fi
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$document" -out "$document.sig"
+    sh -eu -c '. "$work/stub"; . "$work/commit"'
+    cp "$remote" "$work/old"
+    cp "$document.sig" "$work/old.sig"
+    old_digest=$(sha256sum <"$work/old" | cut -d' ' -f1)
+    if [ "$publisher" = publish ]; then
+        printf 'release 42\nsigned %s\nguests none\n' "$(date +%s)" >"$document"
+    else
+        printf '{"release":"42","generated":1000,"advisories":[],"packages":[{"target":"svc","package":"victoria-logs","version":"1.52.1-r0","advisory_coverage":"UNKNOWN","repository":"edge/testing"}]}\n' >"$document"
+    fi
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$document" -out "$document.sig"
+    cp "$document" "$work/new"
+    cp "$document.sig" "$work/new.sig"
+    for failure in 1 2 3 4; do
+        cp "$work/old" "$document"
+        cp "$work/old.sig" "$document.sig"
+        sh -eu -c '. "$work/stub"; . "$work/commit"'
+        cp "$work/new" "$document"
+        cp "$work/new.sig" "$document.sig"
+        : >"$work/uploads"
+        if FAIL_AT=$failure sh -eu -c '. "$work/stub"; . "$work/commit"' >"$work/log" 2>&1; then
+            die "$publisher ignored failed upload $failure"
+        fi
+        [ "$(wc -l <"$work/uploads")" -eq "$failure" ] || die 'upload continued after failure'
+        if [ "$failure" -le 2 ]; then cmp "$remote" "$work/old"; else cmp "$remote" "$work/new"; fi
+        digest=$(sha256sum <"$remote" | cut -d' ' -f1)
+        openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.$digest.sig" >/dev/null
+        if [ "$failure" = 4 ]; then
+            if openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$legacy" -sigfile "$legacy.sig" >/dev/null 2>&1; then
+                die 'interrupted legacy pair verified'
+            fi
+        else
+            openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$legacy" -sigfile "$legacy.sig" >/dev/null
+        fi
+        if [ "$publisher" = publish ] && [ "$failure" -ge 3 ]; then
+            # An identical retry must repair legacy names after the v2 commit.
+            sed -n '/^publish_legacy()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry"
+            latest=42 latest_path=latest-v2 latest_sig=latest-v2.$digest.sig files= objects= \
+                sh -eu -c '. "$work/stub"; . "$work/retry"'
+            cmp "$ep/beta/latest" "$document"
+            cmp "$ep/beta/latest.sig" "$document.sig"
+        fi
+    done
+    sh -eu -c '. "$work/stub"; . "$work/commit"'
+    cmp "$remote" "$document"
+    digest=$(sha256sum <"$remote" | cut -d' ' -f1)
+    openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.$digest.sig" >/dev/null
+    # A reader that fetched the previous document still has its signature.
+    openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$work/old" -sigfile "$remote.$old_digest.sig" >/dev/null
+    cmp "$legacy" "$document"
+    cmp "$legacy.sig" "$document.sig"
+done
+# Reserve room for the pointer and its new immutable signature too.
+printf 'payload\n' >"$dir/payload"
+sed -n '/^new=0$/,/^# Preserve both advertised/p' "$here/publish" | sed '$d' >"$work/budget"
+(
+    files=payload
+    . "$work/budget"
+    expected=$(( $(stat -c %s "$dir/payload") + 2 * $(stat -c %s "$dir/latest") + 2 * $(stat -c %s "$dir/latest.sig") ))
+    [ "$new" = "$expected" ] || die 'publication metadata omitted from bucket cap'
+)
+# Fetch the new pointer through the production reader, with no legacy fallback.
+sed -n '/^[[:space:]]*code=$(get --max-time 60/,/^fi$/p' "$repo/tools/fetch-release" | sed '$d' >"$work/read"
+[ -s "$work/read" ] || die 'missing production reader'
+get() {
+    output= code=
+    while [ "$#" -gt 1 ]; do
+        case $1 in -o) output=$2; shift ;; -w) code=200; shift ;; esac
+        shift
+    done
+    cp "$1" "$output" || return 1
+    printf %s "$code"
+}
+pointer=$work/pointer url=$ep/beta host=fixture
+. "$work/read"
+openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$pointer/latest" -sigfile "$pointer/latest.sig" >/dev/null
+# Execute the shipped old pointer reader, including signature and grammar checks.
+git -C "$repo" show v0.1.4-rc1:tools/fetch-release >"$work/old-fetch"
+sed -n '/^field()/p; /^num()/p; /^bytes()/p; /^read_pointer() {/,/^}/p' "$work/old-fetch" >"$work/old-functions"
+sed -n '/^[[:space:]]*code=$(get --max-time 60/,/^fi$/p' "$work/old-fetch" | sed '$d' >"$work/old-read"
+key=$work/pub usb=
+eval "$(git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/update.sh | sed -n '/^verify()/p')"
+. "$work/old-functions"
+. "$work/old-read"
+read_pointer
+[ "$latest" = 42 ] || die 'old reader did not discover the new release'
+# The old status reader and its original jq validator consume the new publisher's output.
+git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/release-status.sh >"$work/old-status-source"
+sed -n '/^[[:space:]]*if get /,/^[[:space:]]*verify "\$f"/p' "$work/old-status-source" |
+    sed '1s/if get/get/; $s/ &&$//' >"$work/old-status-fetch"
+(
+    release=42 f=$pointer/advisories.json
+    . "$work/old-status-fetch"
+    cmp "$f" "$ep/beta/42/advisories.json"
+)
+if command -v jq >/dev/null 2>&1; then
+    git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/release-status.jq >"$work/old-status.jq"
+    sed -e "s|/var/lib/node_exporter|$work/metrics|g" \
+            -e "s|/var/lib/convergent/release-status|$work/cache|g" \
+            -e "s|/usr/lib/convergent/release-status.jq|$work/old-status.jq|g" "$work/old-status-source" >"$work/old-status.sh"
+    (
+        private() { mkdir -p "$1"; }
+        booted=42
+        . "$work/old-status.sh"
+        release_metrics 1
+        for role in installed latest; do
+            grep -qx "cv_release_status_verified{role=\"$role\",release=\"42\"} 1" "$work/metrics/release.prom"
+        done
+        cmp "$work/cache/42.json" "$ep/beta/42/advisories.json"
+    )
+else
+    echo 'test-publish: old status ingestion fixture skipped (jq unavailable)'
+fi
+printf 'tampered\n' >>"$ep/beta/latest-v2"
+if (. "$work/read") >"$work/log" 2>&1; then die 'reader accepted missing digest signature'; fi
+# Bucket pressure must preserve both advertised releases.
+sed -n '/^for old in \$olds; do/,/^done$/p' "$here/publish" >"$work/prune"
+olds='1 2 3' latest=3 legacy_latest=1 n=3 keep=2 total=300 new=100 cap=200
+keys_of() { printf '%s\n' "$1"; }
+size_of() { echo 100; }
+s3() { printf '%s\n' "$3" >>"$work/deleted"; }
+. "$work/prune"
+[ "$(cat "$work/deleted")" = "$ep/2" ] || die 'pruned an advertised release'
+# The published sidecar requires retained metadata and payloads.
+mkdir -p "$dir/guests/svc" "$dir/guests/remmina"
+printf 'payload\n' >"$dir/guests/svc/rootfs.tar.gz"
+printf 'payload\n' >"$dir/guests/remmina/rootfs.tar.gz"
+printf 'host payload\n' >"$dir/slot.img"
+{
+    printf 'release 42\nsize slot.img %s\n' "$(stat -c %s "$dir/slot.img")"
+    (cd "$dir"; sha256sum slot.img)
+} >"$dir/manifest"
+cp "$dir/slot.img" "$ep/beta/42/"
+for guest in svc remmina; do
+    case $guest in svc) manifest=guests.manifest ;; *) manifest=remmina.manifest ;; esac
+    (cd "$dir"; printf 'release 42\n'; sha256sum "guests/$guest/rootfs.tar.gz") >"$dir/$manifest"
+done
+for manifest in manifest guests.manifest remmina.manifest; do
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/$manifest" -out "$dir/$manifest.sig"
+    cp "$dir/$manifest" "$dir/$manifest.sig" "$ep/beta/42/"
+done
+sed -n '/^[[:space:]]*# A retained signed inventory/,/^[[:space:]]*rm -f "\$work\/advisories.json"/p' "$here/advisories-publish" | sed '$d' >"$work/retained"
+s3() { [ "$1" = -o ]; cp "$3" "$2"; }
+verify() { openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$1" -sigfile "$1.sig" >/dev/null 2>&1; }
+has_guests=1 has_remmina=1
+. "$work/retained"
+for missing in remmina.manifest guests/remmina/rootfs.tar.gz; do
+    mv "$dir/$missing" "$work/saved"
+    if (. "$work/retained") >"$work/log" 2>&1; then die "accepted missing $missing"; fi
+    mv "$work/saved" "$dir/$missing"
+done
+# Fetch and verify a host payload using the shipped old manifest/download logic.
+(
+    latest=42 dir=$work/old-release
+    mkdir "$dir"
+    sed -n '/^have()/p; /^mf()/p; /^download() {/,/^}/p' "$work/old-fetch" >"$work/old-download"
+    . "$work/old-download"
+    get -o "$dir/manifest" "$url/$latest/manifest"
+    get -o "$dir/manifest.sig" "$url/$latest/manifest.sig"
+    verify "$dir/manifest"
+    [ "$(field release '' "$dir/manifest")" = "$latest" ]
+    download slot.img
+    cmp "$dir/slot.img" "$ep/beta/42/slot.img"
+    rm "$dir/slot.img"
+    printf 'tampered\n' >"$ep/beta/42/slot.img"
+    if (download slot.img) >"$work/log" 2>&1; then die 'old reader accepted a corrupt payload'; fi
+)
+if command -v python3 >/dev/null 2>&1; then
+    sed -n '/^import re, sys/,/^PY$/p' "$here/advisories-publish" | sed '$d' >"$work/list.py"
+    for id in 0 42 00042 20261031123456; do
+        {
+            printf '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated>'
+            for manifest in manifest guests.manifest remmina.manifest; do
+                printf '<Contents><Key>beta/%s/%s</Key></Contents>' "$id" "$manifest"
+            done
+            printf '</ListBucketResult>\n'
+        } >"$work/list.xml"
+        case $id in
+        0|42)
+            python3 "$work/list.py" "$work/list.xml" beta >"$work/list"
+            [ "$(cat "$work/list")" = "$id 1 1" ] || die 'lost published Remmina requirement'
+            ;;
+        *)
+            if python3 "$work/list.py" "$work/list.xml" beta >"$work/list" 2>"$work/log"; then die 'accepted noncanonical bucket release'; fi
+            ;;
+        esac
+    done
+else
+    echo 'test-publish: bucket listing fixtures skipped (python3 unavailable)'
+fi
+# A timed-out clone takes the normal fetch-failure branch, never cached GLSAs.
+sed -n '/^if .*git clone /,/^branch=/p' "$here/advisories" | sed '$d' >"$work/clone"
+timeout() { [ "$1 $2 $3 $4 $5" = '-k 10 120 git clone' ] || die 'unbounded clone'; echo bounded >"$work/timeout"; return 124; }
+git() { die 'clone bypassed timeout'; }
+glsa=$work/glsa
+. "$work/clone"
+[ "$(cat "$work/timeout")" = bounded ]
+grep -q 'GLSA HTTPS fetch failed' "$work/host.json"
+echo 'test-publish: atomic commits, legacy recovery, readers, retention, Remmina and clone deadline passed'

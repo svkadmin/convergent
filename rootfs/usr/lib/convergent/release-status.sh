@@ -19,8 +19,9 @@ release_metrics() (
 			f=$pointer/advisories.json
 			previous=0
 			if [ -f "$cache/$release.json" ]; then previous=$(jq -r '.generated' "$cache/$release.json"); fi
-			if get --max-time 30 --max-filesize 1048576 -o "$f" "$url/$release/advisories.json" 2>/dev/null &&
-				get --max-time 30 --max-filesize 1024 -o "$f.sig" "$url/$release/advisories.json.sig" 2>/dev/null &&
+			if get --max-time 30 --max-filesize 1048576 -o "$f" "$url/$release/advisories-v2.json" 2>/dev/null &&
+				digest=$(sha256sum <"$f" | cut -d' ' -f1) &&
+				get --max-time 30 --max-filesize 1024 -o "$f.sig" "$url/$release/advisories-v2.json.$digest.sig" 2>/dev/null &&
 				verify "$f" &&
 				jq -ser --arg release "$release" --arg role "$role" --argjson now "$now" --argjson previous "$previous" \
 					-f /usr/lib/convergent/release-status.jq "$f" >"$pointer/status.prom" 2>/dev/null; then
