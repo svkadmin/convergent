@@ -9,6 +9,7 @@ fail=0
 bad() { echo "lint: $*"; fail=1; }
 sh build/test --install-options || bad 'install options selftest failed'
 sh build/test-vm-runner || bad 'VM runner selftest failed'
+sh build/test-devices || bad 'USB enrollment selftest failed'
 offline_start=$(date +%s)
 for dependency in python3 jq openssl; do
     command -v "$dependency" >/dev/null 2>&1 || bad "offline preflight requires $dependency"
