@@ -121,7 +121,8 @@ echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures 
     sh -n "$clock/recipe"
     cat >"$clock/fixture" <<'FIXTURE'
 record() { printf '%s\n' "$*" >>"$clock/log"; [ "$*" != "$fail_at" ]; }
-rc-service() { record "host rc-service $*"; }
+rc_service() { record "host rc-service $*"; }
+alias rc-service=rc_service
 date() {
     case $node:$* in
     'host:-u -s YYYY-MM-DD HH:MM:SS') record 'host set UTC' ;;
