@@ -1,0 +1,198 @@
+#!/bin/sh
+# Offline bootstrap authentication and cache fixtures.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+export work repo
+die() { echo "test-bootstrap: $*" >&2; exit 1; }
+deny() {
+	if sh -eu "$@" >"$work/error" 2>&1; then die "accepted $*"; fi
+}
+
+# A valid signature cannot authorize bytes outside the stage3 pin.
+sed -n '/^if \[ ! -x "\$BUILDER\/bin\/sh" \]; then$/,/^fi$/p' "$here/buildenv" >"$work/stage"
+cat >"$work/stage-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+payload=$work/$1
+STAGE3_SHA256=$2
+signature=$3
+work=$work/stage-case
+mkdir "$work"
+BUILDER=$work/builder
+STAGE3_VARIANT=hardened-openrc STAGE3_BUILD=fixture mirror=https://fixture key=fixture
+curl() {
+	[ "$1 $2" = '-fsSL -o' ] || return 1
+	cp "$payload" "$3"
+}
+gpg() {
+	case $* in
+	'-q --import fixture') return 0 ;;
+	'-q --verify '*) : >"$work/verified"; [ "$signature" = good ] ;;
+	*) return 1 ;;
+	esac
+}
+mkdir() {
+	if [ "$1" = -m ]; then shift 2; fi
+	command mkdir "$@"
+}
+tar() { : >"$work/extracted"; }
+. "$work/../stage"
+SH
+printf pinned >"$work/good"
+printf older-signed >"$work/old"
+digest=$(sha256sum "$work/good" | awk '{print $1}')
+for part in stage stage-run; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+sh -eu "$work/stage-run" good "$digest" good
+[ -f "$work/stage-case/verified" ] && [ -f "$work/stage-case/extracted" ]
+for mode in old missing bad-signature; do
+	rm -rf "$work/stage-case"
+	case $mode in
+	old) deny "$work/stage-run" old "$digest" good ;;
+	missing) deny "$work/stage-run" good '' good ;;
+	bad-signature) deny "$work/stage-run" good "$digest" bad ;;
+	esac
+	[ -f "$work/stage-case/verified" ] && [ ! -e "$work/stage-case/extracted" ]
+done
+echo 'test-bootstrap: stage3 pin and signature passed'
+
+# Authenticate each package before tar sees metadata or a dependency is fetched.
+sed -n '/^pkgbase=/,/^# 3\./p' "$repo/guests/fw/build" >"$work/fetchpkg"
+cat >"$work/pkg-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+www=$work/www dl=$work/dl
+OPENBSD_MIRROR=https://fixture ver=7.9 v=79 FW_PACKAGES=root
+signify=fixture_signify
+mkdir -p "$www/pkg" "$dl"
+cp "$work/base79.tgz" "$dl/base79.tgz"
+curl() {
+	while [ "$1" != -o ]; do shift; done
+	[ "$3" = "https://fixture/7.9/packages/amd64/${3##*/}" ] || return 1
+	printf '%s\n' "${3##*/}" >>"$work/downloads"
+	cp "$work/packages/${3##*/}" "$2"
+}
+# Model signify's checked inputs; package hashing and tar are real.
+fixture_signify() {
+	case $1 in
+	-V)
+		[ "$*" = "-V -e -q -p $dl/pkg.pub -x $dl/pkg-SHA256.sig -m $dl/pkg-SHA256.verified" ] || return 1
+		cmp "$dl/pkg.pub" "$work/base/etc/signify/openbsd-79-pkg.pub" || return 1
+		[ "$(cat "$dl/pkg-SHA256.sig")" = 'signed fixture' ] || return 1
+		cp "$work/signed-manifest" "$dl/pkg-SHA256.verified" ;;
+	-C)
+		[ "$*" = "-C -q -p $dl/pkg.pub -x $dl/pkg-SHA256.sig $7" ] || return 1
+		cmp "$dl/pkg.pub" "$work/base/etc/signify/openbsd-79-pkg.pub" || return 1
+		[ "$(cat "$dl/pkg-SHA256.sig")" = 'signed fixture' ] || return 1
+		awk -v f="($7)" '$2 == f' "$work/signed-manifest" >"$work/checksum"
+		sha256sum -c "$work/checksum" >/dev/null ;;
+	*) return 1 ;;
+	esac
+}
+tar() {
+	[ "$3" != +CONTENTS ] || printf '%s\n' "${2##*/}" >>"$work/parsed"
+	command tar "$@"
+}
+. "$work/fetchpkg"
+SH
+for part in fetchpkg pkg-run; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+mkdir -p "$work/packages" "$work/contents" "$work/base/etc/signify"
+printf 'fixture package key\n' >"$work/base/etc/signify/openbsd-79-pkg.pub"
+tar -czf "$work/base79.tgz" -C "$work/base" ./etc/signify/openbsd-79-pkg.pub
+printf '@depend:leaf-*:leaf-1:leaf\n' >"$work/contents/+CONTENTS"
+tar -czf "$work/packages/root-1.tgz" -C "$work/contents" +CONTENTS
+printf '@depend:root-*:root-1:root\n' >"$work/contents/+CONTENTS"
+tar -czf "$work/packages/leaf-1.tgz" -C "$work/contents" +CONTENTS
+(cd "$work/packages" && sha256sum --tag *.tgz) >"$work/all-checksums"
+cp "$work/all-checksums" "$work/packages/SHA256"
+cp "$work/all-checksums" "$work/signed-manifest"
+echo 'signed fixture' >"$work/packages/SHA256.sig"
+sh -eu "$work/pkg-run"
+printf 'SHA256\nSHA256.sig\nroot-1.tgz\nleaf-1.tgz\n' >"$work/want"
+cmp "$work/want" "$work/downloads"
+printf 'root-1.tgz\nleaf-1.tgz\n' >"$work/want"
+cmp "$work/want" "$work/parsed"
+for mode in corrupt unlisted duplicate dependency bad-signature missing-signature manifest-mismatch; do
+	rm -rf "$work/www" "$work/dl"
+	: >"$work/downloads"; : >"$work/parsed"
+	cp "$work/all-checksums" "$work/packages/SHA256"
+	echo 'signed fixture' >"$work/packages/SHA256.sig"
+	case $mode in
+	corrupt)
+		cp "$work/packages/root-1.tgz" "$work/root.good"
+		printf '@depend:rogue-*:rogue-1:rogue\n' >"$work/contents/+CONTENTS"
+		tar -czf "$work/packages/root-1.tgz" -C "$work/contents" +CONTENTS ;;
+	unlisted) : >"$work/packages/SHA256" ;;
+	duplicate) cat "$work/all-checksums" >>"$work/packages/SHA256" ;;
+	dependency) grep root-1.tgz "$work/all-checksums" >"$work/packages/SHA256" ;;
+	bad-signature) echo invalid >"$work/packages/SHA256.sig" ;;
+	missing-signature) rm "$work/packages/SHA256.sig" ;;
+	esac
+	cp "$work/packages/SHA256" "$work/signed-manifest"
+	[ "$mode" != manifest-mismatch ] || printf '\n' >>"$work/packages/SHA256"
+	deny "$work/pkg-run"
+	printf 'SHA256\nSHA256.sig\n' >"$work/want"
+	case $mode in
+	corrupt)
+		[ ! -s "$work/parsed" ]
+		printf 'root-1.tgz\n' >>"$work/want"
+		cmp "$work/want" "$work/downloads"
+		mv "$work/root.good" "$work/packages/root-1.tgz" ;;
+	dependency)
+		printf 'root-1.tgz\n' >>"$work/want"
+		cmp "$work/want" "$work/downloads"
+		printf 'root-1.tgz\n' >"$work/want"
+		cmp "$work/want" "$work/parsed" ;;
+	*) cmp "$work/want" "$work/downloads"; [ ! -s "$work/parsed" ] ;;
+	esac
+done
+echo 'test-bootstrap: signed package manifest, rejection, dependency closure and cycle passed'
+
+# Bad downloads and legacy cache entries must not prevent the next retry.
+sed -n '/^alpine_bootstrap() {$/,/^}$/p; /^alpine_repositories() {$/,/^}$/p' \
+	"$repo/guests/alpine.sh" >"$work/alpine"
+cat >"$work/alpine-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+MINIROOTFS=mini.tar.gz MINIROOTFS_SHA256=$2 ALPINE_MIRROR=https://fixture ALPINE_BRANCH=fixture
+mode=$1
+curl() {
+	while [ "$1" != -o ]; do shift; done
+	printf '%s\n' "$2" >>"$work/downloads"
+	[ ! -f "$work/cache/$MINIROOTFS" ] || return 1
+	case $mode in
+	good) cp "$work/mini.good" "$2" ;;
+	bad) printf corrupt >"$2" ;;
+	failed) printf partial >"$2"; return 1 ;;
+	cached) return 1 ;;
+	esac
+}
+. "$work/alpine"
+alpine_bootstrap "$work/mini" "$work/cache"
+SH
+for part in alpine alpine-run; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+mkdir -p "$work/miniroot/etc/apk"
+echo pinned >"$work/miniroot/marker"
+tar -czf "$work/mini.good" -C "$work/miniroot" .
+digest=$(sha256sum "$work/mini.good" | awk '{print $1}')
+: >"$work/downloads"
+for mode in bad failed; do
+	deny "$work/alpine-run" "$mode" "$digest"
+	[ ! -e "$work/cache/mini.tar.gz" ] && [ ! -e "$work/mini/marker" ]
+	[ -z "$(find "$work/cache" -type f -print)" ]
+done
+# mktemp must give separate download names in the cache directory.
+[ "$(sort -u "$work/downloads" | wc -l)" = 2 ]
+sh -eu "$work/alpine-run" good "$digest"
+cmp "$work/mini.good" "$work/cache/mini.tar.gz"
+[ "$(cat "$work/mini/marker")" = pinned ]
+: >"$work/downloads"
+sh -eu "$work/alpine-run" cached "$digest"
+[ ! -s "$work/downloads" ]
+rm -rf "$work/mini"
+printf corrupt >"$work/cache/mini.tar.gz"
+deny "$work/alpine-run" cached "$digest"
+[ ! -e "$work/cache/mini.tar.gz" ] && [ ! -e "$work/mini/marker" ]
+sh -eu "$work/alpine-run" good "$digest"
+cmp "$work/mini.good" "$work/cache/mini.tar.gz"
+echo 'test-bootstrap: Alpine rejection, eviction, retry and cache hit passed'

@@ -7,13 +7,24 @@ alpine_bootstrap() {
 	mini=$1
 	alpine_tar=$2/$MINIROOTFS
 	mkdir -p "$mini" "$2"
-	if [ ! -f "$alpine_tar" ]; then
-		curl -fsSL --proto '=https' --proto-redir '=https' -o "$alpine_tar.part" \
-			"$ALPINE_MIRROR/$ALPINE_BRANCH/releases/x86_64/$MINIROOTFS"
-		mv "$alpine_tar.part" "$alpine_tar"
+	if [ -f "$alpine_tar" ]; then
+		if ! printf '%s  %s\n' "$MINIROOTFS_SHA256" "$alpine_tar" | sha256sum -c - >/dev/null; then
+			rm -f "$alpine_tar"
+			die "$MINIROOTFS does not match its pin"
+		fi
+	else
+		alpine_part=$(mktemp "$alpine_tar.part.XXXXXX")
+		if ! curl -fsSL --proto '=https' --proto-redir '=https' -o "$alpine_part" \
+			"$ALPINE_MIRROR/$ALPINE_BRANCH/releases/x86_64/$MINIROOTFS"; then
+			rm -f "$alpine_part"
+			die "$MINIROOTFS download failed"
+		fi
+		if ! printf '%s  %s\n' "$MINIROOTFS_SHA256" "$alpine_part" | sha256sum -c - >/dev/null; then
+			rm -f "$alpine_part"
+			die "$MINIROOTFS does not match its pin"
+		fi
+		mv "$alpine_part" "$alpine_tar"
 	fi
-	printf '%s  %s\n' "$MINIROOTFS_SHA256" "$alpine_tar" | sha256sum -c - >/dev/null ||
-		die "$MINIROOTFS does not match its pin"
 	tar -xzf "$alpine_tar" -C "$mini"
 	alpine_repositories "$mini"
 }

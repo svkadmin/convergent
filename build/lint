@@ -15,6 +15,7 @@ esac
 if [ "${1:-}" != --rules ]; then
 sh build/test --install-options || bad 'install options selftest failed'
 sh build/test-vm-runner || bad 'VM runner selftest failed'
+sh build/test-bootstrap || bad 'bootstrap selftest failed'
 offline_start=$(date +%s)
 for dependency in python3 jq openssl; do
     command -v "$dependency" >/dev/null 2>&1 || bad "offline preflight requires $dependency"

@@ -28,6 +28,8 @@ if [ ! -x "$BUILDER/bin/sh" ]; then
 	mkdir -m 700 "$GNUPGHOME"
 	gpg -q --import "$key"
 	gpg -q --verify "$work/$tarball.asc" "$work/$tarball" || die "stage3 signature does not verify"
+	printf '%s  %s\n' "$STAGE3_SHA256" "$work/$tarball" | sha256sum -c - >/dev/null ||
+		die "stage3 does not match its pin"
 	mkdir -p "${BUILDER%/*}"
 	stage=$(mktemp -d "$BUILDER.stage3.XXXXXX")
 	tar -xpf "$work/$tarball" --xattrs-include='*.*' --numeric-owner -C "$stage"
