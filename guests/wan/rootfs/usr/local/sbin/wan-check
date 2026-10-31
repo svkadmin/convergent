@@ -60,7 +60,12 @@ for ifc in $UP_IFS; do
 			logger -t convergent-alert -p local0.crit \
 				"UpstreamOverlap interface=$ifc lease=$cidr internal=$INTERNAL_NET action=refused"
 			if [ "$ifc" = "$WIFI_IF" ]; then
-				timeout 10 iwctl station "$ifc" disconnect >/dev/null 2>&1
+				if ! timeout 10 iwctl station "$ifc" disconnect >/dev/null; then
+					rc=1
+					logger -t wan-check "disconnect failed interface=$ifc; removing IPv4 routes and addresses"
+					ip -4 route flush dev "$ifc" || logger -t wan-check "route cleanup failed interface=$ifc"
+					ip -4 addr flush dev "$ifc" || logger -t wan-check "address cleanup failed interface=$ifc"
+				fi
 			else
 				ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 				ip addr flush dev "$ifc" 2>/dev/null

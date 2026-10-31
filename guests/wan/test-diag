@@ -6,6 +6,69 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 mkdir "$work/run" "$work/log"
+# Exercise the refusal loop with IWD stalled and independent cleanup failures.
+(
+. "$here/rootfs/usr/local/lib/wan-lib.sh"
+sed -n '/^good=0$/,/^if \[ "\$bad" -eq 0 \]/p' "$here/rootfs/usr/local/sbin/wan-check" |
+    sed '$d' >"$work/refuse"
+[ -s "$work/refuse" ]
+sh -n "$work/refuse"
+d=$work/run UP_IFS=wlan0 WIFI_IF=wlan0 INTERNAL_NET=100.80.0.0/16
+logger() { printf '%s\n' "$*" >>"$work/messages"; }
+timeout() { [ "$1" = 10 ] || exit 97; shift; "$@"; }
+iwctl() {
+    [ "$*" = 'station wlan0 disconnect' ] || exit 97
+    echo disconnect >>"$work/calls"
+    if [ "$fault" != none ]; then echo 'IWD timed out' >&2; return 124; fi
+    rm "$work/address" "$work/route"
+}
+ip() {
+    case $* in
+    '-4 -o addr show dev wlan0 scope global') echo "2: wlan0 inet $lease scope global wlan0" ;;
+    '-4 route flush dev wlan0'|'-4 addr flush dev wlan0')
+        case $2 in route) item=route ;; addr) item=address ;; esac
+        echo "$item" >>"$work/calls"
+        if [ "$fault" = "$item" ] || [ "$fault" = both ]; then return 1; fi
+        rm "$work/$item"
+        ;;
+    *) exit 97 ;;
+    esac
+}
+for fault in none timeout route address both safe; do
+    rc=0 lease=100.80.1.2/24
+    [ "$fault" != safe ] || lease=192.168.1.2/24
+    touch "$work/address" "$work/route"
+    rm -f "$d/refused"
+    : >"$work/calls"
+    : >"$work/messages"
+    # wan-check does not use errexit; inspect its accumulated status below.
+    if . "$work/refuse" 2>"$work/error"; then :; fi
+    case $fault in
+    safe)
+        [ "$rc" = 0 ] && [ "$good" = 1 ] && [ "$bad" = 0 ]
+        [ ! -s "$work/calls" ] && [ ! -e "$d/refused" ]
+        [ -e "$work/address" ] && [ -e "$work/route" ]
+        continue ;;
+    none) [ "$rc" = 0 ]; printf 'disconnect\n' >"$work/want" ;;
+    *)
+        [ "$rc" = 1 ]
+        grep -q 'disconnect failed interface=wlan0' "$work/messages"
+        grep -qx 'IWD timed out' "$work/error"
+        printf 'disconnect\nroute\naddress\n' >"$work/want" ;;
+    esac
+    cmp "$work/want" "$work/calls"
+    grep -q '^wlan0 100.80.1.2/24 ' "$d/refused"
+    for item in route address; do
+        if [ "$fault" = "$item" ] || [ "$fault" = both ]; then
+            [ -e "$work/$item" ]
+            grep -q "$item cleanup failed interface=wlan0" "$work/messages"
+        else
+            [ ! -e "$work/$item" ]
+        fi
+    done
+done
+echo 'wan-check: disconnect and IPv4 cleanup failure fixtures passed'
+)
 sed -n '/^echo "== overlap refusal"/,$p' "$here/rootfs/usr/local/sbin/wan-diag" |
 	sed "s|/run/wan|$work/run|g; s|/var/log/wan|$work/log|g" >"$work/diag"
 sh "$work/diag" >"$work/out"
