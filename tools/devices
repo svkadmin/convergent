@@ -166,23 +166,25 @@ enrol() {
 	trap 'cancelled=129' HUP
 	trap 'cancelled=130' INT
 	trap 'cancelled=143' TERM
-	(
-		# Children must also finish the commit before cancellation takes effect.
+	# OpenRC resets signal handlers; keep the commit outside the terminal's group.
+	setsid -w sh -eu - "$work" <<'COMMIT' &
+		work=$1
+		die() { echo "devices: $*" >&2; exit 1; }
 		trap '' HUP INT TERM
 		trap 'echo "$?" >"$work/result"' 0
 		# Insert reviewed rules before any old catch-all, then remove the old policy.
 		while IFS= read -r rule; do
-			usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
+			timeout -k 1 30 usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
 		done <"$work/approved"
 		while IFS= read -r rule; do
 			id=${rule%%:*}
 			case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac
-			usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
+			timeout -k 1 30 usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
 		done <"$work/old"
 		# The daemon applies the saved policy to present devices on startup.
-		rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
-		logger -t devices 'USB policy replaced after individual review'
-	) &
+		timeout -k 1 30 rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
+		timeout -k 1 30 logger -t devices 'USB policy replaced after individual review' || die 'policy saved; logging failed'
+COMMIT
 	commit=$!
 	# A trapped signal interrupts wait; the child records its own final status.
 	while kill -0 "$commit" 2>/dev/null; do wait "$commit" || :; done
