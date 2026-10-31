@@ -3,10 +3,24 @@
 set -eu
 umask 077
 state=/var/lib/convergent
+key=/etc/ssh/ssh_host_ed25519_key
+if [ ! -e "$key" ]; then
+    [ ! -e "$key.pub" ] || { echo 'seed: missing host private key' >&2; exit 1; }
+    rm -f "$key.new" "$key.new.pub"
+    ssh-keygen -q -t ed25519 -N '' -f "$key.new"
+    ssh-keygen -y -P '' -f "$key.new" >"$key.new.pub"
+    sync
+    mv "$key.new" "$key"
+    sync
+fi
+# Recover the public half before announcing an already seeded guest.
+ssh-keygen -y -P '' -f "$key" >"$key.pub.new"
+sync
+mv "$key.pub.new" "$key.pub"
+sync
 announce() { printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan $(cat "$state/seeded") $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console; }
 if [ -f "$state/seeded" ] && [ "$(wc -c <"$state/seeded")" -eq 33 ] &&
     LC_ALL=C grep -qxE '[0-9a-f]{32}' "$state/seeded"; then announce; exit 0; fi
-[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
 device=$(blkid -L CVSEED || true)
 if [ -z "$device" ]; then
     printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan unseeded $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console

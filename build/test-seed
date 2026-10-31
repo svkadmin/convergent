@@ -342,10 +342,11 @@ for guest in wan svc; do
         -e "s|/dev/console|$root/dev/console|g" "$repo/guests/$guest/rootfs/usr/local/sbin/$guest-seed" >"$scratch/seed"
     cat >"$scratch/run-seed" <<'SEED'
 blkid() { echo /dev/fixture; }
-mount() { :; }
+mount() { seed_installing=1; }
 umount() { :; }
 chown() { :; }
 sync() {
+    [ "$guest" != wan ] || [ "${seed_installing:-0}" = 1 ] || return 0
     if [ -f "$root/var/lib/convergent/seeded.new" ]; then
         [ "$(cat "$root/var/lib/convergent/seeded.new")" = "$id" ] || exit 1
         [ "$(cat "$root/var/lib/convergent/seeded")" != "$id" ] || exit 1
@@ -383,5 +384,46 @@ $id"; do
         sh -eu "$scratch/run-seed" "$scratch/seed"
         [ ! -s "$root/events" ]
     done
+    [ "$guest" = wan ] || continue
+    # Missing or incorrect public halves recover with and without a seed marker.
+    key=$root/etc/ssh/ssh_host_ed25519_key
+    cp "$key" "$scratch/wan-key"
+    ssh-keygen -y -P '' -f "$key" >"$scratch/wan-pub"
+    fingerprint=$(ssh-keygen -E sha256 -lf "$scratch/wan-pub" | awk '{print $2}')
+    for marker in '' "$id"; do
+        for fault in missing wrong; do
+            printf '%s\n' "$marker" >"$root/var/lib/convergent/seeded"
+            rm "$key.pub"
+            [ "$fault" != wrong ] || echo broken >"$key.pub"
+            sh -eu "$scratch/run-seed" "$scratch/seed"
+            cmp "$key" "$scratch/wan-key"
+            cmp "$key.pub" "$scratch/wan-pub"
+            grep -qx "CONVERGENT-HOSTKEY wan $id $fingerprint" "$root/dev/console"
+        done
+    done
+    cat >"$scratch/run-key" <<'KEY'
+count=0
+sync() { count=$((count + 1)); [ "$count" != "${cut:-0}" ] || exit 75; }
+. "$1"
+KEY
+    sh -n "$scratch/run-key"
+    # Retry each key publication boundary without changing a published identity.
+    for cut in 1 2 3 4; do
+        rm -f "$key" "$key.pub"
+        if cut=$cut sh -eu "$scratch/run-key" "$scratch/seed"; then die "wan missed key cut $cut"; fi
+        if [ -f "$key" ]; then cp "$key" "$scratch/published-key"; fi
+        sh -eu "$scratch/run-key" "$scratch/seed"
+        if [ -f "$scratch/published-key" ]; then
+            cmp "$key" "$scratch/published-key"
+            rm "$scratch/published-key"
+        fi
+        ssh-keygen -y -P '' -f "$key" >"$scratch/wan-pub"
+        cmp "$key.pub" "$scratch/wan-pub"
+    done
+    echo broken >"$key"
+    : >"$root/dev/console"
+    if sh -eu "$scratch/run-key" "$scratch/seed"; then die 'wan accepted invalid private key'; fi
+    grep -qx broken "$key"
+    [ ! -s "$root/dev/console" ]
 done
 echo 'test-seed: credential retries, identity checks and atomic markers passed'
