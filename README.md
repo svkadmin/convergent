@@ -1,15 +1,15 @@
 # Convergent
 
-Single-owner, security-first laptop OS. Gentoo/OpenRC runs a dm-verity EROFS root with A/B UKIs and
-LUKS2+Btrfs state. Incus separates an Alpine WAN VM, OpenBSD fw1/fw2 CARP pair, svc
+Single-owner, security-first laptop OS. Gentoo/OpenRC runs a dm-verity EROFS root, A/B UKIs and
+LUKS2+Btrfs state. Incus isolates an Alpine WAN VM, OpenBSD fw1/fw2 CARP pair, svc
 (VictoriaMetrics/Logs and Grafana), def/tmp/int browsers, Remmina and work guests. Incus UI is
-available through int.
+accessed through int.
 
 Target: UEFI, Intel `/dev/dri/renderD128` graphics, VT-d and Wi-Fi alone in its IOMMU group; no ACS
 override. NVIDIA stays on vfio-pci with runtime power management. Secure Boot signing is not
 implemented.
 
-> Writing an image or running the installer **erases the whole target disk**.
+> Writing an image or installing **erases the target disk**.
 
 ## Docs
 

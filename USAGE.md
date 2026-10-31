@@ -97,29 +97,27 @@ state swap; build media needs 12 GiB plus swap. build/stick forces auto state an
 raise image_size or positional size for disk swap (even 1 GiB exceeds the default 30-GiB image).
 OpenRC activates generated swap settings; editing reference YAML has no runtime effect.
 
-## Coming from Arch
+## System operations
 
-| Arch operation | Convergent |
+| Task | Command or behaviour |
 |---|---|
-| pacman -Syu | Whole signed release: `sys update install`; no runtime package manager |
-| systemctl status/restart | `rc-status -a`; `sudo rc-service <name> status`, `restart` |
-| systemctl enable | Services fixed in the release |
-| journalctl | `sys logs`; [log locations](RECOVERY.md#8-where-the-logs-are) |
-| Edit etc | [Writable exceptions](ARCHITECTURE.md#53-what-is-writable); other changes need a release |
-| passwd | `sys security password` or `sudo account password [user]`; bind-mounted shadow cannot be replaced by plain passwd |
+| Update | Whole signed release: `sys update install`; no runtime package manager |
+| Service status/restart | `rc-status -a`; `sudo rc-service <name> status`, `restart` |
+| Enable services | Fixed in the release |
+| Read logs | `sys logs`; [log locations](RECOVERY.md#8-where-the-logs-are) |
+| Edit /etc | [Writable exceptions](ARCHITECTURE.md#53-what-is-writable); other changes need a release |
+| Change password | `sys security password` or `sudo account password [user]`; bind-mounted shadow cannot be replaced by plain passwd |
 | Home files | Encrypted state, preserved across updates |
-| incus | guests manages infrastructure; Incus UI manages owner work guests |
-| Network manager | `sys wifi` controls wan's radio |
+| Manage guests | guests manages infrastructure; Incus UI manages owner work guests |
+| Wi-Fi | `sys wifi` controls wan's radio |
 
 Firewall inspection: `sudo ssh -F /etc/convergent/ssh_config fw1`, then `pfctl -sr` or
 `ifconfig carp`. Daily use needs no firewall shell.
 
 ## Keys
 
-Sway's stock bindings, plus the Convergent ones below. Super is the Windows key.
-
-Stock Sway, foot, mako and swaylock on a black background and bar. Owners can override each in
-`~/.config/`.
+Stock Sway bindings plus Convergent additions below. Super is the Windows key. Sway, foot, mako and
+swaylock use stock styling with a black background/bar; override each in `~/.config/`.
 
 | Key | Does |
 |---|---|
@@ -144,7 +142,7 @@ Stock Sway, foot, mako and swaylock on a black background and bar. Owners can ov
 Super+a also runs `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
 
 Display preview: type `yes` then Enter within 15 seconds to keep it. Any other answer, Escape then
-Enter, or no answer restores the previous layout. Dock and undock need no key.
+Enter, or timeout restores the previous layout. Docking/undocking needs no key.
 
 Files (Super+d) opens Midnight Commander in foot, with its internal editor (`mcedit`) and the
 `modarin256-defbg` dark skin on the terminal background. Notes opens Vim's directory list in foot at
@@ -158,9 +156,9 @@ an argument to that default (`sys backup /mnt/x proj` works; `sys wifi foo` is a
 Missing arguments are prompted for; partial lists are usage errors. `sys help` lists actions and
 aliases. `*` marks actions that ask for `yes` in the terminal (default No).
 
-`sys` (Super+m) uses fzf: the menu left; right, a Gentoo system dashboard above the highlighted
-row's status and commands, in terminal colours with a blue highlight. The dashboard refreshes on
-menu entry; narrow panes hide the logo. Enter opens or runs; Esc goes back; typing filters.
+`sys` (Super+m) uses fzf: menu left; Gentoo dashboard, selected status and commands right, in terminal
+colours with blue highlighting. The dashboard refreshes on entry; narrow panes hide the logo.
+Enter opens/runs; Esc goes back; typing filters.
 Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
 
 Wi-Fi picker: type to filter, Enter selects the highlighted SSID, Esc cancels, Ctrl+u clears the
@@ -195,15 +193,13 @@ does not join an unscanned name.
 DNS edits, wired assignment and firewall maintenance ask inside the action, after showing the change
 or checking health. Not built into `sys`: owner guest management and printing.
 
-Screen too big: `sys display set eDP-1 scale 1.3`, confirm with `yes`, then `sys display save`. Save
-once docked and once undocked. Profiles key on the connected make/model/serial set, including
-disabled panels; connector names and order can change. Profiles apply at login and on any set
-change. Unrecognised sets enable connected screens at preferred modes (`display_scale` if
-configured, otherwise laptop panel scale 1.3, external scale 1), unless an older
-`~/.config/sway/config.d/outputs` file applies, which stays in charge until the first save.
-Identical identities cannot be saved, so `save` refuses them. `reset` clears only the current set's
-profile, not the live layout. Profiles live as JSON in `~/.config/convergent/displays/`; saving
-retires the old outputs file. Saved profiles take precedence over `display_scale`.
+Screen too big: `sys display set eDP-1 scale 1.3`, confirm `yes`, then `sys display save`. Save docked
+and undocked layouts. Profiles match connected make/model/serial sets, including disabled panels;
+connector names/order may change. They apply at login and set changes. Unknown sets enable screens
+at preferred modes: configured `display_scale`, otherwise laptop scale 1.3/external 1. An existing
+`~/.config/sway/config.d/outputs` overrides this until the first save. `save` refuses duplicate
+identities. `reset` clears only the current set's profile, leaving the live layout. JSON profiles in
+`~/.config/convergent/displays/` override `display_scale`; saving retires the old outputs file.
 
 Touchpad: `sys touchpad set` prompts, or takes an option and value (`sys touchpad set pointer_accel
 0.3`). Settings are validated, apply live to all touchpads and save to
@@ -219,9 +215,8 @@ Support depends on hardware; `sys touchpad status` shows libinput settings.
 | `scroll_factor` | 0–10 (scroll speed multiplier; default 3, 0 stops scrolling) |
 
 Screenshots (`sys screenshot`) create the directory if missing and use
-`screenshot-YYYYmmdd-HHMMSS.png` names. After saving and copying, libnotify's `notify-send` tells
-mako to show **Screenshot saved** and the file name for 3 seconds, in its usual look. A repeated
-timestamp is refused, not overwritten.
+`screenshot-YYYYmmdd-HHMMSS.png` names. After saving and copying, `notify-send` displays
+**Screenshot saved** and the filename in mako for 3 seconds. Duplicate timestamps are refused.
 
 Leave the microphone enabled in firmware. Each Sway login waits for PipeWire's default source and
 mutes it; `sys audio mic on|off` changes that. The bar shows orange `MIC` while unmuted (refreshed
@@ -241,8 +236,8 @@ its Grafana/Incus launch URLs. Each browser is Chromium in its own container, wi
 Wayland socket and playback-only audio. Window title starts with `[role]`. Chromium's default
 appearance is kept.
 
-Works when a window titled `[def] …` opens and the bar shows `BR:1`. If Super+b or Super+Shift+t
-fails, a line at the top gives the reason. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
+Success: a `[def] …` window and `BR:1` in the bar. Super+b or Super+Shift+t failures show the reason
+at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
 `$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
 
 | Role | For | State |
@@ -327,9 +322,9 @@ sudo portal status             # per-node state, aggregate on/off/mixed/unknown 
 
 ## Devices
 
-USBGuard denies unapproved devices. `sys usb enrol` shows attached devices/hubs, asks yes for each
-trusted one, then confirms the replacement policy. Nothing saves before confirmation; declined
-devices remain blocked. This replaces broad input/storage/hub class allowances too.
+Disk images initially allow HID/storage/hub classes. `sys usb enrol` replaces that policy with
+individual-device rules: review attached devices/hubs, answer yes for each trusted one, then confirm.
+Nothing saves before confirmation; declined devices remain blocked.
 
 `sys usb review` shows saved rules (even unplugged) and attached decisions. `sys usb revoke RULE`
 takes an allow **rule number**, removes it and denies that device over overlapping allowances. Enrol
@@ -411,16 +406,16 @@ Repeat the same command after interruption to resume.
 sudo backup [<mountpoint> <owner-project>]
 ```
 
-`sys backup [MOUNTPOINT PROJECT]` runs it. Without arguments it asks
-`Mounted encrypted external disk:` and `Owner Incus project:`. It needs an external USB disk with
-LUKS, unlocked and mounted at a root-owned directory (not the laptop's own disk), and an Incus
-project for the owner's guests (`owner`, created by setup; never `default`). It writes
+`sys backup [MOUNTPOINT PROJECT]` runs it, prompting for `Mounted encrypted external disk:` and
+`Owner Incus project:` when arguments are absent. It requires an external LUKS USB disk unlocked
+and mounted at a root-owned directory (not the laptop disk), and the owner's Incus project
+(`owner`, created by setup; never `default`). It writes
 `convergent-backups/backup-<UTC>`: a snapshot of `/home`, the writable `/etc` files, exports of the
 owner's containers and profiles, and custom filesystem/ISO volumes of both projects, including
 `remmina-state` and `share`. Close browsers and Remmina and stop every instance using `share`.
-Keep them stopped throughout the backup. It reads the
-backup back and keeps three. VM instances, custom block volumes, system guest instances and
-`/var/lib/convergent` are excluded (see `EXCLUDED` in the backup). Unmount and close
+Keep them stopped throughout backup. It verifies readback and retains three generations.
+VM instances, custom block volumes, system guest instances and `/var/lib/convergent` are excluded
+(see `EXCLUDED` in the backup). Unmount and close
 the disk before unplugging. Restore steps: [RECOVERY 11](RECOVERY.md#11-start-over).
 
 ## Health and alerts
@@ -485,7 +480,7 @@ may be present. [Missing evidence](RECOVERY.md#17-missing-release-or-network-evi
 
 ## The bar
 
-Refreshed every five seconds; inputs every ten seconds and alerts every thirty seconds. Blocks are shown here separated by `|`; the bar draws its own separators:
+Refresh: five seconds; inputs: ten seconds; alerts: thirty seconds. `|` represents bar separators:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
@@ -589,8 +584,9 @@ Select owner NIC-only profiles `work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn
 `work-dom-jhn-b` (configured family names); supply disks/resources separately. Owner shares managed
 networks, retaining its own profiles. Use DHCP or static .1–.48, /26, gateway/DNS .62 in the
 [selected prefix](ARCHITECTURE.md#41-addressing); Incus NIC settings do not configure the guest OS.
-Families can cross their own VLANs, never the other family/system segments. Internet works; home-LAN
-access requires baked-in canonical RFC1918 prefixes. Topology updates stop both firewalls; failure
+Work guests can communicate within their own VLAN; routing to other work VLANs is blocked, including
+within the same family. System segments are blocked. Internet works; home-LAN access requires
+baked-in canonical RFC1918 prefixes. Topology updates stop both firewalls; failure
 restores both old images. Hash mismatch keeps work access closed.
 
 ## Power and locking

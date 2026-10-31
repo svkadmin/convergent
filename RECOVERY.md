@@ -6,23 +6,23 @@ Run commands on the laptop as owner unless stated. Each recipe includes a succes
 
 Press an arrow key during the three-second boot menu to stop the timer. Pick the release and slot
 ending in `(Recovery)`, e.g. `SLOT A | Gentoo <version> - <kernel> (Recovery)`. Enter the LUKS
-passphrase (US layout); three wrong attempts power off. Recovery needs the same unlock as a normal
-boot, and the same verified release must be able to boot.
+passphrase (US layout); three wrong attempts power off. Recovery requires a bootable verified release
+and normal state unlock.
 
 The menu shows the release, slot and read-write data at `/run/cv-state`:
 
 1. Root shell. Verified root is `/sysroot`; encrypted data and writable `/etc` files are under
    `/run/cv-state`. `exit` returns to the menu.
-2. Reset owner password. Enter it twice. It changes the uid 1000 account. Use 12 to 256 bytes. Uses
-   SHA-512 crypt; a later `account password` in the running system uses yescrypt.
+2. Reset owner password. Enter 12–256 bytes twice for uid 1000. Uses SHA-512 crypt;
+   `account password` in the running system uses yescrypt.
 3. Continue booting. Normal health checks then mark this release good.
 4. Reboot.
 5. Power off.
 
-Booting recovery on an unblessed release uses one of its three tries, shared with normal boots.
-Rebooting or powering off from the menu does not mark it good. The watchdog arms only after you
-continue, so time in the menu does not reset the laptop. Recovery starts no network services. If the
-release cannot reach the passphrase prompt, try the other slot (recipe 3) or the rescue entry below.
+Recovery on an unblessed release consumes one of three tries shared with normal boots.
+Reboot/power-off does not bless it. The watchdog arms only on Continue; time in the menu cannot reset
+the laptop. Recovery starts no network services. If the release cannot reach the passphrase prompt,
+try the other slot (recipe 3) or the rescue entry below.
 
 ## Standalone rescue entry
 
@@ -38,10 +38,10 @@ watchdog, boot counter, blessing or option to continue into a release.
    and both release UKIs. The signature must verify against the embedded release key, even with
    `CONVERGENT_UNSIGNED=1`. Choose `a` or `b`, or press Enter for the slot opposite the last good
    release (if uniquely identifiable). Confirm the printed release and slot with `yes`. This
-   deliberately allows reinstalling an older or identical signed release. It keeps `/var` subvolumes
-   and leaves `good` and `highest` unchanged. It uses `slot`'s checksum, size and readback checks,
-   and installs the chosen release UKI with three tries. Use option 4 to boot it next, especially if
-   it is older than the other slot. Normal updates still enforce anti-rollback.
+   allows older or identical signed releases, preserving `/var` subvolumes, `good` and `highest`.
+   It uses `slot`'s checksum, size and readback checks and installs the UKI with three tries.
+   Use option 4 to boot it next, especially if older than the other slot. Normal updates enforce
+   anti-rollback.
 4. Choose next slot. Select `a` or `b`; this writes `LoaderEntryOneShot` for its normal profile. It
    can pick an exhausted entry without resetting its counter or marking it good.
 5. Copy logs to USB. Choose a writable USB partition. A new `convergent-logs-<time>.<suffix>`
@@ -80,14 +80,14 @@ Rescue test coverage: [BUILD, Test in QEMU](BUILD.md#test-in-qemu).
 
 ## 1. Wrong passphrase, the laptop powers off
 
-Three wrong tries power off without data loss. [US layout](USAGE.md#first-boot) applies. If black,
-type it blind and press Enter. Keys pressed meanwhile show as empty `host login:` prompts; ignore
-them. Power on and type it again.
+Three wrong tries power off without data loss. [US layout](USAGE.md#first-boot) applies. If the screen
+is black, type the passphrase and press Enter. Ignore empty `host login:` prompts from intervening
+keystrokes. After power-off, power on and retry.
 
-The boot can also stop before the prompt, with `more than one disk has a cv-state partition; detach
-the other`. Power off, unplug the other Convergent disk, and boot again. A USB disk cannot reinstall
-over a laptop disk that holds Convergent, since the two cannot yet be told apart. Erase the old one
-first, with the firmware's disk wipe (Dell: F2, Maintenance, Data Wipe) or another system.
+Boot can stop before the prompt with `more than one disk has a cv-state partition; detach
+the other`. Power off, unplug the other Convergent disk, and reboot. A USB disk cannot reinstall
+over an existing Convergent disk: the two are ambiguous. Erase the old disk first with firmware
+(Dell: F2, Maintenance, Data Wipe) or another system.
 
 Right after an update, each power-on uses one of the new release's three tries; three powered-off
 sessions bring the previous release back (recipe 2).
@@ -130,8 +130,7 @@ sudo guests status                          # one line per guest and its state
 sudo tail -n 50 /var/log/incus/<guest>/console.log
 ```
 
-If a step fails twice the same way, photograph the last screen of output and leave the laptop as it
-is.
+If a step fails twice identically, photograph the last output screen and leave the laptop unchanged.
 
 ### Interrupted work-topology migration
 
@@ -145,8 +144,8 @@ retains the journal and holds for retry. Inspect `guests status`, the update log
 
 ## 5. No Wi-Fi
 
-The radio belongs to the `wan` VM, so `ip link` on the host does not show it. Works when:
-`sys wifi status` shows the network and an address.
+The `wan` VM owns the radio; host `ip link` cannot show it. Success: `sys wifi status` shows the
+network and an address.
 
 1. `sys wifi status`. "not found" or no answer means wan or its radio is not up.
 2. Is the card handed to wan?
@@ -180,8 +179,10 @@ failure or upstream DoT blocking. Otherwise send the output.
 
 ## 7. A USB device does not work
 
-USBGuard blocks every device it does not know. The internal keyboard and touchpad are not USB, so
-they always work. Works when the device works and `sudo devices list` no longer shows it.
+Disk images initially allow broad HID/storage/hub classes. Individual-device restrictions apply
+after replacing that policy during [first-boot enrollment](USAGE.md#first-boot). An empty blocked
+list alone does not prove enrollment. Non-USB keyboards/touchpads are unaffected by USBGuard.
+Success: the device works and `sudo devices list` no longer lists it as blocked.
 
 ```sh
 sudo devices list            # blocked devices with a number
@@ -224,8 +225,8 @@ instead.
 
 ## 10. Second passphrase and header backup
 
-Do this once the laptop is in daily use. Keep the backup on offline encrypted media. Works when:
-`luksDump` lists two keyslots.
+Once in daily use, add a second passphrase and keep the header backup on offline encrypted media.
+Success: `luksDump` lists two keyslots.
 
 ```sh
 sudo cryptsetup luksAddKey /dev/disk/by-partlabel/cv-state
@@ -280,7 +281,7 @@ ic stop svc --timeout 120
 incus --force-local list --all-projects  # all volume consumers must be STOPPED
 ```
 
-Repeat for each volume, setting `volume`, `profile` and `device` from the table. Check the instance
+For these filesystem volumes, set `volume`, `profile` and `device` from the table. Check the instance
 with `ic config show <guest>` (`--expanded` shows inherited devices). If its local `devices`
 override the profile, update that device too. Older backups may name the browser archives
 `browser-web-state.tar.gz` and `browser-admin-state.tar.gz`: use those for def and int,
@@ -313,13 +314,20 @@ every consumer's profile or local device to the restored name before restarting.
 `--project owner` for owner devices/profiles, retaining its default volume namespace
 (`features.storage.volumes=false`; [share setup](USAGE.md#remote-desktops)). The old volume's
 `used_by` identifies attachments and must be empty after reattachment. Keep it until data is
-verified. Repeat for owner volumes with their own project, pool and consumers. If no volume exists
-yet, skip the old-volume rename. Start svc with `ic start svc`. Open def/int normally and verify
+verified. Repeat for owner volumes with their own project, pool and consumers. Filesystem exports
+use `.tar.gz`; ISO exports use `.iso` and require this import command instead:
+
+```sh
+ic storage volume import "$pool" "$backup/projects/$project/$pool/$volume.iso" "$volume-restored" --type=iso
+```
+
+Use the same rename/reattachment steps for either type; if no volume exists, skip the old-volume
+rename. Start svc with `project=default; ic start svc`. Open def/int normally and verify
 saved profiles, downloads and Grafana/history. Open Remmina to check its keyring and `/share`, then
 verify owner share attachments before restarting those instances. Then remove unused old volumes
 with `ic storage volume delete "$pool" <volume-before-restore>`.
 
-Finally, import the owner's containers. Then start them after checking their expanded devices:
+Import the owner's containers, check their expanded devices, then start them:
 
 ```sh
 project=owner                       # the original owner project name

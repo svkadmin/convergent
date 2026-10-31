@@ -53,7 +53,7 @@ cannot combine VLANs with IP filtering. Routing policy is in section 4.
 | Accounts | Root locked; owner in wheel/seat/audio/video/dialout; su restricted to wheel; sudo PTY, own log and five-minute ticket; yescrypt passwords; five failures lock login for 15 minutes; restrictive umask |
 | Session | seatd, greetd/tuigreet on tty1, Sway, foot, bemenu, mako, swaylock/swayidle, session PipeWire/WirePlumber; SOF firmware and ALSA UCM for SoundWire |
 | Virtualization | Incus uses QEMU/KVM for VMs and LXC for containers; UI assets pinned for Incus 7.0.1 |
-| Devices | USBGuard denies unapproved devices; state-bound rules change through IPC. Camera loading needs a saved choice (section 9) |
+| Devices | USBGuard uses state-bound rules changed through IPC. Disk images initially allow HID/storage/hub classes; [first-boot enrollment](USAGE.md#first-boot) restricts individual devices. Camera loading needs a saved choice (section 9) |
 | Power | No suspend; CPU preference/cap applied at boot and power-source events. Optional charge/thermal controls leave fan control to firmware. ACPI-event masking is planned |
 | Time | chrony uses configured NTS sources (three by default), requiring two; starts without network and serves firewall NTP |
 | Network | nftables input restrictions and no host forwarding (section 4.4) |
@@ -93,8 +93,8 @@ firewall failures from host kernel failures.
   avoids bridge multicast dependence
 - **pfsync:** Sync link with defer preserves established connections across failover
 - **wan-watch:** rc.d service demotes wanwatch by 128 after two lost WAN probe rounds or ten rounds
-  without a local DNS answer (a hung Unbound, not a reload); three good rounds recover. Three probes 300 ms apart, bounded to one second; any reply
-  passes. Group counter survives watcher restarts
+  without local DNS (hung Unbound, not a reload); three good rounds recover. Each round sends three
+  probes 300 ms apart, bounded to one second; any reply passes. Group counter survives restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover
 - **DHCP:** Work VLANs only; synchronized leases checkpointed across replacement
@@ -112,8 +112,8 @@ Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 The minute checker restarts a firewall after three minutes of failed checks only if its peer is
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
 restart, permits three attempts/hour, and is inhibited by guest journals, maintenance and shutdown.
-A QEMU Incus can no longer read is killed by its own pid file, once its command line names the
-instance, then started; a guest replacement stops such a VM the same way. Attempts appear in
+A QEMU unreadable by Incus is killed using its pid file after verifying the instance in its command
+line, then restarted; guest replacement uses the same stop procedure. Attempts appear in
 syslog and the checker report.
 
 On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then firewalls, with
@@ -156,12 +156,12 @@ policies, and no capture, extensions or search. Addresses: section 4.1.
 Int alone reaches the full-administration UI/API. PF admits int; host nftables drops other TCP
 8443 traffic before loopback/established accepts. Metrics use a separate identity on 8444.
 
-`tools/incus-ui` creates a 90-day client certificate through sudo. Only its AES-256 encrypted
+`tools/incus-ui` creates a 90-day client certificate through sudo. Only the AES-256 encrypted
 PKCS#12 and public certificate persist in root-only TLS state. Each session prompts in a host
 terminal, verifies the fingerprint and imports as UID 1000 into fresh tmpfs NSS state. Both
-persistent NSS locations are masked even for plain int. Trust is added after import; closing int
-stops it and removes session trust/data. Boot and check auto clean orphans; interrupted rotation
-restores a complete credential directory. Grafana-only launches receive no key.
+persistent NSS locations are masked, even for plain int. Import precedes trust; closing int stops
+it and removes session trust/data. Boot and check auto clean orphans; interrupted rotation restores
+a complete credential directory. Grafana-only launches receive no key.
 Commands/endpoint: [USAGE, Incus management](USAGE.md#incus-management).
 
 #### Remmina
@@ -214,11 +214,10 @@ VLANs. DHCP synchronizes over vio1; replacement checkpoints and reseeds leases.
 
 `build/networks` renders topology into each image. `/etc/convergent/segments` lists CARP interfaces,
 VHIDs, parents, labels, prefixes, gateways and families; carp.awk checks exact membership/coherent
-roles. Work opens after host, WAN and both firewall hashes agree with a healthy MASTER. An already
-validated topology can keep serving without its standby; a node answering with PF disabled closes
-it at once, two masters close it without discarding validation, and the checker reconciles it only
-while no guest operation holds the guests lock. Replacements receive the stored DNS policy before
-promotion.
+roles. Work opens after host, WAN and both firewall hashes agree with a healthy MASTER. Validated
+topology can serve without its standby. A responding node with PF disabled closes work immediately;
+two masters close it but retain validation. The checker reconciles only while the guests lock is
+free. Replacements receive stored DNS policy before promotion.
 
 ### 4.2 Flows
 
@@ -304,14 +303,12 @@ Install sizing/swap: [USAGE, Install](USAGE.md#install).
 
 1. Firmware starts systemd-boot; owner-key verification is planned.
 2. The loader selects a slot (section 7.3), UKI profile 0. Profile 1 (`ID=recovery`,
-   `TITLE=Recovery`)
-   shares kernel/initramfs/verity, adding `convergent.recovery=1` before `init=`.
+   `TITLE=Recovery`) shares kernel/initramfs/verity, adding `convergent.recovery=1` before `init=`.
 3. The kernel creates dm-verity from the UKI command line; initramfs mounts verified root read-only.
 4. Unlock refuses ambiguous cv-state partitions. After unlock, normal boot arms the watchdog before
    state mounting; Recovery waits until Continue. Auto state grows partition, LUKS and Btrfs when
-   over 1 GiB is available. Fixed/percentage installs do not grow; absent install-state-size
-   disables
-   growth. Legacy state-max-gib caps auto growth. Interrupted growth resumes later.
+   over 1 GiB is available. Fixed/percentage installs or absent install-state-size disable growth.
+   Legacy state-max-gib caps auto growth. Interrupted growth resumes later.
 5. Initramfs cold-snapshots the last good var for a new release, or seeds it from the image on
    first installation. It mounts var/home/pool, merges missing system accounts below ID 1000
    (preserving existing entries and warning on collisions), adds the owner to dialout, and binds
@@ -381,10 +378,10 @@ locking.
 Wayland, pinned tio/serial drivers and static Incus UI assets. Inputs/commands/release ordering:
 [BUILD](BUILD.md#build-a-release).
 
-The online beta key protects downloads/bucket compromise, not the builder. Stable's encrypted key
-stays offline until the owner checks the manifest before attaching it for signing. Signatures
-establish origin, not benign contents. Offline owner Secure
-Boot keys are planned. Channel/provenance/publication: [BUILD](BUILD.md#sign-and-publish).
+The online beta key protects against download/bucket compromise, not builder compromise. Stable's
+encrypted key stays offline until the owner checks the manifest and attaches it for signing. Signatures
+establish origin, not benign contents. Offline owner Secure Boot keys are planned.
+Channel/provenance/publication: [BUILD](BUILD.md#sign-and-publish).
 
 Build steps (commands in [BUILD](BUILD.md#build-a-release)):
 
@@ -415,12 +412,12 @@ network-free setup. Swap starts before Incus; disk swap mounts its subvolume at
 `/var/lib/convergent/swap`. Firmware key/option-ROM enrollment is planned. Commands: [USAGE,
 Install](USAGE.md#install).
 
-`guests init` generates management keys, TLS credentials and shared CARP password on the laptop; TLS
-credentials and the CARP password persist under `/var/lib/convergent/guests/` across replacements;
-images contain none of these or SSH host keys. Read-only FAT16 CVSEED supplies each guest's
-credentials once. Host checks application, pins fw/WAN SSH keys from Incus console, checks health
-and detaches the disk. Svc receives a mounted seed and has no SSH. Seedless firewalls keep
-CARP/dependent services off; Alpine guests stop credential-dependent services.
+`guests init` generates management keys, TLS credentials and a shared CARP password on the laptop.
+TLS credentials/CARP password persist under `/var/lib/convergent/guests/` across replacements.
+Images contain no credentials or SSH host keys. Read-only FAT16 CVSEED supplies credentials once.
+Host verifies application, pins fw/WAN SSH keys from Incus console, checks health and detaches the
+disk. Svc uses a mounted seed without SSH. Seedless firewalls keep CARP/dependent services off;
+Alpine guests stop credential-dependent services.
 
 Infrastructure starts together; pinning/checks remain sequential. Service certificates server,
 incus-server and incus-client renew with at most 30 days left on the next successful guest apply
@@ -516,7 +513,7 @@ compromised host can alter svc logs.
 pflog_stream forwards sampled logged packet headers over TLS, capped at five/second/node with
 suppression summaries. Local pflogd stays enabled; `convergent_pflogd_up` and
 `convergent_pflogd_suspended` report running/suspended state, and fw-facts moves a suspended
-pflogd's archive (pflogd never reopens a torn one by itself) to `pflog.bad` and signals it. Rankings
+pflogd's torn archive to `pflog.bad` and signals it; pflogd cannot reopen it unaided. Rankings
 count samples, not all drops. On-demand capture holds a shared guest lock and bounds time, packets,
 snaplen and transfer; no continuous upload. [Commands](USAGE.md#release-and-network-evidence).
 
@@ -551,16 +548,14 @@ collection boundaries. [Operator views](USAGE.md#health-and-alerts).
 
 - **Bar:** monotonic deadlines; input/alert caches expire after 180 seconds.
 - **Displays:** hash sorted make/model/serial sets; subscriber maps them to connectors, ignoring
-  layout-only events. Locks serialize save/hotplug/preview; worker/traps restore unconfirmed
-  layouts,
+  layout-only events. Locks serialize save/hotplug/preview; worker/traps restore unconfirmed layouts,
   enabling surviving screens if originals disappear. Profiles are data, never sourced configuration.
 - **Power/camera:** root-owned choices follow per-release var snapshots. Serialized boot/AC handler
   publishes successful CPU settings, restores optional controls and retries camera probing after
   state mount. Sysfs writes are read back; charge writes preserve valid thresholds. Modprobe gates
   video/controller loads unless enabled; disable records denial before non-forced unload. Busy
   drivers leave CAM!. Camera drivers must remain modules; modules/hardware IDs need laptop
-  validation. USB approval is separate;
-  meeting/screen sharing remains deferred.
+  validation. USB approval is separate; meeting/screen sharing remains deferred.
 - **Microphone:** session retries default-source mute until available; locked mic key only mutes.
   Other sources/later default changes are not automatically muted.
 - **Bluetooth:** AutoEnable=false; picker selection must match an enumerated device.
@@ -591,7 +586,7 @@ unlocked physical access and firmware below Secure Boot. Home, writable etc and 
 persist compromise; checker coverage is selected files, not guest contents. Exact-hash option-ROM
 allowance from TPM evidence is planned instead of Microsoft's third-party certificate enrollment.
 
-## 11. Resource budget (estimates, measured in a later phase)
+## 11. Resource budget (unmeasured estimates)
 
 | Item | MiB estimate |
 |---|---|
@@ -614,7 +609,7 @@ allowance from TPM evidence is planned instead of Microsoft's third-party certif
 
 Container ceilings are not idle reservations. Lowering limits without peak measurements risks OOM.
 
-### 11.1 Work removed without changing sampling intervals
+### 11.1 Periodic work
 
 Bar caches release/layout/sensor data; status combines firewall queries and serializes WAN SSH;
 facts parses slot state in shell; power avoids redundant sysfs processes/logs. Sampling: section 8
@@ -646,10 +641,10 @@ residency, SSH/log counts. Exercise layouts, guest failure, portals, AC changes 
 
 ## 12. Our own code
 
-Scripts use OpenRC, cron, acpid and owner actions. Long-running pieces include bar, watchdog feeder,
-display subscriber, guest session supervisors, wan-watch and pflog-stream. Existing Incus, exporter
-and system tools supply underlying mechanisms. Idle CPU target for periodic host scripts/bar is
-under 1% of one core; unmeasured here.
+OpenRC, cron, acpid and owner actions run scripts. Long-running pieces include bar, watchdog feeder,
+display subscriber, guest session supervisors, wan-watch and pflog-stream. Incus, exporters and
+system tools supply underlying mechanisms. Periodic host scripts/bar target under 1% of one core
+at idle; unmeasured.
 
 | Piece | Responsibility |
 |---|---|
@@ -681,8 +676,3 @@ publication; fetch-release expands them before applying:
 - **guests/svc:** metadata.tar.gz, rootfs.tar.gz, incus.yaml
 - **guests/browser:** metadata.tar.gz, rootfs.tar.gz, incus/{base,def,tmp,int}.yaml
 - **guests/remmina:** metadata.tar.gz, rootfs.tar.gz, incus.yaml, packages.txt
-
-## 14. From Archer
-
-Current boundaries/plans: [section 10](#10-security-model). CARP/pfsync replace routing daemons;
-verity/A/B replace package rollback; Btrfs holds state; one svc collects evidence.

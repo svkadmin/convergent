@@ -1,11 +1,11 @@
 # Building Convergent
 
-Build/test/publication commands. Design: [ARCHITECTURE 6](ARCHITECTURE.md#6-build-and-keys);
+Build, test and publish. Design: [ARCHITECTURE 6](ARCHITECTURE.md#6-build-and-keys);
 installation: [USAGE](USAGE.md#install).
 
 ## How it works
 
-Build/cache packages → assemble release → test in QEMU → create private disk image or sign/publish.
+Build/cache packages → assemble → test in QEMU → create private disk image or sign/publish.
 The laptop installs the image/USB release or downloads from its channel.
 
 ## Status
@@ -36,8 +36,8 @@ build/packages          # image packages; --pretend previews
 build/image             # UTC release ID: YYYYMMDDHHMM
 ```
 
-Patched packages compile rather than use binaries, rebuilding on patch changes. Bump VERSION in
-`build/build.conf` per release (currently 0.1.5): major.minor.patch, optional -rcN. Version appears
+Patched packages compile and rebuild on patch changes. Bump VERSION in `build/build.conf` per
+release (currently 0.1.5): major.minor.patch, optional -rcN. Version appears
 in /usr/lib/convergent/version, CONVERGENT_VERSION, boot titles, manifest and status; timestamp ID
 names artifacts, orders IMAGE_VERSION and controls updates/rollback.
 
@@ -56,8 +56,8 @@ build/stick <release> $g <out.img> [size]          # default 30G
 zstd -T0 <out.img>
 ```
 
-Stick asks owner password then LUKS passphrase, 12–256 bytes each. Owner selection:
-CONVERGENT_INSTALL_OWNER, owner_login, then prompt. It runs the installer on a loop device and
+Stick asks for owner password then LUKS passphrase, 12–256 bytes each. Owner selection:
+CONVERGENT_INSTALL_OWNER, owner_login, then prompt. It installs on a loop device and
 prints SHA-256. Images contain the owner's account: never publish them.
 
 Use the same config for host/fw/WAN/svc. build/networks renders registry, topology hash, profiles,
@@ -91,8 +91,7 @@ openssl genpkey -algorithm ed25519 -aes-256-cbc -out /media/offline/stable.key  
 openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
 ```
 
-Return to the repository root for build commands. [Owner trust/unsigned
-updates](USAGE.md#host-updates).
+Return to the repository root. [Owner trust/unsigned updates](USAGE.md#host-updates).
 
 Build-host-only provenance records release-key (SHA-256 of canonical public PEM with final newline)
 and update-channel (embedded URL), or none. Signing/publication require channel/key agreement except
@@ -106,8 +105,8 @@ token to the bucket. Verified host/guest/Remmina payloads upload to <channel>/<r
 bounded. Signed-pointer replay can withhold releases; the client reports age.
 
 At most two releases/channel remain, with a 9-GiB bucket cap. Already-advertised releases are
-immutable: retries compare file sets/bytes including pointer/signatures, returning without writes
-only when identical. New content or re-signed pointers require a new ID. Retry comparisons download
+immutable: retries compare file sets/bytes including pointer/signatures and write nothing if
+identical. New content or re-signed pointers require a new ID. Retry comparisons download
 one file at a time; reserve space for the largest payload.
 
 For clients still using bleeding-edge, beta.{key,pub} must match bleeding-edge.{key,pub}; retain
@@ -118,9 +117,9 @@ build/publish <release-dir>
 CHANNEL=bleeding-edge build/publish <release-dir>
 ```
 
-Those clients switch to the embedded beta URL after boot. Retire the bridge after migration. To
-promote stable, check out the candidate tag's exact commit, rebuild with CHANNEL=stable and its
-public key, sign offline, run the full suite and publish. Embedded URL/key prevent cross-channel
+Clients switch to the embedded beta URL after boot; then retire the bridge. To promote stable,
+check out the candidate tag's exact commit, rebuild with CHANNEL=stable and its public key,
+sign offline, run the full suite and publish. Embedded URL/key prevent cross-channel
 re-signing; stable omits debug.
 
 Before uploads/pruning, publish runs `build/advisories --gate <release-dir>` against Gentoo GLSAs,
@@ -172,11 +171,11 @@ decrypts. [Owner execution/consent/output limits](USAGE.md#health-and-alerts).
 `build/test --desktop` checks enforce labels, clock queries, metrics scrape, BlueZ D-Bus and browser
 sockets under headless Sway. Bluetooth pairing and audio devices still need laptop testing.
 
-Each test boots the release on a throwaway disk in `builder/test/<release>-<mode>`. It passes or
-fails by itself. Tests can run side by side as memory allows (8 to 12 GiB each).
+Each test boots a throwaway disk in `builder/test/<release>-<mode>` and reports pass/fail.
+Tests can run concurrently with 8–12 GiB each.
 
-QEMU runs as the unprivileged `convergent-qemu` user, in the group that owns `/dev/kvm`, under
-`-sandbox on` with seccomp. The user is created on first use. The test fails if QEMU retains root
+QEMU runs as unprivileged `convergent-qemu` (created on first use), in `/dev/kvm`'s group, under
+`-sandbox on` with seccomp. Tests fail if QEMU retains root
 IDs, effective capabilities, or lacks seccomp filtering.
 
 ```sh
@@ -190,13 +189,11 @@ build/test --guests <release> $g                      # plus guests init: firewa
 build/test --guests-update <release> $g <broken-dir>  # plus guest updates and a rollback
 ```
 
-`<broken-dir>` is a new path: the test builds a deliberately broken svc image there and checks that
-the update is rolled back.
+`<broken-dir>` must be new: the test builds a broken svc image there and verifies update rollback.
 
-`--guests` and `--guests-update` also try the Internet path. wan gets an emulated uplink (QEMU user
-networking, as a second NIC). fw1 must then reach 9.9.9.9:853, and the host must resolve a name, or
-the test fails. Both modes also smoke-test the def browser container without Wayland, check tmp
-versus portal policies and devices, and exercise portal expiry and closure. They probe PF's
+`--guests` and `--guests-update` test Internet access through wan's second NIC (QEMU user networking).
+fw1 must reach 9.9.9.9:853 and the host must resolve a name. Both modes smoke-test def without
+Wayland, check tmp versus portal policies/devices, and exercise portal expiry and closure. They probe PF's
 web/admin/svc/host policy (`CV-PF ok/FAIL`, source, destination and port), including portal
 reachability before, during and after portal mode. Temporary listeners give denied ports positive
 controls. Both modes build legacy web/admin from frozen YAML fixtures, then run
@@ -212,10 +209,9 @@ the production launcher (`build/fixtures/remmina-session`), and check ordered sh
 first, then svc, wan and both firewalls, restore prior autorestart overrides/holds, and end in guest
 poweroff.
 
-`build/test --rescue <release>` boots the shipped rescue UKI in the existing QEMU/OVMF console
-driver with both slots empty. It unlocks, checks the menu, selects power off, and checks that UKI
-names, content and blessing state are unchanged. The `build/test --rescue` mode leaves USB writes,
-password reset, next-slot selection and log export for separate testing.
+`build/test --rescue <release>` boots the rescue UKI through QEMU/OVMF with both slots empty.
+It unlocks, checks the menu, powers off, and verifies unchanged UKI names/content and blessing state.
+USB writes, password reset, next-slot selection and log export need separate testing.
 
 ## Checks
 
