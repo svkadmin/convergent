@@ -182,7 +182,14 @@ enrol() {
 			timeout -k 1 30 usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
 		done <"$work/old"
 		# The daemon applies the saved policy to present devices on startup.
-		timeout -k 1 30 rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
+		timeout -k 1 30 rc-service usbguard restart || {
+			timeout -k 1 30 usbguard list-devices >/dev/null 2>&1 || {
+				# Clear interrupted OpenRC state before retrying startup.
+				timeout -k 1 30 rc-service usbguard zap || :
+				timeout -k 1 30 rc-service usbguard start || :
+				timeout -k 1 30 usbguard list-devices >/dev/null 2>&1 || die 'policy saved; USBGuard recovery failed'
+			}
+		}
 		timeout -k 1 30 logger -t devices 'USB policy replaced after individual review' || die 'policy saved; logging failed'
 COMMIT
 	commit=$!

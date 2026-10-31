@@ -34,26 +34,41 @@ generate-policy)
 	printf 'allow id 1234:5678 hash "approved"\nallow id 1234:5679 hash "declined"\n'
 	exit ;;
 list-rules) echo '1: allow'; exit ;;
+list-devices) [ "$#" = 1 ]; [ "$(cat "$fixture/daemon")" = running ]; exit ;;
 append-rule)
 	[ "$#" = 4 ] && [ "$2:$3:$4" = '-a:0:allow id 1234:5678 hash "approved"' ] ;;
 remove-rule) [ "$#" = 2 ] && [ "$2" = 1 ] ;;
-restart) [ "$#" = 1 ] ;;
+restart)
+	[ "$#" = 1 ]
+	echo stopped >"$fixture/daemon"
+	echo interrupted >"$fixture/service"
+	[ "$recovery" != running ] || echo running >"$fixture/daemon" ;;
+zap) [ "$#" = 1 ]; echo stopped >"$fixture/service" ;;
+start)
+	[ "$#" = 1 ] && [ "$(cat "$fixture/service")" = stopped ]
+	case $recovery in
+	no) exit 1 ;;
+	hang) exec python3 "$fixture/interrupt.py" ;;
+	esac
+	echo running >"$fixture/daemon" ;;
 logged) [ "$#" = 1 ] ;;
 *) exit 90 ;;
 esac
 echo "$1" >>"$fixture/events"
 if [ "$phase" = "$1" ]; then
+	[ "$fault" != hang ] || exec python3 "$fixture/interrupt.py"
 	python3 "$fixture/interrupt.py"
 	[ "$fault" = no ] || exit 1
 fi
+[ "$1" != restart ] || echo running >"$fixture/daemon"
 echo "$1 done" >>"$fixture/events"
 MOCK
 cat >"$fixture/bin/rc-service" <<'MOCK'
 #!/bin/sh
 set -eu
 [ "${1:-}" != --fixture-probe ] || { echo mock-rc-service; exit; }
-[ "$#" = 2 ] && [ "$1:$2" = usbguard:restart ]
-exec usbguard restart
+[ "$#" = 2 ] && [ "$1" = usbguard ]
+case $2 in restart|zap|start) exec usbguard "$2" ;; *) exit 90 ;; esac
 MOCK
 cat >"$fixture/bin/logger" <<'MOCK'
 #!/bin/sh
@@ -99,7 +114,8 @@ chmod +x "$fixture/bin/usbguard"
 check_mocks || { echo 'fixture mocks cannot execute (noexec temporary directory?)'; exit 1; }
 for script in "$fixture/body" "$fixture/commit" "$fixture/enrol" "$fixture/bin/"*; do sh -n "$script"; done
 PATH=$fixture/bin:$PATH
-export PATH phase signal fault
+recovery=no
+export PATH phase signal fault recovery
 printf 'yes\nno\n' >"$fixture/answers"
 printf 'append-rule\nappend-rule done\nremove-rule\nremove-rule done\nrestart\nrestart done\nlogged\nlogged done\n' >"$fixture/expected"
 for phase in append-rule remove-rule restart logged; do
@@ -111,14 +127,14 @@ for phase in append-rule remove-rule restart logged; do
 		[ "$rc" = "$want" ] || { cat "$fixture/out"; echo "$phase/$signal: status $rc, expected $want"; exit 1; }
 		cmp "$fixture/expected" "$fixture/events"
 	done
-	# A real command failure must still be reported, never a success.
+	# Unrecovered command failures must still be reported.
 	signal=none fault=yes
 	: >"$fixture/events"
 	if setsid -w sh -eu "$fixture/enrol" <"$fixture/answers" >"$fixture/out" 2>&1; then exit 1; fi
 	case $phase in
 	append-rule) message='append failed' ;;
 	remove-rule) message='removal failed' ;;
-	restart) message='USBGuard restart failed' ;;
+	restart) message='USBGuard recovery failed' ;;
 	logged) message='logging failed' ;;
 	esac
 	grep -q "$message" "$fixture/out"
@@ -132,5 +148,30 @@ for phase in append-rule remove-rule restart logged; do
 	if grep -q 'hung command escaped' "$fixture/out"; then exit 1; fi
 	if grep -qx "$phase done" "$fixture/events"; then exit 1; fi
 	flock -n "$fixture/usb.lock" true
+done
+phase=restart signal=none
+for fault in yes hang; do
+	for recovery in running yes hang; do
+		# A failed restart may already be healthy, or need a fresh start.
+		[ "$recovery:$fault" != hang:yes ] || continue
+		rc=0
+		: >"$fixture/events"
+		setsid -w sh -eu "$fixture/enrol" <"$fixture/answers" >"$fixture/out" 2>&1 || rc=$?
+		if [ "$recovery" = hang ]; then
+			[ "$rc" = 1 ]
+			grep -q 'USBGuard recovery failed' "$fixture/out"
+			if grep -qx logged "$fixture/events"; then exit 1; fi
+		else
+			[ "$rc" = 0 ] || { cat "$fixture/out"; exit 1; }
+			[ "$(cat "$fixture/daemon")" = running ]
+			grep -qx 'logged done' "$fixture/events"
+			if [ "$recovery" = yes ]; then
+				grep -qx 'zap done' "$fixture/events"
+				grep -qx 'start done' "$fixture/events"
+			elif grep -qx zap "$fixture/events"; then exit 1; fi
+		fi
+		if grep -q 'hung command escaped' "$fixture/out"; then exit 1; fi
+		flock -n "$fixture/usb.lock" true
+	done
 done
 echo 'devices: enrollment cancellation, failure and timeout fixtures passed'
