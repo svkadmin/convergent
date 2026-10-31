@@ -39,18 +39,20 @@ EOF
     [ "$(cat "$work/sleeps")" = 30 ]
     [ ! -e "$work/logger" ]
 
-    # Only the device probe and daemon command are mocked for late stop.
+    # Only the device probe and daemon command are mocked for stop.
     sed -n '/^stop() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
         sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ -c /[ -f /' \
             -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
     check_script "$work/stop"
     . "$work/stop"
-    mock_daemon() { printf '%s\n' "$*" >"$work/daemon"; return 1; }
+    mock_daemon() { printf '%s\n' "$*" >"$work/daemon"; return "$daemon_status"; }
     pidfile=$work/exited.pid
-    : >"$work/watchdog"
-    stop
-    [ "$(cat "$work/watchdog")" = V ]
-    [ "$(cat "$work/daemon")" = "--stop --quiet --retry TERM/5 --pidfile $pidfile" ]
+    for daemon_status in 0 1; do
+        : >"$work/watchdog"
+        stop
+        [ "$(cat "$work/watchdog")" = V ]
+        [ "$(cat "$work/daemon")" = "--stop --quiet --retry TERM/5 --pidfile $pidfile" ]
+    done
 )
 echo 'test-boot-privacy: watchdog passed'
 
