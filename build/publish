@@ -1,6 +1,6 @@
 #!/bin/sh
 # publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
-# <channel>/latest-v2 and latest at it. Keeps two releases, under 9 GiB (R2's
+# <channel>/latest at it. Keeps two releases per channel and the bucket under 9 GiB (R2's
 # free tier is 10 GB). Only the five host files, guests.manifest and its signature go up,
 # and the guest files it lists; the bucket is public.
 #   CHANNEL=beta build/publish <release-dir>      override the build.conf default
@@ -80,53 +80,35 @@ case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket"
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
 total=$(printf '%s\n' "$objects" | awk '{ s += $1 } END { print s + 0 }')
 new=0
-for f in $files latest latest.sig latest latest.sig; do
+for f in $files latest latest.sig; do
 	n=$(stat -c %s "$dir/$f")
 	[ "$n" -lt $((5 * 1024 * 1024 * 1024)) ] || die "$f is over R2's 5 GiB single upload"
 	new=$((new + n))
 done
-# Preserve both advertised releases if a legacy refresh was interrupted.
-latest= legacy_latest= latest_path=latest-v2 latest_sig=
-for pointer_name in latest latest-v2; do
-	if cur=$(s3 "$ep/$CHANNEL/$pointer_name" 2>&1); then
-		current=$(printf '%s\n' "$cur" | awk '$1 == "release" {if (NF != 2) exit 1; print $2}') || die 'malformed published latest'
-		case $current in '' | *[!0-9]* | 0?*) die 'malformed published latest' ;; esac
-		[ "${#current}" -le 12 ] || die 'malformed published latest'
-		latest=$current latest_path=$pointer_name
-		latest_sig=$pointer_name.sig
-		if [ "$pointer_name" = latest ]; then legacy_latest=$current
-		else latest_sig=latest-v2.$(printf '%s\n' "$cur" | sha256sum | cut -d' ' -f1).sig
-		fi
-		expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
-	else
-		case $cur in *'returned error: 404'*) ;; *) die "cannot read the published $pointer_name: $cur" ;; esac
-	fi
-done
+# Only a missing latest means none; any other failure stops here.
+latest=
+if cur=$(s3 "$ep/$CHANNEL/latest" 2>&1); then
+	latest=$(printf '%s\n' "$cur" | awk '$1 == "release" {if (NF != 2) exit 1; print $2}') || die 'malformed published latest'
+	case $latest in '' | *[!0-9]* | 0?*) die "the published latest is malformed" ;; esac
+	[ "${#latest}" -le 12 ] || die 'malformed published latest'
+else
+	case $cur in *'returned error: 404'*) ;; *) die "cannot read the published latest: $cur" ;; esac
+fi
+[ -z "$latest" ] || expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
 
-publish_legacy() (
-	check=$(mktemp) || die 'cannot create legacy check'
-	trap 'rm -f "$check"' 0
-	trap 'exit 1' HUP INT TERM
-	# Each PUT is atomic; old readers reject a mismatched pair until retry.
-	for f in latest.sig latest; do
-		if s3 -o "$check" "$ep/$CHANNEL/$f" && cmp -s "$check" "$dir/$f"; then continue; fi
-		s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/$f" "$ep/$CHANNEL/$f" || die "could not update $f"
-	done
-)
 keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { print k }'; }
 if [ "$release" = "$latest" ]; then
 	# An advertised prefix must survive a failed retry unchanged.
 	want=$(for f in $files; do printf '%s/%s/%s\n' "$CHANNEL" "$release" "$f"; done | sort)
-	[ "$(keys_of "$release" | grep -Ev '/advisories(\.json(\.sig)?|-v2\.json(\.[0-9a-f]{64}\.sig)?)$' | sort)" = "$want" ] || die "published file set differs; use a new release ID"
+	[ "$(keys_of "$release" | grep -Ev '/advisories\.json(\.sig)?$' | sort)" = "$want" ] || die "published file set differs; use a new release ID"
 	check=$(mktemp) || die "cannot create retry check"
 	trap 'rm -f "$check"' EXIT
 	trap 'exit 1' HUP INT TERM
 	for f in $files latest latest.sig; do
-		case $f in latest) path=$CHANNEL/$latest_path ;; latest.sig) path=$CHANNEL/$latest_sig ;; *) path=$CHANNEL/$release/$f ;; esac
+		case $f in latest | latest.sig) path=$CHANNEL/$f ;; *) path=$CHANNEL/$release/$f ;; esac
 		s3 -o "$check" "$ep/$path" || die "cannot read published $f"
 		cmp -s "$check" "$dir/$f" || die "published $f differs; use a new release ID"
 	done
-	publish_legacy
 	echo "publish: $CHANNEL/$release is already latest and identical"
 	exit 0
 fi
@@ -144,7 +126,7 @@ n=$(printf '%s\n' $olds | grep -c . || :)
 # Oldest first, never the one latest points at.
 for old in $olds; do
 	[ "$n" -ge "$keep" ] || [ $((total + new)) -gt "$cap" ] || break
-	[ "$old" != "$latest" ] && [ "$old" != "$legacy_latest" ] || continue
+	[ "$old" != "$latest" ] || continue
 	keys_of "$old" | while IFS= read -r k; do
 		s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
 	done
@@ -159,9 +141,7 @@ for f in $files; do
 	got=$(s3 -I "$ep/$CHANNEL/$release/$f" | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { print $2 }')
 	[ "$got" = "$(stat -c %s "$dir/$f")" ] || die "$f is $got bytes in the bucket"
 done
-# The document is the sole commit for digest readers.
-digest=$(sha256sum <"$dir/latest" | cut -d' ' -f1)
-s3 -o /dev/null -T "$dir/latest.sig" "$ep/$CHANNEL/latest-v2.$digest.sig" || die 'could not upload latest signature'
-s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/latest" "$ep/$CHANNEL/latest-v2" || die 'could not update latest'
-publish_legacy
+for f in latest.sig latest; do
+	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/$f" "$ep/$CHANNEL/$f" || die "could not update $f"
+done
 echo "publish: $CHANNEL/$release is latest; bucket $(((total + new) / 1048576)) MiB of $((cap / 1048576))"

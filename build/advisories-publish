@@ -74,10 +74,6 @@ while read -r release has_guests has_remmina; do
 	[ "$(stat -c %s "$work/advisories.json")" -le 1048576 ] || die 'status exceeds 1 MiB'
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$work/advisories.json" -out "$work/advisories.json.sig"
 	verify "$work/advisories.json" || die 'signing key does not match channel'
-	digest=$(sha256sum <"$work/advisories.json" | cut -d' ' -f1)
-	s3 -o /dev/null -T "$work/advisories.json.sig" "$ep/$CHANNEL/$release/advisories-v2.json.$digest.sig"
-	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$work/advisories.json" "$ep/$CHANNEL/$release/advisories-v2.json"
-	# Legacy readers still fetch the original pair.
 	for f in advisories.json.sig advisories.json; do
 		s3 -o /dev/null -H 'Cache-Control: no-store' -T "$work/$f" "$ep/$CHANNEL/$release/$f"
 	done

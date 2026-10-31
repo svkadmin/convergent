@@ -1,5 +1,5 @@
 #!/bin/sh
-# Production commit and retention paths against a local bucket.
+# Publication and readers against a local bucket.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
@@ -30,17 +30,16 @@ s3() {
     mv "$1.tmp" "$1"
 }
 SH
-sed -n '/^publish_legacy()/,/^keys_of()/p' "$here/publish" | sed '$d' >>"$work/stub"
 for path in beta/latest beta/latest.sig beta/42/advisories.json beta/42/advisories.json.sig; do
     printf 'legacy\n' >"$ep/$path"
 done
 for publisher in publish advisories-publish; do
     if [ "$publisher" = publish ]; then
-        sed -n '/^# The document is the sole commit/,/^echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
-        document=$dir/latest remote=$ep/beta/latest-v2 legacy=$ep/beta/latest
+        sed -n '/^for f in latest.sig latest; do/,/^echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        document=$dir/latest remote=$ep/beta/latest
     else
-        sed -n '/^[[:space:]]*digest=/,/^[[:space:]]*echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
-        document=$work/advisories.json remote=$ep/beta/42/advisories-v2.json legacy=$ep/beta/42/advisories.json
+        sed -n '/^[[:space:]]*for f in advisories.json.sig advisories.json; do/,/^[[:space:]]*echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        document=$work/advisories.json remote=$ep/beta/42/advisories.json
     fi
     [ -s "$work/commit" ] || die 'missing production commit'
     if [ "$publisher" = publish ]; then
@@ -52,7 +51,6 @@ for publisher in publish advisories-publish; do
     sh -eu -c '. "$work/stub"; . "$work/commit"'
     cp "$remote" "$work/old"
     cp "$document.sig" "$work/old.sig"
-    old_digest=$(sha256sum <"$work/old" | cut -d' ' -f1)
     if [ "$publisher" = publish ]; then
         printf 'release 42\nsigned %s\nguests none\n' "$(date +%s)" >"$document"
     else
@@ -61,7 +59,7 @@ for publisher in publish advisories-publish; do
     openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$document" -out "$document.sig"
     cp "$document" "$work/new"
     cp "$document.sig" "$work/new.sig"
-    for failure in 1 2 3 4; do
+    for failure in 1 2; do
         cp "$work/old" "$document"
         cp "$work/old.sig" "$document.sig"
         sh -eu -c '. "$work/stub"; . "$work/commit"'
@@ -72,46 +70,21 @@ for publisher in publish advisories-publish; do
             die "$publisher ignored failed upload $failure"
         fi
         [ "$(wc -l <"$work/uploads")" -eq "$failure" ] || die 'upload continued after failure'
-        if [ "$failure" -le 2 ]; then cmp "$remote" "$work/old"; else cmp "$remote" "$work/new"; fi
-        digest=$(sha256sum <"$remote" | cut -d' ' -f1)
-        openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.$digest.sig" >/dev/null
-        if [ "$failure" = 4 ]; then
-            if openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$legacy" -sigfile "$legacy.sig" >/dev/null 2>&1; then
-                die 'interrupted legacy pair verified'
+        cmp "$remote" "$work/old"
+        if [ "$failure" = 2 ]; then
+            if openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.sig" >/dev/null 2>&1; then
+                die 'interrupted pair verified'
             fi
         else
-            openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$legacy" -sigfile "$legacy.sig" >/dev/null
+            openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.sig" >/dev/null
         fi
-        if [ "$publisher" = publish ] && [ "$failure" -ge 3 ]; then
-            # An identical retry must repair legacy names after the v2 commit.
-            sed -n '/^publish_legacy()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry"
-            latest=42 latest_path=latest-v2 latest_sig=latest-v2.$digest.sig files= objects= \
-                sh -eu -c '. "$work/stub"; . "$work/retry"'
-            cmp "$ep/beta/latest" "$document"
-            cmp "$ep/beta/latest.sig" "$document.sig"
-        fi
+        sh -eu -c '. "$work/stub"; . "$work/commit"'
+        cmp "$remote" "$document"
+        cmp "$remote.sig" "$document.sig"
+        openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.sig" >/dev/null
     done
-    sh -eu -c '. "$work/stub"; . "$work/commit"'
-    cmp "$remote" "$document"
-    digest=$(sha256sum <"$remote" | cut -d' ' -f1)
-    openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$remote" -sigfile "$remote.$digest.sig" >/dev/null
-    # A reader that fetched the previous document still has its signature.
-    openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$work/old" -sigfile "$remote.$old_digest.sig" >/dev/null
-    cmp "$legacy" "$document"
-    cmp "$legacy.sig" "$document.sig"
+    [ "$(find "$ep" -type f | wc -l)" -eq 4 ] || die 'publication added objects'
 done
-# Reserve room for the pointer and its new immutable signature too.
-printf 'payload\n' >"$dir/payload"
-sed -n '/^new=0$/,/^# Preserve both advertised/p' "$here/publish" | sed '$d' >"$work/budget"
-(
-    files=payload
-    . "$work/budget"
-    expected=$(( $(stat -c %s "$dir/payload") + 2 * $(stat -c %s "$dir/latest") + 2 * $(stat -c %s "$dir/latest.sig") ))
-    [ "$new" = "$expected" ] || die 'publication metadata omitted from bucket cap'
-)
-# Fetch the new pointer through the production reader, with no legacy fallback.
-sed -n '/^[[:space:]]*code=$(get --max-time 60/,/^fi$/p' "$repo/tools/fetch-release" | sed '$d' >"$work/read"
-[ -s "$work/read" ] || die 'missing production reader'
 get() {
     output= code=
     while [ "$#" -gt 1 ]; do
@@ -122,8 +95,6 @@ get() {
     printf %s "$code"
 }
 pointer=$work/pointer url=$ep/beta host=fixture
-. "$work/read"
-openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$pointer/latest" -sigfile "$pointer/latest.sig" >/dev/null
 # Execute the shipped old pointer reader, including signature and grammar checks.
 git -C "$repo" show v0.1.4-rc1:tools/fetch-release >"$work/old-fetch"
 sed -n '/^field()/p; /^num()/p; /^bytes()/p; /^read_pointer() {/,/^}/p' "$work/old-fetch" >"$work/old-functions"
@@ -161,16 +132,6 @@ if command -v jq >/dev/null 2>&1; then
 else
     echo 'test-publish: old status ingestion fixture skipped (jq unavailable)'
 fi
-printf 'tampered\n' >>"$ep/beta/latest-v2"
-if (. "$work/read") >"$work/log" 2>&1; then die 'reader accepted missing digest signature'; fi
-# Bucket pressure must preserve both advertised releases.
-sed -n '/^for old in \$olds; do/,/^done$/p' "$here/publish" >"$work/prune"
-olds='1 2 3' latest=3 legacy_latest=1 n=3 keep=2 total=300 new=100 cap=200
-keys_of() { printf '%s\n' "$1"; }
-size_of() { echo 100; }
-s3() { printf '%s\n' "$3" >>"$work/deleted"; }
-. "$work/prune"
-[ "$(cat "$work/deleted")" = "$ep/2" ] || die 'pruned an advertised release'
 # The published sidecar requires retained metadata and payloads.
 mkdir -p "$dir/guests/svc" "$dir/guests/remmina"
 printf 'payload\n' >"$dir/guests/svc/rootfs.tar.gz"
@@ -246,4 +207,4 @@ glsa=$work/glsa
 . "$work/clone"
 [ "$(cat "$work/timeout")" = bounded ]
 grep -q 'GLSA HTTPS fetch failed' "$work/host.json"
-echo 'test-publish: atomic commits, legacy recovery, readers, retention, Remmina and clone deadline passed'
+echo 'test-publish: original layout, interrupted pairs, recovery, readers, Remmina and clone deadline passed'

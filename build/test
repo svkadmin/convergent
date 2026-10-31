@@ -42,7 +42,8 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	trap 'rm -rf "$work"' EXIT
 	trap 'exit 1' HUP INT TERM
 	dir=$work/release root=$work/root out=$work/release
-	release=42 VERSION=0.1.2 kver=test CHANNEL=beta
+	. "$here/build.conf"
+	release=42 kver=test CHANNEL=beta
 	roothash=0000000000000000000000000000000000000000000000000000000000000000
 	mkdir -p "$dir" "$root/etc/convergent"
 	openssl genpkey -algorithm ed25519 -out "$work/key"
@@ -60,7 +61,7 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	sed -n '/^awk -v r="\$release" /,/malformed manifest/p' "$here/../install/install" >"$work/manifest-check"
 	. "$work/manifest-check"
 	sed -n '/^guests=none$/,/latest does not match the guest bundle/p' "$here/publish" >"$work/guests-check"
-	sed -n '/^publish_legacy()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
+	sed -n '/^keys_of()/,/^size_of()/p' "$here/publish" | sed '$d' >"$work/retry-check"
 	refuse() {
 		if (. "$1") >"$work/log" 2>&1; then die "accepted $2"; fi
 		grep -q "$3" "$work/log" || { cat "$work/log" >&2; die "wrong refusal for $2"; }
@@ -69,6 +70,10 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(. "$gate")
 	mkdir "$work/keys"
 	cp "$pub" "$work/keys/beta.pub"
+	sed -n '/^python_run() {/,/^}/p' "$here/advisories" >"$work/python-run"
+	. "$work/python-run"
+	mode=status
+	openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/manifest" -out "$dir/manifest.sig"
 	sed -n '/^openssl pkeyutl -verify/,/^cache=/p' "$here/advisories" | sed '$d' |
 		sed "s|/etc/convergent/keys/|$work/keys/|" >"$work/scan-binding"
 	cp "$dir/packages" "$work/packages"
@@ -83,6 +88,21 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 		refuse "$gate" "$fault inventory binding" 'inventory does not match'
 		(release=$dir; refuse "$work/scan-binding" "$fault scan inventory binding" 'inventory does not match')
 	done
+	cp "$work/packages" "$dir/packages"
+	# Legacy inventories remain scannable, but cannot be substituted into new releases.
+	sed '/^manifest /d' "$work/packages" >"$dir/packages"
+	openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/packages" -out "$dir/packages.sig"
+	for version in 0.1.4 0.1.6 0.1.6-rc1 0.1.7 0.1.7-rc1 0.2.0; do
+		sed "s/^version .*/version $version/" "$work/manifest" >"$dir/manifest"
+		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/manifest" -out "$dir/manifest.sig"
+		case $version in
+		0.1.4|0.1.6|0.1.6-rc1) (release=$dir; . "$work/scan-binding") ;;
+		*) (release=$dir; refuse "$work/scan-binding" 'unbound new inventory' 'inventory does not match') ;;
+		esac
+	done
+	sed 's/^version .*/version 0.1.6/' "$work/manifest" >"$dir/manifest"
+	(release=$dir; refuse "$work/scan-binding" 'unsigned version downgrade' 'host manifest signature')
+	cp "$work/manifest" "$dir/manifest"
 	cp "$work/packages" "$dir/packages"
 	for producer in image sign publish guests; do
 		sed -n '/^case \$release in/p; /^\[ "${#release}" -le 12 \]/p' "$here/$producer" >"$work/id-check"
@@ -146,12 +166,9 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	for f in manifest guests.manifest latest; do
 		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/$f" -out "$dir/$f.sig"
 	done
-	ep=$work/bucket latest=42 latest_path=latest-v2
-	latest_sig=latest-v2.$(sha256sum <"$dir/latest" | cut -d' ' -f1).sig
+	ep=$work/bucket latest=42
 	mkdir -p "$ep/beta/42"
 	for f in $files; do cp "$dir/$f" "$ep/beta/42/$f"; done
-	cp "$dir/latest" "$ep/beta/$latest_path"
-	cp "$dir/latest.sig" "$ep/beta/$latest_sig"
 	cp "$dir/latest" "$dir/latest.sig" "$ep/beta/"
 	objects=$(for f in $files; do printf '%s beta/42/%s\n' "$(stat -c %s "$dir/$f")" "$f"; done)
 	s3() { [ "$#" = 3 ] && [ "$1" = -o ] || die 'unexpected bucket mutation'; cp "$3" "$2"; }

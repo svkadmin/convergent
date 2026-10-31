@@ -151,15 +151,14 @@ pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
 if [ -n "$usb" ]; then
 	cp "$usb/latest" "$usb/latest.sig" "$pointer/" || die 'cannot read USB latest and signature'
 else
-	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest-v2" 2>"$pointer/error") || {
+	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest" 2>"$pointer/error") || {
 		status=$?
 		reason=$(head -n 1 "$pointer/error" | cut -c1-160)
 		rm -rf "$pointer"
 		[ "$code" != 404 ] || die 'no release is published on this channel yet'
 		die "cannot reach $host (curl $status, HTTP ${code:-none}${reason:+: $reason})"
 	}
-	digest=$(sha256sum <"$pointer/latest" | cut -d' ' -f1)
-	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest-v2.$digest.sig" || { rm -rf "$pointer"; die "cannot download latest signature from $host"; }
+	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot download latest.sig from $host"; }
 fi
 read_pointer
 # Status failure is observability-only; it never blocks a release update.
