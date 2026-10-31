@@ -276,6 +276,16 @@ validate
 source_refreshed=
 if [ "$mode" = local ]; then
 	[ ! -f "$state/list.refreshed" ] || source_refreshed=$(cat "$state/list.refreshed")
+	# Recovery removes an uncertain legacy stamp.
+	if [ ! -e "$state/list.refreshed" ]; then
+		legacy=$(cat "$state/stamp" 2>/dev/null || :)
+		case $legacy in
+		'' | *[!0-9]*) ;;
+		*) if [ "$legacy" -gt 0 ] 2>/dev/null && [ "$legacy" -le "$(date +%s)" ] 2>/dev/null; then
+			source_refreshed=$legacy
+		   fi ;;
+		esac
+	fi
 	case $source_refreshed in *[!0-9]*) die "invalid source timestamp" ;; esac
 else
 	source_refreshed=$(date +%s)
