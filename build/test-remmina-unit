@@ -10,12 +10,12 @@ sed -n "/^chroot .*<<'COMPILE'/,/^COMPILE$/p" "$here/../guests/remmina/build" |
     sed '1d;$d' >"$work/compile-body"
 [ -s "$work/compile-body" ]
 sh -n "$work/compile-body"
-dash -n "$work/compile-body"
+sh -n "$work/compile-body"
 sed -n '/^[!i].*grep -q .*remmina_crypt_encrypt(value)/p' "$work/compile-body" >"$work/compile-guard"
 [ "$(wc -l <"$work/compile-guard")" = 1 ]
 printf '\necho compiled\n' >>"$work/compile-guard"
 sh -n "$work/compile-guard"
-dash -n "$work/compile-guard"
+sh -n "$work/compile-guard"
 mkdir "$work/src"
 printf 'remmina_crypt_encrypt(value)\n' >"$work/src/remmina_file.c"
 if (cd "$work"; sh -eu ./compile-guard) >"$work/compiled"; then exit 1; fi
