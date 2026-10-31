@@ -106,7 +106,7 @@ if [ ! -e /var/lib/convergent/release-guests/guests/remmina ]; then
     mkdir -p "$installed"
     cp "$release/guests/remmina/incus.yaml" "$installed/"
 fi
-SUDO_UID=$uid /usr/local/sbin/browser --privileged "$display" "$ipc" remmina >"$work/launcher.log" 2>&1 &
+printf '0\n' | SUDO_UID=$uid /usr/local/sbin/browser --privileged "$display" "$ipc" remmina >"$work/launcher.log" 2>&1 &
 launcher=$!; children="$launcher $children"
 wait_file /run/convergent/browser/remmina/cage/wayland-0
 "$work/python3" "$release/fixtures/remmina.py" keyboard /run/convergent/browser/remmina/cage/wayland-0 "$work" >"$work/keyboard.log" 2>&1 &
