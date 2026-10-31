@@ -380,7 +380,10 @@ epoch=$((epoch - ${uptime%.*}))
 checked=${uptime%.*}
 : >"$run/portal.checked"
 mkfifo -m 600 "$run/tick"
-background=yes owner sh -c 'while :; do sleep 2; echo tick; done' >"$run/tick" &
+(
+    exec 9>&- 8>&- 7>&- 6>&-
+    background=yes owner sh -c 'while :; do sleep 2; echo tick; done' >"$run/tick"
+) &
 children="$children $!"
 exec 5<"$run/tick"
 rm "$run/tick"

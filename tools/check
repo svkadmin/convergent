@@ -166,6 +166,8 @@ if [ "${1:-}" = auto ]; then (
     else echo 'SELF-HEAL work access left as is: a guest operation is running' >>"$state/.firewall-heal"; fi
     exec 8>&-
     mv "$state/.firewall-heal" "$state/firewall-heal" || die 'cannot publish self-heal report'
+    exec 9>/run/convergent/check.lock
+    flock -n 9 || exit 0
     if [ -f "$state/last" ]; then
         sed '/^SELF-HEAL /d' "$state/last" >"$state/.last"
         cat "$state/firewall-heal" >>"$state/.last"

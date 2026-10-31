@@ -5,6 +5,29 @@ here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Lock descriptors must be closed before the timer's FIFO redirection is evaluated.
+(
+    run=$work children=
+    sed -n '/^mkfifo .*"\$run\/tick"$/,/^children=/p' "$here/../tools/browser" |
+        sed '1d; s|>"$run/tick"|>"$(tick_path)"|' >"$work/timer"
+    [ -s "$work/timer" ]
+    sh -n "$work/timer"
+    tick_path() {
+        for fd in 6 7 8 9; do
+            if (eval ": >&$fd") 2>/dev/null; then return 1; fi
+        done
+        : >"$work/closed"
+        printf '%s\n' "$run/tick"
+    }
+    owner() { [ "$background" = yes ]; echo tick; }
+    exec 6>"$work/lock6" 7>"$work/lock7" 8>"$work/lock8" 9>"$work/lock9"
+    . "$work/timer"
+    [ -n "$children" ]
+    wait $children
+    [ -f "$work/closed" ]
+    grep -qx tick "$run/tick"
+)
+echo 'CV-REMOTE unit timer closes locks before FIFO open'
 mkdir "$work/bin"
 sed 's|exec /usr/bin/remmina|exec remmina-test-app|' \
     "$here/../guests/remmina/rootfs/usr/local/bin/remmina-session" >"$work/session"
