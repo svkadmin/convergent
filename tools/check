@@ -1,6 +1,7 @@
 #!/bin/sh
 # ARCHITECTURE 5.3, 8, 10, 12; accept only from a trusted release after reviewing changes.
 set -u
+. /usr/lib/convergent/guest-reply.sh
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
@@ -48,7 +49,7 @@ if [ "${1:-}:$#" = status:1 ]; then
                     if [ -n "$dns$lan" ]; then echo "portal on"; else echo "portal off"; fi
                     else echo "portal unknown"; fi'
             fi
-            if carp=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" "$cmd" 9>&- 8>&- 2>/dev/null); then
+            if carp=$(guest_reply 65536 timeout -k 1 10 ssh -F /etc/convergent/ssh_config "$node" "$cmd" 9>&- 8>&- 2>/dev/null); then
                 # All registered CARP interfaces must agree.
                 printf '%s\n' "$carp" | awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >"$status/.$node" || echo degraded >"$status/.$node"
                 printf '%s\n' "$carp" | awk '$1 == "portal" {print $2}' >"$status/.portal-$node"
@@ -66,7 +67,7 @@ if [ "${1:-}:$#" = status:1 ]; then
             [ "$remaining" -le 10 ] || remaining=10
             timeout -k 1 "$remaining" ssh -F /etc/convergent/ssh_config wan "$@" 9>&- 8>&-
         }
-        if diag=$(wan_probe diag 2>/dev/null); then
+        if diag=$(guest_reply 65536 wan_probe diag 2>/dev/null); then
             printf '%s\n' "$diag" | awk '
                 /^== / {section=$2; next}
                 section == "addresses" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=1}
@@ -83,13 +84,13 @@ if [ "${1:-}:$#" = status:1 ]; then
                     # The uplink kind for the bar: a Wi-Fi radio or a passed-through wired NIC.
                     print up ? "up " (dev ~ /^wl/ ? "wlan" : "eth") : "nolink " (eth ? "eth" : wlan ? "wlan" : "-")}' >"$status/.wan"
         else echo nolink - >"$status/.wan"; fi
-        if wifi=$(wan_probe wifi status 2>/dev/null); then
+        if wifi=$(guest_reply 65536 wan_probe wifi status 2>/dev/null); then
             # Valid UTF-8 only: the bar's markup breaks on anything else.
             printf '%s\n' "$wifi" | iconv -c -f UTF-8 -t UTF-8 | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"
         else echo '?' >"$status/.wifi"; fi
         echo unknown >"$status/.portal-wan"
         if [ "$portal_locked" = 1 ] &&
-            portal=$(wan_probe portal status 2>/dev/null); then
+            portal=$(guest_reply 128 wan_probe portal status 2>/dev/null); then
             printf '%s\n' "$portal" | awk '$1 == "on" || $1 == "off" {print $1}' >"$status/.portal-wan"
         fi
     ) &
@@ -410,7 +411,7 @@ for node in fw1 fw2; do
         expected=$(cat "$baseline/fw/$node.$kind.sha256" 2>/dev/null) || expected=
         printf '%s\n' "$expected" | grep -Eq '^[0-9a-f]{64}$' || { bad "$node $kind release hash missing or malformed"; continue; }
         case $kind in pf) cmd='sha256 -q /etc/pf.conf' ;; rules) cmd="pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q" ;; esac
-        actual=$(rsh "$node" "$cmd" 2>>"$work/report") || bad "$node $kind query failed"
+        actual=$(guest_reply 128 rsh "$node" "$cmd" 2>>"$work/report") || bad "$node $kind query failed"
         [ -n "$expected" ] && [ "$actual" = "$expected" ] || bad "$node $kind hash differs from release"
         if [ "$kind" = rules ]; then
             printf 'cv_firewall_ruleset_expected_info{firewall="%s",loaded="SHA256 (stdin) = %s"} 1\n' "$node" "$expected" >>"$work/metrics"

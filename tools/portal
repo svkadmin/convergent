@@ -2,6 +2,7 @@
 # ARCHITECTURE 3.2, 4.2, 9
 # /run/convergent/portal: start epoch; 0 retries closure each minute.
 set -u
+. /usr/lib/convergent/guest-reply.sh
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 net=100.80
@@ -59,8 +60,9 @@ net_of() {
 }
 
 upstream_net() {
-	_diag=$(rsh wan diag 2>/dev/null) || return 1
-	_route=$(printf '%s\n' "$_diag" | awk '
+	_diag=$(guest_reply 65536 rsh wan diag 2>/dev/null) || return 1
+	_route=$(printf '%s
+' "$_diag" | awk '
 		/^== / {section=$2; next}
 		section == "addresses" && $1 != "eth0" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=$2}
 		section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
@@ -144,8 +146,8 @@ on() {
 # status_side SIDE: on or off, or fail.
 status_side() {
 	case $1 in
-	wan) _r=$(rsh wan portal status) || return 1 ;;
-	*) _r=$(rsh "$1" 'dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show) &&
+	wan) _r=$(guest_reply 128 rsh wan portal status) || return 1 ;;
+	*) _r=$(guest_reply 128 rsh "$1" 'dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show) &&
 printf "dns %s lan %s\n" "$(printf "%s" "$dns" | wc -w)" "$(printf "%s" "$lan" | wc -w)"') || return 1 ;;
 	esac
 	case $1 in
@@ -162,7 +164,7 @@ status() {
 			printf '%-4s %s\n' "$_s" "$_r"
 			case $_r in on*) n_on=$((n_on + 1)) ;; *) n_off=$((n_off + 1)) ;; esac
 		else
-			printf '%-4s unreachable: %s\n' "$_s" "$(head -n 1 "$run/portal.err")"
+			printf '%-4s unreachable: %s\n' "$_s" "$(head -c 65536 "$run/portal.err" | head -n 1)"
 			n_bad=$((n_bad + 1))
 		fi
 	done

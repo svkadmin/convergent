@@ -797,6 +797,9 @@ test_peer=INIT; if heal_probe fw1; then exit 1; fi
 test_peer=MASTER
 ssh _ _ _ _ _ _ fw1 >"$work/raw"
 sample=$work/sample
+cat "$work/raw" >"$sample"
+head -c 65537 /dev/zero >>"$sample"
+if heal_probe fw1; then exit 1; fi
 for filter in '/Status:/d' '/defer:/d' '/^carp5:/d' 's/^carp5:/carp4:/' 's/MASTER carpdev vio6/BACKUP carpdev vio6/'; do
     sed "$filter" "$work/raw" >"$sample"
     if heal_probe fw1; then exit 1; fi
@@ -1066,6 +1069,7 @@ awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1
 DRAIN
 # Guest recovery guards; debugfs diagnostics can accompany a successful exit.
 sh -eu <<'GUEST_GUARDS' || bad $LINENO
+. /usr/lib/convergent/guest-reply.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 die() { echo "$*" >&2; exit 1; }

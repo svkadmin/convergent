@@ -57,13 +57,16 @@ CHECK
 s=$(sudo -n /usr/local/sbin/guests status); printf '%s\n' "$s" | awk '$1 ~ /^(fw1|fw2|wan|svc)$/ {state[$1]=$2} END {n=split("fw1 fw2 wan svc", names, " "); for(i=1;i<=n;i++) {s=state[names[i]]; print names[i] ": " (s == "" ? "missing" : s); if(s != "running") bad=1} exit bad}'
 CHECK
 	check wifi 15 <<'CHECK'
-s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi status); printf '%s\n' "$s" | grep -Eq '^[[:space:]]*State[[:space:]]+connected[[:space:]]*$' || { echo 'not connected; run sys wifi connect'; exit 77; }; echo 'State connected'
+. /usr/lib/convergent/guest-reply.sh
+s=$(guest_reply 65536 sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan wifi status 2>/dev/null); printf '%s\n' "$s" | grep -Eq '^[[:space:]]*State[[:space:]]+connected[[:space:]]*$' || { echo 'not connected; run sys wifi connect'; exit 77; }; echo 'State connected'
 CHECK
 	check uplink 20 <<'CHECK'
-s=$(sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan diag 2>&1) || { case $s in *'wan-ssh: command refused'*) echo 'diag refused; older wan image'; exit 77 ;; *) printf '%s\n' "$s"; exit 1 ;; esac; }
+. /usr/lib/convergent/guest-reply.sh
+wan_diag() { sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config wan diag 2>&1; }
+s=$(guest_reply 65536 wan_diag) || { echo 'wan diagnostic reply failed'; exit 1; }
 printf '%s\n' "$s" | grep -q '^default ' || { echo 'wan has no default route (connect Wi-Fi first)'; exit 77; }
 # wan forwards but never originates upstream traffic; the firewalls' DNS over TLS does.
-sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config fw1 'nc -z -w 5 9.9.9.9 853' || { echo 'wan has a route, fw1 cannot reach 9.9.9.9:853'; exit 1; }
+sudo -n /usr/bin/ssh -F /etc/convergent/ssh_config fw1 'nc -z -w 5 9.9.9.9 853' >/dev/null 2>&1 || { echo 'wan has a route, fw1 cannot reach 9.9.9.9:853'; exit 1; }
 echo 'wan default route present; fw1 reaches 9.9.9.9:853'
 CHECK
 	check dns 10 <<'CHECK'

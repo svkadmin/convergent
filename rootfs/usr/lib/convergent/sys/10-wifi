@@ -1,3 +1,4 @@
+. /usr/lib/convergent/guest-reply.sh
 title=Wi-Fi
 actions='status	Show Wi-Fi status	root
 scan	Scan Wi-Fi networks	root
@@ -8,9 +9,10 @@ forget	Forget a Wi-Fi network [SSID]	root confirm
 test	Test DNS and the uplink	root'
 
 wifi_state() { printf 'Wi-Fi: %s\n' "$(cached /run/convergent/status/wifi)"; }
+wifi_ssh() { run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan "$@" 2>&1; }
 wifi_reply() {
-	_reply=$(run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan "$@" 2>&1)
-	_result=$?
+	_result=0
+	_reply=$(guest_reply --display 65536 wifi_ssh "$@") || _result=$?
 	printf '%s\n' "$_reply" | tr -d '\000-\010\013-\037\177'
 	return "$_result"
 }
@@ -48,7 +50,8 @@ wifi_pick() (
 	awk -F '\t' -v id="$selected" '$1 == id {print $2 "\t" $3}' "$states/networks"
 )
 wifi_join_reply() {
-	_reply=$(wifi_wan "$1"); _result=$?
+	_result=0
+	_reply=$(wifi_wan "$1") || _result=$?
 	printf '%s\n' "$_reply"
 	if [ "$_result" != 0 ]; then
 		case $_reply in

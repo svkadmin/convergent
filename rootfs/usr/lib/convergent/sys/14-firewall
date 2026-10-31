@@ -1,3 +1,4 @@
+. /usr/lib/convergent/guest-reply.sh
 title=Firewalls
 alias=fw
 actions='status	Show both firewalls and DNS push status	root
@@ -32,18 +33,18 @@ exit 1;
 	exit "$code"
 )
 firewall_role() {
-	registry=$(firewall_rsh "$1" 'if test -f /etc/convergent/segments; then echo /etc/convergent/segments; else echo /usr/lib/convergent/incus/segments; fi') || return
-	output=$(firewall_rsh "$1" ifconfig) || return
+	registry=$(guest_reply 128 firewall_rsh "$1" 'if test -f /etc/convergent/segments; then echo /etc/convergent/segments; else echo /usr/lib/convergent/incus/segments; fi') || return
+	output=$(guest_reply 65536 firewall_rsh "$1" ifconfig) || return
 	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk "$registry" - >/dev/null
 }
 firewall_pair() { firewall_role "$1" MASTER && firewall_role "$2" BACKUP; }
 firewall_healthy() {
-	output=$(firewall_rsh "$1" 'ifconfig pfsync0') || return
+	output=$(guest_reply 65536 firewall_rsh "$1" 'ifconfig pfsync0') || return
 	printf '%s\n' "$output" | grep -q RUNNING && printf '%s\n' "$output" | grep -q 'defer: on' || return 1
-	output=$(firewall_rsh "$1" 'pfctl -si') || return
+	output=$(guest_reply 65536 firewall_rsh "$1" 'pfctl -si') || return
 	printf '%s\n' "$output" | grep -q '^Status: Enabled' || return 1
 	firewall_rsh "$1" 'pfctl -nf /etc/pf.conf && rcctl check unbound && unbound-control status && { test ! -f /etc/convergent/dhcpd.flags || rcctl check dhcpd; }' >/dev/null || return
-	output=$(firewall_rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1') || return
+	output=$(guest_reply 65536 firewall_rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1') || return
 	printf '%s\n' "$output" | grep -q 'has address 100.80.2.10'
 }
 firewall_status() (
@@ -52,7 +53,7 @@ firewall_status() (
 	result=0
 	for fw in fw1 fw2; do
 		echo "$fw:"
-		if output=$(firewall_rsh "$fw" ifconfig); then
+		if output=$(guest_reply 65536 firewall_rsh "$fw" ifconfig); then
 			printf '%s\n' "$output" | awk -v mode=status -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - || result=1
 		else echo "$fw unreachable; recovery: sys firewall rebuild $fw"; result=1; fi
 		firewall_rsh "$fw" 'set -e; info=$(pfctl -si); printf "%s\n" "$info" | sed -n "/^Status:/p; /current entries/p"; rcctl check unbound; unbound-control status' || result=1
