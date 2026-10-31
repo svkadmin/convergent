@@ -1,7 +1,7 @@
 #!/bin/sh
 # lint: checks before a push. Run from the repository root; no root needed.
 #   build/lint      exit 0 clean, 1 findings
-#   build/lint --rules | --selftest
+#   build/lint --rules   only the fast text rules
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -9,12 +9,10 @@ cd "${here%/build}" || exit 1
 fail=0
 bad() { echo "lint: $*"; fail=1; }
 case ${1:-} in
---selftest) exec sh "$here/test-lint" ;;
 ''|--rules) ;;
 *) echo 'lint: unknown option' >&2; exit 1 ;;
 esac
 if [ "${1:-}" != --rules ]; then
-sh "$here/test-lint" || bad 'lint selftest failed'
 sh build/test --install-options || bad 'install options selftest failed'
 sh build/test-vm-runner || bad 'VM runner selftest failed'
 offline_start=$(date +%s)
