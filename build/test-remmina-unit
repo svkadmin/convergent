@@ -5,6 +5,25 @@ here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# The compile guard must stop before cmake if encryption survived patching.
+sed -n "/^chroot .*<<'COMPILE'/,/^COMPILE$/p" "$here/../guests/remmina/build" |
+    sed '1d;$d' >"$work/compile-body"
+[ -s "$work/compile-body" ]
+sh -n "$work/compile-body"
+dash -n "$work/compile-body"
+sed -n '/^[!i].*grep -q .*remmina_crypt_encrypt(value)/p' "$work/compile-body" >"$work/compile-guard"
+[ "$(wc -l <"$work/compile-guard")" = 1 ]
+printf '\necho compiled\n' >>"$work/compile-guard"
+sh -n "$work/compile-guard"
+dash -n "$work/compile-guard"
+mkdir "$work/src"
+printf 'remmina_crypt_encrypt(value)\n' >"$work/src/remmina_file.c"
+if (cd "$work"; sh -eu ./compile-guard) >"$work/compiled"; then exit 1; fi
+[ ! -s "$work/compiled" ]
+printf 'secret_service_store(value)\n' >"$work/src/remmina_file.c"
+(cd "$work"; sh -eu ./compile-guard) >"$work/compiled"
+grep -qx compiled "$work/compiled"
+echo 'CV-REMOTE unit compile guard ok'
 # Lock descriptors must be closed before the timer's FIFO redirection is evaluated.
 (
     run=$work children=

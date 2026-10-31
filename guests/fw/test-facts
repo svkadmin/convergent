@@ -89,7 +89,7 @@ timeout() {
 	shift 3
 	echo "$*" >>"$calls"
 	if [ "$*" = "$failed" ]; then echo partial; return 124; fi
-	"$@"
+	case $1 in unbound-control) shift; unbound_control "$@" ;; *) "$@" ;; esac
 }
 ifconfig() {
 	case $* in
@@ -109,7 +109,7 @@ pfctl() {
 }
 sha256() { [ "$#" != 0 ] || cat >/dev/null; echo abc; }
 route() { echo 'default 100.80.0.10'; }
-unbound-control() {
+unbound_control() {
 	[ "$1" != status ] || return 0
 	printf 'total.num.queries=1\ntotal.num.cachehits=0\nnum.answer.rcode.SERVFAIL=0\nnum.answer.rcode.NXDOMAIN=0\ntotal.recursion.time.avg=0.01\n'
 }
@@ -127,11 +127,13 @@ sed -e "s|/var/node_exporter/textfile|$work|g" \
 cat "$work/mocks" "$work/publisher" >"$work/run"
 sh -n "$work/mocks"
 sh -n "$work/run"
+dash -n "$work/mocks"
+dash -n "$work/run"
 echo '; convergent-source-refreshed-seconds 1000' >"$work/blocklist.rpz"
 for failed in '' 'unbound-control status' 'unbound-control stats_noreset' 'pfctl -si' 'pfctl -sm' 'pfctl -sr'; do
 	: >"$work/calls"
 	echo stale >"$work/convergent_fw.prom"
-	failed=$failed calls=$work/calls sh "$work/run"
+	failed=$failed calls=$work/calls dash "$work/run"
 	[ "$(wc -l <"$work/calls")" = 5 ]
 	if [ -z "$failed" ]; then want=1; else want=0; fi
 	grep -qx "convergent_fw_facts_success $want" "$work/convergent_fw.prom"
@@ -142,14 +144,14 @@ for failed in '' 'unbound-control status' 'unbound-control stats_noreset' 'pfctl
 done
 for stamp in '' bad 0 -1 999999999999999999999 '1000 extra'; do
 	printf '; convergent-source-refreshed-seconds %s\n' "$stamp" >"$work/blocklist.rpz"
-	failed= calls=$work/calls sh "$work/run"
+	failed= calls=$work/calls dash "$work/run"
 	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
 	grep -qx 'convergent_fw_facts_success 0' "$work/convergent_fw.prom"
 done
 for kind in absent duplicate; do
 	if [ "$kind" = absent ]; then rm "$work/blocklist.rpz"
 	else printf '; convergent-source-refreshed-seconds 1000\n; convergent-source-refreshed-seconds 1001\n' >"$work/blocklist.rpz"; fi
-	failed= calls=$work/calls sh "$work/run"
+	failed= calls=$work/calls dash "$work/run"
 	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
 done
 echo 'fw-facts: bounded probes, publication and source-age fixtures passed'

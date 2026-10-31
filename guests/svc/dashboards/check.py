@@ -94,7 +94,11 @@ def main():
         rpz.write_text('; convergent-source-refreshed-seconds 1000\n')
         script = script.replace('/var/unbound/etc/blocklist.rpz',rpz.as_posix())
         mocks = r'''
-timeout() { [ "$1:$2:$3" = '-k:1:5' ] || return 1; shift 3; "$@"; }
+timeout() {
+    [ "$1:$2:$3" = '-k:1:5' ] || return 1
+    shift 3
+    case $1 in unbound-control) shift; unbound_control "$@" ;; *) "$@" ;; esac
+}
 ifconfig() {
     case "$*" in
     "") printf 'carp0: flags=41<UP,RUNNING>\n groups: carp wanwatch upgrade\n carp: MASTER carpdev vio0 vhid 1 advskew 0\n' ;;
@@ -113,20 +117,23 @@ pfctl() {
 }
 sha256() { cat >/dev/null; echo abc; }
 route() { echo 'default 100.80.0.10'; }
-unbound-control() {
+unbound_control() {
     [ "$1" != status ] || return 0
     printf 'total.num.queries=1\ntotal.num.cachehits=0\nnum.answer.rcode.SERVFAIL=0\nnum.answer.rcode.NXDOMAIN=0\ntotal.recursion.time.avg=0.01\n'
 }
 stat() { echo 1000; }
 netstat() { printf 'Name Mtu Network Address Ibytes Obytes\nvio0 1500 <Link> aa:bb 123 456\n'; }
+ps() { echo 'pflogd: [running] -s 160'; }
 '''
         # File hashing must not consume the remaining script on stdin.
         mocks = mocks.replace('sha256() { cat >/dev/null; echo abc; }', 'sha256() { [ "$#" != 0 ] || cat >/dev/null; echo abc; }')
-        run(['sh'],mocks+script)
+        run(['sh','-n'],mocks+script)
+        run(['dash','-n'],mocks+script)
+        run(['dash'],mocks+script)
         result = (work/'convergent_fw.prom').read_text()
         assert 'convergent_fw_facts_success 1' in result, result
         assert 'convergent_carp_group_present{group="handoff"} 0' in result
-        run(['sh'],'FAIL_PF=1\n'+mocks+script)
+        run(['dash'],'FAIL_PF=1\n'+mocks+script)
         result = (work/'convergent_fw.prom').read_text()
         assert 'convergent_fw_section_success{section="pf"} 0' in result
         assert 'convergent_fw_facts_success 0' in result and 'convergent_pf_enabled' not in result

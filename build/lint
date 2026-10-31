@@ -1,12 +1,120 @@
 #!/bin/sh
 # lint: checks before a push. Run from the repository root; no root needed.
 #   build/lint      exit 0 clean, 1 findings
+#   build/lint --rules | --selftest | --offline-snippets files...
 set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 cd "${here%/build}" || exit 1
 fail=0
 bad() { echo "lint: $*"; fail=1; }
+negation() {
+	awk '
+	FNR==1 {s=""}
+	{if (s=="") n=FNR; s=s $0}
+	/\\$/ {sub(/\\$/, " ", s); next}
+	{
+		if (s ~ /^[[:space:]]*![[:space:]]/ &&
+		    s !~ /\|\||&&|;[[:space:]]*(then|do)([;[:space:]]|$)/)
+			print FILENAME ":" n ":" s
+		s=""
+	}' "$@" || return 2
+}
+functions() {
+	grep -nE '^[[:space:]]*(function[[:space:]]+)?[[:alpha:]_][[:alnum:]_-]*-[[:alnum:]_-]*[[:space:]]*\([[:space:]]*\)' "$@"
+}
+query_project() {
+	grep -nE '(^|[[:space:];(])incus[[:space:]][^;|&#]*(--project[=[:space:]][^;|&#]*[[:space:]]query([[:space:]]|$)|query[[:space:]][^;|&#]*--project([=[:space:]]|$))' "$@"
+}
+offline_source() {
+	grep -nE "^[[:space:]]*\.[[:space:]]+[\"']?/usr/lib/" "$@"
+}
+windows_sed() {
+	awk '!/^[[:space:]]*#/ && /(^|[[:space:];(|])sed[[:space:]].*[[:alpha:]]:\\/ {
+		print FILENAME ":" FNR ":" $0
+	}' "$@" || return 2
+}
+selftest() (
+	set -e
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	trap 'exit 1' HUP INT TERM
+	check() {
+		rule=$1 expected=$2
+		cat >"$work/input"
+		hits=$($rule "$work/input") || [ "$?" = 1 ]
+		lines=$(printf '%s\n' "$hits" | sed -n 's/^\([0-9][0-9]*\):.*/\1/p' | paste -sd ' ' -)
+		# awk includes the filename even for one input.
+		if [ "$rule" = negation ] || [ "$rule" = windows_sed ]; then
+			lines=$(printf '%s\n' "$hits" | cut -d: -f2 | paste -sd ' ' -)
+		fi
+		[ "$lines" = "$expected" ] || { echo "lint: $rule selftest: $lines != $expected"; exit 1; }
+	}
+	check negation '2 3' <<'FIXTURE'
+set -e
+! grep -q forbidden source
+! grep -q \
+    forbidden source
+! grep -q allowed source || exit 1
+! grep -q allowed source && echo absent
+if ! grep -q allowed source; then :; fi
+if test -f source &&
+    ! grep -q allowed \
+    source; then :; fi
+while ! test -f source; do :; done
+FIXTURE
+	check functions '1 2' <<'FIXTURE'
+unbound-control() { :; }
+  function rc-service () { :; }
+unbound_control() { :; }
+# unbound-control() is not a definition.
+FIXTURE
+	check query_project '1 2 3 4 5' <<'FIXTURE'
+incus --project=default query /1.0
+incus --project default --force-local query /1.0
+incus query /1.0 --project default
+incus --force-local query --project=default /1.0
+result=$(incus --project default query /1.0)
+incus query '/1.0/instances?project=default'
+incus --project default list
+incus list; query --project default
+incus query /1.0; other --project default
+incus query /1.0 # --project default
+FIXTURE
+	check offline_source '1 2 3' <<'FIXTURE'
+. /usr/lib/convergent/helper
+  . "/usr/lib/convergent/helper"
+. '/usr/lib/convergent/helper'
+. "$repo/rootfs/usr/lib/convergent/helper"
+# . /usr/lib/convergent/helper
+sed 's|/usr/lib/convergent/helper|checkout/helper|' source
+FIXTURE
+	check windows_sed '1 2' <<'FIXTURE'
+sed "s|@PATH@|C:\Users\Alice|" source
+    sed -e 's|path|D:\work|' source
+sed 's|path|C:/Users/Alice|' source
+sed 's/\(value\)/\1/' source
+sed 's/value/\&/' source
+# sed 's|path|C:\Users\Alice|'
+FIXTURE
+	echo 'lint: rule selftests passed'
+)
+case ${1:-} in
+--selftest) selftest; exit $? ;;
+--offline-snippets)
+	shift
+	[ "$#" -gt 0 ] || exit 1
+	hits=$(offline_source "$@")
+	status=$?
+	[ "$status" = 1 ] && exit 0
+	printf '%s\n' "$hits"
+	exit 1 ;;
+''|--rules) ;;
+*) echo 'lint: unknown option' >&2; exit 1 ;;
+esac
+selftest
+[ "$?" = 0 ] || bad 'rule selftests failed'
+if [ "${1:-}" != --rules ]; then
 sh build/test --install-options || bad 'install options selftest failed'
 sh build/test-vm-runner || bad 'VM runner selftest failed'
 offline_start=$(date +%s)
@@ -26,15 +134,12 @@ if command -v python3 >/dev/null 2>&1; then
 else
 	echo 'lint: python3 not installed, dashboard drift check skipped'
 fi
+fi
 
 # Tracked files; an exported tree (no .git) is checked whole.
 files=$(git ls-files 2>/dev/null) || files=$(find . -type f ! -path './.git/*' | sed 's|^\./||')
 
-# Incus 7.0.1 refuses --project with query: the project belongs in the URL.
-hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' |
-	xargs grep -nE -- '--project [^ ]+ query |query --project' 2>/dev/null) &&
-	{ printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'incus query takes its project in the URL, not --project'; }
-# Nor through an ic() that always adds --project.
+# Incus 7.0.1 query takes its project in the URL, including through wrappers.
 hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' | xargs grep -lI 'ic query' 2>/dev/null | xargs awk '
 	FNR == 1 {fixed = 0}
 	/^[ \t]*ic\(\) \{/ {fixed = /--project/ && !/query/}
@@ -50,6 +155,23 @@ for f in $files; do
 	case $f:$first in guests/fw/site/etc/rc.d/*:'#!/bin/ksh') ;; guests/fw/site/etc/rc.d/*) bad "$f: rc.d scripts need #!/bin/ksh" ;; esac
 	case $first in '#!'*sh* | '#!/sbin/openrc-run'*) scripts="$scripts $f" ;; esac
 done
+# Textual guards also see shell embedded in heredocs and the dashboard fixtures.
+checked=
+for f in $scripts; do [ "$f" = build/lint ] || checked="$checked $f"; done
+for rule in negation functions query_project windows_sed; do
+	inputs=$checked
+	[ "$rule" != functions ] || inputs="$inputs guests/svc/dashboards/check.py"
+	hits=$($rule $inputs)
+	status=$?
+	[ "$status" -le 1 ] || bad "$rule scan failed"
+	[ -z "$hits" ] || { printf '%s\n' "$hits" | sed 's/^/lint: /'; bad "$rule violations"; }
+done
+# Offline files only; build/test contains installed paths used inside the VM.
+hits=$(offline_source build/test-* guests/*/test-*)
+status=$?
+[ "$status" -le 1 ] || bad 'offline source scan failed'
+[ -z "$hits" ] || { printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'offline fixtures must source checkout helpers'; }
+[ "${1:-}" != --rules ] || exit "$fail"
 for f in $scripts; do sh -n "$f" 2>/dev/null || bad "$f: sh -n fails"; done
 if command -v shellcheck >/dev/null 2>&1; then
 	# POSIX sh is the target; init scripts use OpenRC's dialect.

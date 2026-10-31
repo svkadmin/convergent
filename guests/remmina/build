@@ -45,7 +45,7 @@ chroot "$root" /bin/sh -eu <<'COMPILE'
 cd /tmp/remmina-build
 patch -p1 <dsofix.patch
 patch -p1 <secret-service-only.patch
-! grep -q 'remmina_crypt_encrypt(value)' src/remmina_file.c
+if grep -q 'remmina_crypt_encrypt(value)' src/remmina_file.c; then exit 1; fi
 LDFLAGS=-lintl cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=MinSizeRel \
     -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib \
     -DWITH_APPINDICATOR=OFF -DWITH_AVAHI=ON -DWITH_FREERDP3=ON -DWITH_GCRYPT=ON \
