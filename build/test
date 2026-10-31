@@ -2622,7 +2622,7 @@ for step in journal rebuilt; do
             if sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-dns.log; then exit 1; fi
             cmp "$state/pending" "$release/rebuild-pending"
             grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-dns.log
-            ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-dns.log
+            ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-dns.log || exit 1
             [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Running ]
         )
         [ "$?" = 0 ] || bad $LINENO
@@ -3567,7 +3567,7 @@ guest_test = goal in ("guests", "guests-maint", "guests-update", "online", "desk
 drain_test = goal in ("guests", "guests-maint", "guests-update", "online")
 # The guest flows print two verdicts (PF smoke, then the update flow); both must be 0.
 markers = {"guests-maint": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "guests-update": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
-           "online": [b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
+           "online": [b"CV-GUESTS-RESULT", b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
 verdicts = {}
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
