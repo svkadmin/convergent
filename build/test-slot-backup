@@ -185,3 +185,54 @@ ic() { [ "$*" = 'export container /payload/projects/owner/instance-container.tar
 name=container payload=/payload project=owner
 . "$work/export"
 echo 'test-slot-backup: EFI selection, failure cleanup, boot snapshots and root-only export passed'
+
+# Rescue must authenticate even when the ordinary writer's bypass is set.
+sed -n '/^write() {/,/^}/p' "$repo/tools/slot" |
+    sed "s|/run/slot-write.XXXXXX|$work/write.XXXXXX|" >"$work/write"
+[ -s "$work/write" ]
+sh -n "$work/write"
+mkdir "$work/release"
+for f in slot.img convergent-42-a.efi convergent-42-b.efi; do echo "$f" >"$work/release/$f"; done
+(
+    cd "$work/release"
+    echo 'release 42'
+    sha256sum -t slot.img convergent-42-a.efi convergent-42-b.efi
+) >"$work/manifest"
+openssl genpkey -algorithm ed25519 -out "$work/key"
+openssl genpkey -algorithm ed25519 -out "$work/wrong-key"
+openssl pkey -in "$work/key" -pubout -out "$work/pub"
+for fault in signed missing wrong-key tampered; do
+    cp "$work/manifest" "$work/release/manifest"
+    signing_key=$work/key
+    [ "$fault" != wrong-key ] || signing_key=$work/wrong-key
+    openssl pkeyutl -sign -inkey "$signing_key" -rawin -in "$work/release/manifest" -out "$work/release/manifest.sig"
+    case $fault in
+    missing) rm "$work/release/manifest.sig" ;;
+    tampered) echo '# changed' >>"$work/release/manifest" ;;
+    esac
+    : >"$work/mutations"
+    if (
+        . "$work/write"
+        key=$work/pub rescue_target=b CONVERGENT_UNSIGNED=1
+        state_mount() { echo "state $*" >>"$work/mutations"; }
+        esp_mount() { echo esp >>"$work/mutations"; }
+        num() { echo 0; }
+        log() { echo "$*"; }
+        # EOF at confirmation keeps even a valid release away from real devices.
+        write "$work/release" </dev/null
+    ) >"$work/write-out" 2>"$work/write-error"; then die "write accepted EOF: $fault"; fi
+    if [ "$fault" = signed ]; then
+        grep -q 'Write signed release 42 over slot b' "$work/write-out"
+        grep -q 'no confirmation' "$work/write-error"
+        printf 'state rw\nesp\n' >"$work/expected"
+        cmp "$work/expected" "$work/mutations"
+    else
+        [ ! -s "$work/mutations" ] || die "rescue mounted before authentication: $fault"
+        if grep -q 'Type yes:' "$work/write-out"; then die "rescue offered unsigned write: $fault"; fi
+        case $fault in
+        missing) grep -q 'release is not signed' "$work/write-error" ;;
+        *) grep -q 'manifest signature does not verify' "$work/write-error" ;;
+        esac
+    fi
+done
+echo 'test-slot-backup: rescue signature enforcement passed'

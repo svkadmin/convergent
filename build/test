@@ -315,6 +315,55 @@ if [ "${1:-}" = --install-options ]; then
 	export LC_ALL=C
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' 0
+	# Run the erase guard with fixture probes and a private sysfs tree.
+	sed -n '/^check_disk() {/,/^}/p' "$here/../install/install" |
+		sed -e "s|/sys/class/block/|$work/sys/|g" -e 's/\[ -b "\$disk" \]/is_block "$disk"/' >"$work/disk-check"
+	[ -s "$work/disk-check" ]
+	sh -n "$work/disk-check"
+	(
+	. "$work/disk-check"
+	disk=/dev/testdisk bootdisks=/dev/bootdisk image_install=
+	# Only the block-device predicate is virtual; all other assertions are real.
+	is_block() { [ "$1" = "$disk" ] && [ "$fault" != nonblock ]; }
+	lsblk() {
+		case $1 in
+		-dnro) [ "$2:$3" = "TYPE:$disk" ] || exit 97
+			[ "$fault" != type-probe ] || return 1
+			case $fault in partition) echo part ;; loop) echo loop ;; *) echo disk ;; esac ;;
+		-nrpo) [ "$3" = "$disk" ] || exit 97
+			case $2 in
+			MOUNTPOINTS)
+				case $fault in mount-probe) return 1 ;; mounted) echo /mounted ;; swap) echo '[SWAP]' ;; esac ;;
+			NAME) [ "$fault" != holder-probe ] || return 1; printf '%s\n' "$disk" "${disk}1" ;;
+			*) exit 97 ;;
+			esac ;;
+		*) exit 97 ;;
+		esac
+	}
+	blockdev() {
+		[ "$*" = "--getro $disk" ] || exit 97
+		case $fault in ro-probe) return 1 ;; readonly) echo 1 ;; *) echo 0 ;; esac
+	}
+	for fault in safe loop nonblock partition boot readonly mounted swap holder child-holder type-probe ro-probe mount-probe holder-probe; do
+		rm -rf "$work/sys" "$work/erase"
+		mkdir -p "$work/sys/testdisk/holders" "$work/sys/testdisk1/holders"
+		bootdisks=/dev/bootdisk image_install=
+		case $fault in
+		loop) image_install=1 ;;
+		boot) bootdisks=$disk ;;
+		holder) touch "$work/sys/testdisk/holders/dm-0" ;;
+		child-holder) touch "$work/sys/testdisk1/holders/dm-0" ;;
+		esac
+		if (check_disk; touch "$work/erase") >"$work/disk-error" 2>&1; then
+			case $fault in safe|loop) ;; *) die "erase guard accepted $fault" ;; esac
+		else
+			case $fault in safe|loop) cat "$work/disk-error"; die "erase guard rejected $fault" ;; esac
+			[ ! -e "$work/erase" ] || die "erased after $fault"
+			grep -q '^test: ' "$work/disk-error" || die "unexpected guard failure: $fault"
+		fi
+		case $fault in safe|loop) [ -f "$work/erase" ] ;; esac
+	done
+	)
 	# SATA must be available before dm-mod.waitfor can enter userspace.
 	sed -n '/^for want in CONFIG_VLAN_8021Q=y/,/^done$/p' "$here/image" >"$work/kernel-check"
 	[ -s "$work/kernel-check" ]
@@ -453,6 +502,11 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 chroot_mount
 qemu_identity
+if [ "$mode" = desktop ]; then
+	cp "$here/fixtures/wayland-registry.c" "$BUILDER$work/wayland-registry.c"
+	bld gcc -O2 -Wall -Werror -std=c99 -I/staging/usr/include -L/staging/usr/lib64 \
+		-Wl,-rpath-link,/staging/usr/lib64 "$work/wayland-registry.c" -lwayland-client -o "$work/wayland-registry"
+fi
 case $mode in guests|guests-maint|guests-update|online)
 	cp -R "$here/fixtures" "$BUILDER$work/fixtures"
 	bld gcc -O2 -static -Wall -Werror -std=c99 "$work/fixtures/pf-l2.c" -o "$work/fixtures/pf-l2-bin" || die 'pf-l2 compilation failed'
@@ -2902,6 +2956,7 @@ EOF
 	cp "$here/test-remmina" "$var/lib/convergent/test-release/remmina-test"
 	# End Remmina lifecycle fixture.
 	cp "$here/test-pf" "$var/lib/convergent/test-release/pf-test"
+	cp "$here/test-backup-restore" "$var/lib/convergent/test-release/backup-restore-test"
 	cp -R "$BUILDER$work/fixtures" "$var/lib/convergent/test-release/fixtures"
 	cp "$here/fixtures/shutdown" "$var/lib/convergent/test-release/shutdown-test"
 	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
@@ -3211,6 +3266,7 @@ for node in fw1 fw2 wan svc; do
 		    .["boot.autostart"] == "true" and .["boot.autorestart"] == "true"' >/dev/null ||
 		{ echo "CV-BOOT failed: $node autostart"; result=1; }
 done
+timeout -k 30 300 sh "$release/backup-restore-test" || { echo 'CV-BACKUP-RESTORE failed'; result=1; }
 r=0; timeout -k 30 300 sh "$release/browser-test" || r=$?
 case $r in
 0) ;;
@@ -3274,6 +3330,7 @@ inject_desktop() {
 	var="$state/var-$release"
 	[ -d "$var" ] || die "no var-$release after blessing"
 	mkdir -p "$var/lib/convergent/test-release" "$var/spool/cron/crontabs"
+	cp "$BUILDER$work/wayland-registry" "$var/lib/convergent/test-release/wayland-registry"
 	cat >"$var/lib/convergent/test-release/desktop-sockets" <<'EOF'
 #!/bin/sh
 set -eu
@@ -3339,6 +3396,20 @@ background=yes owner way-secure -e convergent -a "$role" -i "$name" --socket-pat
 wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
 grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current" || die "way-secure runs as $(cat "/proc/$wayland/attr/current")"
+# Every denial has a positive control on the same compositor.
+registry=$run/wayland-registry
+install -m 0755 /var/lib/convergent/test-release/wayland-registry "$registry"
+owner timeout 10 "$registry" "$display" >"$run/ordinary-globals"
+owner timeout 10 "$registry" "$run/sockets/wayland-0" >"$run/restricted-globals"
+for protocol in wl_compositor wl_shm xdg_wm_base; do
+	grep -qx "$protocol" "$run/ordinary-globals"
+	grep -qx "$protocol" "$run/restricted-globals"
+done
+for protocol in zwlr_screencopy_manager_v1 zwlr_export_dmabuf_manager_v1 \
+	zwlr_virtual_pointer_manager_v1 zwp_virtual_keyboard_manager_v1 zwp_idle_inhibit_manager_v1; do
+	grep -qx "$protocol" "$run/ordinary-globals" || die "missing ordinary $protocol control"
+	if grep -qx "$protocol" "$run/restricted-globals"; then die "restricted socket exposes $protocol"; fi
+done
 # A client round-trip through the restricted socket, not just a socket inode.
 owner env WAYLAND_DISPLAY="$run/sockets/wayland-0" timeout 10 \
 	foot -e /bin/true >"$run/client.log" 2>&1 || die 'no client round-trip through way-secure'
