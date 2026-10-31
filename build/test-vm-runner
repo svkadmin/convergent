@@ -2,6 +2,14 @@
 # Run the boot retry loop with a controlled driver; no root or KVM needed.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
+# Firewall downloads finish before the bounded VM boots; allow slow large sets.
+awk '
+    /^[[:space:]]*curl / {
+        n++
+        if ($0 !~ / --connect-timeout 30 / || $0 !~ / --max-time 3600 /) bad=1
+    }
+    END {exit (n != 4 || bad)}' "$here/../guests/fw/build"
+echo 'test-vm-runner: all four firewall downloads have connection and transfer limits'
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' 0
 trap 'exit 1' HUP INT TERM

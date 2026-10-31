@@ -66,13 +66,13 @@ trap 'exit 1' HUP INT TERM
 
 # Verify sets with the pinned release key before serving.
 echo "build: fetching OpenBSD $ver"
-curl -fsS --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/openbsd-$v-base.pub"
+curl -fsS --connect-timeout 30 --max-time 3600 --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/openbsd-$v-base.pub"
 seen=$(sha256sum "$dl/key.pub" | awk '{print $1}')
 [ "$seen" = "${OPENBSD_KEY_SHA256:-}" ] ||
 	die "openbsd-$v-base.pub has SHA256 $seen, pinned: '${OPENBSD_KEY_SHA256:-}'; check it, then set OPENBSD_KEY_SHA256 in pins"
 files="BUILDINFO bsd bsd.mp bsd.rd base$v.tgz BOOTX64.EFI"
 for f in SHA256 SHA256.sig $files; do
-	curl -fsS --proto =https --tlsv1.2 -o "$dl/$f" "$base/$f"
+	curl -fsS --connect-timeout 30 --max-time 3600 --proto =https --tlsv1.2 -o "$dl/$f" "$base/$f"
 done
 (cd "$dl" && "$signify" -C -q -p key.pub -x SHA256.sig $files) || die "signify: the downloaded files do not verify"
 echo "build: sets verified"
@@ -92,7 +92,7 @@ cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/BUILDINFO" "$dl/bsd" "$dl/bsd.mp" "$dl/bas
 
 # Fetch release packages and dependencies; pkg_add checks signatures.
 pkgbase=$OPENBSD_MIRROR/$ver/packages/amd64
-curl -fsS --proto =https --tlsv1.2 -o "$dl/pkg-index.txt" "$pkgbase/index.txt"
+curl -fsS --connect-timeout 30 --max-time 3600 --proto =https --tlsv1.2 -o "$dl/pkg-index.txt" "$pkgbase/index.txt"
 pkgnames=
 fetchpkg() {
 	case $1 in
@@ -101,7 +101,7 @@ fetchpkg() {
 		*) die "invalid package basename" ;;
 	esac
 	[ ! -f "$www/pkg/$1" ] || return 0
-	curl -fsS --proto =https --tlsv1.2 -o "$www/pkg/$1" "$pkgbase/$1"
+	curl -fsS --connect-timeout 30 --max-time 3600 --proto =https --tlsv1.2 -o "$www/pkg/$1" "$pkgbase/$1"
 	tar -xzOf "$www/pkg/$1" +CONTENTS | awk -F: '/^@depend/ { print $3 ".tgz" }' |
 		while read -r dep; do fetchpkg "$dep"; done
 }

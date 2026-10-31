@@ -514,8 +514,10 @@ compromised host can alter svc logs.
 
 pflog_stream forwards sampled logged packet headers over TLS, capped at five/second/node with
 suppression summaries. Local pflogd stays enabled; `convergent_pflogd_up` and
-`convergent_pflogd_suspended` report running/suspended state, and fw-facts moves a suspended
-pflogd's torn archive to `pflog.bad` and signals it; pflogd cannot reopen it unaided. Rankings
+`convergent_pflogd_suspended` report running/suspended state. For an absent or suspended writer,
+or a pflog file at least 1 MiB, fw-facts stops pflogd, removes any existing `pflog.bad`, rotates
+through newsyslog and restarts pflogd. Ordinary rotation retains three compressed archives,
+as enforced by install.site. Rankings
 count samples, not all drops. On-demand capture holds a shared guest lock and bounds time, packets,
 snaplen and transfer; no continuous upload. [Commands](USAGE.md#release-and-network-evidence).
 

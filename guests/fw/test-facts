@@ -5,6 +5,12 @@ here=$(cd "$(dirname "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Recovery docs must describe the bounded rotation, not preservation as .bad.
+sed -n '/^pflog_stream forwards /,/^$/p' "$here/../../ARCHITECTURE.md" |
+	tr '\n' ' ' >"$work/docs"
+grep -qF 'For an absent or suspended writer, or a pflog file at least 1 MiB' "$work/docs"
+grep -qF 'stops pflogd, removes any existing `pflog.bad`, rotates through newsyslog and restarts pflogd' "$work/docs"
+grep -qF 'Ordinary rotation retains three compressed archives, as enforced by install.site' "$work/docs"
 sed -n '/if capture pflogd /,/^	fi$/p' \
 	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/check"
 [ -s "$work/check" ]
