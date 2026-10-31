@@ -374,7 +374,9 @@ until ic exec "$name" -- test -f "$ready"; do
 done
 # Refuse argv-only guests before opening services.
 if [ "$role" != remmina ]; then
-    ic exec "$name" -- grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" ||
+    # Bounded: a hostile guest can make the probe block (e.g. a FIFO launcher) while we hold the locks.
+    timeout -k 1 30 incus --force-local --project default exec "$name" -- \
+        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
         die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
 fi
 if [ -n "$portal_mode" ]; then

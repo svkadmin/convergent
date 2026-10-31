@@ -151,6 +151,9 @@ for version in current old missing; do
                     service_call "$@"
                 fi
             }
+            # The bounded probe runs incus through timeout; forward both to the ic mock.
+            timeout() { shift 3; "$@"; }
+            incus() { [ "$1 $2 $3" = '--force-local --project default' ] && shift 3; ic "$@"; }
             . "$work/services"
         ) >"$work/error" 2>&1 || rc=$?
         if [ "$version" = current ] || [ "$mode" = remmina ]; then
@@ -168,6 +171,9 @@ for version in current old missing; do
         fi
     done
 done
+# A hostile guest can stall the probe: it must stay bounded.
+grep -q 'timeout -k 1 30 incus --force-local --project default exec "\$name" --' "$work/services" ||
+    die 'compatibility probe is unbounded'
 # Guard placement matters: no earlier service opening may bypass it.
 awk '/^# Refuse argv-only guests / {guard = NR}
     /\/usr\/local\/sbin\/portal begin|\/usr\/local\/sbin\/incus-ui --unlock|rc-service grafana start/ {
