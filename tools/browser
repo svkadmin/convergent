@@ -256,7 +256,6 @@ if [ "$role" = int ]; then
         if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
             die 'stop int before unlocking an Incus session'
         fi
-        /usr/local/sbin/incus-ui --unlock 9>&- 8>&- 7>&- 6>&-
     fi
 fi
 
@@ -280,10 +279,6 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' \
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
-fi
-if [ -n "$portal_mode" ]; then
-    portal=1
-    /usr/local/sbin/portal begin || die 'cannot open portal mode'
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
@@ -377,7 +372,17 @@ until ic exec "$name" -- test -f "$ready"; do
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
 done
+# Refuse argv-only guests before opening services.
+if [ "$role" != remmina ]; then
+    ic exec "$name" -- grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" ||
+        die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+fi
+if [ -n "$portal_mode" ]; then
+    portal=1
+    /usr/local/sbin/portal begin || die 'cannot open portal mode'
+fi
 if [ -n "$incus_ui" ]; then
+    /usr/local/sbin/incus-ui --unlock 9>&- 8>&- 7>&- 6>&-
     /usr/local/sbin/incus-ui --import 9>&- 8>&- 7>&- 6>&-
 fi
 if [ "$role" = int ] && [ -z "$incus_ui" ]; then
@@ -393,7 +398,7 @@ done
 mkfifo -m 600 "$run/output"
 tail -c 65536 9>&- 8>&- 7>&- 6>&- <"$run/output" >"$run/browser.log" &
 capture=$!
-send_url "$@" | incus --force-local --project default exec "$name" --mode non-interactive \
+send_url "$@" 9>&- 8>&- 7>&- 6>&- | incus --force-local --project default exec "$name" --mode non-interactive \
     --user 1000 --group 1000 -- "$launcher" 9>&- 8>&- 7>&- 6>&- >"$run/output" 2>&1 &
 browser=$!
 flock -u 9

@@ -14,7 +14,7 @@ sed -n '/^if \[ "${1:-}" = --session \]; then$/,/^fi$/p' "$repo/tools/browser" |
     sed 's/exec env /mock_env /' >"$work/session"
 sed -n '/^\[ "${1:-}" = --privileged \]/,/^uid=\$SUDO_UID$/p' "$repo/tools/browser" |
     sed '$d; s|/usr/local/sbin/portal gateway|portal gateway|' >"$work/privileged"
-sed -n '/^send_url "\$@" | incus /,/^browser=\$!$/p' "$repo/tools/browser" >"$work/incus"
+sed -n '/^send_url "\$@" .*| incus /,/^browser=\$!$/p' "$repo/tools/browser" >"$work/incus"
 sed -n '/^\[ "\$#" = 0 \]/,/^\[ -S \/mnt\/browser\/wayland-0 \]/p' \
     "$repo/guests/browser/rootfs/usr/local/bin/browser-launch" |
     sed '$d; s|\[ -f /run/browser-portal \]|[ "$portal_mode" = 1 ]|' >"$work/guest"
@@ -120,4 +120,93 @@ done
     . "$work/privileged" <"$work/input"
     [ "$#" = 0 ]
 )
-echo 'browser-url: stdin boundaries, defaults, portal and allowlist passed'
+# An argv-only installed guest must fail before portal, unlock/import or Grafana.
+sed -n '/^# Refuse argv-only guests /,/^\[ -z "\$portal_mode" \]/p' "$repo/tools/browser" |
+    sed 's|/usr/local/sbin/incus-ui|service_call|g; s|/usr/local/sbin/portal begin|service_call begin|' >"$work/services"
+check_script "$work/services"
+guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
+sed '/^\[ "\$#" = 0 \]/,/^esac$/d' "$guest" >"$work/argv-only"
+check_script "$work/argv-only"
+for version in current old missing; do
+    for mode in def tmp portal grafana incus remmina; do
+        : >"$work/services-called"
+        rc=0
+        (
+            role=$mode name=$mode portal_mode= incus_ui=
+            case $mode in
+                portal) role=tmp portal_mode=1 ;;
+                grafana) role=int ;;
+                incus) role=int incus_ui=1 ;;
+            esac
+            launcher=$guest
+            case $version in old) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; esac
+            service_call() { printf '%s\n' "$*" >>"$work/services-called"; }
+            portal_on() { return 0; }
+            ic() {
+                if [ "$1" = exec ] && [ "$2" = "$name" ]; then
+                    [ "$3" = -- ] || return 1
+                    shift 3
+                    "$@"
+                else
+                    service_call "$@"
+                fi
+            }
+            . "$work/services"
+        ) >"$work/error" 2>&1 || rc=$?
+        if [ "$version" = current ] || [ "$mode" = remmina ]; then
+            [ "$rc" = 0 ] || die "rejected $version $mode"
+            case $mode in
+                portal) grep -qx begin "$work/services-called" ;;
+                incus) printf '%s\n' --unlock --import >"$work/expected"
+                    cmp "$work/expected" "$work/services-called" ;;
+                grafana) grep -qx 'exec svc -- rc-service grafana start' "$work/services-called" ;;
+                *) [ ! -s "$work/services-called" ] ;;
+            esac
+        else
+            [ "$rc" != 0 ] && [ ! -s "$work/services-called" ] || die "opened $version $mode"
+            grep -q 'run sys update install' "$work/error"
+        fi
+    done
+done
+# Guard placement matters: no earlier service opening may bypass it.
+awk '/^# Refuse argv-only guests / {guard = NR}
+    /\/usr\/local\/sbin\/portal begin|\/usr\/local\/sbin\/incus-ui --unlock|rc-service grafana start/ {
+        if (!guard || NR <= guard) exit 1
+    }' "$repo/tools/browser"
+# A full pipe must not leave its writer holding session lock descriptors.
+(
+    sed 's/^send_url()/write_url()/' "$work/send" >"$work/write"
+    check_script "$work/write"
+    . "$work/write"
+    closed() {
+        for fd in 6 7 8 9; do
+            if (eval ": >&$fd") 2>/dev/null; then die "inherited lock $fd"; fi
+        done
+    }
+    send_url() {
+        closed
+        : >"$work/writer-ready"
+        write_url "$@"
+        : >"$work/writer-done"
+    }
+    incus() {
+        closed
+        attempts=0
+        until [ -f "$work/writer-ready" ]; do
+            attempts=$((attempts + 1))
+            [ "$attempts" -lt 50 ] || die 'writer did not start'
+            sleep .1
+        done
+        [ ! -e "$work/writer-done" ] || die 'writer did not block'
+        cat >"$work/blocked-input"
+    }
+    exec 6>"$work/lock6" 7>"$work/lock7" 8>"$work/lock8" 9>"$work/lock9"
+    name=tmp-20 launcher=/usr/local/bin/browser-launch run=$work
+    set -- "https://example.org/$(head -c 131000 /dev/zero | tr '\000' x)"
+    . "$work/incus"
+    wait "$browser"
+    [ -f "$work/writer-done" ]
+    write_url "$@" >"$work/expected"
+    cmp "$work/expected" "$work/blocked-input"
+)
+echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions and writer locks passed'
