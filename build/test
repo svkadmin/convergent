@@ -1108,6 +1108,7 @@ for op in restore delete; do
     grep -Fqx "            locked ic storage volume snapshot $op default \"\$volume\" \"\$snap\" || return" "$work/rollback"
 done
 # Replay the interrupted pair before any startup; reject invalid saved pairs first.
+credentials() { :; } # Renewal is exercised by test-seed.
 eval "$(sed -n '/^init_server() {/,/^}/p; /^init_done()/p' /usr/local/sbin/guests | sed 's/rc-service /rc_service /g; s/start-stop-daemon /start_stop_daemon /g')"
 sed -n '/^init() {/,/^    autorestart_clear$/p' /usr/local/sbin/guests | sed '$d; s/rc-service /rc_service /g' >"$work/init-head"
 printf '}\n' >>"$work/init-head"
@@ -1387,7 +1388,7 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	tls=$work/tls
 	mkdir "$tls"
 	eval "$(sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p' /usr/local/sbin/guests)"
-	openssl() { return 0; }
+	certificate_current() { return 0; }
 	certificates_prepare() { trust=new; echo prepare >>"$work/cert-events"; }
 	running() { return 1; }
 	retry() { "$@"; }
@@ -1402,7 +1403,7 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	}
 	certificates_apply
 	[ ! -e "$work/cert-events" ]
-	for cert in server incus-client; do echo new >"$tls/$cert.crt"; done
+	for cert in ca server incus-client; do echo new >"$tls/$cert.crt"; done
 	touch "$tls/pending"
 	restart_failure=1
 	set +e
@@ -1413,7 +1414,7 @@ grep -qx B "$installed/guests/svc/SHA256SUMS"
 	restart_failure=
 	certificates_apply
 	[ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ]
-	[ "$(grep -c '^install$' "$work/cert-events")" = 4 ]
+	[ "$(grep -c '^install$' "$work/cert-events")" = 6 ]
 	[ "$(grep -c '^restart$' "$work/cert-events")" = 3 ]
 	rm "$work/cert-events"
 	certificates_apply

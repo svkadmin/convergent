@@ -1303,6 +1303,7 @@ init() {
     [ ! -e "$state/initialized" ] || die 'already initialized'
     if [ -f "$state/init/release" ] && [ -f "$state/init/preseed" ] && [ ! -f "$state/init/server" ]; then
         [ "$(cat "$state/init/release")" = "$(cd "$1" && pwd)" ] || die 'resume init with the original release directory'
+        credentials
         init_server
     fi
     rc-service incus status >/dev/null 9>&- 8>&- 7>&- 6>&- || rc-service incus start 9>&- 8>&- 7>&- 6>&-
@@ -1396,8 +1397,10 @@ init() {
     retry pair fw1 fw2
     seed_finish wan
     retry pair fw1 fw2
-    seed_finish svc
+    retry seed_applied svc
     mkdir -p /var/lib/convergent/syslog-ca /var/lib/syslog-ng
+    certificates_apply
+    seed_finish svc
     ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
     install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0"
     rc-service syslog-ng reload 9>&- 8>&- 7>&- 6>&-
