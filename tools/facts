@@ -296,8 +296,9 @@ auto() {
 	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ]; then
 		boot
 	fi
-	if [ "$(age "$out/daily.prom")" -ge 72000 ] ||
-		{ [ "$(age "$out/daily.prom")" -ge 3600 ] && ! grep -qx 'cv_collector_success{collector="daily"} 1' "$out/daily.prom" 2>/dev/null; }; then
+	daily_age=$(age "$out/daily.prom")
+	if [ "$daily_age" -lt 0 ] || [ "$daily_age" -ge 72000 ] ||
+		{ [ "$daily_age" -ge 3600 ] && ! grep -qx 'cv_collector_success{collector="daily"} 1' "$out/daily.prom" 2>/dev/null; }; then
 		daily
 	fi
 	hourly

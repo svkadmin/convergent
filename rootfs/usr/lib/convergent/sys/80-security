@@ -19,8 +19,8 @@ security_status() {
 	printf 'Verity: '
 	sudo dmsetup status vroot || echo unknown
 	printf 'Blocked USB: %s\n' "$(usb_count)"
-	alerts=$(curl -sf --connect-timeout 2 -m 4 http://100.80.2.10:8880/api/v1/alerts 'http://100.80.2.10:8880/api/v1/rules?type=alert' |
-		jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
+	alerts=$(curl -qsf --noproxy '*' --connect-timeout 2 -m 4 --max-filesize 1048576 --fail-early http://100.80.2.10:8880/api/v1/alerts 'http://100.80.2.10:8880/api/v1/rules?type=alert') &&
+		alerts=$(printf '%s\n' "$alerts" | timeout -k 1 8 prlimit --as=134217728 -- jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
 		select(.[0].data.alerts | type == "array") |
 		select(.[1].data.groups | type == "array") |
 		select([.[1].data.groups[].rules[]] | length > 0) |
@@ -35,9 +35,9 @@ security_status() {
 security_check() { noargs "$@"; page run sudo /usr/local/sbin/check; }
 security_alerts() { noargs "$@"; page security_alert_list; }
 security_alert_list() {
-	alerts=$(curl -sf --connect-timeout 2 -m 4 http://100.80.2.10:8880/api/v1/alerts 'http://100.80.2.10:8880/api/v1/rules?type=alert') ||
+	alerts=$(curl -qsf --noproxy '*' --connect-timeout 2 -m 4 --max-filesize 1048576 --fail-early http://100.80.2.10:8880/api/v1/alerts 'http://100.80.2.10:8880/api/v1/rules?type=alert') ||
 		{ echo 'Alert evaluation failure: cannot reach vmalert.' >&2; return 1; }
-	printf '%s\n' "$alerts" | jq -ser '
+	printf '%s\n' "$alerts" | timeout -k 1 8 prlimit --as=134217728 -- jq -ser '
 		def text: tostring | gsub("[\u0000-\u001f\u007f-\u009f]"; " ");
 		select(length == 2 and all(.[]; .status == "success")) |
 		select(.[0].data.alerts | type == "array") |
