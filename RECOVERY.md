@@ -415,10 +415,20 @@ sudo find /var/lib/convergent/crash -type f
 sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
 ```
 
-Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory or
-`bert-<sha256>` file (`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`), then run `sudo facts
-boot` to refresh `cv_crash_records` (the archived file count). `CrashRecorded` clears when no
-archived files remain. Firmware must support EFI variable writes during a panic. An empty archive
+Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory
+(`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`). For BERT, persist an acknowledgment
+outside the archive before deleting the reviewed file (replace `<sha256>` with its hash):
+
+```sh
+sudo install -d -m 0700 /var/lib/convergent/crash-ack &&
+sudo touch /var/lib/convergent/crash-ack/bert-<sha256> &&
+sudo sync &&
+sudo rm /var/lib/convergent/crash/bert-<sha256>
+```
+
+The marker permanently suppresses that hash, including future byte-identical BERT records.
+Then run `sudo facts boot` to refresh `cv_crash_records` (the archived file count). `CrashRecorded`
+clears when no archived files remain. Firmware must support EFI variable writes during a panic. An empty archive
 alone does not prove the last shutdown was clean. If the release keeps crashing, boot the other slot
 (recipe 3).
 

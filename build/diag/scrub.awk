@@ -26,4 +26,4 @@ function mask(s,    out, m, parts, count, i, valid) {
 	return out s
 }
 function keep4(a) {return a ~ /^100\.80\./ || a ~ /^127\./ || a == "0.0.0.0" || a ~ /^255\./}
-{print mask($0)}
+{print mask($0); if (fflush() != 0) exit 1}

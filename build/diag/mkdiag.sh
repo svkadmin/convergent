@@ -19,14 +19,15 @@ EOF
 		cat "$d/$parser.awk"
 		echo AWK
 	done
-	echo '('
+	# Shell termination diagnostics can quote the unsanitized collector command.
+	echo '{ { ('
 	cat "$body"
 	cat <<'EOF'
-) >"$o/raw" 2>&1
-status=$?
-awk -f "$o/scrub.awk" "$o/raw" >"$o/out" || exit 1
-rm -f "$o/raw"
-cat "$o/out"
+)
+printf '%s\n' "$?" >"$o/collector-status"
+} 2>&1 | awk -f "$o/scrub.awk" || exit 1
+} 2>/dev/null
+status=$(cat "$o/collector-status") || exit 1
 exit "$status"
 EOF
 } >"$out"

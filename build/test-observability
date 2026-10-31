@@ -3,6 +3,9 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
+# CheckerFailed must name the existing sys handler.
+grep -qF 'Inspect sys security check and' "$repo/guests/svc/dashboards/security.py"
+grep -qF 'Inspect sys security check and' "$repo/guests/svc/rootfs/usr/share/grafana/dashboards/security.json"
 sh "$here/test-guest-reply"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
