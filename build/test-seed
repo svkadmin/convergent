@@ -37,7 +37,7 @@ sh -eu "$scratch/setup" "$scratch/setup-state" 7 || status=$?
 grep -qx failed "$scratch/setup-status"
 sh -eu "$scratch/setup" "$scratch/setup-state" 0
 [ -f "$scratch/setup-state/initialized" ]
-grep -qx done "$scratch/setup-status"
+grep -qx 'done' "$scratch/setup-status"
 [ "$(wc -l <"$scratch/setup-state/events")" = 2 ]
 if sh -eu "$scratch/setup" "$scratch/setup-state" 0; then die 'accepted initialized setup'; fi
 echo 'test-seed: setup pruning failure and retry passed'
