@@ -328,7 +328,8 @@ sudo portal status             # per-node state, aggregate on/off/mixed/unknown 
 
 Disk images initially allow HID/storage/hub classes. `sys usb enrol` replaces that policy with
 individual-device rules: review attached devices/hubs, answer yes for each trusted one, then confirm.
-Nothing saves before confirmation; declined devices remain blocked.
+Nothing saves before confirmation; declined devices remain blocked. Do not interrupt it after
+confirming: an interrupted save can leave the policy half applied; run `sys usb enrol` again.
 
 `sys usb review` shows saved rules (even unplugged) and attached decisions. `sys usb revoke RULE`
 takes an allow **rule number**, removes it and denies that device over overlapping allowances. Enrol
