@@ -13,11 +13,47 @@ check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
 fw=$repo/guests/fw/site
 awk -F= '$1 == "net.inet.ip.forwarding" {n++; if ($2 != 0) bad=1}
     END {exit (n != 1 || bad)}' "$fw/etc/sysctl.conf" || die 'early firewall forwarding'
+# Apply the installation edit to the stock bootstrap rules; reject upstream drift.
+sed -n '/^# Bootstrap SSH states/,/^# No CARP/p' "$fw/install.site" |
+    sed '$d;s|/etc/rc|"$work/fw-rc"|g' >"$work/fw-edit"
+check_script "$work/fw-edit"
+cat >"$work/fw-stock" <<'FWRC'
+RULES="
+    block all
+    pass on lo0
+    pass in proto tcp from any to any port ssh keep state
+    pass out proto { tcp, udp } from any to any port domain keep state"
+printf '%s\n' "$RULES"
+FWRC
+check_script "$work/fw-stock"
+for shape in stock missing duplicate changed; do
+    cp "$work/fw-stock" "$work/fw-rc"
+    case $shape in
+    missing) sed '/port ssh/d' "$work/fw-stock" >"$work/fw-rc" ;;
+    duplicate) cat "$work/fw-stock" >>"$work/fw-rc" ;;
+    changed) sed 's/port ssh/port 22/' "$work/fw-stock" >"$work/fw-rc" ;;
+    esac
+    if sh -eu -c 'work=$1; die() { echo "$*" >&2; exit 1; }; . "$work/fw-edit"' sh "$work"; then
+        [ "$shape" = stock ] || die "bootstrap edit accepted $shape"
+        check_script "$work/fw-rc"
+        sh "$work/fw-rc" >"$work/fw-patched-rules"
+        sed '/port ssh/d' "$work/fw-stock" >"$work/fw-expected-rc"
+        cmp "$work/fw-expected-rc" "$work/fw-rc"
+    else
+        [ "$shape" != stock ] || die 'bootstrap edit failed'
+    fi
+done
+sh "$work/fw-stock" >"$work/fw-stock-rules"
+cp "$fw/usr/local/libexec/convergent/fw-pf-reload" "$work/fw-reload"
+check_script "$work/fw-reload"
 sed -n "/^cat >\/etc\/rc.local <<'FIRSTBOOT'$/,/^FIRSTBOOT$/p" "$fw/install.site" |
-    sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|' >"$work/fw-boot"
+    sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|;s|/usr/local/libexec/convergent/fw-pf-reload|. "$work/fw-reload"|' >"$work/fw-boot"
 check_script "$work/fw-boot"
 cat >"$work/fw-run" <<'FWBOOT'
-work=$1 fault=$2
+work=$1 fault=$2 mode=$3 rules=$4
+# PF sees the incoming SYN before the forwarding check. Reloads retain its state.
+state=0
+if grep -q 'pass in proto tcp from any to any port ssh keep state' "$rules"; then state=1; fi
 pfctl() {
     case "$*" in
     '-f /etc/pf.conf') echo load >>"$work/fw-events"; [ "$fault" != load ] ;;
@@ -35,9 +71,15 @@ pfctl() {
 }
 sysctl() {
     case "$*" in
+    net.inet.ip.forwarding=0)
+        echo 0 >"$work/fw-forwarding"
+        echo off >>"$work/fw-events" ;;
     net.inet.ip.forwarding=1)
-        [ "$(cat "$work/fw-events")" = "$(printf 'load\nstatus')" ] || exit 97
+        [ "$(cat "$work/fw-events")" = "$(printf 'off\nload\nstatus')" ] || exit 97
         [ "$fault" != sysctl ] || return 1
+        echo 1 >"$work/fw-forwarding"
+        # Retransmitted forbidden SSH passes only if bootstrap state survived.
+        [ "$state" = 0 ] || echo leak >>"$work/fw-events"
         echo forward >>"$work/fw-events" ;;
     '-n kern.version') echo fixture ;;
     *) exit 98 ;;
@@ -46,20 +88,31 @@ sysctl() {
 sha256() { echo fixture; }
 syspatch() { [ "$*" = -l ]; }
 fw_seed() { echo seed >>"$work/fw-events"; }
-. "$work/fw-boot"
+. "$work/fw-$mode"
 FWBOOT
 check_script "$work/fw-run"
+for mode in boot reload; do
 for fault in none load disabled malformed status sysctl; do
     : >"$work/fw-events"
-    if sh -eu "$work/fw-run" "$work" "$fault" >"$work/fw-log" 2>&1; then
+    case $mode in boot) echo 0 ;; reload) echo 1 ;; esac >"$work/fw-forwarding"
+    if sh -eu "$work/fw-run" "$work" "$fault" "$mode" "$work/fw-patched-rules" >"$work/fw-log" 2>&1; then
         [ "$fault" = none ] || die "forwarding accepted $fault"
-        printf 'load\nstatus\nforward\nseed\n' >"$work/fw-expected"
+        [ "$(cat "$work/fw-forwarding")" = 1 ]
+        printf 'off\nload\nstatus\nforward\n' >"$work/fw-expected"
+        [ "$mode" != boot ] || echo seed >>"$work/fw-expected"
         cmp "$work/fw-expected" "$work/fw-events"
     else
         [ "$fault" != none ] || { cat "$work/fw-log"; die 'firewall boot'; }
+        [ "$(cat "$work/fw-forwarding")" = 0 ] || die "forwarding left on after $fault"
         if grep -qE '^(forward|seed)$' "$work/fw-events"; then die "forwarded after $fault"; fi
     fi
 done
+done
+# Allow control: the unedited bootstrap rule leaks despite the forwarding gate.
+: >"$work/fw-events"
+echo 0 >"$work/fw-forwarding"
+sh -eu "$work/fw-run" "$work" none boot "$work/fw-stock-rules" >"$work/fw-log" 2>&1
+grep -qx leak "$work/fw-events" || die 'SYN state survival control failed'
 echo 'test-boot-privacy: firewall forwarding passed'
 
 # Capture the feeder's actual fd 3 writes, including TERM's magic close.

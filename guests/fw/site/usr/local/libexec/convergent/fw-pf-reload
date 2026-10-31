@@ -1,0 +1,9 @@
+#!/bin/sh
+# Boot and runtime policy loads leave forwarding off on failure.
+set -eu
+export LC_ALL=C
+sysctl net.inet.ip.forwarding=0
+pfctl -f /etc/pf.conf
+pf_status=$(pfctl -si)
+printf '%s\n' "$pf_status" | grep -q '^Status: Enabled'
+sysctl net.inet.ip.forwarding=1

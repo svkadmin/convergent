@@ -112,7 +112,8 @@ OpenRC activates generated swap settings; editing reference YAML has no runtime 
 | Wi-Fi | `sys wifi` controls wan's radio |
 
 Firewall inspection: `sudo ssh -F /etc/convergent/ssh_config fw1`, then `pfctl -sr` or
-`ifconfig carp`. Daily use needs no firewall shell.
+`ifconfig carp`. Daily use needs no firewall shell. For a manual policy reload, use
+`/usr/local/libexec/convergent/fw-pf-reload`; a failed load leaves forwarding off.
 
 ## Keys
 

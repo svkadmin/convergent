@@ -46,6 +46,7 @@ chmod 0644 /etc/ssh/sshd_config /etc/convergent/update_src
 chmod 0640 /etc/convergent/pf.guests
 chmod 0644 /var/unbound/etc/*.conf /var/unbound/etc/blocklist.rpz
 chmod 0755 /usr/local/libexec/convergent/fw-facts /usr/local/libexec/convergent/wan-watch /usr/local/libexec/convergent/fw-seed
+chmod 0755 /usr/local/libexec/convergent/fw-pf-reload
 
 # Keep the inherited rotation budget in sync with pflogd's 1MiB cap.
 awk '$1 == "/var/log/pflog" {n++; if ($3 != 3 || $6 != "ZB") bad=1}
@@ -55,6 +56,12 @@ cap_mkdb /etc/login.conf
 # Nobody sits at a firewall's console: a failed preen repairs with -y and reboots, as -p does after fixing root.
 sed -i 's/echo "Automatic file system check failed; help!"/echo "Automatic file system check failed; repairing."; fsck -y "$@"; case $? in 0|4) echo Rebooting...; reboot ;; *) false ;; esac/' /etc/rc
 grep -qF 'fsck -y "$@"; case $? in 0|4) echo Rebooting...; reboot ;; *) false ;; esac' /etc/rc || die '/etc/rc has no unattended fsck repair'
+
+# Bootstrap SSH states would survive the final policy load.
+ssh_rule='^[[:space:]]*pass in proto tcp from any to any port ssh keep state$'
+[ "$(grep -c "$ssh_rule" /etc/rc)" = 1 ] || die 'unexpected bootstrap SSH rule'
+sed -i "/$ssh_rule/d" /etc/rc
+[ "$(grep -c "$ssh_rule" /etc/rc)" = 0 ] || die 'bootstrap SSH rule remains'
 
 # No CARP interfaces or dependent daemons until the seed is installed.
 mkdir -p /etc/convergent/carp
@@ -169,11 +176,7 @@ SYSPATCH
 cat >/etc/rc.local <<'FIRSTBOOT'
 #!/bin/sh
 set -eu
-# Never forward under the bootstrap rules, or after a failed policy load.
-pfctl -f /etc/pf.conf
-pf_status=$(pfctl -si)
-printf '%s\n' "$pf_status" | grep -q '^Status: Enabled'
-sysctl net.inet.ip.forwarding=1
+/usr/local/libexec/convergent/fw-pf-reload
 echo "CONVERGENT-KERNEL $(sysctl -n kern.version | sed -n '1p')"
 kernel=$(sha256 -q /bsd.booted)
 echo "CONVERGENT-KERNEL-SHA256 $kernel"
