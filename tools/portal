@@ -61,8 +61,7 @@ net_of() {
 
 upstream_net() {
 	_diag=$(guest_reply 65536 rsh wan diag 2>/dev/null) || return 1
-	_route=$(printf '%s
-' "$_diag" | awk '
+	_route=$(printf '%s\n' "$_diag" | awk '
 		/^== / {section=$2; next}
 		section == "addresses" && $1 != "eth0" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=$2}
 		section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
