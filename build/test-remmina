@@ -98,8 +98,8 @@ EOF
     if sh "$work/updater" update remmina "$work/broken" >"$work/update.log" 2>&1; then
         cat "$work/update.log"; echo 'CV-REMOTE corrupt image accepted'; exit 1
     fi
-    grep -q CV-REMOTE-MUTATED "$work/update.log"
-    grep -q 'restoring remmina/' "$work/update.log"
+    grep -q CV-REMOTE-MUTATED "$work/update.log" && grep -q 'restoring remmina/' "$work/update.log" ||
+        { tail -n 40 "$work/update.log"; exit 1; }
     test "$(ic config get remmina volatile.base_image)" = "$before"
     test ! -e /var/lib/convergent/guests/pending
     ic start remmina

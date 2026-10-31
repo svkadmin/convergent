@@ -1,5 +1,6 @@
 #!/bin/sh
-# Quiesce both allocators while checkpointing and seeding a replacement.
+# Quiesce both allocators while checkpointing and seeding a replacement. A replacement still booting and
+# relinking took over 30 s for the rcctl calls below.
 leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
@@ -7,7 +8,7 @@ leases_hold() {
     lease_sources=0
     for lease_node in fw1 fw2; do
         running "$lease_node" || continue
-        if rsh "$lease_node" 'set -e
+        if probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     rcctl disable dhcpd
     if rcctl check dhcpd >/dev/null 2>&1; then rcctl stop dhcpd; fi
@@ -28,7 +29,7 @@ fi' >"$work/leases.$lease_node"; then
     mv "$work/leases.saved" "$state/leases/saved" && sync || return
     for lease_node in fw1 fw2; do
         running "$lease_node" || continue
-        if ! rsh "$lease_node" 'set -e
+        if ! probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     umask 077
     cat >/var/db/dhcpd.leases.new
@@ -46,7 +47,7 @@ leases_resume() {
     lease_waiting=
     for lease_node in ${1:-fw1 fw2}; do
         running "$lease_node" || { lease_waiting=1; continue; }
-        rsh "$lease_node" 'set -e
+        probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     rcctl enable dhcpd
     rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)

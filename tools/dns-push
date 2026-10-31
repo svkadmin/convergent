@@ -21,6 +21,7 @@ die() { echo "dns-push: $*" >&2; exit 1; }
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@" 9>&- 8>&- 7>&-; }
+# Checkconf, reload and restore on a firewall still relinking after its boot outlasted 120 s.
 rsh_wait() { _h=$1; shift; timeout 900 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 close_src() {
 	_closed=0
@@ -71,7 +72,7 @@ rollback() {
 	_failed=0
 	if [ -e "$state/pending" ]; then
 		for _f in $fws; do
-			rsh "$_f" "$lock
+			rsh_wait "$_f" "$lock
 $restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _failed=1; }
 		done
 		rm -f "$state/stamp" "$state/last-push"
@@ -326,7 +327,7 @@ for fw in $fws; do
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
 		[ "$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
 	done
-	rsh "$fw" "cd $rdir &&
+	rsh_wait "$fw" "cd $rdir &&
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
 		unbound-checkconf $rdir/dns-check.conf >/dev/null &&
 		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev"
@@ -340,7 +341,7 @@ sync
 : >"$state/pending"
 sync
 for fw in $fws; do
-	rsh "$fw" "$lock
+	rsh_wait "$fw" "$lock
 		trap 's=\$?; set +e; trap - 0; if [ \$s != 0 ]; then $restore; fi; $unlock; exit \$s' 0
 		trap 'exit 1' HUP INT TERM
 		cd $rdir

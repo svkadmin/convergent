@@ -1874,6 +1874,11 @@ cv_time firewall-self-heal
     until [ "$(heal_probe fw2)" = backup ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
+    # The restarted fw2 relinks its kernel for ~25 minutes; meanwhile its rcctl calls outlasted 30 s.
+    deadline=$(($(date +%s) + 3600))
+    until fwssh fw2 '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
     grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     rm /run/convergent/guests-stopping

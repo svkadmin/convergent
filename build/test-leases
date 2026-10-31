@@ -57,7 +57,7 @@ cp "$work/old" "$work/live/fw1"
 cp "$work/new" "$work/live/fw2"
 . "$lib/fw-leases"
 running() { [ -f "$work/live/$1" ]; }
-rsh() { case $2 in *'cat /var/db/dhcpd.leases'*) cat "$work/live/$1" ;; *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;; *) : ;; esac; }
+rsh() { echo "${probe_limit:-30}" >>"$work/limits"; case $2 in *'cat /var/db/dhcpd.leases'*) cat "$work/live/$1" ;; *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;; *) : ;; esac; }
 leases_hold
 cmp "$work/live/fw1" "$work/live/fw2"
 sort "$state/leases/saved" >"$work/actual"
@@ -72,6 +72,9 @@ cp "$work/old" "$work/live/fw1"
 cp "$work/new" "$work/live/fw2"
 leases_resume
 [ ! -e "$state/leases/held" ]
+# A replacement still booting and relinking needed more than the 30 s probe bound for these mutators.
+[ -s "$work/limits" ]
+if grep -vqx 120 "$work/limits"; then exit 1; fi
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p' "$here/../tools/guests")"
 keys=$work/keys
