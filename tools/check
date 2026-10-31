@@ -23,12 +23,12 @@ if [ "${1:-}:$#" = status:1 ]; then
     status=/run/convergent/status
     install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
     exec 9>"$status/lock"; flock -n 9 || exit 0
-    # Read portal state under its action lock; contention leaves the previous sample to age out.
+    # Wait out expiry's WAN probe; leave 25 seconds plus kill grace for collection.
     umask 077
     exec 8>/run/convergent/portal.lock
     umask 022
     portal_locked=0
-    flock -n 8 && portal_locked=1
+    flock -w 30 8 && portal_locked=1
     # Parallel guests, sequential sessions per guest: no cold ControlMaster race.
     (
         if instances=$(timeout -k 1 10 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 2>/dev/null); then

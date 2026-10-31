@@ -8,10 +8,11 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 sed -n '/^        if diag=/,/^        if wifi=/ { /^        if wifi=/d; p; }' "$repo/tools/check" >"$work/uplink"
 sed -n '/^    wait$/,/^    exit \$?$/p' "$repo/tools/check" >"$work/publish"
-for part in uplink publish; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+sed -n '/^    portal_locked=0$/,/^    # Parallel/ { /^    # Parallel/d; p; }' "$repo/tools/check" >"$work/portal-lock"
+for part in uplink publish portal-lock; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
 status=$work/status
 mkdir "$status"
-guest_reply() { [ "$*" = '65536 wan_probe diag' ]; cat "$work/diag"; }
+guest_reply() { [ "$*" = '65536 wan_probe diag' ] || return 1; cat "$work/diag"; }
 for scenario in wired wifi noaddress nocarrier linkdown internal none; do
     case $scenario in wifi) first=wlan0 second=enp3s0 expected='up wlan' ;;
         *) first=enp3s0 second=wlan0 expected='up eth' ;; esac
@@ -38,11 +39,18 @@ for scenario in wired wifi noaddress nocarrier linkdown internal none; do
     . "$work/uplink"
     [ "$(cat "$status/.wan")" = "$expected" ]
 done
+if guest_reply 128 wan_probe diag >/dev/null; then exit 1; fi
 echo 'check status: route preference and eligibility passed'
+flock() {
+    case $* in
+        '-w 30 8') [ "$scenario" != busy ] ;;
+        '-n 8') case $scenario in busy|expiry) return 1 ;; *) return 0 ;; esac ;;
+        *) echo "unexpected flock: $*" >&2; exit 1 ;;
+    esac
+}
 # Lock contention preserves both the sample and its age; other status still advances.
 for scenario in busy on off inconsistent failed empty; do
-    portal_locked=1
-    [ "$scenario" != busy ] || portal_locked=0
+    . "$work/portal-lock" || :
     echo on >"$status/portal"
     touch -t 200001010000 "$status/portal"
     previous=$(stat -c %Y "$status/portal")
@@ -72,3 +80,18 @@ for scenario in busy on off inconsistent failed empty; do
     grep -qx 1234 "$status/guestmem"
 done
 echo 'check status: busy portal ages out; verified results and other status publish'
+# Expiry wins four successive minute ticks, then releases within the lock wait.
+scenario=expiry
+echo on >"$status/portal"
+for node in fw1 fw2 wan; do echo on >"$status/.portal-$node"; done
+for tick in 1 2 3 4; do
+    previous=$(stat -c %Y "$status/portal")
+    sleep 1
+    cp "$status/wifi" "$status/.wifi"
+    cp "$status/guestmem" "$status/.guestmem"
+    . "$work/portal-lock" || :
+    ( . "$work/publish" )
+    [ "$(cat "$status/portal")" = on ]
+    [ "$(stat -c %Y "$status/portal")" -gt "$previous" ]
+done
+echo 'check status: repeated expiry contention refreshes the portal sample'
