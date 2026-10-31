@@ -92,6 +92,9 @@ ic exec int -- sh -eu -c '
 ic exec int -- test ! -e /run/incus-ui/import.p12
 ic exec int --user 1000 --group 1000 -- certutil -K -d sql:/home/browser/.pki/nssdb -f /dev/null | grep -q browser-int-ui
 ic config trust list --format json | jq -e 'any(.[]; .name == "browser-int-ui" and .type == "client" and .restricted == false and (.projects | length) == 0)'
+# A CARP blip right after PF's maintenance rounds once split int's handshake across both firewalls.
+deadline=$(($(date +%s) + 240))
+until [ "$(api 2>/dev/null)" != 000 ]; do [ "$(date +%s)" -lt "$deadline" ]; sleep 5; done
 [ "$(api)" = 403 ]
 [ "$(api --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 200 ]

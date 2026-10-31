@@ -45,7 +45,8 @@ heal_qemu() {
         END {exit !(q && n && p)}' || return 1
     echo "$pid"
 }
-# Identity checked again right before the signal. Incus sees the exit, cleans up and reports STOPPED.
+# Identity checked again right before the signal. Incus sees the exit and reports STOPPED or, without
+# our hold, restarts the VM itself under a new QEMU.
 heal_kill() {
     if heal_probe "$1" >/dev/null; then return 1; fi
     [ "$(heal_probe "$2")" = master ] && heal_allowed || return 1
@@ -55,7 +56,10 @@ heal_kill() {
     heal_note "$1 QEMU $pid no longer answers Incus; killed for a restart"
     for wait in 1 2 3 4 5 6 7 8 9 10 11 12; do
         sleep 5
-        [ "$(heal_state "$1")" != STOPPED ] || return 0
+        case $(heal_state "$1") in
+        STOPPED) return 0 ;;
+        RUNNING) next=$(heal_qemu "$1") && [ "$next" != "$pid" ] && return 0 ;;
+        esac
     done
     return 1
 }
@@ -140,20 +144,28 @@ firewall_heal() (
             *) [ -n "$original_pid" ] || { heal_note "$node restart refused: unknown Incus state"; exit 1; }
                set -- kill ;;
             esac
-            # A frozen monitor answers config changes only after its 10 s QMP timeout.
-            timeout -k 1 30 incus --force-local --project default config set "$node" \
-                boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- ||
-                { heal_note "$node restart refused: autorestart hold not set"; exit 1; }
-            : >"$heal/$node.hold"
+            # Incus answers no instance read or change of a frozen monitor until it runs again (a 20-minute
+            # SIGSTOP on .9): that QEMU is killed without the hold.
+            held=
+            if [ "$1" != kill ]; then
+                timeout -k 1 30 incus --force-local --project default config set "$node" \
+                    boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- ||
+                    { heal_note "$node restart refused: autorestart hold not set"; exit 1; }
+                : >"$heal/$node.hold"
+                held=1
+            fi
             if [ "$1" != kill ] && ! timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; then
                 # Incus cannot drive a frozen monitor, --force included: end the QEMU itself.
                 if heal_qemu "$node" >/dev/null; then set -- kill; else set -- failed; fi
             fi
             if [ "$1" = kill ]; then
-                heal_kill "$node" "$peer" "$original_pid" && timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- || set -- failed
+                heal_kill "$node" "$peer" "$original_pid" && { [ "$(heal_state "$node")" = RUNNING ] ||
+                    timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&-; } || set -- failed
             fi
-            [ "$1" != failed ] || { heal_note "$node restart failed or timed out; autorestart hold retained"; exit 1; }
-            if timeout -k 1 30 incus --force-local --project default config unset "$node" \
+            [ "$1" != failed ] || { heal_note "$node restart failed or timed out${held:+; autorestart hold retained}"; exit 1; }
+            if [ -z "$held" ]; then
+                heal_note "$node restart completed; awaiting health probes"
+            elif timeout -k 1 30 incus --force-local --project default config unset "$node" \
                 boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&-; then
                 rm -f "$heal/$node.hold"
                 heal_note "$node restart completed; awaiting health probes"

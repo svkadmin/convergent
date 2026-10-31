@@ -20,6 +20,7 @@ die() { echo "dns-push: $*" >&2; exit 1; }
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@" 9>&- 8>&- 7>&-; }
+rsh_wait() { _h=$1; shift; timeout 900 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 close_src() {
 	_closed=0
 	for _f in $fws; do
@@ -312,12 +313,13 @@ for fw in $fws; do
 		unbound-checkconf $rdir/unbound.conf >/dev/null
 		rcctl check unbound >/dev/null || rcctl start unbound
 		unbound-control reload_keep_cache >/dev/null" || die "activation failed on $fw; its previous data is restored"
-	# A freshly replaced node relinks its kernel for minutes: its reload gets up to the 300 s SSH bound to answer.
-	rsh_in "$fw" "i=0; while [ \$i -lt 60 ]; do
+	# Nested test firewalls reloaded this list in 7-43 s, some in 270-330 s (wan-watch demotes a silent
+	# MASTER meanwhile): the reload gets 14 minutes to answer.
+	rsh_wait "$fw" "end=\$((\$(date +%s) + 840)); while [ \$(date +%s) -lt \$end ]; do
 		host -W 2 -t A $selftest 127.0.0.1 2>&1 | grep -Fq 'has address $selftest_addr' &&
 			host -W 2 -t A blocked-$selftest 127.0.0.1 2>&1 | grep -q NXDOMAIN && exit 0
-		i=\$((i + 1)); sleep 2
-	done; exit 1" </dev/null || die "$fw does not answer the pushed records"
+		sleep 2
+	done; exit 1" || die "$fw does not answer the pushed records"
 done
 cp "$work/list.raw" "$state/list.rpz.new"
 mv "$state/list.rpz.new" "$state/list.rpz"

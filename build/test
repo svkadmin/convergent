@@ -658,8 +658,11 @@ logger() { :; }
 flock() { [ "$busy" = 0 ]; }
 timeout() { shift 3; "$@"; }
 sleep() { :; }
-# A killed QEMU is one Incus reports STOPPED afterwards.
-kill() { echo "kill $*" >>"$work/calls"; test_status=STOPPED; }
+# A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
+kill() {
+    echo "kill $*" >>"$work/calls"
+    if [ "${autorestart:-0}" = 1 ]; then qemu 4343 fw2 "$work/incus/fw2/qemu.pid"; test_status=RUNNING; else test_status=STOPPED; fi
+}
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
@@ -684,7 +687,8 @@ incus() {
     esac
     echo "$*" >>"$work/calls"
     case ${4:-}:${5:-} in
-    config:set) touch "$work/held" ;;
+    # A frozen monitor answers no instance change.
+    config:set) [ "$test_status" != unknown ] || return 1; touch "$work/held" ;;
     config:get) [ "${get_failed:-0}" = 0 ] || return 1; [ ! -f "$work/held" ] || echo true ;;
     config:unset) [ "${unset_failed:-0}" = 0 ] || return 1; rm -f "$work/held" ;;
     restart:*)
@@ -767,23 +771,28 @@ qemu() {
     printf '%s\n' "$1" >"$work/incus/fw2/qemu.pid"
     printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name "$2" -uuid x -pidfile "$3" >"$work/proc/$1/cmdline"
 }
-for scenario in hung foreign-name foreign-pidfile gone; do
-    rm -rf "$work/run/firewall-heal" "$work/proc/4242" "$work/incus"
-    test_status=unknown test_peer=MASTER
+for scenario in hung hung-autorestart foreign-name foreign-pidfile gone; do
+    rm -rf "$work/run/firewall-heal" "$work/proc/4242" "$work/proc/4343" "$work/incus"
+    test_status=unknown test_peer=MASTER autorestart=0
     qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
     case $scenario in
+    hung-autorestart) autorestart=1 ;;
     foreign-name) qemu 4242 wan "$work/incus/fw2/qemu.pid" ;;
     foreign-pidfile) qemu 4242 fw2 "$work/incus/wan/qemu.pid" ;;
     gone) rm -r "$work/proc/4242" ;;
     esac
     : >"$work/calls"
     for t in 1000 1060 1120 1180; do tick "$t"; done
+    # No hold first: Incus would answer the change only once the QEMU ran again.
     if [ "$scenario" = hung ]; then
-        printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
-            'kill -KILL 4242' '--force-local --project default start fw2' \
-            '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
+        printf '%s\n' 'kill -KILL 4242' '--force-local --project default start fw2' >"$work/expected"
         cmp "$work/calls" "$work/expected"
         grep -q 'restart completed' "$work/run/firewall-heal/event"
+    elif [ "$scenario" = hung-autorestart ]; then
+        printf '%s\n' 'kill -KILL 4242' >"$work/expected"
+        cmp "$work/calls" "$work/expected"
+        grep -q 'restart completed' "$work/run/firewall-heal/event"
+        [ ! -e "$work/run/firewall-heal/fw2.hold" ]
     else
         [ ! -s "$work/calls" ]
         grep -q 'restart refused: unknown Incus state' "$work/run/firewall-heal/event"
@@ -2279,7 +2288,7 @@ incus() {
 }
 # probe() runs polled reads under timeout(1), which would bypass incus() above.
 timeout() {
-    case "$*" in *' incus --force-local --project default exec svc -- cat /var/lib/convergent/seeded') shift 3; incus "$@" ;;
+    case "$*" in *' incus --force-local --project default exec svc -- cat /var/lib/convergent/seeded') shift 3; "$@" ;;
     *) command timeout "$@" ;; esac
 }
 FAULT
@@ -2340,7 +2349,7 @@ incus() {
     command incus "$@"
 }
 timeout() {
-    case "$*" in *' incus --force-local --project default exec svc -- wget '*) shift 3; incus "$@" ;;
+    case "$*" in *' incus --force-local --project default exec svc -- wget '*) shift 3; "$@" ;;
     *) command timeout "$@" ;; esac
 }
 FAULT
@@ -3017,7 +3026,7 @@ if [ "$r" = 0 ]; then
 	# End Remmina.
 	timeout -k 30 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# Real TLS, per-session NSS and orphan recovery.
-	timeout -k 30 300 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
+	timeout -k 30 600 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End Incus UI checks.
 	timeout -k 30 900 sh "$release/browser-migration-test" || { echo 'CV-BROWSER migration failed'; result=1; }
 fi
