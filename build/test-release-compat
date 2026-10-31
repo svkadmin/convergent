@@ -7,6 +7,99 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-release-compat: $*" >&2; exit 1; }
+# USB reads stay bounded even before signatures or artifact hashes are checked.
+sed -n '/^usb_copy() {/,/^}/p' "$repo/tools/fetch-release" >"$work/usb-copy"
+[ -s "$work/usb-copy" ]
+sh -n "$work/usb-copy"
+. "$work/usb-copy"
+(
+usb=$work/copy-source dir=$work/copy-target
+mkdir "$usb" "$dir"
+head() {
+    command head "$@" >"$work/read" || return 1
+    stat -c %s "$work/read" >"$work/read-bytes"
+    cat "$work/read"
+    [ "$fault" != io ]
+}
+cp() {
+    command cp "$@" || return 1
+    stat -c %s "$2" >"$work/read-bytes"
+    [ "$fault" != io ]
+}
+for limit in 1024 65536; do
+    for fault in none oversized io directory; do
+        echo 0 >"$work/read-bytes"
+        rm -rf "$usb/input"
+        case $fault in
+        none|io) command head -c "$limit" /dev/zero >"$usb/input" ;;
+        oversized) command head -c "$((limit * 2))" /dev/zero >"$usb/input" ;;
+        directory) mkdir "$usb/input" ;;
+        esac
+        echo partial >"$dir/output"
+        if usb_copy input "$dir/output" "$limit"; then
+            [ "$fault" = none ] || die "accepted $fault USB metadata"
+            cmp "$usb/input" "$dir/output"
+        else
+            [ "$fault" != none ] || die 'rejected bounded USB metadata'
+            [ ! -e "$dir/output" ] || die 'left failed USB output'
+        fi
+        [ "$(cat "$work/read-bytes")" -le "$((limit + 1))" ] || die 'unbounded USB read'
+    done
+done
+sed -n '/^field()/p; /^have()/p; /^mf()/p; /^download() {/,/^}/p' "$repo/tools/fetch-release" >"$work/download-check"
+[ -s "$work/download-check" ] && grep -q '^download()' "$work/download-check"
+sh -n "$work/download-check"
+. "$work/download-check"
+printf good >"$usb/slot.img"
+printf 'size slot.img 4\n%s slot.img\n' "$(sha256sum <"$usb/slot.img" | cut -d' ' -f1)" >"$dir/manifest"
+for fault in none oversized short hash io directory; do
+    echo 0 >"$work/read-bytes"
+    rm -rf "$usb/slot.img"
+    rm -f "$dir/slot.img"
+    case $fault in
+    none|io) printf good >"$usb/slot.img" ;;
+    oversized) printf oversized >"$usb/slot.img" ;;
+    short) printf bad >"$usb/slot.img" ;;
+    hash) printf evil >"$usb/slot.img" ;;
+    directory) mkdir "$usb/slot.img" ;;
+    esac
+    if (download slot.img) >"$work/log" 2>&1; then
+        [ "$fault" = none ] || die "accepted $fault USB artifact"
+        cmp "$usb/slot.img" "$dir/slot.img"
+    else
+        [ "$fault" != none ] || { cat "$work/log"; exit 1; }
+        [ ! -e "$dir/slot.img" ] || die 'left failed USB artifact'
+    fi
+    [ "$(cat "$work/read-bytes")" -le 5 ] || die 'artifact exceeded signed size plus one'
+done
+# A dropped online download still keeps its partial file for resumption.
+usb= url=https://fixture.invalid latest=43
+get() {
+    [ "$*" = "--max-time 7200 --max-filesize 4 --retry 5 -C - -o $dir/slot.img $url/43/slot.img" ] || exit 97
+    printf go >"$dir/slot.img"
+    return 18
+}
+if (download slot.img) >"$work/log" 2>&1; then die 'accepted dropped online download'; fi
+[ "$(cat "$dir/slot.img")" = go ]
+)
+# The anti-rollback floor is not evidence that the running release is current.
+sed -n '/^uptodate=/,/^# Fail now/p' "$repo/tools/fetch-release" >"$work/current"
+[ -s "$work/current" ] && grep -q '^sync=' "$work/current"
+sh -n "$work/current"
+for mode in check write; do
+    for highest in 43 44; do
+        if (booted=42 latest=43 floor=$highest current='up to date' signed_ago='signed 0 days ago'; . "$work/current") >"$work/log" 2>&1; then
+            die 'accepted older boot as current'
+        fi
+        grep -q 'booted release 42 is older than newest published 43' "$work/log"
+        grep -q "highest good release $highest blocks ordinary reinstallation" "$work/log"
+        grep -q 'boot menu.*rescue' "$work/log"
+        if grep -q 'up to date' "$work/log"; then die 'reported older boot current'; fi
+    done
+    (booted=43 latest=43 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ "$sync" = 1 ])
+    (booted=42 latest=44 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ -z "$sync" ])
+done
+echo 'test-release-compat: bounded USB copies, online resumption and older boot fixtures passed'
 # A failed flush must still kill states, retain tracking and allow cleanup to retry.
 (
 . "$repo/rootfs/usr/lib/convergent/update.sh"

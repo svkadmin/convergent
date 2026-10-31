@@ -185,6 +185,10 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	(
 	key=$pub usb= pointer=$work/pointer
 	mkdir "$pointer"
+	sed -n '/^usb_copy() {/,/^}/p' "$here/../tools/fetch-release" >"$work/usb-copy"
+	[ -s "$work/usb-copy" ]
+	sh -n "$work/usb-copy"
+	. "$work/usb-copy"
 	eval "$(sed -n '/^field()/p; /^num()/p; /^bytes()/p; /^read_pointer() {/,/^}/p' "$here/../tools/fetch-release")"
 	eval "$(sed -n '/^verify()/p' "$here/../rootfs/usr/lib/convergent/update.sh")"
 	printf 'read_pointer\n' >"$work/pointer-check"
