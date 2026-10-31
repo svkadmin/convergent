@@ -6,6 +6,44 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Maintenance publishes healing even when a full scan owns the report lock.
+(
+    state=$work/merge
+    mkdir "$state"
+    sed -n '/^if .*auto.*then ($/,/^); fi$/p' "$repo/tools/check" |
+        sed -n '/^    exec 8>&-$/,$p' | sed '$d' |
+        sed "s|/run/convergent/check.lock|$state/check.lock|" >"$work/merge-script"
+    [ -s "$work/merge-script" ]
+    sh -n "$work/merge-script"
+    die() { echo "$*" >&2; exit 1; }
+    flock() {
+        [ "$*" = '-n 9' ] || exit 1
+        [ -f "$state/firewall-heal" ] || exit 1
+        if ( : >&8 ) 2>/dev/null; then exit 1; fi
+        [ "$sample" = free ] || return 1
+        : >"$state/locked"
+    }
+    sed() {
+        [ -f "$state/locked" ] || exit 1
+        command sed "$@"
+    }
+    for sample in busy free; do
+        printf 'FAIL new scan\nSELF-HEAL old\n' >"$state/last"
+        touch -t 202001010000 "$state/last"
+        cp -p "$state/last" "$state/before"
+        echo 'SELF-HEAL current' >"$state/.firewall-heal"
+        (exec 8>"$state/guests.lock"; . "$work/merge-script")
+        grep -qx 'SELF-HEAL current' "$state/firewall-heal"
+        [ "$(stat -c %Y "$state/last")" = "$(stat -c %Y "$state/before")" ]
+        case $sample in
+        busy) cmp "$state/before" "$state/last"; [ ! -e "$state/.last" ] ;;
+        free)
+            printf 'FAIL new scan\nSELF-HEAL current\n' >"$state/expected"
+            cmp "$state/expected" "$state/last" ;;
+        esac
+    done
+)
+echo 'observability: maintenance report lock and timestamp assertions passed'
 # Scrub evidence and its missing-record grace survive short boots.
 sed -n '/^[[:space:]]*uuid=$(findmnt/,/^[[:space:]]*for volume / {
     /^[[:space:]]*for volume /d; p;
