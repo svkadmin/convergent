@@ -26,13 +26,29 @@ done
 printf 'valid\n' >"$reply"
 result=7
 refuse guest_reply 128 transport
+code=0
+guest_reply --display 128 transport >"$scratch/output" || code=$?
+[ "$code" = 7 ]
+cmp "$reply" "$scratch/output"
+head -c 129 /dev/zero >"$reply"
+refuse guest_reply --display 128 transport
 : >"$reply"
 code=0
 guest_reply 128 transport || code=$?
 [ "$code" = 7 ]
 result=0
 # A streaming producer stops at the pipe limit, without filling shell memory.
-refuse guest_reply 128 timeout -k 1 5 yes valid
+cat >"$scratch/stream" <<'STREAM'
+#!/bin/sh
+set -eu
+. "$1"
+guest_reply 128 yes valid
+STREAM
+sh -n "$scratch/stream"
+code=0
+timeout -k 1 5 sh "$scratch/stream" "$repo/rootfs/usr/lib/convergent/guest-reply.sh" >"$scratch/output" || code=$?
+[ "$code" = 125 ]
+[ ! -s "$scratch/output" ]
 [ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]
 
 # Exercise the production assignments, not copies of their byte limits.
@@ -81,6 +97,21 @@ for node in fw1 wan svc; do
     if seed_applied "$node"; then exit 1; fi
 done
 
+# Full default-topology ifconfig + pfctl -si, with at least 48 KiB spare.
+cp "$here/fixtures/firewall-reply" "$reply"
+result=0
+[ "$(grep -c '^carp[0-9]*:' "$reply")" = 10 ]
+[ "$(grep -c '^vlan[0-9]*:' "$reply")" = 4 ]
+[ "$((65536 - $(wc -c <"$reply")))" -ge 49152 ]
+guest_reply 65536 transport >"$scratch/output"
+cmp "$reply" "$scratch/output"
+CONVERGENT_CONFIG=$scratch/no-config sh "$here/networks" registry "$scratch/registry"
+sed -n '/^heal_probe() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
+    sed -e "s|/usr/lib/convergent/incus/carp.awk|$repo/rootfs/usr/lib/convergent/incus/carp.awk|g" \
+        -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/probe"
+[ -s "$scratch/probe" ]; sh -n "$scratch/probe"; . "$scratch/probe"
+[ "$(heal_probe fw1)" = master ]
+
 for module in 10-wifi 14-firewall; do
     sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
@@ -88,6 +119,24 @@ for module in 10-wifi 14-firewall; do
 done
 run() { transport; }
 firewall_rsh() { transport; }
+# Ordinary failures retain both the guest's text and its status for UI advice.
+for failure in 'Operation failed' 'Authentication failed' 'No network found'; do
+    printf '%s\n' "$failure" >"$reply"
+    result=7 code=0
+    wifi_join_reply connect >"$scratch/output" 2>"$scratch/error" || code=$?
+    [ "$code" = 7 ]
+    cmp "$reply" "$scratch/output"
+    case $failure in
+    'Operation failed') grep -q 'Wi-Fi association failed:' "$scratch/error" ;;
+    'Authentication failed') grep -q 'Wi-Fi authentication failed:' "$scratch/error" ;;
+    'No network found') grep -q 'Wi-Fi has no signal' "$scratch/error" ;;
+    esac
+done
+printf 'Scan failed\n' >"$reply"
+code=0
+wifi_wan scan >"$scratch/output" || code=$?
+[ "$code" = 7 ]
+cmp "$reply" "$scratch/output"
 printf 'Status: Enabled\nRUNNING defer: on\nhas address 100.80.2.10\n' >"$reply"
 result=0
 wifi_reply status >"$scratch/output"
