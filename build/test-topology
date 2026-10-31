@@ -120,15 +120,53 @@ echo 'test-topology: rollback/replay and commit fixtures passed'
 # Exercise the real snapshot loop: EOF used to erase the caller's rollback fingerprint.
 (
     awk '/^rebuild_root\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/rebuild"
+    [ -s "$scratch/rebuild" ]
+    sh -n "$scratch/rebuild"
     . "$scratch/rebuild"
-    ic() { case $1 in query) echo '[]' ;; snapshot) : ;; rebuild) [ "$2" = fingerprint ] ;; *) return 1 ;; esac; }
+    ic() {
+        echo "$*" >>"$log"
+        case $1 in
+        query) echo '[]' ;;
+        snapshot) : ;;
+        rebuild)
+            [ "$2" = fingerprint ] || return 1
+            case $3 in
+            fw1|fw2) [ -f "$state/dns.stale" ] && [ "$synced" = yes ] ;;
+            svc) [ ! -e "$state/dns.stale" ] && [ "$synced" = no ] ;;
+            *) return 1 ;;
+            esac ;;
+        *) return 1 ;;
+        esac
+    }
     jq() { printf '%s\n' guests-one guests-two; }
     locked() { "$@"; }
+    sync() { [ "${fault:-}" != sync ] || return 1; synced=yes; }
+    touch() { [ "${fault:-}" != touch ] || return 1; command touch "$@"; }
     old=fingerprint
-    rebuild_root fw1 "$old"
-    [ "$old" = fingerprint ]
+    for node in fw1 fw2 svc; do
+        # A completed DNS push removed the marker before rollback.
+        rm -f "$state/dns.stale"
+        synced=no
+        rebuild_root "$node" "$old"
+        [ "$old" = fingerprint ]
+        grep -qx "rebuild fingerprint $node" "$log"
+    done
+    # Cleanup disables errexit: neither marker failure may reach Incus.
+    for node in fw1 fw2; do
+        for fault in touch sync; do
+            rm -f "$state/dns.stale"
+            : >"$log"
+            set +e
+            rebuild_root "$node" "$old"
+            code=$?
+            set -e
+            [ "$code" != 0 ]
+            [ ! -s "$log" ]
+        done
+    done
+    rm -f "$state/dns.stale"
 )
-echo 'test-topology: production snapshot loop preserves rollback fingerprint'
+echo 'test-topology: production rebuild preserves fingerprint and durably marks DNS stale'
 
 if command -v jq >/dev/null 2>&1; then
     (
