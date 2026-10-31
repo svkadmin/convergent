@@ -45,8 +45,8 @@ chmod 700 /run/user/1000 /home/browser
 for path in /home/browser/profile /home/browser/Downloads "$downloads"; do
     if [ ! -d "$path" ]; then
         mkdir -m 700 "$path"
-        chown 1000:1000 "$path"
     fi
+    chown 1000:1000 "$path"
 done
 # Mask both persistent Chromium NSS locations for every int session.
 if [ "$role" = int ]; then

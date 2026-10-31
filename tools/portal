@@ -15,7 +15,7 @@ reason=$run/portal.reason
 
 die() { logger -t portal "$*"; echo "portal: $*" >&2; exit 1; }
 log() { logger -t portal "$*"; echo "portal: $*"; }
-usage() { echo "usage: portal on [A.B.C.D/LEN] | begin | off [closed|interrupted] | status | expire" >&2; exit 2; }
+usage() { echo "usage: portal on [A.B.C.D/LEN] | begin | gateway | off [closed|interrupted] | status | expire" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # Expiry yields to an active sys action.
@@ -59,14 +59,23 @@ net_of() {
 }
 
 upstream_net() {
-	_a=$(rsh wan diag 2>/dev/null | awk '
+	_diag=$(rsh wan diag 2>/dev/null) || return 1
+	_route=$(printf '%s\n' "$_diag" | awk '
 		/^== / {section=$2; next}
 		section == "addresses" && $1 != "eth0" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=$2}
 		section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
-			for (i=1;i<NF;i++) if ($i == "dev" && address[$(i+1)] != "") {print address[$(i+1)]; exit}
+			gateway=""; for (i=1;i<NF;i++) if ($i == "via") gateway=$(i+1)
+			for (i=1;i<NF;i++) if ($i == "dev" && address[$(i+1)] != "") {print address[$(i+1)], gateway; exit}
 		}')
-	[ -n "$_a" ] || return 1
-	net_of "$_a"
+	_a=${_route% *}
+	_upstream=$(net_of "$_a") || return 1
+	if [ "${1:-}" = gateway ]; then
+		_gateway=${_route#* }
+		[ "$(net_of "$_gateway/${_a#*/}")" = "$_upstream" ] || return 1
+		printf '%s\n' "$_gateway"
+	else
+		printf '%s\n' "$_upstream"
+	fi
 }
 
 open_side() {
@@ -193,6 +202,7 @@ expire() {
 case ${1:-} in
 on) shift; [ $# -le 1 ] || usage; browser_active && die 'portal browser already running'; on "$@" ;;
 begin) [ $# = 1 ] || usage; browser_active || die 'begin requires the browser session lock'; on ;;
+gateway) [ $# = 1 ] || usage; upstream_net gateway || die 'wan has no gateway in the uplink subnet' ;;
 off)
 	case $#:${2:-} in
 	1:) off ;;

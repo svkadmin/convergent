@@ -244,7 +244,7 @@ at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
 |---|---|---|
 | def | everyday browsing | profile and downloads kept in a 4 GiB volume |
 | tmp | anything untrusted; several at once | container deleted on close; history, cookies and cache cleared |
-| tmp --portal | captive portals; opens `http://neverssl.com/` unless given a URL | container deleted on close; owns portal mode |
+| tmp --portal | captive portals; opens `http://<uplink-gateway>/` unless given a URL | container deleted on close; owns portal mode |
 | int | Grafana; Incus after a session unlock | profile kept in a 512 MiB volume; UI key lives only in session memory |
 
 A second def or int start raises the open window. Portal mode refuses one; normal tmp runs many at
@@ -307,8 +307,12 @@ most 32 KiB.
 
 ## Captive portals
 
-`sys portal on` or `browser tmp --portal [url]` opens a dedicated browser and its firewall/WAN DNS
-rules. Mode ends on close, `sys portal off`, or after 30 minutes; bar: PORTAL. Wired and Wi-Fi work.
+`sys portal on` or `browser tmp --portal [url]` opens a dedicated browser and its firewall/WAN
+DNS rules. The default URL is `http://<gateway>/`, using the selected uplink's DHCP gateway;
+an explicit HTTP/HTTPS URL is optional. Without a usable gateway, supply an uplink-local URL.
+HTTP/HTTPS destinations remain restricted to the selected uplink subnet. Portals requiring
+interception of public HTTP requests or publicly hosted login pages are unsupported.
+Mode ends on close, `sys portal off`, or after 30 minutes; bar: PORTAL. Wired and Wi-Fi work.
 DNS uses only the selected default uplink's first nameserver: IPv4 outside 100.80.0.0/16. An
 unusable first resolver refuses activation even if later ones work. New launches require stale-rule
 closure on all three guests. Cron retries partial closure/abandoned sessions each minute. `sys
