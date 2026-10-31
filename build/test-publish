@@ -2,11 +2,12 @@
 # Publication and readers against a local bucket.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-publish: $*" >&2; exit 1; }
+# Archive fixtures must not need repository metadata (or a real clone).
+git() { die 'unexpected git invocation'; }
 dir=$work/release ep=$work/bucket CHANNEL=beta release=42
 export work dir ep CHANNEL release
 mkdir -p "$dir" "$ep/beta/42" "$work/pointer"
@@ -96,17 +97,19 @@ get() {
 }
 pointer=$work/pointer url=$ep/beta host=fixture
 # Execute the shipped old pointer reader, including signature and grammar checks.
-git -C "$repo" show v0.1.4-rc1:tools/fetch-release >"$work/old-fetch"
+# Frozen sources from v0.1.4-rc1, also available in git-archive tarballs.
+old=$here/fixtures/readers-0.1.4
+cp "$old/fetch-release" "$work/old-fetch"
 sed -n '/^field()/p; /^num()/p; /^bytes()/p; /^read_pointer() {/,/^}/p' "$work/old-fetch" >"$work/old-functions"
 sed -n '/^[[:space:]]*code=$(get --max-time 60/,/^fi$/p' "$work/old-fetch" | sed '$d' >"$work/old-read"
 key=$work/pub usb=
-eval "$(git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/update.sh | sed -n '/^verify()/p')"
+. "$old/verify.sh"
 . "$work/old-functions"
 . "$work/old-read"
 read_pointer
 [ "$latest" = 42 ] || die 'old reader did not discover the new release'
 # The old status reader and its original jq validator consume the new publisher's output.
-git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/release-status.sh >"$work/old-status-source"
+cp "$old/release-status.sh" "$work/old-status-source"
 sed -n '/^[[:space:]]*if get /,/^[[:space:]]*verify "\$f"/p' "$work/old-status-source" |
     sed '1s/if get/get/; $s/ &&$//' >"$work/old-status-fetch"
 (
@@ -115,7 +118,7 @@ sed -n '/^[[:space:]]*if get /,/^[[:space:]]*verify "\$f"/p' "$work/old-status-s
     cmp "$f" "$ep/beta/42/advisories.json"
 )
 if command -v jq >/dev/null 2>&1; then
-    git -C "$repo" show v0.1.4-rc1:rootfs/usr/lib/convergent/release-status.jq >"$work/old-status.jq"
+    cp "$old/release-status.jq" "$work/old-status.jq"
     sed -e "s|/var/lib/node_exporter|$work/metrics|g" \
             -e "s|/var/lib/convergent/release-status|$work/cache|g" \
             -e "s|/usr/lib/convergent/release-status.jq|$work/old-status.jq|g" "$work/old-status-source" >"$work/old-status.sh"
@@ -202,7 +205,6 @@ fi
 # A timed-out clone takes the normal fetch-failure branch, never cached GLSAs.
 sed -n '/^if .*git clone /,/^branch=/p' "$here/advisories" | sed '$d' >"$work/clone"
 timeout() { [ "$1 $2 $3 $4 $5" = '-k 10 120 git clone' ] || die 'unbounded clone'; echo bounded >"$work/timeout"; return 124; }
-git() { die 'clone bypassed timeout'; }
 glsa=$work/glsa
 . "$work/clone"
 [ "$(cat "$work/timeout")" = bounded ]
