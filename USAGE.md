@@ -578,7 +578,11 @@ Unused old images prune only after commit and alias release. Staleness starts wi
 kind updates clear it after recording, def/int leaves browser generation stale. Recording failures
 remain pending; next install reuses valid staged data or downloads it.
 
-Manual updates require a good host and closed browsers/Remmina; copy images to $g:
+Manual updates require a good host and closed browsers/Remmina. Keep the release layout:
+`$g` is `<release-dir>/guests`, with unpacked images and the signed `guests.manifest`
+(or `remmina.manifest`) and its `.sig` in `<release-dir>`. The manifest must match the
+booted release; its identity binds the checksums and supplied Incus profiles.
+For an unsigned build you trust locally, append `--trusted-local` to bypass authentication.
 
 ```sh
 sudo guests update fw  $g/fw      # fw2, failover, fw1

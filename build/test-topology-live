@@ -67,7 +67,7 @@ for fault in fw1 fw2 none; do
         sed "s|^\. \"\$lib/fw-topology\"|. \"$release/fw-topology-fault\"|" /usr/local/sbin/guests >"$release/guests-topology-run"
     fi
     rc=0
-    sh -x "$release/guests-topology-run" update fw "$release/guests/fw" >"$release/topology-$fault.log" 2>&1 || rc=$?
+    sh -x "$release/guests-topology-run" update fw "$release/guests/fw" --trusted-local >"$release/topology-$fault.log" 2>&1 || rc=$?
     if [ "$fault" = none ]; then [ "$rc" = 0 ]; else [ "$rc" != 0 ]; fi
     [ ! -e "$state/fw.topology" ]
     awk '

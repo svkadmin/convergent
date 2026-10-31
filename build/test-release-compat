@@ -232,3 +232,122 @@ fi
 openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$work/pointer/latest" -out "$work/pointer/latest.sig"
 (pointer=$work/pointer; usb=; . "$work/old-pointer"; read_pointer)
 echo 'test-release-compat: old parsers accept base bundle and latest; signed sidecar and rejection fixtures passed'
+# Manual updates authenticate before the first state/recovery operation.
+(
+manual=$work/manual
+mkdir -p "$manual/release/guests"
+openssl genpkey -algorithm ed25519 -out "$manual/other-key" 2>/dev/null
+printf 'convergent.release=42\n' >"$manual/cmdline"
+echo topology >"$manual/topology.sha256"
+sed "s|^key=.*|key=$work/pub|" "$repo/rootfs/usr/lib/convergent/update.sh" >"$manual/update.sh"
+sed -n '/^verify_image() {/,/^}/p; /^manual_image() (/,/^)/p' "$repo/tools/guests" |
+    sed -e "s|/usr/lib/convergent/update.sh|$manual/update.sh|" \
+        -e "s|/proc/cmdline|$manual/cmdline|" \
+        -e "s|/etc/convergent/topology.sha256|$manual/topology.sha256|" >"$manual/functions"
+grep -q '^verify_image()' "$manual/functions"
+grep -q '^manual_image()' "$manual/functions"
+sed -n '/^case ${1:-}:$# in/,/^mkdir -p "\$state" \/run\/convergent/p' "$repo/tools/guests" |
+    sed '$d' | sed -e "s|mkdir -p \"\$state\"\$|mkdir -p \"$manual\"|" \
+        -e "s|\"\$state/stage.XXXXXX\"|\"$manual/stage.XXXXXX\"|" >"$manual/entry"
+[ -s "$manual/entry" ]
+grep -q "$manual/stage.XXXXXX" "$manual/entry" || { echo 'test-release-compat: staging path not mapped'; exit 1; }
+sh -n "$manual/update.sh"
+sh -n "$manual/functions"
+sh -n "$manual/entry"
+. "$manual/functions"
+sed -n '/^ident() /p' "$here/guests" >"$manual/ident"
+[ -s "$manual/ident" ]
+sh -n "$manual/ident"
+. "$manual/ident"
+id() { echo 0; }
+sign_manual() {
+    printf 'release %s\nguest %s %s\n' "$release_id" "$identity_kind" "$(ident "$image")" >"$manifest"
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$manifest" -out "$manifest.sig"
+}
+for guest in fw wan svc browser def int remmina; do
+    kind=$guest
+    case $guest in def|int) kind=browser ;; esac
+    image=$manual/release/guests/$kind
+    mkdir -p "$image"
+    case $kind in
+    fw) artifacts='fw1.qcow2 fw2.qcow2 fw1.pf.sha256 fw2.pf.sha256 fw1.rules.sha256 fw2.rules.sha256 segments topology.sha256' ;;
+    wan) artifacts='wan-metadata.tar.xz wan.qcow2 topology.sha256' ;;
+    *) artifacts='metadata.tar.gz rootfs.tar.gz' ;;
+    esac
+    for artifact in $artifacts; do echo "$artifact" >"$image/$artifact"; done
+    case $kind in fw|wan) cp "$manual/topology.sha256" "$image/" ;; esac
+    case $kind in
+    svc|remmina) echo 'config: {}' >"$image/incus.yaml" ;;
+    browser)
+        mkdir -p "$image/incus"
+        for role in base def tmp int; do echo "description: $role" >"$image/incus/$role.yaml"; done ;;
+    esac
+    (cd "$image" && sha256sum $artifacts >SHA256SUMS)
+    manifest=$manual/release/guests.manifest
+    [ "$kind" != remmina ] || manifest=$manual/release/remmina.manifest
+    cp -R "$image" "$manual/saved"
+    for fault in none substituted missing signature tampered key old future duplicate-release identity duplicate-identity payload recomputed profile missing-profile extra-profile missing-artifact path duplicate-checksum override bad-option; do
+        rm -rf "$image"
+        cp -R "$manual/saved" "$image"
+        release_id=42 identity_kind=$kind
+        case $fault in old) release_id=41 ;; future) release_id=43 ;; identity) identity_kind=other ;; esac
+        sign_manual
+        case $fault in
+        none) ;;
+        missing|override|bad-option) rm "$manifest" ;;
+        signature) rm "$manifest.sig" ;;
+        tampered) echo tampered >>"$manifest" ;;
+        key) openssl pkeyutl -sign -inkey "$manual/other-key" -rawin -in "$manifest" -out "$manifest.sig" ;;
+        duplicate-release|duplicate-identity)
+            case $fault in duplicate-release) echo 'release 42' ;; *) echo "guest $kind $(ident "$image")" ;; esac >>"$manifest"
+            openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$manifest" -out "$manifest.sig" ;;
+        payload|recomputed)
+            echo substituted >>"$image/${artifacts%% *}"
+            [ "$fault" != recomputed ] || (cd "$image" && sha256sum $artifacts >SHA256SUMS) ;;
+        profile|missing-profile)
+            case $kind in browser) profile=$image/incus/base.yaml ;; svc|remmina) profile=$image/incus.yaml ;; *) continue ;; esac
+            case $fault in profile) echo substituted >>"$profile" ;; *) rm "$profile" ;; esac ;;
+        extra-profile) echo substituted >"$image/incus.yaml" ;;
+        missing-artifact)
+            sed '1d' "$image/SHA256SUMS" >"$manual/sums"
+            mv "$manual/sums" "$image/SHA256SUMS"
+            sign_manual ;;
+        path|duplicate-checksum)
+            case $fault in path) printf '%s ../outside\n' "$(sha256sum <"$image/${artifacts%% *}" | cut -d' ' -f1)" ;; *) head -n 1 "$image/SHA256SUMS" ;; esac >"$manual/sum"
+            cat "$manual/sum" >>"$image/SHA256SUMS"
+            sign_manual ;;
+        esac
+        rm -f "$manual/mutated"
+        if (
+            manual_stage=
+            trap '[ -z "$manual_stage" ] || rm -rf "$manual_stage"' 0
+            set -- update "$guest" "$image"
+            case $fault in override) set -- "$@" --trusted-local ;; bad-option) set -- "$@" --trust-local ;; esac
+            . "$manual/entry" || exit 1
+            if [ "$fault" = substituted ]; then
+                # Replace the source after authentication, as during the lock wait.
+                echo substituted >"$image/${artifacts%% *}"
+                (cd "$image" && sha256sum $artifacts >SHA256SUMS) || exit 1
+                case $kind in
+                svc|remmina) echo substituted >"$image/incus.yaml" ;;
+                browser) echo substituted >"$image/incus/base.yaml" ;;
+                esac
+                rm "$manifest" "$manifest.sig" || exit 1
+            fi
+            case $fault in none|substituted)
+                image_dir=$3
+                verify_image "$guest" || exit 1
+                diff -r "$manual/saved" "$image_dir" || exit 1 ;;
+            esac
+            echo recovery >"$manual/mutated"
+        ) >"$manual/log" 2>&1; then
+            case $fault in none|substituted|override) [ -s "$manual/mutated" ] ;; *) die "manual $guest accepted $fault" ;; esac
+        else
+            case $fault in none|substituted|override) cat "$manual/log"; die "manual $guest rejected $fault" ;; esac
+            [ ! -e "$manual/mutated" ] || die 'manual rejection mutated state'
+        fi
+    done
+    rm -rf "$manual/saved"
+done
+echo 'test-release-compat: manual signatures, release binding, identities, profiles, digests, source substitution and explicit local override passed'
+)
