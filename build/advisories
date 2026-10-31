@@ -11,6 +11,8 @@ python_run() {
 	"$@" <<'PY'
 import contextlib
 import datetime as dt
+import email.utils
+import fcntl
 import functools
 import gzip
 import hashlib
@@ -352,6 +354,24 @@ def incus_ui_packages(release, compressed):
     return max(versions, key=lambda version: incus_ui_version(version, debian=True))
 
 
+def incus_ui_generation(release, now):
+    def signed_date(field, optional=False):
+        values = re.findall(r'^' + field + r':[^\S\n]*(.*)$', release, re.M)
+        if optional and not values:
+            return None
+        require(len(values) == 1, f'missing/ambiguous Zabbly {field}')
+        value = email.utils.parsedate_to_datetime(values[0])
+        require(value.tzinfo is not None, f'invalid Zabbly {field} timezone')
+        return int(value.timestamp())
+
+    generated = signed_date('Date')
+    expires = signed_date('Valid-Until', optional=True)
+    # Cap index age at seven days, even without Valid-Until.
+    require(0 <= now - generated <= 7 * 86400, 'stale/future Zabbly Date')
+    require(expires is None or generated <= now < expires, 'expired Zabbly index')
+    return generated
+
+
 def incus_ui_latest(work):
     for name in ('zabbly-key.asc', 'zabbly-InRelease', 'zabbly-Packages.gz'):
         require(not (work / (name + '.failed')).exists(), f'{name}: fetch failed')
@@ -364,7 +384,17 @@ def incus_ui_latest(work):
         signatures = [line.split() for line in verified.stderr.splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
         require(len(signatures) == 1 and signatures[0][-1] == '4EFC590696CB15B87C73A3AD82CC8797C838DCFD',
                 'Zabbly InRelease signed by an unexpected key')
-        return incus_ui_packages(verified.stdout, (work / 'zabbly-Packages.gz').read_bytes())
+        latest = incus_ui_packages(verified.stdout, (work / 'zabbly-Packages.gz').read_bytes())
+        generated = incus_ui_generation(verified.stdout, int(dt.datetime.now(dt.timezone.utc).timestamp()))
+        floor = work.parent / 'zabbly.generated'
+        with (work.parent / 'zabbly.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            previous = floor.read_text().strip() if floor.exists() else '0'
+            require(re.fullmatch(r'[0-9]+', previous) and generated >= int(previous), 'Zabbly Date regressed')
+            pending = floor.with_suffix('.generated.new')
+            pending.write_text(str(generated) + '\n')
+            pending.replace(floor)
+        return latest
 
 
 def incus_ui_selftest():
@@ -388,15 +418,43 @@ def incus_ui_selftest():
         else:
             raise ValueError('invalid UI index was accepted')
     with tempfile.TemporaryDirectory(prefix='incus-ui-test-') as temporary:
-        work = Path(temporary)
+        work = Path(temporary) / 'run'
+        work.mkdir()
         (work / 'zabbly-Packages.gz').write_bytes(compressed)
-        verified = subprocess.CompletedProcess([], 0, release,
+        now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+        date = email.utils.format_datetime(dt.datetime.fromtimestamp(now, dt.timezone.utc))
+        dated = 'Date: ' + date + '\n' + release
+        verified = subprocess.CompletedProcess([], 0, dated,
             '[GNUPG:] VALIDSIG 4EFC590696CB15B87C73A3AD82CC8797C838DCFD 0 0 0 4 0 1 10 01 '
             '4EFC590696CB15B87C73A3AD82CC8797C838DCFD\n')
         with patch.object(subprocess, 'run', return_value=verified) as run:
+            verified.stdout = 'Date: ' + email.utils.format_datetime(
+                dt.datetime.fromtimestamp(now - 1, dt.timezone.utc)) + '\n' + release
+            require(incus_ui_latest(work) == version, 'initial UI generation')
+            verified.stdout = dated
             require(incus_ui_latest(work) == version, 'verified UI index')
             require('--import' in run.call_args_list[0].args[0] and '--decrypt' in run.call_args.args[0] and
                     run.call_args.kwargs['check'], 'UI signature verification is not required')
+            floor = work.parent / 'zabbly.generated'
+            require(floor.read_text().strip() == str(now), 'UI generation not persisted')
+            for bad in (release, dated + 'Date: ' + date + '\n',
+                        'Date: invalid\n' + release,
+                        'Date: ' + email.utils.format_datetime(dt.datetime.fromtimestamp(now - 7 * 86400 - 1, dt.timezone.utc)) + '\n' + release,
+                        'Date: ' + email.utils.format_datetime(dt.datetime.fromtimestamp(now + 3600, dt.timezone.utc)) + '\n' + release,
+                        dated + 'Valid-Until: ' + date + '\n', dated + 'Valid-Until: invalid\n',
+                        dated + 'Valid-Until: ' + date + '\nValid-Until: ' + date + '\n',
+                        'Date: ' + email.utils.format_datetime(dt.datetime.fromtimestamp(now - 1, dt.timezone.utc)) + '\n' + release):
+                verified.stdout = bad
+                try:
+                    incus_ui_latest(work)
+                except ValueError:
+                    pass
+                else:
+                    raise ValueError('stale/invalid/regressing UI index was accepted')
+                require(floor.read_text().strip() == str(now), 'rejected UI index changed floor')
+            verified.stdout = dated + 'Valid-Until: ' + email.utils.format_datetime(
+                dt.datetime.fromtimestamp(now + 86400, dt.timezone.utc)) + '\n'
+            require(incus_ui_latest(work) == version, 'valid UI expiry rejected')
             verified.stderr = verified.stderr.replace('4EFC590696CB15B87C73A3AD82CC8797C838DCFD', '0' * 40)
             try:
                 incus_ui_latest(work)
