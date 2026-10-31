@@ -363,7 +363,59 @@ ic storage volume import "$pool" "$backup/projects/$project/$pool/$volume.iso" "
 ```
 
 Use the same rename/reattachment steps for either type; if no volume exists, skip the old-volume
-rename. Start svc with `project=default; ic start svc`. Open def/int normally and verify
+rename. Before starting Grafana against restored `svc-grafana`, restore its matching secrets.
+For backups containing `grafana-secrets/`, run the following after volume restoration. An attached
+seed means setup has not finished; stop and finish setup before retrying. The unused cached seed
+is discarded so the next guest rebuild uses the restored host secrets.
+
+```sh
+# Restore Grafana secrets.
+project=default
+state=/var/lib/convergent/guests
+devices=$(ic config device show svc)
+if printf '%s\n' "$devices" | grep -q '^seed:'; then
+    echo 'finish guest setup before restoring Grafana secrets' >&2
+    exit 1
+fi
+if [ -f "$state/seeds/svc.img" ]; then
+    loops=$(losetup -j "$state/seeds/svc.img")
+    [ -z "$loops" ]
+fi
+for secret in admin-password secret-key; do
+    [ -s "$backup/grafana-secrets/$secret" ]
+done
+rm -f "$state/seeds/svc.img" "$state/seeds/svc.sha256"
+ic start svc
+# Grafana is absent from boot runlevels; keep it stopped until both files are installed.
+ic exec svc -- rc-service grafana stop
+for secret in admin-password secret-key; do
+    install -m 600 "$backup/grafana-secrets/$secret" "$state/tls/$secret"
+    ic exec svc -- sh -eu -c '
+        umask 077
+        cat >"$1.new"
+        chown root:grafana "$1.new"
+        chmod 640 "$1.new"
+        mv "$1.new" "$1"
+    ' sh "/etc/grafana/$secret" <"$state/tls/$secret"
+done
+sync
+# Grafana secrets restored.
+```
+
+Older backups lack these secrets. Start svc with `project=default; ic start svc`, keep Grafana
+stopped, and [reset the restored admin password](https://grafana.com/docs/grafana/latest/administration/cli/#reset-admin-password)
+to the newly generated host password:
+
+```sh
+ic exec svc -- rc-service grafana stop
+ic exec svc -- grafana-cli --homepath /usr/share/grafana --config /etc/grafana.ini \
+    admin reset-admin-password --password-from-stdin </var/lib/convergent/guests/tls/admin-password
+```
+
+If you had saved encrypted credentials or settings, re-enter them after login: the new
+`secret-key` cannot decrypt values saved with the lost key. Shipped data sources have no credentials.
+For either backup format, a password changed in Grafana remains the database password unless reset.
+Open def/int normally and verify
 saved profiles, downloads and Grafana/history. Open Remmina to check its keyring and `/share`, then
 verify owner share attachments before restarting those instances. Then remove unused old volumes
 with `ic storage volume delete "$pool" <volume-before-restore>`.

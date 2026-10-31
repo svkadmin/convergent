@@ -419,9 +419,10 @@ and mounted at a root-owned directory (not the laptop disk), and the owner's Inc
 (`owner`, created by setup; never `default`). It writes
 `convergent-backups/backup-<UTC>`: a snapshot of `/home`, the writable `/etc` files, exports of the
 owner's containers and profiles, and custom filesystem/ISO volumes of both projects, including
-`remmina-state` and `share`. Close browsers and Remmina and stop every instance using `share`.
+`remmina-state` and `share`, plus Grafana's matching `admin-password` and `secret-key` in
+`grafana-secrets/`. Close browsers and Remmina and stop every instance using `share`.
 Keep them stopped throughout backup. It verifies readback and retains three generations.
-VM instances, custom block volumes, system guest instances and `/var/lib/convergent` are excluded
+VM instances, custom block volumes, system guest instances and the rest of `/var/lib/convergent` are excluded
 (see `EXCLUDED` in the backup). Unmount and close
 the disk before unplugging. Restore steps: [RECOVERY 11](RECOVERY.md#11-start-over).
 

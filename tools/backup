@@ -95,6 +95,13 @@ tar --one-file-system --acls --xattrs --numeric-owner -C "$snapshot" -cpf "$payl
 grep -v '^#' /usr/lib/convergent/etc-state | sed '/^$/d;s|^|etc/|' >"$work/etc.list"
 tar --one-file-system --acls --xattrs --numeric-owner -C / -cpf "$payload/etc.tar" -T "$work/etc.list"
 rm "$work/etc.list"
+# Keep Grafana's database paired with its host-held secrets.
+mkdir "$payload/grafana-secrets"
+for secret in admin-password secret-key; do
+    source=/var/lib/convergent/guests/tls/$secret
+    [ -s "$source" ] || die "missing Grafana secret: $secret"
+    install -m 600 "$source" "$payload/grafana-secrets/$secret"
+done
 for project in default "$owner"; do
     mkdir "$payload/projects/$project"
     if [ "$project" = "$owner" ]; then
