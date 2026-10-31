@@ -2,6 +2,11 @@
 # Boot and runtime policy loads leave forwarding off on failure.
 set -eu
 export LC_ALL=C
+# One reload at a time: an overlapping success must not re-enable forwarding after another's failure.
+lock=/var/run/fw-pf-reload.lock
+mkdir "$lock" 2>/dev/null || { echo 'fw-pf-reload: another reload is running' >&2; exit 1; }
+trap 'rmdir "$lock"' 0
+trap 'exit 1' HUP INT TERM
 sysctl net.inet.ip.forwarding=0
 pfctl -f /etc/pf.conf
 pf_status=$(pfctl -si)

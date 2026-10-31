@@ -44,8 +44,16 @@ for shape in stock missing duplicate changed; do
     fi
 done
 sh "$work/fw-stock" >"$work/fw-stock-rules"
-cp "$fw/usr/local/libexec/convergent/fw-pf-reload" "$work/fw-reload"
+sed "s|/var/run/fw-pf-reload.lock|$work/reload.lock|" "$fw/usr/local/libexec/convergent/fw-pf-reload" >"$work/fw-reload"
 check_script "$work/fw-reload"
+grep -q "$work/reload.lock" "$work/fw-reload" || die 'reload lock not mapped'
+# An overlapping reload is refused before it touches forwarding.
+mkdir "$work/reload.lock"
+if (sysctl() { echo "$*" >>"$work/overlap"; }; pfctl() { :; }; . "$work/fw-reload") 2>/dev/null; then
+    die 'overlapping reload accepted'
+fi
+[ ! -s "$work/overlap" ] || die 'overlapping reload touched forwarding'
+rmdir "$work/reload.lock"
 sed -n "/^cat >\/etc\/rc.local <<'FIRSTBOOT'$/,/^FIRSTBOOT$/p" "$fw/install.site" |
     sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|;s|/usr/local/libexec/convergent/fw-pf-reload|. "$work/fw-reload"|' >"$work/fw-boot"
 check_script "$work/fw-boot"
