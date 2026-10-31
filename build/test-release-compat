@@ -34,9 +34,9 @@ for failed_fw in fw2 fw1; do
         done
         src_open=1
         if close_src 2>"$work/pf-error"; then
-            [ "$fault" = none ] && [ -z "$src_open" ]
+            [ "$fault" = none ] && [ -z "$src_open" ] || die 'unexpected cleanup status or tracking'
         else
-            [ "$fault" != none ] && [ "$src_open" = 1 ]
+            [ "$fault" != none ] && [ "$src_open" = 1 ] || die 'unexpected cleanup status or tracking'
         fi
         cmp "$work/pf-want" "$work/pf-calls"
         for fw in $fws; do
