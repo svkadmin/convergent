@@ -23,7 +23,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     status=/run/convergent/status
     install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
     exec 9>"$status/lock"; flock -n 9 || exit 0
-    # Read portal state under its action lock; a transition is unknown until the next run.
+    # Read portal state under its action lock; contention leaves the previous sample to age out.
     umask 077
     exec 8>/run/convergent/portal.lock
     umask 022
@@ -72,7 +72,7 @@ if [ "${1:-}:$#" = status:1 ]; then
                 /^== / {section=$2; next}
                 section == "addresses" && $2 !~ /^(127\.|169\.254\.|0\.)/ {address[$1]=1}
                 section == "routes" && $1 == "default" && $0 !~ /linkdown/ {
-                    for (i=1;i<NF;i++) if ($i == "dev") route[$(i+1)]=1
+                    for (i=1;i<NF;i++) if ($i == "dev") route[++routes]=$(i+1)
                 }
                 section == "links" {
                     name=$2; sub(/:$/, "", name); sub(/@.*/, "", name)
@@ -80,7 +80,10 @@ if [ "${1:-}:$#" = status:1 ]; then
                     else if (name != "eth0" && name ~ /^(eth|en)/) eth=1
                     if (/[<,]UP[,>]/ && /[<,]LOWER_UP[,>]/) link[name]=1
                 }
-                END {for (name in route) if (name != "eth0" && address[name] && link[name]) {up=1; dev=name}
+                END {for (i=1;i<=routes;i++) {
+                        name=route[i]
+                        if (name != "eth0" && address[name] && link[name]) {up=1; dev=name; break}
+                    }
                     # The uplink kind for the bar: a Wi-Fi radio or a passed-through wired NIC.
                     print up ? "up " (dev ~ /^wl/ ? "wlan" : "eth") : "nolink " (eth ? "eth" : wlan ? "wlan" : "-")}' >"$status/.wan"
         else echo nolink - >"$status/.wan"; fi
@@ -137,8 +140,11 @@ if [ "${1:-}:$#" = status:1 ]; then
         printf 'uplink=%s wan=%s fw1=%s fw2=%s svc=%s browsers=%s remote=%s\n' "$uplink" "$wan" "$fw1" "$fw2" "$svc" "$browsers" "$remote" >"$status/.topology"
         chmod 644 "$status/.topology" && mv "$status/.topology" "$status/topology" || exit 1
     fi
-    chmod 644 "$status/.wifi" "$status/.portal" "$status/.guestmem" &&
-        mv "$status/.wifi" "$status/wifi" && mv "$status/.portal" "$status/portal" &&
+    if [ "$portal_locked" = 1 ]; then
+        chmod 644 "$status/.portal" && mv "$status/.portal" "$status/portal" || exit 1
+    fi
+    chmod 644 "$status/.wifi" "$status/.guestmem" &&
+        mv "$status/.wifi" "$status/wifi" &&
         mv "$status/.guestmem" "$status/guestmem"
     exit $?
 fi

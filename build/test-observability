@@ -3,6 +3,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
+sh "$here/test-check-status"
 sh "$here/test-guest-reply"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0

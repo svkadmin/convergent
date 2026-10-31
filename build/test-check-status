@@ -1,0 +1,74 @@
+#!/bin/sh
+# Offline uplink selection and portal publication fixtures.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+sed -n '/^        if diag=/,/^        if wifi=/ { /^        if wifi=/d; p; }' "$repo/tools/check" >"$work/uplink"
+sed -n '/^    wait$/,/^    exit \$?$/p' "$repo/tools/check" >"$work/publish"
+for part in uplink publish; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+status=$work/status
+mkdir "$status"
+guest_reply() { [ "$*" = '65536 wan_probe diag' ]; cat "$work/diag"; }
+for scenario in wired wifi noaddress nocarrier linkdown internal none; do
+    case $scenario in wifi) first=wlan0 second=enp3s0 expected='up wlan' ;;
+        *) first=enp3s0 second=wlan0 expected='up eth' ;; esac
+    {
+        echo '== addresses'
+        echo 'eth0 100.80.0.2/24'
+        [ "$scenario" = noaddress ] || echo 'enp3s0 192.0.2.2/24'
+        echo 'wlan0 198.51.100.2/24'
+        echo '== routes'
+        [ "$scenario" != internal ] || echo 'default via 100.80.0.1 dev eth0'
+        if [ "$scenario" != none ]; then
+            suffix=
+            [ "$scenario" != linkdown ] || suffix=linkdown
+            printf 'default via 192.0.2.1 dev %s metric 203 %s\n' "$first" "$suffix"
+            printf 'default via 198.51.100.1 dev %s metric 300\n' "$second"
+        fi
+        echo '== links'
+        echo '2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP>'
+        if [ "$scenario" = nocarrier ]; then echo '3: enp3s0: <BROADCAST,MULTICAST,UP>'
+        else echo '3: enp3s0: <BROADCAST,MULTICAST,UP,LOWER_UP>'; fi
+        echo '4: wlan0: <BROADCAST,MULTICAST,UP,LOWER_UP>'
+    } >"$work/diag"
+    case $scenario in noaddress|nocarrier|linkdown) expected='up wlan' ;; none) expected='nolink eth' ;; esac
+    . "$work/uplink"
+    [ "$(cat "$status/.wan")" = "$expected" ]
+done
+echo 'check status: route preference and eligibility passed'
+# Lock contention preserves both the sample and its age; other status still advances.
+for scenario in busy on off inconsistent failed empty; do
+    portal_locked=1
+    [ "$scenario" != busy ] || portal_locked=0
+    echo on >"$status/portal"
+    touch -t 200001010000 "$status/portal"
+    previous=$(stat -c %Y "$status/portal")
+    for node in fw1 fw2 wan; do echo on >"$status/.portal-$node"; done
+    expected=unknown
+    case $scenario in
+        busy) expected=on; for node in fw1 fw2 wan; do echo unknown >"$status/.portal-$node"; done ;;
+        on) expected=on ;;
+        off) expected=off; for node in fw1 fw2 wan; do echo off >"$status/.portal-$node"; done ;;
+        inconsistent) echo off >"$status/.portal-wan" ;;
+        failed) echo unknown >"$status/.portal-fw1" ;;
+        empty) : >"$status/.portal-wan" ;;
+    esac
+    printf 'true true true true 1 false\n' >"$status/.running"
+    echo 'up eth' >"$status/.wan"
+    echo master >"$status/.fw1"
+    echo backup >"$status/.fw2"
+    echo fresh-wifi >"$status/.wifi"
+    echo 1234 >"$status/.guestmem"
+    for name in topology wifi guestmem; do echo old >"$status/$name"; done
+    ( . "$work/publish" )
+    [ "$(cat "$status/portal")" = "$expected" ]
+    if [ "$scenario" = busy ]; then [ "$(stat -c %Y "$status/portal")" = "$previous" ]
+    else [ "$(stat -c %Y "$status/portal")" -gt "$previous" ]; fi
+    grep -qx 'uplink=eth wan=up fw1=master fw2=backup svc=up browsers=1 remote=off' "$status/topology"
+    grep -qx fresh-wifi "$status/wifi"
+    grep -qx 1234 "$status/guestmem"
+done
+echo 'check status: busy portal ages out; verified results and other status publish'
