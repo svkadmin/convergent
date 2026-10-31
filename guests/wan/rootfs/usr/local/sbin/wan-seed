@@ -4,7 +4,8 @@ set -eu
 umask 077
 state=/var/lib/convergent
 announce() { printf '\n' >/dev/console; echo "CONVERGENT-HOSTKEY wan $(cat "$state/seeded") $(ssh-keygen -E sha256 -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')" >/dev/console; }
-[ ! -f "$state/seeded" ] || { announce; exit 0; }
+if [ -f "$state/seeded" ] && [ "$(wc -c <"$state/seeded")" -eq 33 ] &&
+    LC_ALL=C grep -qxE '[0-9a-f]{32}' "$state/seeded"; then announce; exit 0; fi
 [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
 device=$(blkid -L CVSEED || true)
 if [ -z "$device" ]; then
@@ -30,6 +31,8 @@ cp "$seed/syslog-ca.crt" /etc/syslog-ng/svc-ca.pem
 chmod 644 /etc/syslog-ng/svc-ca.pem
 umount "$seed"
 trap - 0
-printf '%s\n' "$id" >"$state/seeded"
+printf '%s\n' "$id" >"$state/seeded.new"
+sync
+mv "$state/seeded.new" "$state/seeded"
 sync
 announce

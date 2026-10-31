@@ -291,19 +291,56 @@ secret_create() {
     openssl rand -hex "$2" >"$1.new" && secret_valid "$1.new" "$2" &&
         sync && mv "$1.new" "$1" && sync || { rm -f "$1.new"; die "cannot generate $1"; }
 }
+certificate_pair() {
+    openssl pkey -in "$1" -check -noout >/dev/null 2>&1 &&
+        openssl pkey -in "$1" -pubout -out "$work/key.pub" &&
+        openssl x509 -in "$2" -pubkey -noout >"$work/cert.pub" &&
+        cmp -s "$work/key.pub" "$work/cert.pub"
+}
 credentials() {
     step=credentials
     mkdir -p "$tls" "$keys"
     secret_create "$state/carp-pass" 16
-    [ -f "$keys/id_ed25519" ] || ssh-keygen -q -t ed25519 -N '' -C convergent -f "$keys/id_ed25519"
-    if [ ! -f "$tls/ca.crt" ]; then
-        openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-            -keyout "$tls/ca.key" -out "$tls/ca.crt" -days 3650 -subj '/CN=Local CA' \
-            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+    if [ ! -f "$keys/id_ed25519" ]; then
+        [ ! -e "$keys/id_ed25519.pub" ] || die 'missing management private key'
+        rm -f "$keys/id_ed25519.new" "$keys/id_ed25519.new.pub"
+        ssh-keygen -q -t ed25519 -N '' -C convergent -f "$keys/id_ed25519.new"
+        ssh-keygen -y -P '' -f "$keys/id_ed25519.new" >"$keys/id_ed25519.new.pub"
+        sync
+        mv "$keys/id_ed25519.new" "$keys/id_ed25519"
+        sync
     fi
+    # Recover the public half without changing the laptop's identity.
+    ssh-keygen -y -P '' -f "$keys/id_ed25519" >"$keys/id_ed25519.pub.new" || die 'invalid management private key'
+    sync
+    mv "$keys/id_ed25519.pub.new" "$keys/id_ed25519.pub"
+    sync
+    if ! openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then
+        if [ ! -f "$tls/ca.key" ]; then
+            openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/ca.key.new"
+            openssl pkey -in "$tls/ca.key.new" -check -noout >/dev/null
+            sync
+            mv "$tls/ca.key.new" "$tls/ca.key"
+            sync
+        fi
+        openssl pkey -in "$tls/ca.key" -check -noout >/dev/null || die 'invalid CA key'
+        openssl req -x509 -key "$tls/ca.key" -out "$tls/ca.crt.new" -days 3650 -subj '/CN=Local CA' \
+            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
+        certificate_pair "$tls/ca.key" "$tls/ca.crt.new" || die 'invalid CA pair'
+        openssl verify -CAfile "$tls/ca.crt.new" "$tls/ca.crt.new" >/dev/null || die 'invalid CA certificate'
+        sync
+        mv "$tls/ca.crt.new" "$tls/ca.crt"
+        sync
+    fi
+    certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
+    openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
     for cert in server incus-server incus-client; do
         if [ -f "$tls/$cert.crt" ]; then
-            openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null && continue
+            if openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null; then
+                certificate_pair "$tls/$cert.key" "$tls/$cert.crt" || die "invalid pair for $cert"
+                openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null || die "invalid certificate for $cert"
+                continue
+            fi
             [ -s "$tls/$cert.key" ] || die "missing key for $cert"
         fi
         case $cert in
@@ -313,7 +350,10 @@ credentials() {
         esac
         if [ ! -f "$tls/$cert.key" ]; then
             openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/$cert.key.new"
+            openssl pkey -in "$tls/$cert.key.new" -check -noout >/dev/null
+            sync
             mv "$tls/$cert.key.new" "$tls/$cert.key"
+            sync
         fi
         openssl req -new -key "$tls/$cert.key" -out "$work/request" -subj "/CN=$cert"
         printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \

@@ -311,6 +311,25 @@ if [ "${1:-}" = --install-options ]; then
 	export LC_ALL=C
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' 0
+	# Media must match the selected slot, including older releases.
+	sed -n '/^# Compare with the selected release/,/^fi$/p' "$here/../install/install" >"$work/topology-check"
+	[ -s "$work/topology-check" ]
+	sh -n "$work/topology-check"
+	mkdir -p "$work/image/etc/convergent" "$work/guests/fw" "$work/guests/wan"
+	CONVERGENT_INSTALL_GUESTS=$work/guests image_install=1
+	printf '%064d\n' 1 >"$work/image/etc/convergent/topology.sha256"
+	for kind in fw wan; do cp "$work/image/etc/convergent/topology.sha256" "$work/guests/$kind/topology.sha256"; done
+	. "$work/topology-check"
+	for guest in fw wan; do
+		printf '%064d\n' 2 >"$work/guests/$guest/topology.sha256"
+		if (. "$work/topology-check") 2>/dev/null; then die "accepted mismatched $guest topology"; fi
+		rm "$work/guests/$guest/topology.sha256"
+		if (. "$work/topology-check") 2>/dev/null; then die "accepted missing $guest topology"; fi
+		cp "$work/image/etc/convergent/topology.sha256" "$work/guests/$guest/topology.sha256"
+	done
+	rm "$work/image/etc/convergent/topology.sha256"
+	if (. "$work/topology-check") 2>/dev/null; then die 'accepted missing host topology'; fi
+	(image_install=; . "$work/topology-check")
 	sed -n '/^secret()/,/^cr=/p' "$here/../install/install" >"$work/secret"
 	sh -n "$work/secret"
 	. "$work/secret"
@@ -339,7 +358,7 @@ if [ "${1:-}" = --install-options ]; then
 	echo 'test: install options passed'
 	exit 0
 fi
-for fixture in test-topology test-leases test-work-gate test-release-compat test-slot-backup; do sh "$here/$fixture" || exit 1; done
+for fixture in test-topology test-leases test-work-gate test-release-compat test-slot-backup test-seed; do sh "$here/$fixture" || exit 1; done
 . "$here/build.conf"
 . "$here/chroot.sh"
 

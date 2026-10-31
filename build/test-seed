@@ -1,0 +1,171 @@
+#!/bin/sh
+# Retry interrupted credentials and seed markers without Incus or mounts.
+set -eu
+umask 077
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-seed: $*" >&2; exit 1; }
+work=$scratch/work state=$scratch/state
+keys=$state/keys tls=$state/tls
+export work state keys tls
+mkdir -p "$work" "$state"
+sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' >"$scratch/credentials"
+[ -s "$scratch/credentials" ]
+grep -q '^credentials() {' "$scratch/credentials"
+cat >>"$scratch/credentials" <<'CREDENTIALS'
+die() { echo "$*" >&2; exit 1; }
+count=0
+sync() { count=$((count + 1)); [ "$count" != "${cut:-0}" ] || exit 75; }
+credentials
+CREDENTIALS
+sh -n "$scratch/credentials"
+sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'initial credentials'; }
+cp -R "$state" "$scratch/good"
+# Retry before the CA's notBefore, as after a backward clock correction.
+cat >"$scratch/ca.conf" <<EOF
+[ca]
+default_ca = fixture
+[fixture]
+database = $scratch/index
+serial = $scratch/serial
+new_certs_dir = $scratch
+default_md = sha256
+policy = policy
+x509_extensions = extensions
+[policy]
+commonName = supplied
+[extensions]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+EOF
+: >"$scratch/index"
+openssl req -new -key "$tls/ca.key" -subj '/CN=Local CA' -out "$scratch/request"
+openssl ca -batch -notext -selfsign -rand_serial -config "$scratch/ca.conf" \
+    -keyfile "$tls/ca.key" -in "$scratch/request" -out "$tls/ca.crt" \
+    -startdate "$(date -u -d '+1 day' +%Y%m%d%H%M%SZ)" -days 3650 >"$scratch/log" 2>&1 ||
+    { cat "$scratch/log"; die 'future CA'; }
+cp "$tls/ca.crt" "$scratch/future-ca.crt"
+for cert in ca server incus-server incus-client; do
+    if openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >"$scratch/log" 2>&1; then
+        die "accepted future CA for $cert"
+    fi
+    grep -q 'not yet valid' "$scratch/log"
+    openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
+done
+sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }
+cmp "$tls/ca.crt" "$scratch/future-ca.crt"
+for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
+for fault in missing-pub wrong-pub empty-ca truncated-ca; do
+    rm -rf "$state"
+    cp -R "$scratch/good" "$state"
+    case $fault in
+    missing-pub) rm "$keys/id_ed25519.pub" ;;
+    wrong-pub) echo broken >"$keys/id_ed25519.pub" ;;
+    empty-ca) : >"$tls/ca.crt" ;;
+    truncated-ca) head -c 80 "$scratch/good/tls/ca.crt" >"$tls/ca.crt" ;;
+    esac
+    sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "$fault retry"; }
+    cmp "$keys/id_ed25519" "$scratch/good/keys/id_ed25519"
+    ssh-keygen -y -P '' -f "$keys/id_ed25519" >"$scratch/public"
+    cmp "$keys/id_ed25519.pub" "$scratch/public"
+    for key in ca server incus-server incus-client; do cmp "$tls/$key.key" "$scratch/good/tls/$key.key"; done
+    openssl verify -CAfile "$tls/ca.crt" "$tls/server.crt" >/dev/null
+    case $fault in *pub) cmp "$tls/ca.crt" "$scratch/good/tls/ca.crt" ;; esac
+done
+for fault in ssh-key ca-key ca-pair leaf-pair missing-ca-key; do
+    rm -rf "$state"
+    cp -R "$scratch/good" "$state"
+    case $fault in
+    ssh-key) echo broken >"$keys/id_ed25519" ;;
+    ca-key) echo broken >"$tls/ca.key" ;;
+    ca-pair) cp "$tls/server.key" "$tls/ca.key" ;;
+    leaf-pair) cp "$tls/ca.key" "$tls/server.key" ;;
+    missing-ca-key) rm "$tls/ca.key" ;;
+    esac
+    if sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "accepted $fault"; fi
+    cmp "$tls/ca.crt" "$scratch/good/tls/ca.crt"
+done
+# Interrupt at each early publication boundary, then retry the same state.
+for cut in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+    rm -rf "$state"
+    mkdir "$state"
+    if cut=$cut sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "missed cut $cut"; fi
+    for key in keys/id_ed25519 tls/ca.key; do
+        if [ -f "$state/$key" ]; then cp "$state/$key" "$scratch/saved-${key##*/}"; fi
+    done
+    sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "cut $cut retry"; }
+    for key in keys/id_ed25519 tls/ca.key; do
+        if [ -f "$scratch/saved-${key##*/}" ]; then
+            cmp "$state/$key" "$scratch/saved-${key##*/}"
+            rm "$scratch/saved-${key##*/}"
+        fi
+    done
+done
+id=0123456789abcdef0123456789abcdef
+root=$scratch/fs
+export root id
+for guest in wan svc; do
+    mkdir -p "$root/etc/ssh" "$root/etc/syslog-ng" "$root/etc/victoria-logs/tls" \
+        "$root/etc/victoria-metrics/tls" "$root/etc/grafana" "$root/dev" "$root/var/lib/convergent" "$root/mnt/cvseed"
+    cp "$keys/id_ed25519" "$root/etc/ssh/ssh_host_ed25519_key"
+    cp "$keys/id_ed25519.pub" "$root/etc/ssh/ssh_host_ed25519_key.pub"
+    seed=$root/var/lib/convergent/seed
+    [ "$guest" != wan ] || seed=$root/mnt/cvseed
+    mkdir -p "$seed"
+    printf '%s\n' "$id" >"$seed/seed-id"
+    cp "$keys/id_ed25519.pub" "$seed/management.pub"
+    cp "$tls/ca.crt" "$seed/syslog-ca.crt"
+    for file in server.crt server.key ca.crt incus-client.crt incus-client.key admin-password secret-key; do
+        cp "$tls/$file" "$seed/$file"
+    done
+    sed -e "s|/var/lib/convergent|$root/var/lib/convergent|g" -e "s|/etc/|$root/etc/|g" \
+        -e "s|/root/|$root/root/|g" -e "s|/mnt/cvseed|$root/mnt/cvseed|g" \
+        -e "s|/dev/console|$root/dev/console|g" "$repo/guests/$guest/rootfs/usr/local/sbin/$guest-seed" >"$scratch/seed"
+    cat >"$scratch/run-seed" <<'SEED'
+blkid() { echo /dev/fixture; }
+mount() { :; }
+umount() { :; }
+chown() { :; }
+sync() {
+    if [ -f "$root/var/lib/convergent/seeded.new" ]; then
+        [ "$(cat "$root/var/lib/convergent/seeded.new")" = "$id" ] || exit 1
+        [ "$(cat "$root/var/lib/convergent/seeded")" != "$id" ] || exit 1
+        if [ "$guest" = wan ]; then
+            cmp "$seed/syslog-ca.crt" "$root/etc/syslog-ng/svc-ca.pem" || exit 1
+            grep -q 'restrict,from=' "$root/root/.ssh/authorized_keys" || exit 1
+        else
+            cmp "$seed/server.key" "$root/etc/victoria-logs/tls/server.key" || exit 1
+            cmp "$seed/secret-key" "$root/etc/grafana/secret-key" || exit 1
+        fi
+        echo staged >>"$root/events"
+        [ "${cut:-0}" != 1 ] || exit 75
+    else
+        [ "$(cat "$root/var/lib/convergent/seeded")" = "$id" ] || exit 1
+        echo published >>"$root/events"
+    fi
+}
+. "$1"
+SEED
+    sh -n "$scratch/seed"
+    sh -n "$scratch/run-seed"
+    export guest seed
+    for marker in '' short z123456789abcdef0123456789abcdef "$id
+$id"; do
+        printf '%s\n' "$marker" >"$root/var/lib/convergent/seeded"
+        : >"$root/events"
+        if cut=1 sh -eu "$scratch/run-seed" "$scratch/seed"; then die "$guest missed cut"; fi
+        [ "$(cat "$root/var/lib/convergent/seeded")" = "$marker" ]
+        [ "$(cat "$root/events")" = staged ]
+        : >"$root/events"
+        sh -eu "$scratch/run-seed" "$scratch/seed"
+        [ "$(wc -c <"$root/var/lib/convergent/seeded")" -eq 33 ]
+        [ "$(cat "$root/events")" = "$(printf 'staged\npublished')" ]
+        : >"$root/events"
+        sh -eu "$scratch/run-seed" "$scratch/seed"
+        [ ! -s "$root/events" ]
+    done
+done
+echo 'test-seed: credential retries, identity checks and atomic markers passed'
