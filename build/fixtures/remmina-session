@@ -109,6 +109,15 @@ fi
 SUDO_UID=$uid /usr/local/sbin/browser --privileged "$display" "$ipc" remmina >"$work/launcher.log" 2>&1 &
 launcher=$!; children="$launcher $children"
 wait_file /run/convergent/browser/remmina/cage/wayland-0
+cage=$(pidof cage)
+[ -n "$cage" ]
+for pid in $cage; do
+    grep -Eq '^Groups:[[:space:]]*$' "/proc/$pid/status"
+    awk -v uid="$uid" -v gid="$gid" '
+        /^Uid:/ {if ($2 != uid || $3 != uid || $4 != uid || $5 != uid) exit 1; u=1}
+        /^Gid:/ {if ($2 != gid || $3 != gid || $4 != gid || $5 != gid) exit 1; g=1}
+        END {if (!u || !g) exit 1}' "/proc/$pid/status"
+done
 "$work/python3" "$release/fixtures/remmina.py" keyboard /run/convergent/browser/remmina/cage/wayland-0 "$work" >"$work/keyboard.log" 2>&1 &
 keyboard=$!; children="$keyboard $children"
 wait_file "$work/keyboard-ready"

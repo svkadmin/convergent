@@ -481,6 +481,7 @@ backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOV
 
 ## 8. Observability
 
+- **Exporter profiling:** node_exporter's profiling endpoints remain reachable from svc only.
 - **Exporters, monitoring self-metrics:** 30 seconds; bounded collectors/series and var/host
   selectors, PSI/diskstats
 - **Incus:** 60 seconds; seven CPU/memory/network/disk resource families

@@ -14,8 +14,8 @@ trap 'exit 1' HUP INT TERM
 now=$(date +%s)
 {
     ok=1
-    if rules=$(curl -qfsS --noproxy '*' --connect-timeout 2 --max-time 8 --max-filesize 1048576 http://100.80.2.10:8880/api/v1/rules); then
-        if printf '%s\n' "$rules" | timeout -k 1 8 prlimit --as=134217728 --fsize=1048576 -- jq -er --argjson now "$now" -f /usr/lib/convergent/monitoring.jq >"$tmp.rules"; then
+    if rules=$(setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs curl -qfsS --noproxy '*' --connect-timeout 2 --max-time 8 --max-filesize 1048576 http://100.80.2.10:8880/api/v1/rules); then
+        if printf '%s\n' "$rules" | timeout -k 1 8 prlimit --as=134217728 --fsize=1048576 -- setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs jq -er --argjson now "$now" -f /usr/lib/convergent/monitoring.jq >"$tmp.rules"; then
             cat "$tmp.rules" || exit 1
         else ok=0; fi
     else ok=0; fi
@@ -24,8 +24,8 @@ now=$(date +%s)
     echo "cv_collector_success{collector=\"rules\"} $ok"
     echo "cv_collector_timestamp_seconds{collector=\"rules\"} $now"
     dns=0; ok=1
-    addresses=$(timeout -k 1 5 getent ahostsv4 example.com 2>/dev/null) && dns=1
-    address=$(printf '%s\n' "$addresses" | awk 'NR == 1 {print $1}')
+    addresses=$(timeout -k 1 5 setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs getent ahostsv4 example.com 2>/dev/null) && dns=1
+    address=$(printf '%s\n' "$addresses" | setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs awk 'NR == 1 {print $1}')
     echo "cv_internet_probe_success{probe=\"dns\",source=\"host\",target=\"example.com\"} $dns"
     # Only an existing web namespace has ordinary HTTPS egress; never open pf tables or start a guest.
     if state=$(timeout -k 1 5 incus --force-local query "/1.0/instances/def/state?project=default" 2>/dev/null); then
@@ -34,7 +34,7 @@ now=$(date +%s)
             echo 'cv_https_probe_available 1'
             https=0
             if [ "$dns" = 1 ]; then
-                timeout -k 1 10 nsenter --target "$pid" --net -- curl -q4fsS --noproxy '*' --proto '=https' \
+                timeout -k 1 10 nsenter --target "$pid" --net -- setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs curl -q4fsS --noproxy '*' --proto '=https' \
                     --resolve "example.com:443:$address" --connect-timeout 3 --max-time 8 \
                     --output /dev/null https://example.com/ && https=1
             fi

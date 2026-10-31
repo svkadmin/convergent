@@ -1,0 +1,72 @@
+#!/bin/sh
+# Run the real probe commands with privilege and namespace boundaries recorded.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+# Stop before host cgroup collection.
+awk '/^    ok=1$/ && !started {started=1} started {print} /cv_collector_timestamp_seconds.*internet/ {exit}' "$here/../tools/observe" >"$work/probes"
+[ -s "$work/probes" ]; sh -n "$work/probes"
+setpriv() (
+    [ "$1:$2:$3:$4" = '--reuid=65534:--regid=65534:--clear-groups:--no-new-privs' ] || exit 90
+    shift 4
+    [ "$fault" != "$1" ] || return 1
+    dropped=yes
+    "$@"
+)
+timeout() { [ "$1:$2" = '-k:1' ] || exit 90; shift 3; "$@"; }
+prlimit() {
+    [ "$1:$2:$3" = '--as=134217728:--fsize=1048576:--' ] || exit 90
+    shift 3; "$@"
+}
+nsenter() {
+    [ "${dropped:-}" = '' ] || exit 90
+    [ "$1:$2:$3:$4" = '--target:123:--net:--' ] || exit 90
+    shift 4
+    namespace=def
+    "$@"
+}
+incus() { [ "${dropped:-}" = '' ] || exit 90; echo trusted-state; }
+getent() { [ "${dropped:-}" = yes ] || exit 90; echo '192.0.2.1 STREAM example.com'; }
+awk() { [ "${dropped:-}" = yes ] || exit 90; command awk "$@"; }
+curl() {
+    [ "${dropped:-}" = yes ] || exit 90
+    case $* in
+    *https://example.com/)
+        [ "${namespace:-}" = def ] || exit 90
+        case $* in *'--resolve example.com:443:192.0.2.1 '*) ;; *) exit 90 ;; esac
+        echo https >>"$work/calls" ;;
+    *http://100.80.2.10:8880/api/v1/rules) echo rules >>"$work/calls"; echo guest-data ;;
+    *) exit 90 ;;
+    esac
+}
+jq() {
+    case $* in
+    *monitoring.jq)
+        [ "${dropped:-}" = yes ] || exit 90
+        [ "$(cat)" = guest-data ] || exit 90
+        echo parsed >>"$work/calls"; echo cv_rules_healthy\ 1 ;;
+    *) [ "$(cat)" = trusted-state ] || exit 90; echo 123 ;;
+    esac
+}
+logger() { :; }
+now=100000 tmp=$work/output
+for fault in none curl jq getent; do
+    : >"$work/calls"
+    . "$work/probes" >"$work/result"
+    if [ "$fault" = none ] || [ "$fault" = getent ]; then
+        grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result"
+        grep -qx parsed "$work/calls"
+    else
+        grep -qx 'cv_collector_success{collector="rules"} 0' "$work/result"
+        if grep -qx parsed "$work/calls"; then exit 1; fi
+    fi
+    if [ "$fault" = none ] || [ "$fault" = jq ]; then
+        grep -qx https "$work/calls"
+    else
+        if grep -qx https "$work/calls"; then exit 1; fi
+    fi
+    [ ! -e "$tmp.rules" ]
+done
+echo 'observe: dropped clients/parsers, root namespace entry and failed drops passed'
