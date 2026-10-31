@@ -68,9 +68,13 @@ def main():
     scrub = facts.split("awk -F'|' '",1)[1].split("' \"$scrub\"",1)[0]
     data = 'scrub status:1\n'
     for device, start, errors in [(1,1000,0),(2,1100,3)]:
-        data += 'fs:%d|t_start:%d|finished:1|canceled:0|uncorrectable_errors:%d|read_errors:0|csum_errors:0|verify_errors:0\n' % (device,start,errors)
+        data += 'fs:%d|t_start:%d|finished:1|canceled:0|uncorrectable_errors:%d|read_errors:0|csum_errors:0|verify_errors:0|super_errors:0\n' % (device,start,errors)
     result = run(['awk','-F|',scrub],data)
     assert 'cv_btrfs_scrub_started_seconds 1000' in result and 'cv_btrfs_scrub_errors 3' in result
+    result = run(['awk','-F|',scrub],data.replace('uncorrectable_errors:3', 'uncorrectable_errors:0').replace('super_errors:0', 'super_errors:1'))
+    assert 'cv_btrfs_scrub_finished 1' in result and 'cv_btrfs_scrub_errors 2' in result
+    for value in ('', 'bad', '-1'):
+        assert subprocess.run(['awk','-F|',scrub],input=data.replace('super_errors:0', 'super_errors:'+value),text=True,capture_output=True).returncode != 0
     broken = 'scrub status:1\nfs:1|t_start:1000|finished:1\n'
     assert subprocess.run(['awk','-F|',scrub],input=broken,text=True,capture_output=True).returncode != 0
     fw = (REPO/'guests/fw/site/usr/local/libexec/convergent/fw-facts').read_text()
@@ -86,7 +90,11 @@ def main():
         script = script.replace('/usr/local/libexec/convergent/carp.awk',(REPO/'rootfs/usr/lib/convergent/incus/carp.awk').as_posix())
         script = script.replace('/usr/local/libexec/convergent/interface-bytes.awk',(REPO/'guests/fw/site/usr/local/libexec/convergent/interface-bytes.awk').as_posix())
         script = script.replace('/etc/convergent/segments',registry.as_posix())
+        rpz = work/'blocklist.rpz'
+        rpz.write_text('; convergent-source-refreshed-seconds 1000\n')
+        script = script.replace('/var/unbound/etc/blocklist.rpz',rpz.as_posix())
         mocks = r'''
+timeout() { [ "$1:$2:$3" = '-k:1:5' ] || return 1; shift 3; "$@"; }
 ifconfig() {
     case "$*" in
     "") printf 'carp0: flags=41<UP,RUNNING>\n groups: carp wanwatch upgrade\n carp: MASTER carpdev vio0 vhid 1 advskew 0\n' ;;

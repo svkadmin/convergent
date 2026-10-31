@@ -251,16 +251,29 @@ storage() {
 	else bad 'Btrfs device stats unavailable'; fi
 	uuid=$(findmnt -n -o UUID /var) || { uuid=; bad "cannot identify /var UUID"; }
 	scrub=/var/lib/btrfs/scrub.status.$uuid
+	missing=$sdir/scrub-missing.$uuid
 	if [ -n "$uuid" ] && [ -r "$scrub" ]; then
 		awk -F'|' 'NR>1 {
 			delete v; for(i=2;i<=NF;i++) {split($i,a,":"); v[a[1]]=a[2]}
-			if(v["t_start"] !~ /^[0-9]+$/ || v["finished"] !~ /^[01]$/ || v["canceled"] !~ /^[01]$/ || v["uncorrectable_errors"] !~ /^[0-9]+$/ || v["read_errors"] !~ /^[0-9]+$/ || v["csum_errors"] !~ /^[0-9]+$/ || v["verify_errors"] !~ /^[0-9]+$/) {bad=1; next}
+			if(v["t_start"] !~ /^[0-9]+$/ || v["finished"] !~ /^[01]$/ || v["canceled"] !~ /^[01]$/ || v["uncorrectable_errors"] !~ /^[0-9]+$/ || v["read_errors"] !~ /^[0-9]+$/ || v["csum_errors"] !~ /^[0-9]+$/ || v["verify_errors"] !~ /^[0-9]+$/ || v["super_errors"] !~ /^[0-9]+$/) {bad=1; next}
 			n++; t=v["t_start"]+0; if(!start || t<start) start=t
 			if(v["finished"] != 1 || v["canceled"] != 0) failed=1
-			errors+=v["uncorrectable_errors"]+v["read_errors"]+v["csum_errors"]+v["verify_errors"]
+			errors+=v["uncorrectable_errors"]+v["read_errors"]+v["csum_errors"]+v["verify_errors"]+v["super_errors"]
 		} END {if(n && !bad) printf "cv_btrfs_scrub_started_seconds %d\ncv_btrfs_scrub_finished %d\ncv_btrfs_scrub_errors %d\n",start,!failed,errors; exit !n || bad}' "$scrub" >>"$buf" || bad 'invalid Btrfs scrub status'
 		m 'cv_btrfs_scrub_recorded 1'
-	else m 'cv_btrfs_scrub_recorded 0'; fi
+		rm -f "$missing" || bad 'cannot clear missing scrub observation'
+	else
+		m 'cv_btrfs_scrub_recorded 0'
+		now=$(date +%s)
+		if [ -n "$uuid" ] && [ ! -e "$missing" ]; then
+			printf '%s\n' "$now" >"$missing.new" && mv "$missing.new" "$missing" || bad 'cannot record missing scrub observation'
+		fi
+		since=$(cat "$missing" 2>/dev/null) || since=0
+		case $since in ''|*[!0-9]*) since=0 ;; esac
+		if [ "$since" -gt 0 ] 2>/dev/null && [ "$since" -le "$now" ] 2>/dev/null; then :
+		else since=0; bad 'invalid missing scrub observation'; fi
+		m "cv_btrfs_scrub_missing_since_seconds $since"
+	fi
 	for volume in svc-metrics svc-logs svc-grafana; do
 		path=/var/lib/incus/storage-pools/default/custom/default_$volume
 		if id=$(btrfs inspect-internal rootid "$path" 2>/dev/null) && limits=$(btrfs qgroup show --raw -r "$path" 2>/dev/null); then

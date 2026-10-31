@@ -7,6 +7,7 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 sed -n '/if capture pflogd /,/^[[:space:]]*fi$/p' \
 	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/check"
+sh -n "$work/check"
 capture() { data=$sample; }
 # The archive repair: exactly a suspended pflogd gets its archive moved aside and a HUP.
 mv() { echo "mv $*" >>"$work/repair"; }
@@ -46,3 +47,74 @@ ok=1
 . "$work/check"
 [ "$ok" = 0 ]
 echo 'fw-facts: pflogd running, suspended, absent and failed-query fixtures passed'
+# Run the whole publisher; each blocked command must still replace old facts.
+cat >"$work/mocks" <<'SH'
+timeout() {
+	[ "$1:$2:$3" = '-k:1:5' ] || exit 1
+	shift 3
+	echo "$*" >>"$calls"
+	if [ "$*" = "$failed" ]; then echo partial; return 124; fi
+	"$@"
+}
+ifconfig() {
+	case $* in
+	'') printf 'carp0: flags=41<UP,RUNNING>\n groups: carp wanwatch upgrade\n carp: MASTER carpdev vio0 vhid 1 advskew 0\n' ;;
+	'-g '*) echo 'carp: carp demote count 0' ;;
+	pfsync0) printf 'pfsync0: flags=41<UP,RUNNING>\n defer: on\n' ;;
+	esac
+}
+sysctl() { echo 1; }
+rcctl() { return 0; }
+pfctl() {
+	case $1 in
+	-si) printf 'Status: Enabled\n current entries 12\nCounters\n  match 12\n' ;;
+	-sm) echo 'states hard limit 10000' ;;
+	-sr) echo pass ;;
+	esac
+}
+sha256() { [ "$#" != 0 ] || cat >/dev/null; echo abc; }
+route() { echo 'default 100.80.0.10'; }
+unbound-control() {
+	[ "$1" != status ] || return 0
+	printf 'total.num.queries=1\ntotal.num.cachehits=0\nnum.answer.rcode.SERVFAIL=0\nnum.answer.rcode.NXDOMAIN=0\ntotal.recursion.time.avg=0.01\n'
+}
+stat() { echo 2000000000; }
+netstat() { printf 'Name Mtu Network Address Ibytes Obytes\nvio0 1500 <Link> aa:bb 123 456\n'; }
+ps() { echo 'pflogd: [running] -s 160'; }
+SH
+echo 'carp0 1 vio0 host 100.80.1.0/28 100.80.1.1 system' >"$work/segments"
+sed -e "s|/var/node_exporter/textfile|$work|g" \
+	-e "s|/usr/local/libexec/convergent/carp.awk|$here/../../rootfs/usr/lib/convergent/incus/carp.awk|g" \
+	-e "s|/usr/local/libexec/convergent/|$here/site/usr/local/libexec/convergent/|g" \
+	-e "s|/etc/convergent/segments|$work/segments|g" \
+	-e "s|/var/unbound/etc/blocklist.rpz|$work/blocklist.rpz|g" \
+	"$here/site/usr/local/libexec/convergent/fw-facts" >"$work/publisher"
+cat "$work/mocks" "$work/publisher" >"$work/run"
+sh -n "$work/mocks"
+sh -n "$work/run"
+echo '; convergent-source-refreshed-seconds 1000' >"$work/blocklist.rpz"
+for failed in '' 'unbound-control status' 'unbound-control stats_noreset' 'pfctl -si' 'pfctl -sm' 'pfctl -sr'; do
+	: >"$work/calls"
+	echo stale >"$work/convergent_fw.prom"
+	failed=$failed calls=$work/calls sh "$work/run"
+	[ "$(wc -l <"$work/calls")" = 5 ]
+	if [ -z "$failed" ]; then want=1; else want=0; fi
+	grep -qx "convergent_fw_facts_success $want" "$work/convergent_fw.prom"
+	if [ "$failed" = 'unbound-control status' ]; then want=0; else want=1; fi
+	grep -qx "convergent_unbound_up $want" "$work/convergent_fw.prom"
+	grep -qx 'convergent_dns_source_refreshed_seconds 1000' "$work/convergent_fw.prom"
+	if grep -q partial "$work/convergent_fw.prom"; then exit 1; fi
+done
+for stamp in '' bad 0 -1 999999999999999999999 '1000 extra'; do
+	printf '; convergent-source-refreshed-seconds %s\n' "$stamp" >"$work/blocklist.rpz"
+	failed= calls=$work/calls sh "$work/run"
+	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
+	grep -qx 'convergent_fw_facts_success 0' "$work/convergent_fw.prom"
+done
+for kind in absent duplicate; do
+	if [ "$kind" = absent ]; then rm "$work/blocklist.rpz"
+	else printf '; convergent-source-refreshed-seconds 1000\n; convergent-source-refreshed-seconds 1001\n' >"$work/blocklist.rpz"; fi
+	failed= calls=$work/calls sh "$work/run"
+	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
+done
+echo 'fw-facts: bounded probes, publication and source-age fixtures passed'
