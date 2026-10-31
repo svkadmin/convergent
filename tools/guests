@@ -479,14 +479,62 @@ verify_image() {
     wan) set -- wan-metadata.tar.xz wan.qcow2 topology.sha256 ;;
     *) set -- metadata.tar.gz rootfs.tar.gz ;;
     esac
-    : >"$work/checksums"
-    for artifact do
-        awk -v name="$artifact" '($2 == name || $2 == "*" name) && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {print; n++}
-            END {if (n != 1) exit 1}' "$image_dir/SHA256SUMS" >>"$work/checksums" ||
-            die "missing or invalid SHA256SUMS entry: $artifact"
-    done
-    (cd "$image_dir" && sha256sum -c "$work/checksums") || die 'guest artifact checksum mismatch'
+    checksums=$(
+        for artifact do
+            awk -v name="$artifact" '($2 == name || $2 == "*" name) && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {print; n++}
+                END {if (n != 1) exit 1}' "$image_dir/SHA256SUMS" ||
+                die "missing or invalid SHA256SUMS entry: $artifact"
+        done
+    ) || die 'invalid guest checksums'
+    printf '%s\n' "$checksums" | (cd "$image_dir" && sha256sum -c -) || die 'guest artifact checksum mismatch'
 }
+manual_image() (
+    # update.sh has globals and rsh of its own; keep them in this subshell.
+    . /usr/lib/convergent/update.sh
+    case $1 in
+    def|int) kind=browser ;;
+    fw|wan|svc|browser|remmina) kind=$1 ;;
+    *) die 'invalid update guest' ;;
+    esac
+    case $2 in /*) image_dir=$2 ;; *) image_dir=./$2 ;; esac
+    [ -d "$image_dir" ] && [ ! -L "$image_dir" ] || die 'invalid image directory'
+    links=$(find "$image_dir" -type l -print) || die 'cannot inspect image directory'
+    [ -z "$links" ] || die 'image directory contains symlinks'
+    gm=$image_dir/../../guests.manifest
+    [ "$kind" != remmina ] || gm=$image_dir/../../remmina.manifest
+    verify "$gm" || die 'guest manifest signature does not verify (trusted local builds require --trusted-local)'
+    booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+    case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+    awk -v release="$booted" '$1 == "release" {n++; if (NF != 2 || $2 != release) bad=1}
+        END {exit bad || n != 1}' "$gm" || die 'guest manifest is for another release'
+    case $kind in
+    svc|remmina) [ -f "$image_dir/incus.yaml" ] || die 'missing incus.yaml' ;;
+    browser)
+        for role in base def tmp int; do
+            [ -f "$image_dir/incus/$role.yaml" ] || die "missing browser profile: $role"
+        done ;;
+    esac
+    # The build/guests identity binds SHA256SUMS and every supplied profile.
+    profiles=$(cd "$image_dir" && find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \)) || die 'cannot list profiles'
+    profiles=$(printf '%s\n' "$profiles" | sort) || die 'cannot sort profiles'
+    identity=$(
+        cd "$image_dir" || exit 1
+        cat SHA256SUMS || exit 1
+        printf '%s\n' "$profiles" | while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            sha256sum "$path" || exit 1
+        done
+    ) || die 'cannot hash guest identity'
+    identity=$(printf '%s\n' "$identity" | sha256sum) || die 'cannot hash guest identity'
+    identity=${identity%% *}
+    awk -v kind="$kind" -v id="$identity" '$1 == "guest" && $2 == kind {n++; if (NF != 3 || tolower($3) != id) bad=1}
+        END {exit bad || n != 1}' "$gm" || die 'guest identity or profiles differ from manifest'
+    awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+        {sub(/^\*/, "", $2); if ($2 !~ /^[A-Za-z0-9._-]+$/ || $2 == "." || $2 == ".." || seen[$2]++) exit 1; n++}
+        END {if (!n) exit 1}' "$image_dir/SHA256SUMS" || die 'invalid guest artifact paths'
+    (cd "$image_dir" && sha256sum -c SHA256SUMS) || die 'guest artifact checksum mismatch'
+    verify_image "$1"
+)
 import_image() {
     verify_image "$1"
     step="import $1"
@@ -1719,7 +1767,11 @@ trap 'cleanup "$?"' 0
 trap 'die "received HUP"' HUP
 trap 'die "received INT"' INT
 trap 'die "received TERM"' TERM
-case ${1:-}:$# in init:2|update:3|rebuild:2|apply:1|status:1) ;; *) die 'usage: guests init <release-dir> | update <guest> <image-dir> | rebuild fw1|fw2 | apply | status' ;; esac
+case ${1:-}:$# in
+init:2|update:3|rebuild:2|apply:1|status:1) ;;
+update:4) [ "$4" = --trusted-local ] || die 'unknown update option' ;;
+*) die 'usage: guests init <release-dir> | update <guest> <image-dir> [--trusted-local] | rebuild fw1|fw2 | apply | status' ;;
+esac
 [ "$(id -u)" = 0 ] || die 'run as root'
 if [ "$1" = status ]; then
     step=status
@@ -1727,6 +1779,8 @@ if [ "$1" = status ]; then
     printf '%s\n' "$instances" | jq -r 'sort_by(.name)[] | "\(.name) \(.status | ascii_downcase)"'
     exit
 fi
+# Authenticate manual input before archive recovery, journals or Incus can change.
+if [ "$1" = update ] && [ "${4:-}" != --trusted-local ]; then manual_image "$2" "$3"; fi
 mkdir -p "$state" /run/convergent
 [ -w "$state" ] || die 'state disk lost or read-only: reboot'
 exec 9>/run/convergent/guests.lock

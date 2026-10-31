@@ -95,7 +95,7 @@ EOF
     sed '/for volume in $(volumes "$guest"); do locked ic storage volume snapshot create /r '"$work/mutate" \
         /usr/local/sbin/guests >"$work/updater"
     sh -n "$work/updater"
-    if sh "$work/updater" update remmina "$work/broken" >"$work/update.log" 2>&1; then
+    if sh "$work/updater" update remmina "$work/broken" --trusted-local >"$work/update.log" 2>&1; then
         cat "$work/update.log"; echo 'CV-REMOTE corrupt image accepted'; exit 1
     fi
     grep -q CV-REMOTE-MUTATED "$work/update.log" && grep -q 'restoring remmina/' "$work/update.log" ||
@@ -106,7 +106,7 @@ EOF
     timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
     ic exec remmina -- sh -eu -c 'grep -qx state /home/remmina/.cv-state; grep -qx share-new /share/.cv-share'
     ic stop remmina --force
-    /usr/local/sbin/guests update remmina "$source"
+    /usr/local/sbin/guests update remmina "$source" --trusted-local
     test "$(ic storage volume snapshot list default share --format csv -c n)" = "$share_before"
     ic start remmina
     timeout -k 1 60 sh -c 'until incus --force-local --project default exec remmina -- test -f /run/remmina-ready; do sleep 1; done'

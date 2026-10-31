@@ -50,7 +50,7 @@ for mode in normal interrupted detached renamed committed; do
 			' /usr/local/sbin/guests >"$release/guests-interrupt"
 			grep -Eq '^    (kill -KILL "\$\$"|return 1)$' "$release/guests-interrupt"
 			r=0
-			sh "$release/guests-interrupt" update browser "$release/guests/browser" || r=$?
+			sh "$release/guests-interrupt" update browser "$release/guests/browser" --trusted-local || r=$?
 			step="$fault fault assertions"
 			# Trace the assertions: a failure names its check on the console.
 			set -x
@@ -77,7 +77,7 @@ for mode in normal interrupted detached renamed committed; do
 		done
 	fi
 	step="$mode resume"
-	sh -x /usr/local/sbin/guests update browser "$release/guests/browser" 2>"/var/log/guests-update-browser-$mode.log" || {
+	sh -x /usr/local/sbin/guests update browser "$release/guests/browser" --trusted-local 2>"/var/log/guests-update-browser-$mode.log" || {
 		tail -n 80 "/var/log/guests-update-browser-$mode.log" >&2
 		exit 1
 	}
