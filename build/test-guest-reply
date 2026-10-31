@@ -117,6 +117,13 @@ for module in 10-wifi 14-firewall; do
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
     sh -n "$scratch/module"; . "$scratch/module"
 done
+# firewall_role reads the host registry: the firewall is asked only for ifconfig, and a hostile
+# reply never reaches awk's argument list.
+: >"$scratch/role-calls"
+firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; printf '%s\n' "-eBEGIN{system(\"touch $scratch/pwned\")}"; }
+firewall_role fw1 MASTER >/dev/null 2>&1 || :
+[ "$(cat "$scratch/role-calls")" = ifconfig ] && [ ! -e "$scratch/pwned" ] ||
+    { echo 'test-guest-reply: firewall_role trusts a firewall-supplied path'; exit 1; }
 run() { transport; }
 firewall_rsh() { transport; }
 # Ordinary failures retain both the guest's text and its status for UI advice.

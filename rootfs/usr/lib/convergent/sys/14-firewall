@@ -33,9 +33,10 @@ exit 1;
 	exit "$code"
 )
 firewall_role() {
-	registry=$(guest_reply 128 firewall_rsh "$1" 'if test -f /etc/convergent/segments; then echo /etc/convergent/segments; else echo /usr/lib/convergent/incus/segments; fi') || return
+	# The host's own registry: a path from the firewall reached awk's argument list (a reply of
+	# "-e..." ran as host root).
 	output=$(guest_reply 65536 firewall_rsh "$1" ifconfig) || return
-	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk "$registry" - >/dev/null
+	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
 }
 firewall_pair() { firewall_role "$1" MASTER && firewall_role "$2" BACKUP; }
 firewall_healthy() {
