@@ -3340,7 +3340,7 @@ for module in usbserial ftdi_sio cp210x pl2303 ch341 cdc_acm; do t modinfo "$mod
 t sh -c '
 	. /usr/lib/convergent/sys/80-security
 	curl() { printf "%s\n" "$response" "$rules"; }
-	rules='"'"'{"status":"success","data":{"groups":[{"rules":[{"health":"ok"}]}]}}'"'"'
+	rules=$(jq -nc '"'"'{status:"success",data:{groups:[{interval:30,rules:[{health:"ok",lastEvaluation:(now | todateiso8601)}]}]}}'"'"')
 	response='"'"'{"status":"success","data":{"alerts":[
 		{"state":"pending","labels":{"alertname":"Pending"}},
 		{"state":"firing","labels":{"severity":"warning","alertname":"Warm"},"annotations":{"description":"Too warm"},"activeAt":"2026-01-01T00:00:00Z"},

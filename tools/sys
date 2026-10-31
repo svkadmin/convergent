@@ -293,7 +293,7 @@ dashboard() (
 		close("/proc/meminfo")
 		held=get(st "/guestmem"); ram="?"
 		if (memtime>0 && now>=memtime && now-memtime<=180 && held ~ /^[0-9]+$/) {
-			used=mem["MemTotal:"]-mem["MemFree:"]-held
+			used=mem["MemTotal:"]-mem["MemAvailable:"]-held
 			ram=sprintf("%.1f",(used>0 ? used : 0)/1048576)
 		}
 		line(sprintf("RAM: %s/%.1f GiB (host)",ram,mem["MemTotal:"]/1048576))
@@ -306,8 +306,8 @@ dashboard() (
 		if (mtime>0 && now>=mtime && now-mtime<=180) {
 			if (topo["fw1"] == "master" && topo["fw2"] == "backup") master="fw1"
 			if (topo["fw2"] == "master" && topo["fw1"] == "backup") master="fw2"
-			if (split(get(st "/.running"),m," ") == 5 && m[5] ~ /^[0-9]+$/)
-				count=((m[1] == "true")+(m[2] == "true")+(m[3] == "true")+(m[4] == "true")+m[5]) "/?"
+			if (split(get(st "/.running"),m," ") == 6 && m[5] ~ /^[0-9]+$/)
+				count=((m[1] == "true")+(m[2] == "true")+(m[3] == "true")+(m[4] == "true")+m[5]+(m[6] == "true")) "/?"
 		}
 		if (ENVIRON["SYS_GUESTS"] != "unknown") {
 			n=split(ENVIRON["SYS_GUESTS"],rows,"\n"); total=0; running=0
