@@ -15,7 +15,7 @@ pfctl() {
     printf '%s %s\n' "$fw" "$*" >>"$work/pf-calls"
     case $* in
     '-t update_src -T flush') op=flush ;;
-    '-k label -k update') op=kill ;;
+    '-k label -k update') op='kill' ;;
     *) exit 97 ;;
     esac
     if [ "$fw" = "$failed_fw" ] && { [ "$fault" = "$op" ] || [ "$fault" = both ]; }; then

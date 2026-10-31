@@ -52,7 +52,8 @@ for service in logs metrics; do
     sh -n "$work/args"
     . "$work/args"
     printf '%s\n' $command_args >"$work/flags"
-    grep -qxF -- '-retentionPeriod=14d' "$work/flags"
+    case $service in logs) days=7d ;; *) days=14d ;; esac
+    grep -qxF -- "-retentionPeriod=$days" "$work/flags"
     if [ "$service" = logs ]; then
         grep -qxF -- '-retention.maxDiskSpaceUsageBytes=2GiB' "$work/flags"
         grep -qxF -- '-storage.minFreeDiskSpaceBytes=1GiB' "$work/flags"
