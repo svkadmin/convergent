@@ -52,7 +52,7 @@ rsh() { probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" || { c
 probe() (
     limit=${probe_limit:-30}
     if [ -n "$polling" ]; then
-        now=$(date +%s) || exit 1
+        now=$(cut -d. -f1 /proc/uptime) || exit 1
         remaining=$((deadline - now))
         [ "$remaining" -gt 0 ] || exit 124
         if [ "$remaining" -eq 1 ]; then
@@ -82,7 +82,7 @@ retry() {
     *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;;
     *) wait=$boot_timeout ;;
     esac
-    now=$(date +%s) || return
+    now=$(cut -d. -f1 /proc/uptime) || return
     deadline=$((now + wait))
     polling=1
     waiting=
@@ -92,14 +92,14 @@ retry() {
             *) echo "guests: waiting for $*" >&2 ;; esac
             waiting=1
         fi
-        now=$(date +%s) || return
+        now=$(cut -d. -f1 /proc/uptime) || return
         if [ "$now" -ge "$deadline" ]; then
             polling=
             cat "$work/retry.err" >&2
             [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(cat "$work/retry.err")" 2>/dev/null || :
             fail "$* timed out after ${wait}s" || :
             case $1:${2:-} in pin:fw1|pin:fw2|pin:wan|seed_applied:fw1|seed_applied:fw2|seed_applied:wan|healthy:fw1|healthy:fw2|healthy:wan)
-                now=$(date +%s) || return
+                now=$(cut -d. -f1 /proc/uptime) || return
                 deadline=$((now + 15))
                 polling=1
                 ic console "$2" --show-log | tail -n 20 >&2
@@ -297,6 +297,13 @@ certificate_pair() {
         openssl x509 -in "$2" -pubkey -noout >"$work/cert.pub" &&
         cmp -s "$work/key.pub" "$work/cert.pub"
 }
+certificate_current() (
+    openssl x509 -in "$1" -checkend 2592000 -noout >/dev/null 2>&1 || exit 1
+    start=$(openssl x509 -in "$1" -startdate -noout) || exit 1
+    start=$(date -d "${start#notBefore=}" +%s) || exit 1
+    now=$(date +%s) || exit 1
+    [ "$start" -le "$now" ]
+)
 credentials() {
     step=credentials
     mkdir -p "$tls" "$keys"
@@ -315,7 +322,11 @@ credentials() {
     sync
     mv "$keys/id_ed25519.pub.new" "$keys/id_ed25519.pub"
     sync
-    if ! openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then
+    if openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then
+        certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
+        openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
+    fi
+    if ! certificate_current "$tls/ca.crt"; then
         if [ ! -f "$tls/ca.key" ]; then
             openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/ca.key.new"
             openssl pkey -in "$tls/ca.key.new" -check -noout >/dev/null
@@ -328,17 +339,18 @@ credentials() {
             -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
         certificate_pair "$tls/ca.key" "$tls/ca.crt.new" || die 'invalid CA pair'
         openssl verify -CAfile "$tls/ca.crt.new" "$tls/ca.crt.new" >/dev/null || die 'invalid CA certificate'
+        touch "$tls/ca.pending"
         sync
         mv "$tls/ca.crt.new" "$tls/ca.crt"
         sync
     fi
     certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
-    openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
+    openssl verify -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
     for cert in server incus-server incus-client; do
         if [ -f "$tls/$cert.crt" ]; then
-            if openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null; then
+            if certificate_current "$tls/$cert.crt"; then
                 certificate_pair "$tls/$cert.key" "$tls/$cert.crt" || die "invalid pair for $cert"
-                openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null || die "invalid certificate for $cert"
+                openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null || die "invalid certificate for $cert"
                 continue
             fi
             [ -s "$tls/$cert.key" ] || die "missing key for $cert"
@@ -374,9 +386,9 @@ credentials() {
     done
 }
 certificates_due() {
-    [ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ] && [ ! -f "$tls/incus-client.previous" ] || return 0
-    for cert in server incus-server incus-client; do
-        openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null 2>&1 || return 0
+    [ ! -f "$tls/pending" ] && [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/deploy" ] && [ ! -f "$tls/incus-client.previous" ] || return 0
+    for cert in ca server incus-server incus-client; do
+        certificate_current "$tls/$cert.crt" || return 0
     done
     return 1
 }
@@ -402,9 +414,10 @@ certificates_apply() (
     certificates_prepare
     running svc || ic start svc
     retry ic exec svc -- true
-    for entry in 'server.crt victoria-logs vmlogs' 'incus-client.crt victoria-metrics vmmetrics'; do
+    for entry in 'server.crt victoria-logs vmlogs server.crt' \
+        'incus-client.crt victoria-metrics vmmetrics incus-client.crt' 'ca.crt victoria-metrics vmmetrics incus-ca.crt'; do
         set -- $entry
-        if ic exec svc -- cat "/etc/$2/tls/$1" >"$work/current.crt" && cmp -s "$tls/$1" "$work/current.crt"; then continue; fi
+        if ic exec svc -- cat "/etc/$2/tls/$4" >"$work/current.crt" && cmp -s "$tls/$1" "$work/current.crt"; then continue; fi
         # Retry restarts even if interrupted after installing the certificates.
         touch "$tls/deploy"
         sync
@@ -416,7 +429,7 @@ certificates_apply() (
             chmod 640 "$1.new"
             mv "$1.new" "$1"
             sync
-        ' sh "/etc/$2/tls/$1" "$3" <"$tls/$1"
+        ' sh "/etc/$2/tls/$4" "$3" <"$tls/$1"
     done
     if [ -f "$tls/deploy" ]; then
         ic exec svc -- rc-service victoria-logs restart
@@ -424,6 +437,24 @@ certificates_apply() (
         retry healthy svc
         rm "$tls/deploy"
         sync
+    fi
+    if [ -f "$tls/ca.pending" ]; then
+        ca_hash=$(openssl x509 -in "$tls/ca.crt" -hash -noout)
+        install -m 600 "$tls/ca.crt" "/var/lib/convergent/syslog-ca/$ca_hash.0.new"
+        mv "/var/lib/convergent/syslog-ca/$ca_hash.0.new" "/var/lib/convergent/syslog-ca/$ca_hash.0"
+        sync
+        rc-service syslog-ng reload 9>&- 8>&- 7>&- 6>&-
+        for node in fw1 fw2; do
+            fw_mutate "$node" 'set -eu
+                umask 077
+                ca=/etc/convergent/seeded/syslog-ca.crt
+                cat >"$ca.new"
+                openssl x509 -in "$ca.new" -noout >/dev/null
+                mv "$ca.new" "$ca"
+                sync
+                rcctl restart syslogd' <"$tls/ca.crt"
+        done
+        fw_mutate wan syslog-ca <"$tls/ca.crt"
     fi
     if [ -f "$tls/incus-client.previous" ]; then
         old=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
@@ -433,7 +464,7 @@ certificates_apply() (
         rm "$tls/incus-client.previous"
         sync
     fi
-    rm -f "$tls/pending"
+    rm -f "$tls/pending" "$tls/ca.pending"
     sync
 )
 verify_image() {
@@ -1020,7 +1051,8 @@ prepare_cleanup() {
     [ -f "$state/preparing" ] || return 0
     read -r prep_guest prep_snap prep_start <"$state/preparing" || return
     if ! awk -v g="$prep_guest" -v s="$prep_snap" '$1 == g && $2 == s {found=1} END {exit !found}' "$state/pending" 2>/dev/null; then
-        prep_deadline=$(($(date +%s) + boot_timeout))
+        prep_now=$(cut -d. -f1 /proc/uptime) || return
+        prep_deadline=$((prep_now + boot_timeout))
         for volume in $(volumes "$prep_guest"); do
             # A disconnected client can leave an Incus operation running.
             while :; do
@@ -1030,7 +1062,8 @@ prepare_cleanup() {
                     select(any(.resources[]?[]?; split("?")[0] | . == $v or startswith($v + "/snapshots/"))) |
                     .id' "$work/operations" >"$work/volume-operations" || return
                 [ -s "$work/volume-operations" ] || break
-                [ "$(date +%s)" -lt "$prep_deadline" ] || { fail "snapshot operations for $volume timed out after ${boot_timeout}s"; return 1; }
+                prep_now=$(cut -d. -f1 /proc/uptime) || return
+                [ "$prep_now" -lt "$prep_deadline" ] || { fail "snapshot operations for $volume timed out after ${boot_timeout}s"; return 1; }
                 sleep 1
             done
             ic storage volume snapshot list default "$volume" --format csv -c n >"$work/volume-snapshots" || return
@@ -1496,7 +1529,8 @@ ifconfig -g handoff carpdemote 128'
         replace "$1"
         commit_update
         rm -rf "$state/profiles.before"
-        [ "$1" != svc ] || certificates_apply
+        # Apply deploys after WAN has its current SSH commands.
+        [ "$1" != svc ] || [ -n "$applying" ] || certificates_apply
         ;;
     def|int)
         browser_migrate

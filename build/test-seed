@@ -8,6 +8,24 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-seed: $*" >&2; exit 1; }
+# A full apply must update WAN before using its CA deployment command.
+sed -n '/^        # Apply deploys/,/^        ;;/p' "$repo/tools/guests" | sed '1d;$d' >"$scratch/apply-order"
+[ -s "$scratch/apply-order" ]
+sh -n "$scratch/apply-order"
+for mode in standalone apply; do
+    (
+        applying=
+        [ "$mode" != apply ] || applying=1
+        certificates_apply() { touch "$scratch/deployed"; }
+        set -- svc
+        . "$scratch/apply-order"
+    )
+    if [ "$mode" = standalone ]; then [ -f "$scratch/deployed" ]; else [ ! -f "$scratch/deployed" ]; fi
+    rm -f "$scratch/deployed"
+done
+sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
+    awk '/^    for kind in/ {updates=NR} /^    certificates_apply$/ {deploy=NR}
+        END {exit !(updates && deploy > updates)}'
 work=$scratch/work state=$scratch/state
 keys=$state/keys tls=$state/tls
 export work state keys tls
@@ -24,6 +42,12 @@ CREDENTIALS
 sh -n "$scratch/credentials"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'initial credentials'; }
 cp -R "$state" "$scratch/good"
+sed -n '/^certificate_current() (/,/^)/p; /^certificates_due() {/,/^}/p' "$repo/tools/guests" >"$scratch/due"
+[ -s "$scratch/due" ]
+sh -n "$scratch/due"
+. "$scratch/due"
+rm -f "$tls/pending" "$tls/ca.pending"
+if certificates_due; then die 'current credentials due'; fi
 # Retry before the CA's notBefore, as after a backward clock correction.
 cat >"$scratch/ca.conf" <<EOF
 [ca]
@@ -55,9 +79,143 @@ for cert in ca server incus-server incus-client; do
     grep -q 'not yet valid' "$scratch/log"
     openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
 done
+certificates_due || die 'future CA not due'
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }
-cmp "$tls/ca.crt" "$scratch/future-ca.crt"
+[ -f "$tls/ca.pending" ]
+if cmp -s "$tls/ca.crt" "$scratch/future-ca.crt"; then die 'future CA reused'; fi
+for cert in ca server incus-server incus-client; do
+    cmp "$tls/$cert.key" "$scratch/good/tls/$cert.key"
+    openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
+done
 for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
+# Each future leaf must independently trigger renewal, retaining its key.
+for cert in server incus-server incus-client; do
+    rm -f "$tls/pending" "$tls/ca.pending" "$tls/incus-client.previous"
+    case $cert in
+    server) san='IP:100.80.2.10,DNS:svc'; purpose=serverAuth ;;
+    incus-server) san='DNS:host,IP:100.80.1.10'; purpose=serverAuth ;;
+    incus-client) san='DNS:svc'; purpose=clientAuth ;;
+    esac
+    printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
+        "$purpose" "$san" >"$scratch/extensions"
+    openssl req -new -key "$tls/$cert.key" -subj "/CN=$cert" -out "$scratch/request"
+    openssl ca -batch -notext -rand_serial -config "$scratch/ca.conf" -extfile "$scratch/extensions" \
+        -cert "$tls/ca.crt" -keyfile "$tls/ca.key" -in "$scratch/request" -out "$tls/$cert.crt" \
+        -startdate "$(date -u -d '+1 day' +%Y%m%d%H%M%SZ)" -days 825 >"$scratch/log" 2>&1 ||
+        { cat "$scratch/log"; die "future $cert"; }
+    cp "$tls/$cert.crt" "$scratch/future-leaf.crt"
+    certificates_due || die "future $cert not due"
+    sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "renew $cert"; }
+    if cmp -s "$tls/$cert.crt" "$scratch/future-leaf.crt"; then die "future $cert reused"; fi
+    for key in ca server incus-server incus-client; do cmp "$tls/$key.key" "$scratch/good/tls/$key.key"; done
+    openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
+    if [ "$cert" = incus-client ]; then cmp "$tls/incus-client.previous" "$scratch/future-leaf.crt"; fi
+done
+# Exercise deployment and interrupted reloads with the real remote payloads.
+sed -n '/^secret_valid() {/,/^verify_image() {/p' "$repo/tools/guests" | sed '$d' |
+    sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g" >"$scratch/deploy-functions"
+[ -s "$scratch/deploy-functions" ]
+sh -n "$scratch/deploy-functions"
+old_trust=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
+export scratch old_trust
+cat >"$scratch/deploy" <<'DEPLOY'
+. "$scratch/deploy-functions"
+die() { echo "$*" >&2; exit 1; }
+sync() { :; }
+running() { [ "$1" = svc ]; }
+retry() { "$@"; }
+healthy() { [ "$1" = svc ]; echo healthy >>"$scratch/events"; }
+rc-service() { echo host >>"$scratch/events"; [ "$fault" != host ]; }
+jq() { [ "$1 $2 $3" = '-e --arg fp' ] && [ "$4" = "$old_trust" ]; }
+ic() {
+    case "$*" in
+    'admin update-certificate '*) echo server >>"$scratch/events" ;;
+    'config trust list --format json') echo '[]' ;;
+    'config trust add-certificate '*) echo add >>"$scratch/events" ;;
+    "config trust remove $old_trust") echo remove >>"$scratch/events" ;;
+    'exec svc -- true') : ;;
+    'exec svc -- cat '*) shift 4; cat "$scratch/svc$1" ;;
+    'exec svc -- sh -c '*)
+        shift 5
+        printf 'chown() { :; }; sync() { :; }\n%s\n' "$1" >"$scratch/payload"
+        sh -n "$scratch/payload"
+        shift 2
+        sh -eu "$scratch/payload" "$scratch/svc$1" "$2" ;;
+    'exec svc -- rc-service victoria-logs restart') echo logs >>"$scratch/events" ;;
+    'exec svc -- rc-service victoria-metrics restart') echo metrics >>"$scratch/events" ;;
+    *) die "unexpected Incus call: $*" ;;
+    esac
+}
+fw_mutate() {
+    node=$1
+    export node
+    if [ "$node" = wan ]; then
+        [ "$2" = syslog-ca ] || return 97
+        sed "s|/etc/syslog-ng/svc-ca.pem|$scratch/wan/ca|g" "$repo/guests/wan/rootfs/usr/local/sbin/wan-ssh" |
+            sed 's/exec rc-service /rc-service /' >"$scratch/remote"
+        # The production branch execs; stop the fixture after its reload.
+        sed 's/rc-service syslog-ng reload/rc-service syslog-ng reload; exit $?/' "$scratch/remote" >"$scratch/remote.new"
+        mv "$scratch/remote.new" "$scratch/remote"
+    else
+        printf '%s\n' "$2" | sed "s|/etc/convergent/seeded/syslog-ca.crt|$scratch/$node/ca|g" >"$scratch/remote"
+    fi
+    sh -n "$scratch/remote"
+    SSH_ORIGINAL_COMMAND=syslog-ca sh -eu "$scratch/remote-run"
+}
+certificates_apply
+DEPLOY
+cat >"$scratch/remote-run" <<'REMOTE'
+sync() { :; }
+rcctl() { [ "$*" = 'restart syslogd' ]; echo "$node" >>"$scratch/events"; [ "$fault" != "$node" ]; }
+rc-service() { [ "$*" = 'syslog-ng reload' ]; echo "$node" >>"$scratch/events"; [ "$fault" != "$node" ]; }
+. "$scratch/remote"
+REMOTE
+sh -n "$scratch/deploy"
+sh -n "$scratch/remote-run"
+export repo
+cp "$tls/incus-client.previous" "$scratch/previous"
+for fault in host fw1 fw2 wan none; do
+    export fault
+    mkdir -p "$scratch/host" "$scratch/fw1" "$scratch/fw2" "$scratch/wan" \
+        "$scratch/svc/etc/victoria-logs/tls" "$scratch/svc/etc/victoria-metrics/tls"
+    for path in victoria-logs/tls/server.crt victoria-metrics/tls/incus-client.crt victoria-metrics/tls/incus-ca.crt; do
+        echo stale >"$scratch/svc/etc/$path"
+    done
+    cp "$scratch/previous" "$tls/incus-client.previous"
+    touch "$tls/ca.pending" "$tls/pending"
+    : >"$scratch/events"
+    if sh -eu "$scratch/deploy" >"$scratch/log" 2>&1; then
+        [ "$fault" = none ] || die "missed $fault reload failure"
+    else
+        [ "$fault" != none ] || { cat "$scratch/log"; die 'CA deployment'; }
+        [ -f "$tls/ca.pending" ] && [ -f "$tls/incus-client.previous" ]
+        if grep -qx remove "$scratch/events"; then die 'removed trust before deployment'; fi
+        fault=none sh -eu "$scratch/deploy" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'deployment retry'; }
+    fi
+    for path in host/"$(openssl x509 -in "$tls/ca.crt" -hash -noout)".0 fw1/ca fw2/ca wan/ca svc/etc/victoria-metrics/tls/incus-ca.crt; do
+        cmp "$tls/ca.crt" "$scratch/$path"
+    done
+    cmp "$tls/server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"
+    cmp "$tls/incus-client.crt" "$scratch/svc/etc/victoria-metrics/tls/incus-client.crt"
+    [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/incus-client.previous" ]
+    if certificates_due; then die 'deployed credentials due'; fi
+    if [ "$fault" = none ]; then
+        printf 'server\nadd\nlogs\nmetrics\nhealthy\nhost\nfw1\nfw2\nwan\nremove\n' >"$scratch/expected"
+        cmp "$scratch/expected" "$scratch/events"
+    fi
+done
+cp "$scratch/wan/ca" "$scratch/wan-before"
+: >"$scratch/events"
+if printf 'invalid\n' | node=wan fault=none SSH_ORIGINAL_COMMAND=syslog-ca sh -eu "$scratch/remote-run" >"$scratch/log" 2>&1; then
+    die 'WAN accepted invalid CA'
+fi
+cmp "$scratch/wan-before" "$scratch/wan/ca"
+[ ! -s "$scratch/events" ]
+if node=wan fault=none SSH_ORIGINAL_COMMAND='syslog-ca extra' sh -eu "$scratch/remote-run" >"$scratch/log" 2>&1; then
+    die 'WAN accepted extra arguments'
+else
+    [ "$?" = 126 ]
+fi
 for fault in missing-pub wrong-pub empty-ca truncated-ca; do
     rm -rf "$state"
     cp -R "$scratch/good" "$state"

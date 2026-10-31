@@ -6,6 +6,17 @@ topology) exec cat /etc/convergent/topology.sha256 ;;
 "seed-status")
 	exec cat /var/lib/convergent/seeded
 	;;
+"syslog-ca")
+	set -eu
+	umask 077
+	ca=/etc/syslog-ng/svc-ca.pem
+	cat >"$ca.new"
+	openssl x509 -in "$ca.new" -noout >/dev/null
+	chmod 644 "$ca.new"
+	mv "$ca.new" "$ca"
+	sync
+	exec rc-service syslog-ng reload
+	;;
 "wifi list" | "wifi scan" | "wifi status" | "wifi auto" | "wifi disconnect" | \
 "wifi connect" | "wifi connect-hidden" | "wifi add" | "wifi add-hidden" | "wifi forget")
 	exec /usr/local/sbin/wan-wifi "${SSH_ORIGINAL_COMMAND#wifi }"

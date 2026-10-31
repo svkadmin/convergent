@@ -1156,6 +1156,46 @@ GUEST_GUARDS
     set -e
     work=$(mktemp -d "$release/wait.XXXXXX")
     eval "$(sed -n '/^fail()/p; /^stopped() {/,/^}/p; /^retry() {/,/^}/p; /^stop_guest() {/,/^}/p' /usr/local/sbin/guests)"
+    # A backward wall-clock step must not extend either lifecycle wait.
+    (
+        sed -n '/^probe() (/,/^)/p; /^prepare_cleanup() {/,/^}/p' /usr/local/sbin/guests >"$work/budgets"
+        [ -s "$work/budgets" ]
+        sh -n "$work/budgets"
+        . "$work/budgets"
+        polling= step=test boot_timeout=3 tick=100 attempts=0
+        date() { if [ "$attempts" = 0 ]; then echo 2000000000; else echo 1000000000; fi; }
+        cut() { [ "$*" = '-d. -f1 /proc/uptime' ] || return 97; echo "$tick"; }
+        sleep() { tick=$((tick + $1)); }
+        logger() { :; }
+        stalled() { attempts=$((attempts + 1)); [ "$attempts" -gt 4 ]; }
+        if retry stalled 2>"$work/err"; then exit 1; fi
+        [ "$tick" = 103 ] && [ "$attempts" = 3 ]
+        grep -q 'timed out after 3s' "$work/err"
+        timeout() { printf '%s\n' "$*" >"$work/bound"; }
+        polling=1 deadline=105
+        probe true
+        grep -qx -- '-k 1 1 true' "$work/bound"
+        tick=104
+        probe true
+        grep -qx -- '-s KILL 1 true' "$work/bound"
+        tick=105
+        if probe true; then exit 1; else [ "$?" = 124 ]; fi
+        state=$work/budget-state
+        mkdir "$state"
+        printf 'svc test no\n' >"$state/preparing"
+        : >"$state/pending"
+        polling= tick=100 attempts=0
+        volumes() { echo svc-logs; }
+        ic() { [ "$*" = 'operation list --format json' ] || return 97; attempts=$((attempts + 1)); }
+        jq() { [ "$attempts" -gt 5 ] || echo operation; }
+        if prepare_cleanup 2>"$work/err"; then exit 1; fi
+        [ "$tick" = 103 ] && [ "$attempts" = 4 ] && [ -f "$state/preparing" ]
+        grep -q 'snapshot operations for svc-logs timed out after 3s' "$work/err"
+        attempts=6
+        ic() { :; }
+        prepare_cleanup
+        [ ! -f "$state/preparing" ]
+    )
     polling= step=test boot_timeout=10
     logger() { printf '%s\n' "$*" >>"$work/logged"; }
     sleep() { :; }
@@ -1182,7 +1222,7 @@ GUEST_GUARDS
     (
         # Diagnostics get their own bound through the real ic/probe path.
         eval "$(sed -n '/^ic() {/,/^}/p; /^probe() (/,/^)/p' /usr/local/sbin/guests)"
-        date() { echo 100; }
+        cut() { [ "$*" = '-d. -f1 /proc/uptime' ] || return 97; echo 100; }
         healthy() { fail 'health check failed'; }
         timeout() {
             printf '%s\n' "$*" >"$work/console-bound"
