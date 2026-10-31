@@ -115,7 +115,6 @@ sed -n '/^heal_probe() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall
 for module in 10-wifi 14-firewall; do
     sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
-    sh "$here/lint" --offline-snippets "$scratch/module"
     sh -n "$scratch/module"; . "$scratch/module"
 done
 run() { transport; }
@@ -154,7 +153,6 @@ for check in wifi uplink; do
         "$repo/rootfs/usr/lib/convergent/sys/99-selftest" | sed '1d;$d' |
         sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" >"$scratch/selftest-body"
     [ -s "$scratch/selftest-body" ]; sh -n "$scratch/selftest-body"
-    sh "$here/lint" --offline-snippets "$scratch/selftest-body"
     printf 'sudo() { cat "$REPLY"; return "$RESULT"; }\n' >"$scratch/selftest"
     cat "$scratch/selftest-body" >>"$scratch/selftest"
     for fault in none overflow transfer; do

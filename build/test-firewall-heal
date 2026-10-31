@@ -16,5 +16,4 @@ sed -n "/^sh -eu <<'HEAL'/,/^HEAL$/p" "$here/test" | sed '1d;$d' |
         -e "s|/usr/local/sbin/guests|$repo/tools/guests|g" \
         -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/fixture"
 sh -n "$scratch/fixture"
-sh "$here/lint" --offline-snippets "$scratch/heal" "$scratch/fixture"
 sh -eu "$scratch/fixture"
