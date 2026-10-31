@@ -15,7 +15,7 @@ def generate():
                  overrides=[ov(n,mappings=OK) for n in ('Secure Boot','confidentiality lockdown','accepted local LUKS baseline')] + [ov('measured at',unit='dateTimeAsIso')] ))
     known(p.stat('Checker evidence', [target('cv_checker_success and on() (' + CHECKER + ')', 'checker'),
                  target('time() - cv_checker_last_run_seconds', 'age'), target('cv_crash_records', 'archived crashes')], grid(14, 0, 10, 3),
-                 'Checker expires after 36h. Inspect sys check and /var/lib/convergent/check/last for failure categories. Crash archives remain in /var/lib/convergent/crash until acknowledged.',
+                 'Checker expires after 36h. Inspect sys security check and /var/lib/convergent/check/last for failure categories. Crash archives remain in /var/lib/convergent/crash until acknowledged.',
                  overrides=[ov('checker',mappings=OK), ov('age',unit='s',thresholds=thresholds(('text',None),(AMBER,129600))), ov('archived crashes',thresholds=BAD)]))
     p.table('Certificates - time remaining', [target('cv_certificate_not_after_seconds - time()')], grid(0, 3, 12, 6),
             ['certificate'], ['remaining'], 'Daily certificate inventory; failure and measurement age are on Monitoring. Incus UI certificate is optional and remains managed by its existing owner flow.', [ov('remaining',unit='s')])

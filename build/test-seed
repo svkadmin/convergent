@@ -14,6 +14,33 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-seed: $*" >&2; exit 1; }
+# Failed pruning leaves setup retryable and the failure visible.
+sed -n '/^init() {/,/^}/p' "$repo/tools/guests" >"$scratch/init"
+grep -q 'touch "$state/initialized"' "$scratch/init"
+cat >"$scratch/setup" <<'SETUP'
+state=$1 failed=$2
+die() { exit 1; }
+sync() { :; }
+images_prune() { echo prune >>"$state/events"; return "$failed"; }
+SETUP
+sed -n '/^    \[ ! -e "\$state\/initialized" \]/p' "$scratch/init" >"$scratch/setup-guard"
+sed -n '/^    for node in fw1 fw2 wan svc; do ic config set .*boot.autostart=true/,/^}/p' "$scratch/init" |
+    sed '1d;$d' | sed "s|/run/convergent/status/setup|$scratch/setup-status|g" >"$scratch/setup-tail"
+for part in setup-guard setup-tail; do [ -s "$scratch/$part" ]; sh -n "$scratch/$part"; cat "$scratch/$part" >>"$scratch/setup"; done
+sh -n "$scratch/setup"
+mkdir "$scratch/setup-state"
+echo failed >"$scratch/setup-status"
+status=0
+sh -eu "$scratch/setup" "$scratch/setup-state" 7 || status=$?
+[ "$status" = 7 ] || die 'missed prune failure'
+[ ! -e "$scratch/setup-state/initialized" ] || die 'failed setup marked initialized'
+grep -qx failed "$scratch/setup-status"
+sh -eu "$scratch/setup" "$scratch/setup-state" 0
+[ -f "$scratch/setup-state/initialized" ]
+grep -qx done "$scratch/setup-status"
+[ "$(wc -l <"$scratch/setup-state/events")" = 2 ]
+if sh -eu "$scratch/setup" "$scratch/setup-state" 0; then die 'accepted initialized setup'; fi
+echo 'test-seed: setup pruning failure and retry passed'
 # A full apply must update WAN before using its CA deployment command.
 sed -n '/^        # Apply deploys/,/^        ;;/p' "$repo/tools/guests" | sed '1d;$d' >"$scratch/apply-order"
 [ -s "$scratch/apply-order" ]

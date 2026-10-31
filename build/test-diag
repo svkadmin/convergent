@@ -9,6 +9,7 @@ trap 'exit 1' HUP INT TERM
 die() { echo "test-diag: $*" >&2; exit 1; }
 o=$work
 sed -n '/^x() {/,/^}/p' "$here/diag/body-std.sh" >"$work/probe"
+[ -s "$work/probe" ]; sh -n "$work/probe"
 . "$work/probe"
 # The production body deliberately runs without errexit so failed probes can be reported.
 set +e
@@ -64,12 +65,51 @@ grep -q 'BERT record=1 severity=fatal data_bytes=4 raw_bytes=0' "$work/bert-summ
 if grep -q ABCD "$work/bert-summary"; then die 'BERT summary leaks raw bytes'; fi
 if printf '0 0 0' | awk -f "$here/diag/bert.awk" >/dev/null; then die 'accepted short BERT'; fi
 arch=$work/crash
+sdir=$work
 mkdir "$arch"
 bad() { die "$*"; }
 sed -n '/^\tbert=\/sys/,/^\tfi$/p' "$repo/tools/facts" | sed "s|bert=/sys/firmware/acpi/tables/data/BERT|bert=$work/record|" >"$work/archive"
+[ -s "$work/archive" ]; sh -n "$work/archive"
 . "$work/archive"
 . "$work/archive"
 [ "$(find "$arch" -type f | wc -l)" = 1 ] || die 'duplicate BERT archive'
+cmp "$work/record" "$arch"/bert-*
+# Run the documented acknowledgment while collection holds its lock, then retry.
+hash=$(sha256sum <"$work/record"); hash=${hash%% *}
+sed -n '/^sudo .*\(facts.lock\|crash-ack\)/,/^```/p' "$repo/RECOVERY.md" |
+    sed "\$d; s|^sudo ||; s|/var/lib/convergent|$sdir|g; s|/run/convergent|$work|g; s|<sha256>|$hash|g" >"$work/ack"
+[ -s "$work/ack" ]; sh -n "$work/ack"
+# Shorten only the documented wait; keep the real flock and fail on a hung command.
+sed 's/flock -w 30 /flock -w 0.1 /' "$work/ack" >"$work/ack-busy"
+sh -n "$work/ack-busy"
+ack_overlap() {
+	status=0
+	timeout -k 1 5 sh "$work/ack-busy" 9>&- || status=$?
+	[ "$status" = 1 ] || die 'busy acknowledgment did not fail closed'
+	[ ! -e "$sdir/crash-ack/bert-${hash%% *}" ] || die 'busy acknowledgment wrote marker'
+	[ -f "$arch/bert-${hash%% *}" ] || die 'busy acknowledgment deleted archive'
+	: >"$work/overlapped"
+}
+# Pause after the marker check, before testing the archive's existence.
+sed 's/elif \[ -e "$target" \]; then/elif ack_overlap \&\& [ -e "$target" ]; then/' "$work/archive" >"$work/archive-overlap"
+grep -q 'elif ack_overlap' "$work/archive-overlap"
+sh -n "$work/archive-overlap"
+sed -n '/^exec 9>/p' "$repo/tools/facts" >"$work/lock"
+[ -s "$work/lock" ]; sh -n "$work/lock"
+(
+	run=$work
+	. "$work/lock"
+	flock -w 1 9
+	. "$work/archive-overlap"
+)
+[ -f "$work/overlapped" ] || die 'missed collection/acknowledgment overlap'
+. "$work/ack"
+[ -f "$sdir/crash-ack/bert-$hash" ]
+. "$work/archive"
+[ "$(find "$arch" -type f | wc -l)" = 0 ] || die 'acknowledged BERT reimported'
+printf 'new record\n' >>"$work/record"
+. "$work/archive"
+[ "$(find "$arch" -type f | wc -l)" = 1 ] || die 'new BERT suppressed'
 cmp "$work/record" "$arch"/bert-*
 sh "$here/diag/mkdiag.sh" "$here/diag/body-std.sh" "$work/collector"
 sh -n "$work/collector"
@@ -77,13 +117,41 @@ cat >"$work/body" <<'EOF'
 printf '%s\n' 'SSID=PRIVATE-NETWORK' 'PCI [2646:1234]'
 exit 9
 EOF
+sh -n "$work/body"
 sh "$here/diag/mkdiag.sh" "$work/body" "$work/wrapped"
 sed "s|/var/lib/convergent/debug/.d.XXXXXX|$work/.d.XXXXXX|" "$work/wrapped" >"$work/run"
+sh -n "$work/run"
 status=0
 sh "$work/run" >"$work/wrapped-output" || status=$?
 [ "$status" = 9 ] || die 'wrapper lost body status'
 ! grep -q PRIVATE "$work/wrapped-output" || die 'wrapper exposed raw output'
 grep -qF 'PCI [2646:1234]' "$work/wrapped-output"
+# Completed evidence must reach the output before the aggregate deadline.
+cat >"$work/body" <<'EOF'
+printf '%s\n' 'SSID=PRIVATE-NETWORK' 'PCI [2646:1234]'
+sleep 10
+EOF
+sh -n "$work/body"
+sh "$here/diag/mkdiag.sh" "$work/body" "$work/wrapped"
+sed "s|/var/lib/convergent/debug/.d.XXXXXX|$work/.d.XXXXXX|" "$work/wrapped" >"$work/run"
+sh -n "$work/run"
+status=0
+timeout -k 1 1 sh "$work/run" >"$work/partial" 2>&1 || status=$?
+[ "$status" = 124 ] || die 'missed aggregate timeout'
+grep -qxF 'PCI [2646:1234]' "$work/partial" || die 'timeout discarded completed evidence'
+if grep -q PRIVATE "$work/partial"; then die 'timeout exposed raw output'; fi
+# A successful collector cannot hide scrubber failure.
+printf 'exit 0\n' >"$work/body"
+sh -n "$work/body"
+sh "$here/diag/mkdiag.sh" "$work/body" "$work/wrapped"
+sed "s|/var/lib/convergent/debug/.d.XXXXXX|$work/.d.XXXXXX|" "$work/wrapped" >"$work/run"
+sh -n "$work/run"
+sh "$work/run" >"$work/empty-output"
+[ ! -s "$work/empty-output" ]
+sed "s|/var/lib/convergent/debug/.d.XXXXXX|$work/.d.XXXXXX|; s|^{print mask(.*|BEGIN {exit 7}|" "$work/wrapped" >"$work/run"
+sh -n "$work/run"
+if sh "$work/run" >"$work/failed-output"; then die 'ignored scrubber failure'; fi
+[ ! -s "$work/failed-output" ]
 echo 'test: diagnostic status, privacy, health and BERT fixtures passed'
 
 # Failure paths reach host syslog at a locally retained severity even with no svc.

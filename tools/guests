@@ -1407,9 +1407,9 @@ init() {
     rc-service syslog-ng reload 9>&- 8>&- 7>&- 6>&-
     for node in fw1 fw2 wan svc; do ic config set "$node" boot.autostart=true; done
     sync
+    images_prune
     touch "$state/initialized"
     sync
-    images_prune
     # Clears the bar's SETUP after a manual retry too.
     [ ! -e /run/convergent/status/setup ] || echo 'done' >/run/convergent/status/setup
 }

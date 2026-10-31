@@ -133,7 +133,8 @@ fact_pstore() {
 		copy=$(mktemp "$arch/.bert.XXXXXX") || { bad 'cannot create BERT archive'; umask 022; return; }
 		if cat "$bert" >"$copy" && hash=$(sha256sum <"$copy"); then
 			target=$arch/bert-${hash%% *}
-			if [ -e "$target" ]; then
+			if [ -f "$sdir/crash-ack/bert-${hash%% *}" ]; then :
+			elif [ -e "$target" ]; then
 				cmp -s "$copy" "$target" || bad 'BERT archive differs'
 			else
 				mv "$copy" "$target" && sync || bad 'cannot archive BERT'
