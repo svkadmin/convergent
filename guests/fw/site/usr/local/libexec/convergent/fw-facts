@@ -81,12 +81,11 @@ capture() {
 		m=$(stat -f %m "/var/unbound/etc/$f" 2>/dev/null) &&
 			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m" || ok=0
 	done
-	# Source age travels with the RPZ through local pushes and rollback.
-	refresh=$(awk -v now="$started" '
-		$1 == ";" && $2 == "convergent-source-refreshed-seconds" {
-			n++; if (NF != 3 || $3 !~ /^[0-9]+$/ || $3 <= 0 || $3 > now) bad=1; t=$3
-		} END {if (n == 1 && !bad) print t; else exit 1}
-	' /var/unbound/etc/blocklist.rpz 2>/dev/null) || { refresh=0; ok=0; }
+	# Source age travels with the RPZ as its last line (dns-push writes it last): no full scan each minute.
+	refresh=$(tail -n 1 /var/unbound/etc/blocklist.rpz 2>/dev/null | awk -v now="$started" '
+		$1 == ";" && $2 == "convergent-source-refreshed-seconds" && NF == 3 &&
+			$3 ~ /^[0-9]+$/ && $3 > 0 && $3 <= now {print $3; found=1}
+		END {exit !found}') || { refresh=0; ok=0; }
 	echo "convergent_dns_source_refreshed_seconds $refresh"
 	if capture interfaces netstat -ibn; then
 		printf '%s\n' "$data" | awk -f /usr/local/libexec/convergent/interface-bytes.awk || ok=0

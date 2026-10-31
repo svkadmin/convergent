@@ -148,9 +148,9 @@ for stamp in '' bad 0 -1 999999999999999999999 '1000 extra'; do
 	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
 	grep -qx 'convergent_fw_facts_success 0' "$work/convergent_fw.prom"
 done
-for kind in absent duplicate; do
+for kind in absent not-last; do
 	if [ "$kind" = absent ]; then rm "$work/blocklist.rpz"
-	else printf '; convergent-source-refreshed-seconds 1000\n; convergent-source-refreshed-seconds 1001\n' >"$work/blocklist.rpz"; fi
+	else printf '; convergent-source-refreshed-seconds 1000\nads.example CNAME .\n' >"$work/blocklist.rpz"; fi
 	failed= calls=$work/calls sh "$work/run"
 	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
 done
