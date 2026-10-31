@@ -3796,6 +3796,13 @@ run_vm() {
 	limit=300
 	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=18000 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
+	case $mode in fallback | interrupt)
+		# A retried crash must not consume an uncounted boot-counter step.
+		attach
+		dd if="${loop}p1" of="$BUILDER$work/esp-retry.img" bs=4M status=none
+		detach
+		;;
+	esac
 	# ESXi + nested KVM stale-translation bug: 1.4% per boot with 4 vCPUs, 0 with 1.
 	for boot_try in 1 2; do
 	remaining=$((deadline - $(date +%s)))
@@ -3978,6 +3985,12 @@ EOF
 	driver=''
 	if grep -qF -e 'init[1]: segfault' -e 'Kernel panic - not syncing: Attempted to kill init' "$log"; then
 		[ "$boot_try" = 1 ] || die "nested PID 1 crash; see $log"
+		case $mode in fallback | interrupt)
+			attach
+			dd if="$BUILDER$work/esp-retry.img" of="${loop}p1" bs=4M conv=fsync status=none
+			detach
+			;;
+		esac
 		echo "CV-TEST nested PID 1 crash; rerunning boot $runs"
 		continue
 	fi

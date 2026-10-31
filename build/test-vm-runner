@@ -15,6 +15,7 @@ trap 'rm -rf "$fixture"' 0
 trap 'exit 1' HUP INT TERM
 export fixture
 sed -n '/^run_vm()/,/^blessed()/p' "$here/test" | sed '$d' >"$fixture/run-vm"
+[ -s "$fixture/run-vm" ]
 sh -n "$fixture/run-vm"
 cat >"$fixture/driver-check" <<'EOF'
 set -eu
@@ -23,12 +24,18 @@ cv_time() { :; }
 . "$fixture/run-vm"
 BUILDER= work=$fixture/$mode-$scenario
 mkdir "$work"
+echo 3 >"$work/loopp1"
+attach() { loop=$work/loop; }
+detach() { loop=''; }
 pass=fixture qemu_id=1:1 runs=0
 deadline=$(($(date +%s) + 60))
 chroot() {
     cat >/dev/null
     echo "$CVTEST_RUN $CVTEST_GOAL" >>"$work/calls"
     n=$(wc -l <"$work/calls")
+    # Model the ESP counter decrement before PID 1 can crash.
+    tries=$(cat "$work/loopp1")
+    echo "$((tries - 1))" >"$work/loopp1"
     [ ! -e "$CVTEST_LOG" ] || exit 91
     echo blessed >"$work/ended-$CVTEST_RUN"
     case $scenario:$n in
@@ -47,10 +54,13 @@ once)
 1 $goal" ]
     grep -qF "$signature" "$work/console-1-1.log"
     [ "$(readlink "$work/console.log")" = console-1-2.log ]
+    case $mode in fallback | interrupt) tries=2 ;; *) tries=1 ;; esac
+    [ "$(cat "$work/loopp1")" = "$tries" ]
     run_vm "$goal"
     [ "$runs" = 2 ] && [ "$(wc -l <"$work/calls")" = 3 ]
     grep -qF "$signature" "$work/console-1-1.log"
     [ "$(readlink "$work/console.log")" = console-2-1.log ]
+    [ "$(cat "$work/loopp1")" = "$((tries - 1))" ]
     ;;
 other) [ "$ended" = timeout ] && [ "$(wc -l <"$work/calls")" = 1 ] ;;
 driver-fail | driver-crash) exit 0 ;;
