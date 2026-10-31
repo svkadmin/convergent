@@ -6,6 +6,157 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# A fresh report cannot borrow an older success interval; clock rollback is due.
+sed -n '/^if \[ "${1:-}" = auto \] && \[ -f "\$state\/last" \]; then$/,/^fi$/p' "$repo/tools/check" >"$work/throttle"
+sed -n '/^ok=1$/,/^# The management endpoint/ { /^# The management endpoint/d; p; }' "$repo/tools/check" >"$work/scan-start"
+sed -n '/^printf .*cv_checker_success/,/^logger -t check/ { /^logger -t check/d; p; }' "$repo/tools/check" >"$work/scan-end"
+for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+(
+    state=$work/scan-state out=$work/scan-out
+    mkdir "$state" "$out" "$work/scan"
+    fixture=$work
+    work=$fixture/scan
+    die() { exit 1; }
+    date() { echo "$clock"; }
+    stat() { echo 100000; }
+    awk() { echo 1; }
+    cat() {
+        case $1 in /proc/sys/kernel/random/uuid) echo new-scan; return ;; esac
+        [ "$fault" != cat ] || return 1
+        command cat "$@"
+    }
+    mktemp() { [ "$fault" != mktemp ] && command mktemp "$@"; }
+    chmod() { [ "$fault" != chmod ] && command chmod "$@"; }
+    mv() {
+        if [ "$fault" = mv ] && [ "$2" = "$out/checker.prom" ]; then return 1; fi
+        command mv "$@"
+    }
+    due() {
+        (set +e; set -- auto; net_ok=1; . "$fixture/throttle"; echo run) >"$fixture/due"
+        if [ "$1" = yes ]; then grep -qx run "$fixture/due"; else [ ! -s "$fixture/due" ]; fi
+    }
+    for fault in none mktemp cat chmod mv; do
+        for success in 0 1; do
+            printf '# scan old-scan\ncv_checker_success 1\ncv_checker_last_run_seconds 100000\n' >"$out/checker.prom"
+            cp "$out/checker.prom" "$fixture/previous-metrics"
+            clock=100000
+            . "$fixture/scan-start"
+            ok=$success
+            : >"$work/metrics"
+            if (set +e; . "$fixture/scan-end"); then [ "$fault" = none ]; else [ "$fault" != none ]; fi
+            grep -qx 'Scan: new-scan' "$state/last"
+            if [ "$fault" = none ]; then
+                grep -qx '# scan new-scan' "$out/checker.prom"
+            else cmp "$fixture/previous-metrics" "$out/checker.prom"; fi
+            clock=100299; due no
+            clock=100300
+            if [ "$fault:$success" = none:1 ]; then due no; else due yes; fi
+            clock=186400; due yes
+            clock=99999; due yes
+        done
+    done
+    # A pre-upgrade report has no identity; success still gets only five minutes.
+    echo old-report >"$state/last"
+    echo 'cv_checker_success 1' >"$out/checker.prom"
+    clock=100300; due yes
+)
+sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
+[ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
+(
+    . "$work/facts-auto"
+    out=$work/daily; mkdir "$out"
+    : >"$out/boot.prom"
+    storage() { :; }; hourly() { :; }; boot() { :; }
+    daily() { echo due >"$out/due"; }
+    stat() { echo 100000; }; date() { echo "$clock"; }; awk() { echo 1; }
+    for success in 0 1; do
+        echo "cv_collector_success{collector=\"daily\"} $success" >"$out/daily.prom"
+        for elapsed in -86400 -1 0 3599 3600 71999 72000; do
+            clock=$((100000 + elapsed)); rm -f "$out/due"
+            auto
+            if [ "$elapsed" -lt 0 ] || [ "$elapsed" -ge 72000 ] || { [ "$success" = 0 ] && [ "$elapsed" -ge 3600 ]; }; then
+                grep -qx due "$out/due"
+            else [ ! -e "$out/due" ]; fi
+        done
+    done
+)
+echo 'observability: scan publication failures, retry intervals and backward clocks passed'
+# Check every svc reader before parsing; a failed transfer may still return valid JSON.
+grep -qx '>=net-misc/curl-8.4.0' "$repo/portage/sets/convergent"
+sed -n '/^poll_alerts() {/,/^}/p' "$repo/tools/bar" >"$work/poll-alerts"
+sed -n '/^    ok=1$/,/^    dns=0;/ { /^    dns=0;/q; p; }' "$repo/tools/observe" >"$work/rules-read"
+sed -n '/^        probe curl .*100\.80\.2\.10:/p' "$repo/tools/guests" >"$work/guest-reads"
+for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+(
+    . "$repo/rootfs/usr/lib/convergent/sys/80-security"
+    . "$work/poll-alerts"
+    vmalert=http://100.80.2.10:8880 now=100000
+    noargs() { [ "$#" = 0 ]; }; cached() { echo unknown; }; usb_count() { echo 0; }
+    sudo() { :; }; od() { :; }; logger() { :; }; fail() { return 1; }; probe() { "$@"; }
+    curl() {
+        printf '%s\n' "$@" >"$work/curl-args"
+        case " $* " in *' --max-filesize 1048576 '*) ;; *) exit 90 ;; esac
+        case " $* " in *' --max-time 8 '*|*' -m 4 '*|*' --max-time 5 '*) ;; *) exit 90 ;; esac
+        case $reader in bar|status|list) grep -qx -- --fail-early "$work/curl-args" || exit 90 ;; esac
+        echo bounded >>"$work/curl-called"
+        printf '%s\n' '{"status":"success","data":{"alerts":[]}}' '{"status":"success","data":{"groups":[]}}'
+        return "$reply"
+    }
+    prlimit() {
+        [ "$1:$2:$3" = '--as=134217728:--:jq' ] || exit 90
+        echo limited >"$work/limited"
+        [ "$fault" != limit ] || return 1
+        shift 2
+        "$@"
+    }
+    timeout() {
+        [ "$1:$2:$3:$4" = '-k:1:8:prlimit' ] || exit 90
+        shift 3
+        echo bounded >"$work/parser-timeout"
+        [ "$fault" != timeout ] || return 124
+        "$@"
+    }
+    jq() {
+        [ -s "$work/limited" ] && [ -s "$work/parser-timeout" ] || exit 90
+        cat >/dev/null
+        echo parsed >"$work/parsed"
+        [ "$fault" != parser ] || return 1
+        echo "$expected"
+    }
+    for reader in observe bar status list guests; do
+        for fault in none transfer timeout parser limit; do
+            reply=0; [ "$fault" != transfer ] || reply=63
+            rm -f "$work/curl-called" "$work/limited" "$work/parser-timeout" "$work/parsed"
+            expected='0 0 0'
+            case $reader in status) expected='0 critical, 0 other firing' ;; list) expected='No firing alerts.' ;; esac
+            case $reader in
+            observe) . "$work/rules-read" >"$work/result" ;;
+            bar) poll_alerts; cp "$work/alerts" "$work/result" ;;
+            status) security_status >"$work/result" ;;
+            list) if security_alert_list >"$work/result" 2>&1; then [ "$fault" = none ]; else [ "$fault" != none ]; fi ;;
+            guests) if (set +e; . "$work/guest-reads"); then [ "$fault" != transfer ]; else [ "$fault" = transfer ]; fi ;;
+            esac
+            [ -s "$work/curl-called" ]
+            if [ "$reader" = guests ]; then [ "$(wc -l <"$work/curl-called")" = 2 ] || [ "$fault" = transfer ]; continue; fi
+            if [ "$fault" = none ]; then
+                [ -s "$work/parsed" ]
+                case $reader in
+                observe) grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result" ;;
+                *) grep -qF "$expected" "$work/result" ;;
+                esac
+            else
+                case $fault in transfer|limit|timeout) [ ! -e "$work/parsed" ] ;; esac
+                case $reader in
+                observe) grep -qx 'cv_collector_success{collector="rules"} 0' "$work/result" ;;
+                bar) grep -qx '?' "$work/result" ;;
+                status) grep -qx 'Alerts: unknown' "$work/result" ;;
+                list) grep -q 'Alert evaluation failure' "$work/result" ;;
+                esac
+            fi
+        done
+    done
+)
+echo 'observability: svc response caps, transfer errors and parser limits passed'
 # Maintenance publishes healing even when a full scan owns the report lock.
 (
     state=$work/merge

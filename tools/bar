@@ -59,8 +59,8 @@ release=${version:-$release}
 
 # Failed requests or unhealthy rules leave the count unknown.
 poll_alerts() {
-    alerts=$(curl -sf --connect-timeout 2 -m 4 "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules" |
-        jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
+    alerts=$(curl -qsf --noproxy '*' --connect-timeout 2 -m 4 --max-filesize 1048576 --fail-early "$vmalert/api/v1/alerts" "$vmalert/api/v1/rules") &&
+        alerts=$(printf '%s\n' "$alerts" | timeout -k 1 8 prlimit --as=134217728 -- jq -ser 'select(length == 2 and all(.[]; .status == "success")) |
         select(.[0].data.alerts | type == "array") |
         select(.[1].data.groups | type == "array") |
         select([.[1].data.groups[].rules[]] | length > 0) |

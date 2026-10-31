@@ -194,9 +194,12 @@ flock "$lock" -n 8 || { [ "${1:-}" = auto ] && exit 0; die 'a guest operation is
 if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     last=$(stat -c %Y "$state/last")
     interval=300
-    grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
+    scan=$(sed -n 's/^Scan: //p' "$state/last")
+    [ -n "$scan" ] && grep -qxF "# scan $scan" "$out/checker.prom" 2>/dev/null &&
+        grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
     boot=$(awk '$1 == "btime" {print $2}' /proc/stat)
-    if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$(($(date +%s) - last))" -lt "$interval" ] &&
+    elapsed=$(($(date +%s) - last))
+    if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$interval" ] &&
         [ ! /var/lib/convergent/guests/updates -nt "$state/last" ] &&
         [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ]; then exit 0; fi
 fi
@@ -204,7 +207,9 @@ work=$(mktemp -d "$state/.run.XXXXXX") || die 'cannot create scratch directory'
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 ok=1
+scan=$(cat /proc/sys/kernel/random/uuid) || die 'cannot create scan identity'
 date -u '+%FT%TZ' >"$work/report"
+printf 'Scan: %s\n' "$scan" >>"$work/report"
 # The management endpoint must never widen or replace the metrics listener.
 address=$(timeout -k 1 30 incus --force-local config get core.https_address) &&
     [ "$address" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
@@ -423,7 +428,7 @@ if [ "$ok" = 1 ] && [ "$baseline" = "$work/accepted" ]; then
         mv "$baseline" "$state/accepted" || die 'cannot promote acceptance'
     logger -t check "accepted ${1} baselines for $release"
 fi
-printf 'cv_checker_success %s\ncv_checker_last_run_seconds %s\n' "$ok" "$(date +%s)" >>"$work/metrics"
+printf '# scan %s\ncv_checker_success %s\ncv_checker_last_run_seconds %s\n' "$scan" "$ok" "$(date +%s)" >>"$work/metrics"
 [ "$ok" != 1 ] || echo 'OK release, writable state, firewalls, guests and boot security' >>"$work/report"
 mv "$work/report" "$state/last" || die 'cannot publish report'
 tmp=$(mktemp "$out/.checker.XXXXXX") || die 'cannot create metric file'

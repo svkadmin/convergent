@@ -14,8 +14,8 @@ trap 'exit 1' HUP INT TERM
 now=$(date +%s)
 {
     ok=1
-    if rules=$(curl -qfsS --noproxy '*' --connect-timeout 2 --max-time 8 http://100.80.2.10:8880/api/v1/rules); then
-        printf '%s\n' "$rules" | jq -er --argjson now "$now" -f /usr/lib/convergent/monitoring.jq || ok=0
+    if rules=$(curl -qfsS --noproxy '*' --connect-timeout 2 --max-time 8 --max-filesize 1048576 http://100.80.2.10:8880/api/v1/rules); then
+        printf '%s\n' "$rules" | timeout -k 1 8 prlimit --as=134217728 -- jq -er --argjson now "$now" -f /usr/lib/convergent/monitoring.jq || ok=0
     else ok=0; fi
     [ "$ok" = 1 ] || logger -p user.warning -t observe "rule API collection failed"
     echo "cv_collector_success{collector=\"rules\"} $ok"
