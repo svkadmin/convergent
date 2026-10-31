@@ -1103,6 +1103,7 @@ replace() {
 }
 # In place, from an image: devices, MACs and seeds stay. An interrupted rebuild is redone whole.
 rebuild_root() {
+    case $1 in fw1|fw2) touch "$state/dns.stale" && sync || return ;; esac
     ic query "/1.0/instances/$1/snapshots?recursion=1" >"$work/snapshots" || return
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots" || return
     while read -r old_snapshot; do ic snapshot delete "$1" "$old_snapshot" || return; done <"$work/old-snapshots"
@@ -1127,7 +1128,6 @@ rebuild_root() {
 replace_root() {
     if [ "$rebuilding" = fw1 ]; then touch "$state/fw.handoff"; sync; fi
     step="rebuild $guest"
-    case $guest in fw1|fw2) touch "$state/dns.stale"; sync ;; esac
     rebuild_root "$guest" "candidate-$guest"
     case $guest in
     def|int|remmina) ;;
