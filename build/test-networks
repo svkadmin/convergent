@@ -104,13 +104,13 @@ mkdir "$dns"
 echo example.org >"$dns/allow"
 printf '%s\n' 'ads.example.org CNAME .' '*.ads.example.org CNAME .' 'notexample.org CNAME .' 'other.net CNAME .' >"$dns/list.raw"
 sed -n '/^awk -v allow=/,/list\.raw/p' "$repo/tools/dns-push" >"$dns/render"
-(work=$dns selftest=probe.test selftest_addr=127.0.0.2; . "$dns/render")
+(work=$dns selftest=probe.test selftest_addr=127.0.0.2 source_refreshed=; . "$dns/render")
 grep -qx 'notexample.org CNAME .' "$dns/blocklist.rpz"
 grep -qx 'other.net CNAME .' "$dns/blocklist.rpz"
 grep -qx 'example.org CNAME rpz-passthru.' "$dns/blocklist.rpz"
 if grep -q 'ads.example.org' "$dns/blocklist.rpz"; then exit 1; fi
 echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures passed'
-# Source age belongs to the RPZ, including cached edits and interrupted commits.
+# Source age follows the RPZ, including cached edits and interrupted commits.
 (
     work=$dns
     state=$dns/state
@@ -121,26 +121,65 @@ echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures 
     sed -n '/^cp "\$work\/list.raw"/,/^sync$/p' "$repo/tools/dns-push" >"$dns/cache"
     sed -n '/^restore=/,/^rollback() / { /^rollback() /d; p; }' "$repo/tools/dns-push" >"$dns/restore"
     sed -n '/^rollback() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/rollback"
-    for part in render stamp-source journal cache restore rollback; do sh -n "$dns/$part"; done
+    sed -n '/^validate() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/validate"
+    sed -n "/^domain='/,/^}'$/p" "$repo/tools/dns-push" >"$dns/domain"
+    for part in render stamp-source journal cache restore rollback validate domain; do sh -n "$dns/$part"; done
     . "$dns/restore"
     . "$dns/rollback"
+    . "$dns/domain"
+    . "$dns/validate"
+    die() { echo "test-networks: $*" >&2; exit 1; }
     date() { echo 2000000; }
     sync() { :; }
     rsh() { [ "$remote_ok" = 1 ] || return 1; shift; sh -c 'rcctl() { :; }; unbound-control() { :; }; '"$*"; }
     lock= fws=fw remote_ok=1
+    selftest=probe.test selftest_addr=127.0.0.2
+    # A near-cap full push must leave a cache that passes local validation.
+    BLOCKLIST_MAX_BYTES=16777216 BLOCKLIST_MIN_DOMAINS=1
+    awk -v cap="$BLOCKLIST_MAX_BYTES" 'BEGIN {
+        base="$TTL 60\n@ SOA localhost. root.localhost. 1 2 3 4 5\n NS localhost.\nother.net CNAME .\n"
+        printf "%s", base
+        left=cap-1-length(base)
+        while (left>1024) {printf ";%1022s\n", ""; left-=1024}
+        printf ";%*s\n", left-2, ""
+    }' >"$dns/list.raw"
+    [ "$(wc -c <"$dns/list.raw")" = "$((BLOCKLIST_MAX_BYTES - 1))" ]
+    cp "$dns/list.raw" "$dns/download"
+    mode=full
+    validate
+    . "$dns/stamp-source"
+    . "$dns/render"
+    . "$dns/journal"
+    . "$dns/cache"
+    : >"$state/committed"
+    rollback
+    mode=local
+    cp "$state/list.rpz" "$dns/list.raw"
+    validate
+    . "$dns/stamp-source"
+    . "$dns/render"
+    cmp "$dns/download" "$state/list.rpz"
+    grep -qx '; convergent-source-refreshed-seconds 2000000' "$dns/blocklist.rpz"
+    # Neither full nor local input gets an allowance above the configured cap.
+    printf '\n\n' >>"$dns/list.raw"
+    for mode in full local; do
+        if (validate) >"$dns/error" 2>&1; then die "accepted oversized $mode RPZ"; fi
+        grep -q 'RPZ size outside limits' "$dns/error"
+    done
     # Strip untrusted source metadata; exactly this successful download sets age.
     printf 'other.net CNAME .\n; convergent-source-refreshed-seconds 1\n ; convergent-source-refreshed-seconds 2\n' >"$dns/list.raw"
     mode=full
     . "$dns/stamp-source"
-    [ "$(grep -c convergent-source-refreshed-seconds "$dns/list.raw")" = 1 ]
-    grep -qx '; convergent-source-refreshed-seconds 2000000' "$dns/list.raw"
+    . "$dns/render"
+    [ "$(grep -c convergent-source-refreshed-seconds "$dns/blocklist.rpz")" = 1 ]
+    grep -qx '; convergent-source-refreshed-seconds 2000000' "$dns/blocklist.rpz"
     # A local push must retain old age even when the retry stamp is newer.
-    printf 'other.net CNAME .\n; convergent-source-refreshed-seconds 1000\n' >"$state/list.rpz"
+    printf 'old.net CNAME .\n' >"$state/list.rpz"
+    echo 1000 >"$state/list.refreshed"
     echo 1999999 >"$state/stamp"
     cp "$state/list.rpz" "$dns/list.raw"
     mode=local
     . "$dns/stamp-source"
-    selftest=probe.test selftest_addr=127.0.0.2
     . "$dns/render"
     grep -qx '; convergent-source-refreshed-seconds 1000' "$dns/blocklist.rpz"
     # Cache and firewall rollback must restore the same source age after replacement.
@@ -148,36 +187,43 @@ echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures 
     : >"$rdir/local-owner.conf.prev"
     . "$dns/journal"
     mode=full
+    echo 'new.net CNAME .' >"$dns/list.raw"
     . "$dns/stamp-source"
     . "$dns/render"
     cp "$dns/blocklist.rpz" "$rdir/blocklist.rpz"
     . "$dns/cache"
-    grep -qx '; convergent-source-refreshed-seconds 2000000' "$state/list.rpz"
+    grep -qx 'new.net CNAME .' "$state/list.rpz"
+    [ "$(cat "$state/list.refreshed")" = 2000000 ]
     remote_ok=0
     if rollback; then exit 1; fi
     [ -f "$state/pending" ] && [ -d "$state/cache.before" ]
     remote_ok=1
     rollback
     [ ! -e "$state/stamp" ] && [ ! -e "$state/pending" ]
-    grep -qx '; convergent-source-refreshed-seconds 1000' "$state/list.rpz"
+    grep -qx 'old.net CNAME .' "$state/list.rpz"
+    [ "$(cat "$state/list.refreshed")" = 1000 ]
     grep -qx '; convergent-source-refreshed-seconds 1000' "$rdir/blocklist.rpz"
     # A committed update retains the new cache; a failed first push leaves none.
     . "$dns/journal"
     . "$dns/cache"
     : >"$state/committed"
     rollback
-    grep -qx '; convergent-source-refreshed-seconds 2000000' "$state/list.rpz"
+    grep -qx 'new.net CNAME .' "$state/list.rpz"
+    [ "$(cat "$state/list.refreshed")" = 2000000 ]
     [ ! -e "$state/cache.before" ]
-    rm "$state/list.rpz"
+    rm "$state/list.rpz" "$state/list.refreshed"
     . "$dns/journal"
     . "$dns/cache"
     rollback
-    [ ! -e "$state/list.rpz" ]
+    [ ! -e "$state/list.rpz" ] && [ ! -e "$state/list.refreshed" ]
     # A legacy cache without source metadata stays unknown on local publication.
     echo 'other.net CNAME .' >"$dns/list.raw"
     mode=local
     . "$dns/stamp-source"
     . "$dns/render"
     if grep -q convergent-source-refreshed-seconds "$dns/blocklist.rpz"; then exit 1; fi
+    echo invalid >"$state/list.refreshed"
+    if (. "$dns/stamp-source") >"$dns/error" 2>&1; then die 'accepted invalid source timestamp'; fi
+    grep -q 'invalid source timestamp' "$dns/error"
 )
 echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'

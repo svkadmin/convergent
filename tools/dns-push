@@ -77,9 +77,11 @@ $restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _fa
 	fi
 	[ "$_failed" = 0 ] || return 1
 	if [ -e "$state/pending" ] && [ -d "$state/cache.before" ]; then
-		if [ -f "$state/cache.before/list.rpz" ]; then
-			cp "$state/cache.before/list.rpz" "$state/list.rpz.new" && mv "$state/list.rpz.new" "$state/list.rpz" || return 1
-		else rm -f "$state/list.rpz" || return 1; fi
+		for file in list.rpz list.refreshed; do
+			if [ -f "$state/cache.before/$file" ]; then
+				cp "$state/cache.before/$file" "$state/$file.new" && mv "$state/$file.new" "$state/$file" || return 1
+			else rm -f "$state/$file" || return 1; fi
+		done
 	fi
 	if [ -d "$state/edit.before" ]; then
 		for file in allow records; do
@@ -270,11 +272,13 @@ case $mode in add|remove|allow|unallow)
 esac
 if [ "$mode" = local ]; then cp "$state/list.rpz" "$work/list.raw"; else download; fi
 validate
-# Keep source age in the cached data, independent of the retry stamp.
-if [ "$mode" != local ]; then
-	sed '/^[[:space:]]*;[[:space:]]*convergent-source-refreshed-seconds\([[:space:]].*\)\{0,1\}$/d' "$work/list.raw" >"$work/list.stamped"
-	printf '\n; convergent-source-refreshed-seconds %s\n' "$(date +%s)" >>"$work/list.stamped"
-	mv "$work/list.stamped" "$work/list.raw"
+# Keep source age beside the cache, outside the payload size cap and retry stamp.
+source_refreshed=
+if [ "$mode" = local ]; then
+	[ ! -f "$state/list.refreshed" ] || source_refreshed=$(cat "$state/list.refreshed")
+	case $source_refreshed in *[!0-9]*) die "invalid source timestamp" ;; esac
+else
+	source_refreshed=$(date +%s)
 fi
 : >"$work/allow.in"
 [ ! -f "$state/allow" ] || cp "$state/allow" "$work/allow.in"
@@ -283,11 +287,12 @@ awk "$domain"'
 	  d=tolower($0); sub(/\.$/, "", d); if (!isdom(d)) exit 1; print d }
 ' "$work/allow.in" >"$work/allow" || die "invalid allow-list"
 
-awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" '
+awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" -v refreshed="$source_refreshed" '
 	BEGIN {
 		print "$ORIGIN blocklist.rpz."
 		while ((getline d < allow) > 0) { ok[d]=ok["*." d]=1; under[++n]="." d }
 	}
+	/^[[:space:]]*;[[:space:]]*convergent-source-refreshed-seconds([[:space:]].*)?$/ { next }
 	# An exception covers its subdomains: an entry at or beneath it goes too, or that exact name would still win.
 	{ name=$1; sub(/\.$/, "", name); keep=!(name in ok)
 	  for (i=1; keep && i<=n; i++) if (substr(name, length(name)-length(under[i])+1) == under[i]) keep=0 }
@@ -296,6 +301,7 @@ awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" '
 		for (d in ok) print d " CNAME rpz-passthru."
 		print probe " A " addr
 		print "blocked-" probe " CNAME ."
+		if (refreshed != "") print "; convergent-source-refreshed-seconds " refreshed
 	}
 ' "$work/list.raw" >"$work/blocklist.rpz"
 : >"$work/local-owner.conf"
@@ -315,7 +321,9 @@ for fw in $fws; do
 done
 # Journal both firewalls before activation.
 mkdir "$state/cache.before"
-[ ! -f "$state/list.rpz" ] || cp "$state/list.rpz" "$state/cache.before/list.rpz"
+for file in list.rpz list.refreshed; do
+	[ ! -f "$state/$file" ] || cp "$state/$file" "$state/cache.before/$file"
+done
 sync
 : >"$state/pending"
 sync
@@ -339,6 +347,8 @@ for fw in $fws; do
 done
 cp "$work/list.raw" "$state/list.rpz.new"
 mv "$state/list.rpz.new" "$state/list.rpz"
+printf '%s\n' "$source_refreshed" >"$state/list.refreshed.new"
+mv "$state/list.refreshed.new" "$state/list.refreshed"
 [ "$mode" = local ] || date +%s >"$state/stamp"
 sync
 date -u '+%Y-%m-%dT%H:%M:%SZ' >"$state/last-push.new"
