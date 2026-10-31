@@ -1324,6 +1324,60 @@ rm -rf "$work/installed"
 record_installed svc "$work/source"
 grep -qx B "$installed/guests/svc/SHA256SUMS"
 [ ! -e "$installed/guests/svc.stale" ]
+# Resume the same WAN source after the canonical archive was renamed away.
+sed -n '/^flock -w 600 9 /,/^if \[ "\$1" != apply \]/p' /usr/local/sbin/guests | sed '$d' |
+	sed -e "s|/var/lib/convergent/release-guests|$work/archive|g" \
+	    -e "s|/run/convergent/guests-stopping|$work/stopping|g" >"$work/archive-start"
+[ -s "$work/archive-start" ]
+sed -n '/^verify_image() {/,/^}/p' /usr/local/sbin/guests |
+	sed "s|/etc/convergent/topology.sha256|$work/topology.sha256|g" >"$work/verify-image"
+[ -s "$work/verify-image" ]
+sh -n "$work/archive-start"
+sh -n "$work/verify-image"
+(
+	die() { echo "$*" >&2; exit 1; }
+	flock() { [ "$*" = '-w 600 9' ]; archive_locked=1; }
+	mv() { [ "$archive_locked" = 1 ]; command mv "$@"; }
+	mountpoint() { return 1; }
+	sync() { echo synced >>"$work/archive-events"; }
+	. "$work/verify-image"
+	image_dir=$installed/guests/wan
+	mkdir "$image_dir"
+	echo topology >"$work/topology.sha256"
+	cp "$work/topology.sha256" "$image_dir/topology.sha256"
+	for artifact in wan.qcow2 wan-metadata.tar.xz; do echo "$artifact" >"$image_dir/$artifact"; done
+	(cd "$image_dir" && sha256sum wan.qcow2 wan-metadata.tar.xz topology.sha256 >SHA256SUMS)
+	stale_installed wan
+	command mv "$image_dir" "$image_dir.old"
+	mkdir -p "$state/work.654321/installed"
+	cp -a "$image_dir.old/." "$state/work.654321/installed/"
+	archive_locked=0
+	: >"$work/archive-events"
+	set -- update wan "$image_dir"
+	. "$work/archive-start"
+	[ "$archive_locked" = 1 ]
+	[ ! -e "$state/work.654321" ] && [ ! -e "$image_dir.old" ]
+	[ -f "$image_dir.stale" ]
+	grep -qx synced "$work/archive-events"
+	verify_image wan
+	# An existing canonical archive wins; recovery never clears stale identity.
+	mkdir "$image_dir.old"
+	echo old >"$image_dir.old/topology.sha256"
+	: >"$work/archive-events"
+	. "$work/archive-start"
+	verify_image wan
+	grep -qx old "$image_dir.old/topology.sha256"
+	[ ! -s "$work/archive-events" ] && [ -f "$image_dir.stale" ]
+	rm -rf "$image_dir.old"
+	for link in "$installed" "$installed/guests" "$image_dir" "$image_dir.old"; do
+		[ ! -e "$link" ] || command mv "$link" "$link.saved"
+		ln -s "$work/absent" "$link"
+		[ -L "$link" ]
+		if (. "$work/archive-start"); then die "accepted archive symlink: $link"; fi
+		rm "$link"
+		[ ! -e "$link.saved" ] || command mv "$link.saved" "$link"
+	done
+)
 # A completed initialization seed must not be attached again on resume.
 (
 	state=$work initializing=1
