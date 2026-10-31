@@ -1782,7 +1782,9 @@ if [ "$1" = status ]; then
 fi
 # Authenticate manual input before archive recovery, journals or Incus can change.
 if [ "$1" = update ] && [ "${4:-}" != --trusted-local ]; then
-    manual_stage=$(mktemp -d /var/tmp/guests.XXXXXX)
+    # Under the state directory, where a killed run's stage is found and pruned below.
+    mkdir -p "$state"
+    manual_stage=$(mktemp -d "$state/stage.XXXXXX")
     case $3 in /*) source_image=$3 ;; *) source_image=./$3 ;; esac
     case $2 in remmina) manual_manifest=remmina.manifest ;; *) manual_manifest=guests.manifest ;; esac
     mkdir "$manual_stage/guests"
@@ -1807,6 +1809,12 @@ for installed_kind in fw wan svc browser remmina; do
         mv "$installed/guests/$installed_kind.old" "$installed/guests/$installed_kind"
         sync
     fi
+done
+# A killed manual update leaves its staged copy; a run still waiting for the lock has a fresh one.
+for stale in "$state"/stage.??????; do
+    [ "$stale" != "${manual_stage:-}" ] && [ -d "$stale" ] && [ ! -L "$stale" ] || continue
+    [ -n "$(find "$stale" -maxdepth 0 -mmin +1440)" ] || continue
+    rm -rf --one-file-system "$stale" || :
 done
 # A killed seed writer may leave a guest disk mounted below its scratch directory.
 for stale in "$state"/work.??????; do

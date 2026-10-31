@@ -247,8 +247,10 @@ sed -n '/^verify_image() {/,/^}/p; /^manual_image() (/,/^)/p' "$repo/tools/guest
 grep -q '^verify_image()' "$manual/functions"
 grep -q '^manual_image()' "$manual/functions"
 sed -n '/^case ${1:-}:$# in/,/^mkdir -p "\$state" \/run\/convergent/p' "$repo/tools/guests" |
-    sed '$d' | sed "s|/var/tmp/guests.XXXXXX|$manual/stage.XXXXXX|" >"$manual/entry"
+    sed '$d' | sed -e "s|mkdir -p \"\$state\"\$|mkdir -p \"$manual\"|" \
+        -e "s|\"\$state/stage.XXXXXX\"|\"$manual/stage.XXXXXX\"|" >"$manual/entry"
 [ -s "$manual/entry" ]
+grep -q "$manual/stage.XXXXXX" "$manual/entry" || { echo 'test-release-compat: staging path not mapped'; exit 1; }
 sh -n "$manual/update.sh"
 sh -n "$manual/functions"
 sh -n "$manual/entry"
