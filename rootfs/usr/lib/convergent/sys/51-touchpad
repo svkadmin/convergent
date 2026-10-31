@@ -12,7 +12,7 @@ touchpad_status() {
 	json=$(run swaymsg -r -t get_inputs) || return
 	printf '%s\n' "$json" | page jq '.[] | select(.type == "touchpad") | {identifier, libinput, scroll_factor}'
 }
-touchpad_set() {
+touchpad_set() (
 	sway; path "$HOME"
 	if [ "$#" = 0 ]; then
 		touchpad_status || return
@@ -41,6 +41,9 @@ touchpad_set() {
 	accel_profile:adaptive|accel_profile:flat|tap:enabled|tap:disabled|natural_scroll:enabled|natural_scroll:disabled|dwt:enabled|dwt:disabled|middle_emulation:enabled|middle_emulation:disabled|scroll_method:none|scroll_method:two_finger|scroll_method:edge|scroll_method:on_button_down) ;;
 	*) die 'invalid touchpad option or value' ;;
 	esac
+	run mkdir -p "$HOME/.config/sway" || return
+	exec 9>"$HOME/.config/sway/touchpad.lock" || return
+	flock -x 9 || return
 	file=$HOME/.config/sway/config.d/touchpad
 	settings=
 	if [ -e "$file" ]; then
@@ -62,4 +65,4 @@ touchpad_set() {
 		[ -z "$settings" ] || printf '%s\n' "$settings"
 		printf 'input type:touchpad %s %s\n' "$setting" "$value"
 	} | save_config touchpad
-}
+)

@@ -142,7 +142,7 @@ review() {
 	printf '%s\n' "$lines" | tr -d '\000-\010\013-\037\177'
 }
 
-enrol() (
+enrol() {
 	[ -t 0 ] || die 'enrol needs a terminal'
 	work=$(mktemp -d) || exit 1
 	trap 'rm -rf "$work"' 0
@@ -162,19 +162,33 @@ enrol() (
 	tr -d '\000-\010\013-\037\177' <"$work/approved"
 	ask 'Replace the entire USB policy with these devices? Unlisted devices will be blocked.'
 	usbguard list-rules >"$work/current" && cmp -s "$work/old" "$work/current" || die 'policy changed during review; retry'
-	# Insert reviewed rules before any old catch-all, then remove the old policy.
-	while IFS= read -r rule; do
-		usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
-	done <"$work/approved"
-	while IFS= read -r rule; do
-		id=${rule%%:*}
-		case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac
-		usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
-	done <"$work/old"
-	# The daemon applies the saved policy to present devices on startup.
-	rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
-	logger -t devices 'USB policy replaced after individual review'
-)
+	cancelled=0
+	trap 'cancelled=129' HUP
+	trap 'cancelled=130' INT
+	trap 'cancelled=143' TERM
+	(
+		# Children must also finish the commit before cancellation takes effect.
+		trap '' HUP INT TERM
+		trap 'echo "$?" >"$work/result"' 0
+		# Insert reviewed rules before any old catch-all, then remove the old policy.
+		while IFS= read -r rule; do
+			usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
+		done <"$work/approved"
+		while IFS= read -r rule; do
+			id=${rule%%:*}
+			case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac
+			usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
+		done <"$work/old"
+		# The daemon applies the saved policy to present devices on startup.
+		rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
+		logger -t devices 'USB policy replaced after individual review'
+	) &
+	commit=$!
+	# A trapped signal interrupts wait; the child records its own final status.
+	while kill -0 "$commit" 2>/dev/null; do wait "$commit" || :; done
+	[ -s "$work/result" ] && [ "$(cat "$work/result")" = 0 ] || die 'USB policy commit failed; review before retrying'
+	exit "$cancelled"
+}
 
 revoke() {
 	case $1 in ''|*[!0-9]*) die 'invalid rule number' ;; esac

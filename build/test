@@ -315,6 +315,23 @@ if [ "${1:-}" = --install-options ]; then
 	export LC_ALL=C
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' 0
+	# SATA must be available before dm-mod.waitfor can enter userspace.
+	sed -n '/^for want in CONFIG_VLAN_8021Q=y/,/^done$/p' "$here/image" >"$work/kernel-check"
+	[ -s "$work/kernel-check" ]
+	sh -n "$work/kernel-check"
+	config=$here/kernel.config
+	(. "$work/kernel-check")
+	for symbol in ATA SATA_AHCI; do
+		grep -qx "CONFIG_$symbol=y" "$here/kernel.config"
+		for value in m n missing; do
+			sed "/^CONFIG_$symbol=/d" "$here/kernel.config" >"$work/kernel.config"
+			[ "$value" = missing ] || echo "CONFIG_$symbol=$value" >>"$work/kernel.config"
+			if (config=$work/kernel.config; . "$work/kernel-check") >"$work/kernel-error" 2>&1; then
+				die "accepted CONFIG_$symbol=$value"
+			fi
+			grep -q "not built with: CONFIG_$symbol=y" "$work/kernel-error"
+		done
+	done
 	# Media must match the selected slot, including older releases.
 	sed -n '/^# Compare with the selected release/,/^fi$/p' "$here/../install/install" >"$work/topology-check"
 	[ -s "$work/topology-check" ]
@@ -3517,6 +3534,61 @@ CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+# Hold the first save open while a second action tries to read the same file.
+(
+HOME=$work/home SWAYSOCK=fixture
+mkdir -p "$HOME/.config/sway/config.d"
+printf 'input type:touchpad dwt enabled\n' >"$HOME/.config/sway/config.d/touchpad"
+sed -n '/^save_config() ($/,/^)/p' /usr/local/sbin/sys >"$work/save-config"
+[ -s "$work/save-config" ]
+sh -n "$work/save-config"
+. "$work/save-config"
+. /usr/lib/convergent/sys/51-touchpad
+die() { echo "$*" >&2; exit 1; }
+sway() { :; }
+path() { :; }
+text_valid() { :; }
+wait_file() {
+	n=0
+	while [ ! -e "$1" ] && [ "$n" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+	[ -e "$1" ] || die "timeout: $1"
+}
+flock() {
+	[ "$setting" != natural_scroll ] || : >"$work/second"
+	command flock "$@"
+}
+run() {
+	if [ "$1" = swaymsg ]; then
+		[ "$*" = 'swaymsg -r -t get_inputs' ] || exit 1
+		echo '[{"type":"touchpad","libinput":{"tap":"enabled","natural_scroll":"enabled"}}]'
+	else "$@"; fi
+}
+swayrun() {
+	case $* in
+	'input type:touchpad tap enabled')
+		: >"$work/first"
+		wait_file "$work/release" ;;
+	'input type:touchpad natural_scroll enabled') : >"$work/second" ;;
+	reload) : ;;
+	*) exit 1 ;;
+	esac
+}
+touchpad_set tap enabled >"$work/tap.out" & first=$!
+wait_file "$work/first"
+touchpad_set natural_scroll enabled >"$work/scroll.out" & second=$!
+wait_file "$work/second"
+: >"$work/release"
+wait "$first"
+wait "$second"
+for option in dwt tap natural_scroll; do
+	grep -qx "input type:touchpad $option enabled" "$HOME/.config/sway/config.d/touchpad"
+done
+for out in tap scroll; do grep -q '^Saved:' "$work/$out.out"; done
+# The action must not retain its lock in the interactive caller.
+touchpad_set natural_scroll enabled >"$work/scroll.out"
+command flock -n "$HOME/.config/sway/touchpad.lock" true
+[ "$(find "$HOME/.config/sway/config.d" -type f | wc -l)" = 1 ]
+)
 sed -n '/printf.*json.*jq -e --arg key/,/not saved/p' /usr/lib/convergent/sys/51-touchpad >"$work/verify"
 die() { exit 1; }
 for setting in middle_emulation tap natural_scroll dwt scroll_method; do

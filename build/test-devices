@@ -1,0 +1,82 @@
+#!/bin/sh
+# Offline USB enrollment fixtures; no daemon or root needed.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' 0
+trap 'exit 1' HUP INT TERM
+export fixture
+mkdir "$fixture/bin"
+# Exercise the complete enrollment body, replacing only terminal approval.
+sed -n '/^enrol() [({]$/,/^[)}]$/p' "$here/../tools/devices" |
+	sed '1d; $d; /needs a terminal/d' >"$fixture/body"
+[ -s "$fixture/body" ]
+cat >"$fixture/enrol" <<'ENROL'
+die() { echo "$*" >&2; exit 1; }
+ask() { :; }
+logger() { echo logged >>"$fixture/events"; }
+enrol_pid=$$
+export enrol_pid
+. "$fixture/body"
+ENROL
+cat >"$fixture/bin/usbguard" <<'MOCK'
+#!/bin/sh
+set -eu
+case $1 in
+generate-policy)
+	printf 'allow id 1234:5678 hash "approved"\nallow id 1234:5679 hash "declined"\n'
+	exit ;;
+list-rules) echo '1: allow'; exit ;;
+append-rule)
+	[ "$#" = 4 ] && [ "$2:$3:$4" = '-a:0:allow id 1234:5678 hash "approved"' ] ;;
+remove-rule) [ "$#" = 2 ] && [ "$2" = 1 ] ;;
+restart) [ "$#" = 1 ] ;;
+*) exit 90 ;;
+esac
+echo "$1" >>"$fixture/events"
+if [ "$phase" = "$1" ]; then
+	if [ "$signal" != none ]; then
+		kill -"$signal" "$enrol_pid"
+		kill -"$signal" "$$"
+		# Interrupt the parent's wait again while the child is still running.
+		sleep 0.05
+		kill -"$signal" "$enrol_pid"
+	fi
+	[ "$fault" = no ] || exit 1
+fi
+echo "$1 done" >>"$fixture/events"
+MOCK
+cat >"$fixture/bin/rc-service" <<'MOCK'
+#!/bin/sh
+set -eu
+[ "$#" = 2 ] && [ "$1:$2" = usbguard:restart ]
+exec usbguard restart
+MOCK
+chmod +x "$fixture/bin/"*
+for script in "$fixture/body" "$fixture/enrol" "$fixture/bin/"*; do sh -n "$script"; done
+PATH=$fixture/bin:$PATH
+export PATH phase signal fault
+printf 'yes\nno\n' >"$fixture/answers"
+printf 'append-rule\nappend-rule done\nremove-rule\nremove-rule done\nrestart\nrestart done\nlogged\n' >"$fixture/expected"
+for phase in append-rule remove-rule restart; do
+	for signal in none HUP INT TERM; do
+		fault=no rc=0
+		: >"$fixture/events"
+		sh -eu "$fixture/enrol" <"$fixture/answers" >"$fixture/out" 2>&1 || rc=$?
+		case $signal in none) want=0 ;; HUP) want=129 ;; INT) want=130 ;; TERM) want=143 ;; esac
+		[ "$rc" = "$want" ] || { cat "$fixture/out"; echo "$phase/$signal: status $rc, expected $want"; exit 1; }
+		cmp "$fixture/expected" "$fixture/events"
+	done
+	# A real command failure must still be reported, never a success.
+	signal=none fault=yes
+	: >"$fixture/events"
+	if sh -eu "$fixture/enrol" <"$fixture/answers" >"$fixture/out" 2>&1; then exit 1; fi
+	case $phase in
+	append-rule) message='append failed' ;;
+	remove-rule) message='removal failed' ;;
+	restart) message='USBGuard restart failed' ;;
+	esac
+	grep -q "$message" "$fixture/out"
+	if grep -qx logged "$fixture/events"; then exit 1; fi
+done
+echo 'devices: enrollment cancellation and failure fixtures passed'
