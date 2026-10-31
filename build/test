@@ -1235,6 +1235,8 @@ GUEST_GUARDS
 # Polling must keep transient failures out of stderr and syslog.
 (
     set -e
+    # seed_applied and pin capture guest replies through guest_reply.
+    . /usr/lib/convergent/guest-reply.sh
     work=$(mktemp -d "$release/wait.XXXXXX")
     eval "$(sed -n '/^fail()/p; /^stopped() {/,/^}/p; /^retry() {/,/^}/p; /^stop_guest() {/,/^}/p' /usr/local/sbin/guests)"
     # A backward wall-clock step must not extend either lifecycle wait.
@@ -1834,7 +1836,8 @@ cv_time firewall-self-heal
     set -e
     . /usr/lib/convergent/incus/firewall-heal
     fw_pid() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
-    fwssh() { timeout 30 ssh -F /etc/convergent/ssh_config "$@"; }
+    # rcctl stop/start on a firewall at 85% system CPU outlasted 30 s.
+    fwssh() { timeout 120 ssh -F /etc/convergent/ssh_config "$@"; }
     broken= inhibited= frozen=
     trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
@@ -2026,7 +2029,8 @@ cv_time maintenance-reboot
 cv_time dns-recovery
 # Verify the local packet archive before and after the stock OpenBSD rotation.
 for f in fw1 fw2; do
-    timeout 30 ssh -F /etc/convergent/ssh_config "$f" '
+    # Two fw-facts runs: each took 13-42 s on the nested firewalls.
+    timeout 180 ssh -F /etc/convergent/ssh_config "$f" '
         /usr/local/libexec/convergent/fw-facts &&
         grep -qx "convergent_pflogd_up 1" /var/node_exporter/textfile/convergent_fw.prom &&
         newsyslog -F /var/log/pflog && sleep 2 &&
@@ -3287,7 +3291,8 @@ if [ "$r" = 0 ]; then
 	# Remmina: private state, keyring and share; its session waits up to 1500 s for the work gate.
 	timeout -k 10 2000 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End Remmina.
-	timeout -k 30 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	# A deadline kill must leave PF time to undo its maintenance round and delete its probes (int's MAC).
+	timeout -k 1200 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# Real TLS, per-session NSS and orphan recovery.
 	timeout -k 30 600 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End Incus UI checks.
@@ -3352,7 +3357,7 @@ run=/run/convergent/browser/tmp-20
 role=tmp name=tmp-20
 # owner() passes SWAYSOCK; an empty one makes sway bind no socket file at all.
 display=$runtime/wayland-1 ipc=$runtime/sway-ipc.test.sock
-children=
+children= registry_dir=
 die() { reason=$*; echo "desktop-sockets: $*" >&2; exit 1; }
 cleanup() {
 	result=$?
@@ -3362,7 +3367,7 @@ cleanup() {
 	for child in $children; do kill "$child" 2>/dev/null; done
 	for child in $children; do wait "$child" 2>/dev/null; done
 	[ "$result" = 0 ] || { tail -n 4 "$run"/*.log; echo "desktop-sockets: ${reason:-failed}"; }
-	rm -rf "$run" "$runtime"
+	rm -rf "$run" "$runtime" ${registry_dir:+"$registry_dir"}
 	exit "$result"
 }
 # foot starts its child in the working directory, which nobody must be able to enter.
@@ -3407,7 +3412,10 @@ wayland=$!; children="$children $wayland"
 wait_socket "$run/sockets/wayland-0" "$wayland" "$run/wayland.log"
 grep -qx 'way-secure (complain)' "/proc/$wayland/attr/current" || die "way-secure runs as $(cat "/proc/$wayland/attr/current")"
 # Every denial has a positive control on the same compositor.
-registry=$run/wayland-registry
+# Not under /run: dracut mounts it noexec. /var/tmp allows exec.
+registry_dir=$(mktemp -d /var/tmp/desktop-registry.XXXXXX)
+chmod 0755 "$registry_dir"
+registry=$registry_dir/wayland-registry
 install -m 0755 /var/lib/convergent/test-release/wayland-registry "$registry"
 owner timeout 10 "$registry" "$display" >"$run/ordinary-globals"
 owner timeout 10 "$registry" "$run/sockets/wayland-0" >"$run/restricted-globals"

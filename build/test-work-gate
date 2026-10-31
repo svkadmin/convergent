@@ -108,6 +108,11 @@ if sh "$work/gate"; then exit 1; fi
 [ ! -e "$work/gate.valid" ]
 rm "$work/fw1.pfdown" "$work/fw1.hung"
 sh "$work/gate"
+# A healthy reply cut off by the timeout is unanswered: a loaded standby keeps a validated gate open.
+touch "$work/fw2.hung"
+sh "$work/gate"
+[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+rm "$work/fw2.hung"
 # Two masters close the gate but keep validation: a failover seen half-way reopens once one remains.
 echo MASTER >"$work/fw2.role"
 if sh "$work/gate"; then exit 1; fi

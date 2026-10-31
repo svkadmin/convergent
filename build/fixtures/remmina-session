@@ -88,6 +88,9 @@ pid=$(ic query '/1.0/instances/cv-remote/state?project=default' | jq -er .pid)
 nsenter -t "$pid" -n "$work/python3" "$release/fixtures/remmina.py" vnc "$base.7" "$work" >"$work/vnc.log" 2>&1 &
 server=$!; children="$server $children"
 wait_file "$work/listening"
+# check auto stops a running Remmina whose lock is free: hold it until the launcher takes over.
+exec 7>/run/convergent/browser/remmina.lock
+flock -w 60 7
 ic start remmina
 timeout -k 1 60 sh -c 'until incus --force-local exec remmina -- test -f /run/remmina-ready; do sleep 1; done'
 # Provision a known encrypted keyring; the actual launcher must unlock it through Zenity.
@@ -96,6 +99,7 @@ ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina XDG_RUNTIME_D
     test "$(gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets/collection/login --method org.freedesktop.DBus.Properties.Get org.freedesktop.Secret.Collection Locked)" = "(<false>,)"
 '
 ic stop remmina --force
+exec 7>&-
 # guests init from test-release records no installed bundle; the launcher requires Remmina's.
 if [ ! -e /var/lib/convergent/release-guests/guests/remmina ]; then
     installed=/var/lib/convergent/release-guests/guests/remmina
