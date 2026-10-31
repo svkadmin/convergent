@@ -177,6 +177,47 @@ No address/default route: check `sys wifi status` and upstream. Captive portal: 
 resolver does not rule out usable later servers. Failed 9.9.9.9:853 means firewall/WAN/routing
 failure or upstream DoT blocking. Otherwise send the output.
 
+### Recover an incorrect clock
+
+A clock years off can prevent both firewall DoT certificate validation and the host's NTS
+key exchange. With no usable saved NTS cookies, DNS and authenticated time cannot bootstrap
+each other. Correct the host **and both firewalls**; correcting only the host leaves firewall
+ntpd slewing a large offset. Do not disable certificate checks or add unauthenticated servers.
+
+Obtain current UTC from an independently trusted clock (for example, a correctly set offline
+device). Compare it with `date -u` on the host. Replace `YYYY-MM-DD HH:MM:SS` below with that
+verified UTC immediately before running this on the normally booted laptop. This needs no
+working DNS or Internet; both firewalls must be running and reachable over their pinned SSH
+connections. It also works when the host was already corrected: use its independently verified
+current UTC. Wait for any guest update to finish first.
+
+```sh
+sudo sh <<'CLOCK'
+set -eu
+rc-service chronyd stop
+date -u -s 'YYYY-MM-DD HH:MM:SS'
+for fw in fw2 fw1; do
+    timeout -k 5 60 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none \
+        "$fw" 'rcctl stop ntpd'
+    stamp=$(date -u +%Y%m%d%H%M.%S)
+    timeout -k 5 60 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none \
+        "$fw" "date -u $stamp && rcctl start ntpd && rcctl check ntpd"
+done
+rc-service chronyd start
+CLOCK
+```
+
+Stopping ntpd before the step discards its old samples; OpenBSD `date` also cancels the pending
+slew ([adjtime(2)](https://man.openbsd.org/OpenBSD-7.9/adjtime.2)). Each SSH call is bounded. If a
+command fails, stop and fix that error, then repeat with fresh verified UTC; time services may
+remain stopped. No validation policy changes are needed.
+
+Check `date -u` on the host and with `sudo ssh -F /etc/convergent/ssh_config fw1 date -u`
+(repeat for fw2). All three should agree with the trusted clock. With Wi-Fi restored, retry
+`sys wifi test`, then `sudo chronyc online` and `chronyc sources -v`. Success: DNS works and at
+least two sources are selected/combined (`*`/`+`); `chronyc authdata` shows NTS cookies for them.
+Retry the failed update only after these checks pass.
+
 ## 7. A USB device does not work
 
 Disk images initially allow broad HID/storage/hub classes. Individual-device restrictions apply
@@ -350,7 +391,7 @@ download.
 | `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USB updates](USAGE.md#host-updates)) |
 | `this release has no online updates` | The image lacks its release key or update URL: update from USB |
 | `not enough free space in /var` | Free what is still missing in `/var`, plus 1 GiB |
-| `latest is signed more than 5 minutes in the future; check the clock` | Set the clock (`date`), then run it again |
+| `latest is signed more than 5 minutes in the future; check the clock` | Follow [clock recovery](#recover-an-incorrect-clock), then run it again |
 
 Works when `sys update` shows the new release with `+3`. Then reboot (recipe 2 if it does not become
 good).

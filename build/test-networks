@@ -110,6 +110,96 @@ grep -qx 'other.net CNAME .' "$dns/blocklist.rpz"
 grep -qx 'example.org CNAME rpz-passthru.' "$dns/blocklist.rpz"
 if grep -q 'ads.example.org' "$dns/blocklist.rpz"; then exit 1; fi
 echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures passed'
+# Clock recovery must step both firewalls with ntpd stopped, before restarting chrony.
+(
+    clock=$work/clock
+    mkdir "$clock"
+    export clock
+    awk '/^sudo sh <<.CLOCK.$/ {copy=1; next} /^CLOCK$/ {copy=0} copy {print}' \
+        "$repo/RECOVERY.md" >"$clock/recipe"
+    [ -s "$clock/recipe" ]
+    sh -n "$clock/recipe"
+    cat >"$clock/fixture" <<'FIXTURE'
+record() { printf '%s\n' "$*" >>"$clock/log"; [ "$*" != "$fail_at" ]; }
+rc-service() { record "host rc-service $*"; }
+date() {
+    case $node:$* in
+    'host:-u -s YYYY-MM-DD HH:MM:SS') record 'host set UTC' ;;
+    'host:-u +%Y%m%d%H%M.%S') record 'host sample UTC' || return; echo 202610311200.00 ;;
+    fw[12]:-u\ 202610311200.00) record "$node date $*" ;;
+    *) return 1 ;;
+    esac
+}
+rcctl() { record "$node rcctl $*"; }
+timeout() { [ "$1 $2 $3" = '-k 5 60' ] || return 1; shift 3; "$@"; }
+ssh() {
+    [ "$1 $2 $3 $4 $5 $6" = '-F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none' ] || return 1
+    shift 6
+    [ "$#" = 2 ] || return 1
+    case $1 in fw1|fw2) ;; *) return 1 ;; esac
+    printf '%s\n' "$2" >"$clock/remote"
+    sh -n "$clock/remote" || return
+    (node=$1; eval "$2")
+}
+node=host
+. "$clock/recipe"
+FIXTURE
+    sh -n "$clock/fixture"
+    cat >"$clock/want" <<'EXPECTED'
+host rc-service chronyd stop
+host set UTC
+fw2 rcctl stop ntpd
+host sample UTC
+fw2 date -u 202610311200.00
+fw2 rcctl start ntpd
+fw2 rcctl check ntpd
+fw1 rcctl stop ntpd
+host sample UTC
+fw1 date -u 202610311200.00
+fw1 rcctl start ntpd
+fw1 rcctl check ntpd
+host rc-service chronyd start
+EXPECTED
+    fail_at=
+    export fail_at
+    sh -eu "$clock/fixture"
+    cmp "$clock/want" "$clock/log"
+    # Every failed operation must stop the recipe at that operation.
+    line=0
+    while IFS= read -r fail_at; do
+        line=$((line + 1))
+        # The two sample calls share a mock failure point; test the first.
+        [ "$line" != 9 ] || continue
+        : >"$clock/log"
+        if sh -eu "$clock/fixture"; then echo "clock recovery ignored: $fail_at" >&2; exit 1; fi
+        head -n "$line" "$clock/want" >"$clock/prefix"
+        cmp "$clock/prefix" "$clock/log"
+    done <"$clock/want"
+)
+echo 'test-networks: offline clock recovery ordering and failures passed'
+# A backward clock correction makes automatic refresh immediately due.
+(
+    state=$dns/schedule
+    mkdir "$state"
+    sed -n '/^if \[ "\$mode" = auto \]; then$/,/^fi$/p' "$repo/tools/dns-push" >"$state/auto"
+    [ -s "$state/auto" ]
+    sh -n "$state/auto"
+    date() { echo "$now"; }
+    echo 2000000 >"$state/stamp"
+    for mode in auto local full; do
+        for elapsed in -2592000 -1 0 604799 604800 604801; do
+            now=$((2000000 + elapsed))
+            rm -f "$state/due"
+            (. "$state/auto"; : >"$state/due")
+            if [ "$mode" = auto ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ]; then
+                [ ! -e "$state/due" ]
+            else
+                [ -e "$state/due" ]
+            fi
+        done
+    done
+)
+echo 'test-networks: DNS automatic refresh clock boundaries passed'
 # Source age follows the RPZ, including cached edits and interrupted commits.
 (
     work=$dns

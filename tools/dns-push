@@ -259,7 +259,8 @@ fi
 if [ "$mode" = auto ]; then
 	last=$(cat "$state/stamp" 2>/dev/null || :)
 	case $last in '' | *[!0-9]*) last=0 ;; esac
-	[ $(( $(date +%s) - last )) -ge 604800 ] || exit 0
+	elapsed=$(( $(date +%s) - last ))
+	if [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ]; then exit 0; fi
 fi
 . "$conf"
 case ${BLOCKLIST_MAX_BYTES:-} in '' | *[!0-9]*) die "invalid size cap" ;; esac
