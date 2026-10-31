@@ -169,6 +169,11 @@ SYSPATCH
 cat >/etc/rc.local <<'FIRSTBOOT'
 #!/bin/sh
 set -eu
+# Never forward under the bootstrap rules, or after a failed policy load.
+pfctl -f /etc/pf.conf
+pf_status=$(pfctl -si)
+printf '%s\n' "$pf_status" | grep -q '^Status: Enabled'
+sysctl net.inet.ip.forwarding=1
 echo "CONVERGENT-KERNEL $(sysctl -n kern.version | sed -n '1p')"
 kernel=$(sha256 -q /bsd.booted)
 echo "CONVERGENT-KERNEL-SHA256 $kernel"

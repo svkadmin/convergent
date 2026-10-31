@@ -9,6 +9,59 @@ trap 'exit 1' HUP INT TERM
 die() { echo "test-boot-privacy: $*" >&2; exit 1; }
 check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
 
+# Forwarding stays off until the final policy loads and PF answers enabled.
+fw=$repo/guests/fw/site
+awk -F= '$1 == "net.inet.ip.forwarding" {n++; if ($2 != 0) bad=1}
+    END {exit (n != 1 || bad)}' "$fw/etc/sysctl.conf" || die 'early firewall forwarding'
+sed -n "/^cat >\/etc\/rc.local <<'FIRSTBOOT'$/,/^FIRSTBOOT$/p" "$fw/install.site" |
+    sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|' >"$work/fw-boot"
+check_script "$work/fw-boot"
+cat >"$work/fw-run" <<'FWBOOT'
+work=$1 fault=$2
+pfctl() {
+    case "$*" in
+    '-f /etc/pf.conf') echo load >>"$work/fw-events"; [ "$fault" != load ] ;;
+    -si)
+        echo status >>"$work/fw-events"
+        case $fault in
+        disabled) echo 'Status: Disabled' ;;
+        malformed) echo unknown ;;
+        status) echo 'Status: Enabled'; return 1 ;;
+        *) echo 'Status: Enabled for 0 days 00:00:01' ;;
+        esac ;;
+    -sr) echo 'block drop all' ;;
+    *) exit 98 ;;
+    esac
+}
+sysctl() {
+    case "$*" in
+    net.inet.ip.forwarding=1)
+        [ "$(cat "$work/fw-events")" = "$(printf 'load\nstatus')" ] || exit 97
+        [ "$fault" != sysctl ] || return 1
+        echo forward >>"$work/fw-events" ;;
+    '-n kern.version') echo fixture ;;
+    *) exit 98 ;;
+    esac
+}
+sha256() { echo fixture; }
+syspatch() { [ "$*" = -l ]; }
+fw_seed() { echo seed >>"$work/fw-events"; }
+. "$work/fw-boot"
+FWBOOT
+check_script "$work/fw-run"
+for fault in none load disabled malformed status sysctl; do
+    : >"$work/fw-events"
+    if sh -eu "$work/fw-run" "$work" "$fault" >"$work/fw-log" 2>&1; then
+        [ "$fault" = none ] || die "forwarding accepted $fault"
+        printf 'load\nstatus\nforward\nseed\n' >"$work/fw-expected"
+        cmp "$work/fw-expected" "$work/fw-events"
+    else
+        [ "$fault" != none ] || { cat "$work/fw-log"; die 'firewall boot'; }
+        if grep -qE '^(forward|seed)$' "$work/fw-events"; then die "forwarded after $fault"; fi
+    fi
+done
+echo 'test-boot-privacy: firewall forwarding passed'
+
 # Capture the feeder's actual fd 3 writes, including TERM's magic close.
 (
     . "$repo/rootfs/etc/init.d/convergent-watchdog"
@@ -165,6 +218,11 @@ awk '
     END {exit bad || modules != 1 || anchors != 1 || harden != 1}
 ' "$dns/unbound.conf" "$dns/local-names.conf" "$dns/local-owner.conf" || die 'DNSSEC validation config weakened'
 echo 'test-boot-privacy: DNSSEC config passed'
+
+# RPZ filtering must not produce an unbounded per-query daemon log.
+awk '$1 == "rpz-log:" {n++; if ($2 != "no") bad=1}
+    END {exit (n != 1 || bad)}' "$dns/unbound.conf" || die 'RPZ query logging enabled'
+echo 'test-boot-privacy: RPZ logging passed'
 
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.
 (
