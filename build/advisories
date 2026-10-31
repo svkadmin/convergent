@@ -491,9 +491,9 @@ def gate_selftest():
                 result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
             if imports is None:
                 require(result == 2 and not status.exists(), 'missing provenance was publishable')
-                manifest = work / 'manifest'
-                current = manifest.read_text()
-                manifest.write_text(current.replace('0.1.7', '0.1.6'))
+                host_manifest = work / 'manifest'
+                current = host_manifest.read_text()
+                host_manifest.write_text(current.replace('0.1.7', '0.1.6'))
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
                 data = json.loads(status.read_text())
@@ -501,7 +501,7 @@ def gate_selftest():
                 secdb('3.5.1-r10')
                 require('svc: libssl3 installed' in check(1), 'legacy scan skipped covered packages')
                 secdb('3.5.1-r2')
-                manifest.write_text(current)
+                host_manifest.write_text(current)
                 status.unlink()
             else:
                 require(result == 0 and status.exists(), 'accepted imports blocked publication')
