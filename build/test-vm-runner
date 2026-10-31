@@ -45,6 +45,7 @@ once)
     [ "$(readlink "$work/console.log")" = console-2-1.log ]
     ;;
 other) [ "$ended" = timeout ] && [ "$(wc -l <"$work/calls")" = 1 ] ;;
+driver-fail | driver-crash) exit 0 ;;
 *) exit 92 ;;
 esac
 EOF
@@ -81,3 +82,24 @@ for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to k
     done
 done
 echo 'test-vm-runner: unique consoles, bounded crash retries and other failures passed'
+# Exercise the build-host console parser without QEMU.
+python3 - "$here/test" <<'PY'
+import pathlib, re, sys, textwrap
+source = pathlib.Path(sys.argv[1]).read_text()
+markers = source[source.index("markers = {"):source.index("\nverdicts = {}")]
+start = source.index("                    if guest_test and result is None:")
+end = source.index("                    # Releases before", start)
+parse = textwrap.dedent(source[start:end])
+for guest in (None, 0, 1):
+    for online in (None, 0, 1):
+        for order in (False, True):
+            state = dict(goal="online", guest_test=True, result=None, verdicts={}, re=re)
+            exec(markers, state)
+            rows = [(b"CV-GUESTS-RESULT", guest), (b"CV-ONLINE-RESULT", online)]
+            for marker, value in reversed(rows) if order else rows:
+                state["seen"] = b"" if value is None else marker + b" %d\n" % value
+                exec(parse, state)
+            want = None if guest is None or online is None else max(guest, online)
+            assert state["result"] == want, (guest, online, order, state["result"])
+print("test-vm-runner: online requires both successful verdicts")
+PY

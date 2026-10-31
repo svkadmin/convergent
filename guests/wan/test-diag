@@ -10,11 +10,11 @@ sed -n '/^echo "== overlap refusal"/,$p' "$here/rootfs/usr/local/sbin/wan-diag" 
 	sed "s|/run/wan|$work/run|g; s|/var/log/wan|$work/log|g" >"$work/diag"
 sh "$work/diag" >"$work/out"
 [ "$(grep -c '^none$' "$work/out")" = 2 ]
-! grep -q 'Choose a non-overlapping' "$work/out"
+! grep -q 'Choose a non-overlapping' "$work/out" || exit 1
 : >"$work/run/refused"
 : >"$work/run/dhcp-overlap.eth1"
 sh "$work/diag" >"$work/out"
-! grep -q 'Choose a non-overlapping' "$work/out"
+! grep -q 'Choose a non-overlapping' "$work/out" || exit 1
 printf 'wlan0 100.80.0.0/24\n' >"$work/run/refused"
 sh "$work/diag" >"$work/out"
 grep -q '^refused interface=wlan0 subnet=100.80.0.0/24$' "$work/out"

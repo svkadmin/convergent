@@ -290,7 +290,7 @@ DHCP
 		udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3
 		read -r address router dns mask </run/w1-lease
 		case $address in "$1".5[1-9]|"$1".6[01]) ;; *) exit 1 ;; esac
-		[ "$router" = "$2" ] && [ "$dns" = "$2" ] && [ "$mask" = 255.255.255.192 ]
+		[ "$router" = "$2" ] && [ "$dns" = "$2" ] && [ "$mask" = 255.255.255.192 ] || exit 1
 		ip -4 addr flush dev eth0
 		ip addr add "$1.10/26" dev eth0
 		ip route replace default via "$2" dev eth0
@@ -347,7 +347,11 @@ timeout -k 1 60 sh -c 'until incus --force-local --project default exec "$1" -- 
 flow_source=$rem
 flow_target=pf-work-330
 flow_address=$(awk '$3 == "vlan330" {sub(/\.0\/26$/, ".10", $5); print $5}' "$work_rows")
-ic exec "$flow_target" -- sh -c 'nc -lk -s "$1" -p 5999 -e /bin/cat </dev/null >/dev/null 2>&1 &' sh "$flow_address"
+ic exec "$flow_target" -- sh -c '
+    nc -lk -s "$1" -p 5999 -e /bin/cat </dev/null >/dev/null 2>&1 &
+    for i in 1 2 3 4 5; do nc -z -w 1 "$1" 5999 && exit 0; sleep 1; done
+    exit 1
+' sh "$flow_address"
 ic exec "$flow_source" -- sh -c '
     { echo before; while [ ! -f /run/pf-flow-continue ]; do sleep 1; done; echo after; sleep 30; } |
         nc "$1" 5999 >/run/pf-flow-replies 2>/run/pf-flow-error &
@@ -529,14 +533,16 @@ for master in fw1 fw2; do
             udp_remote "$want" "$rem" "$address.1" "$port"
         done
         ic exec "$rem" -- ping -c 1 -W 3 "$address.1" || result=1
-        # Listeners prove the denies are PF's: each infrastructure address answers its own node on 5900.
+        # Each denied port answers its own node first.
         for host in 49 50 62; do
             case $host in 49) node=fw1 ;; 50) node=fw2 ;; *) node=$master ;; esac
-            canary_begin "$node" "$address.$host" 5900 || { echo "CV-PF FAIL infrastructure listener readiness for $address.$host"; exit 1; }
-            for port in 5900 22 3389; do probe deny "$rem" "$address.$host" "$port"; done
+            for port in 5900 22 3389; do
+                canary_begin "$node" "$address.$host" "$port" || { echo "CV-PF FAIL infrastructure listener readiness for $address.$host:$port"; exit 1; }
+                probe deny "$rem" "$address.$host" "$port"
+                canary_end || { echo "CV-PF FAIL infrastructure listener for $address.$host:$port"; result=1; }
+            done
             got=$(ic exec "$rem" -- sh -c 'if ping -c 1 -W 2 "$1" >/dev/null 2>&1; then echo allow; else echo deny; fi' sh "$address.$host") || got=error
             [ "$got" = deny ] || result=1
-            canary_end || { echo "CV-PF FAIL infrastructure listener for $address.$host"; result=1; }
         done
     done
     for destination in 100.80.3.1 100.80.1.10 100.80.2.10 100.80.4.10 100.80.0.10 10.0.2.100 1.1.1.1; do

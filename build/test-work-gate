@@ -68,16 +68,16 @@ sh "$work/gate"
 # A standby whose resolver is down is missing, not a mismatch; one that answers without PF closes the gate.
 touch "$work/fw2.unhealthy"
 sh "$work/gate"
-[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ] || exit 1
 rm "$work/fw2.unhealthy"
 touch "$work/fw2.pfdown"
 if sh "$work/gate"; then exit 1; fi
-[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ] || exit 1
 rm "$work/fw2.pfdown"
 sh "$work/gate"
 touch "$work/fw1.pfdown"
 if sh "$work/gate"; then exit 1; fi
-[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ] || exit 1
 rm "$work/fw1.pfdown"
 sh "$work/gate"
 # Partial PF output survives a hung resolver or failed transport.
@@ -90,7 +90,7 @@ sh "$work/gate"
 # Two masters close the gate but keep validation: a failover seen half-way reopens once one remains.
 echo MASTER >"$work/fw2.role"
 if sh "$work/gate"; then exit 1; fi
-[ "$(cat "$work/verdict")" = closed ] && [ -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = closed ] && [ -e "$work/gate.valid" ] || exit 1
 touch "$work/fw1.down"
 sh "$work/gate"
 [ "$(cat "$work/verdict")" = open ]
@@ -100,7 +100,7 @@ sh "$work/gate"
 # Nobody answers (timeouts): a validated gate keeps its state, an unvalidated one closes.
 touch "$work/fw1.down" "$work/fw2.down"
 if sh "$work/gate"; then exit 1; fi
-[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ] || exit 1
 touch "$work/wan.down"
 if sh "$work/gate"; then exit 1; fi
 [ "$(cat "$work/verdict")" = open ]
