@@ -48,7 +48,7 @@ capture() {
 	if capture pfsync ifconfig pfsync0; then
 		printf '%s\n' "$data" | awk '/flags=/ {up=($0 ~ /RUNNING/)} /defer:/ {df=($0 ~ /defer: on/)} END {printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n",up,df}'
 	fi
-	if capture pf pfctl -si; then
+	if capture pf timeout -k 1 5 pfctl -si; then
 		printf '%s\n' "$data" | awk '
 			/^Status:/ {printf "convergent_pf_enabled %d\n",($2 == "Enabled"); status=1}
 			/current entries/ && !done {print "convergent_pf_states " $3; done=1}
@@ -56,19 +56,19 @@ capture() {
 			c && $2 ~ /^[0-9]+$/ {printf "convergent_pf_counter_total{name=\"%s\"} %s\n",$1,$2}
 			END {exit !(status && done)}' || ok=0
 	fi
-	if capture limits pfctl -sm; then
+	if capture limits timeout -k 1 5 pfctl -sm; then
 		printf '%s\n' "$data" | awk '/^states/ {print "convergent_pf_state_limit " $4; found=1} END {exit !found}' || ok=0
 	fi
-	if capture rules pfctl -sr; then
+	if capture rules timeout -k 1 5 pfctl -sr; then
 		loaded=$(printf '%s\n' "$data" | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256)
 		file=$(sha256 -q /etc/pf.conf) && echo "convergent_pf_ruleset_info{loaded=\"$loaded\",file=\"$file\"} 1" || ok=0
 	fi
 	if capture route route -n show -inet; then
 		printf '%s\n' "$data" | awk '$1 == "default" {printf "convergent_default_route_info{gateway=\"%s\"} 1\n",$2; n=1} END {print "convergent_default_route_present " n+0}'
 	fi
-	if unbound-control status >/dev/null 2>&1; then up=1; else up=0; fi
+	if timeout -k 1 5 unbound-control status >/dev/null 2>&1; then up=1; else up=0; ok=0; fi
 	echo "convergent_unbound_up $up"
-	if capture dns unbound-control stats_noreset; then
+	if capture dns timeout -k 1 5 unbound-control stats_noreset; then
 		printf '%s\n' "$data" | awk -F= '
 			$1 == "total.num.queries" {print "convergent_unbound_queries_total " $2; n++}
 			$1 == "total.num.cachehits" {print "convergent_unbound_cachehits_total " $2; n++}
@@ -81,6 +81,13 @@ capture() {
 		m=$(stat -f %m "/var/unbound/etc/$f" 2>/dev/null) &&
 			echo "convergent_dns_file_mtime_seconds{file=\"$f\"} $m" || ok=0
 	done
+	# Source age travels with the RPZ through local pushes and rollback.
+	refresh=$(awk -v now="$started" '
+		$1 == ";" && $2 == "convergent-source-refreshed-seconds" {
+			n++; if (NF != 3 || $3 !~ /^[0-9]+$/ || $3 <= 0 || $3 > now) bad=1; t=$3
+		} END {if (n == 1 && !bad) print t; else exit 1}
+	' /var/unbound/etc/blocklist.rpz 2>/dev/null) || { refresh=0; ok=0; }
+	echo "convergent_dns_source_refreshed_seconds $refresh"
 	if capture interfaces netstat -ibn; then
 		printf '%s\n' "$data" | awk -f /usr/local/libexec/convergent/interface-bytes.awk || ok=0
 	fi

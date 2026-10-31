@@ -6,6 +6,60 @@ repo=${here%/build}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# Scrub evidence and its missing-record grace survive short boots.
+sed -n '/^[[:space:]]*uuid=$(findmnt/,/^[[:space:]]*for volume / {
+    /^[[:space:]]*for volume /d; p;
+}' "$repo/tools/facts" | sed "s|/var/lib/btrfs|$work/btrfs|g" >"$work/scrub"
+sh -n "$work/scrub"
+mkdir "$work/btrfs" "$work/state"
+(
+    sdir=$work/state
+    findmnt() { echo fixture; }
+    date() { echo "$clock"; }
+    m() { echo "$*" >>"$buf"; }
+    bad() { ok=0; }
+    collect() {
+        (ok=1; buf=$work/scrub.prom; : >"$buf"; . "$work/scrub"; echo "$ok" >"$work/scrub.ok")
+    }
+    clock=100000
+    collect
+    grep -qx 'cv_btrfs_scrub_missing_since_seconds 100000' "$work/scrub.prom"
+    clock=200000
+    collect
+    grep -qx 'cv_btrfs_scrub_missing_since_seconds 100000' "$work/scrub.prom"
+    [ "$(cat "$work/scrub.ok")" = 1 ]
+    for value in bad 0 300000 999999999999999999999; do
+        echo "$value" >"$sdir/scrub-missing.fixture"
+        collect
+        grep -qx 'cv_btrfs_scrub_missing_since_seconds 0' "$work/scrub.prom"
+        [ "$(cat "$work/scrub.ok")" = 0 ]
+    done
+    for value in 0 1 bad missing; do
+        row='fs:1|t_start:100000|finished:1|canceled:0|uncorrectable_errors:0|read_errors:0|csum_errors:0|verify_errors:0'
+        [ "$value" = missing ] || row="$row|super_errors:$value"
+        printf 'scrub status:1\n%s\n' "$row" >"$work/btrfs/scrub.status.fixture"
+        collect
+        grep -qx 'cv_btrfs_scrub_recorded 1' "$work/scrub.prom"
+        [ ! -e "$sdir/scrub-missing.fixture" ]
+        case $value in
+        0|1) grep -qx "cv_btrfs_scrub_errors $value" "$work/scrub.prom"; [ "$(cat "$work/scrub.ok")" = 1 ] ;;
+        *) [ "$(cat "$work/scrub.ok")" = 0 ]; if grep -q '^cv_btrfs_scrub_errors ' "$work/scrub.prom"; then exit 1; fi ;;
+        esac
+    done
+    rm "$work/btrfs/scrub.status.fixture"
+    collect
+    grep -qx 'cv_btrfs_scrub_missing_since_seconds 200000' "$work/scrub.prom"
+)
+rules=$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml
+sed -n '/- alert: ScrubNeedsAttention/{n;p;}' "$rules" >"$work/scrub-rule"
+grep -q 'cv_btrfs_scrub_missing_since_seconds > time() - 86400' "$work/scrub-rule"
+if grep -q node_boot_time_seconds "$work/scrub-rule"; then exit 1; fi
+sed -n '/- alert: BlocklistStale/{n;p;}' "$rules" >"$work/blocklist-rule"
+grep -q 'time() - convergent_dns_source_refreshed_seconds.* > 864000' "$work/blocklist-rule"
+grep -q 'unless on(node) convergent_dns_source_refreshed_seconds' "$work/blocklist-rule"
+grep -q 'convergent_dns_source_refreshed_seconds.* <= 0' "$work/blocklist-rule"
+grep -q 'convergent_dns_source_refreshed_seconds.* > time()' "$work/blocklist-rule"
+echo 'observability: scrub superblock, persistent grace and alert assertions passed'
 # Run the checker's reads with successful and timed-out replies, including partial output.
 sed -n '/^# The management endpoint/,/^\/usr\/local\/sbin\/incus-ui/ {
     /^\/usr\/local\/sbin\/incus-ui/d; p;

@@ -76,9 +76,9 @@ groups:
         labels: {severity: warning}
         annotations: {summary: 'Resolver facts missing or older than three minutes on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: BlocklistStale
-        expr: time() - convergent_dns_file_mtime_seconds{node=~"fw1|fw2",file="blocklist.rpz"} > 864000
+        expr: (time() - convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > 864000) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} <= 0) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > time()) or (up{job="node",node=~"fw1|fw2"} unless on(node) convergent_dns_source_refreshed_seconds)
         labels: {severity: warning}
-        annotations: {summary: 'Loaded RPZ generation over 10 days old on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+        annotations: {summary: 'RPZ source refresh missing, invalid or over 10 days old on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: InternetProbeFailed
         expr: cv_internet_probe_success == 0
         for: 2m
@@ -300,7 +300,7 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}', dashboard: '/d/cv-host'}
       - alert: ScrubNeedsAttention
-        expr: (cv_btrfs_scrub_errors > 0) or ((cv_btrfs_scrub_finished == 0) and on(node) (time() - cv_btrfs_scrub_started_seconds > 86400)) or (time() - cv_btrfs_scrub_started_seconds > 3456000) or ((cv_btrfs_scrub_recorded == 0) and on(node) (time() - node_boot_time_seconds{node="host"} > 86400))
+        expr: (cv_btrfs_scrub_errors > 0) or ((cv_btrfs_scrub_finished == 0) and on(node) (time() - cv_btrfs_scrub_started_seconds > 86400)) or (time() - cv_btrfs_scrub_started_seconds > 3456000) or ((cv_btrfs_scrub_recorded == 0) unless on(node) (cv_btrfs_scrub_missing_since_seconds > time() - 86400 and cv_btrfs_scrub_missing_since_seconds <= time()))
         labels: {severity: warning}
         annotations: {summary: 'Btrfs scrub errors, missing record or more than 40 days old', dashboard: '/d/cv-host'}
   - name: security-slow

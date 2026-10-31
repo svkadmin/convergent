@@ -63,6 +63,7 @@ rollback() {
 	if [ -e "$state/committed" ]; then
 		rm -f "$state/pending" || return 1
 		rm -rf "$state/edit.before" || return 1
+		rm -rf "$state/cache.before" || return 1
 		rm -f "$state/committed" || return 1
 		return 0
 	fi
@@ -75,13 +76,19 @@ $restore" || { echo "dns-push: restore failed on $_f; recovery pending" >&2; _fa
 		rm -f "$state/stamp" "$state/last-push"
 	fi
 	[ "$_failed" = 0 ] || return 1
+	if [ -e "$state/pending" ] && [ -d "$state/cache.before" ]; then
+		if [ -f "$state/cache.before/list.rpz" ]; then
+			cp "$state/cache.before/list.rpz" "$state/list.rpz.new" && mv "$state/list.rpz.new" "$state/list.rpz" || return 1
+		else rm -f "$state/list.rpz" || return 1; fi
+	fi
 	if [ -d "$state/edit.before" ]; then
 		for file in allow records; do
 			cp "$state/edit.before/$file" "$state/$file.new" && mv "$state/$file.new" "$state/$file" || return 1
 		done
 		rm -rf "$state/edit.before" || return 1
 	fi
-	rm -f "$state/pending"
+	rm -f "$state/pending" || return 1
+	rm -rf "$state/cache.before"
 }
 cleanup() {
 	_rc=$?
@@ -263,6 +270,12 @@ case $mode in add|remove|allow|unallow)
 esac
 if [ "$mode" = local ]; then cp "$state/list.rpz" "$work/list.raw"; else download; fi
 validate
+# Keep source age in the cached data, independent of the retry stamp.
+if [ "$mode" != local ]; then
+	sed '/^[[:space:]]*;[[:space:]]*convergent-source-refreshed-seconds\([[:space:]].*\)\{0,1\}$/d' "$work/list.raw" >"$work/list.stamped"
+	printf '\n; convergent-source-refreshed-seconds %s\n' "$(date +%s)" >>"$work/list.stamped"
+	mv "$work/list.stamped" "$work/list.raw"
+fi
 : >"$work/allow.in"
 [ ! -f "$state/allow" ] || cp "$state/allow" "$work/allow.in"
 awk "$domain"'
@@ -301,6 +314,9 @@ for fw in $fws; do
 		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev"
 done
 # Journal both firewalls before activation.
+mkdir "$state/cache.before"
+[ ! -f "$state/list.rpz" ] || cp "$state/list.rpz" "$state/cache.before/list.rpz"
+sync
 : >"$state/pending"
 sync
 for fw in $fws; do
