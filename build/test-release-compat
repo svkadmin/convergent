@@ -247,7 +247,7 @@ sed -n '/^verify_image() {/,/^}/p; /^manual_image() (/,/^)/p' "$repo/tools/guest
 grep -q '^verify_image()' "$manual/functions"
 grep -q '^manual_image()' "$manual/functions"
 sed -n '/^case ${1:-}:$# in/,/^mkdir -p "\$state" \/run\/convergent/p' "$repo/tools/guests" |
-    sed '$d' >"$manual/entry"
+    sed '$d' | sed "s|/var/tmp/guests.XXXXXX|$manual/stage.XXXXXX|" >"$manual/entry"
 [ -s "$manual/entry" ]
 sh -n "$manual/update.sh"
 sh -n "$manual/functions"
@@ -284,7 +284,7 @@ for guest in fw wan svc browser def int remmina; do
     manifest=$manual/release/guests.manifest
     [ "$kind" != remmina ] || manifest=$manual/release/remmina.manifest
     cp -R "$image" "$manual/saved"
-    for fault in none missing signature tampered key old future duplicate-release identity duplicate-identity payload recomputed profile missing-profile extra-profile missing-artifact path duplicate-checksum override bad-option; do
+    for fault in none substituted missing signature tampered key old future duplicate-release identity duplicate-identity payload recomputed profile missing-profile extra-profile missing-artifact path duplicate-checksum override bad-option; do
         rm -rf "$image"
         cp -R "$manual/saved" "$image"
         release_id=42 identity_kind=$kind
@@ -317,18 +317,35 @@ for guest in fw wan svc browser def int remmina; do
         esac
         rm -f "$manual/mutated"
         if (
+            manual_stage=
+            trap '[ -z "$manual_stage" ] || rm -rf "$manual_stage"' 0
             set -- update "$guest" "$image"
             case $fault in override) set -- "$@" --trusted-local ;; bad-option) set -- "$@" --trust-local ;; esac
             . "$manual/entry" || exit 1
+            if [ "$fault" = substituted ]; then
+                # Replace the source after authentication, as during the lock wait.
+                echo substituted >"$image/${artifacts%% *}"
+                (cd "$image" && sha256sum $artifacts >SHA256SUMS) || exit 1
+                case $kind in
+                svc|remmina) echo substituted >"$image/incus.yaml" ;;
+                browser) echo substituted >"$image/incus/base.yaml" ;;
+                esac
+                rm "$manifest" "$manifest.sig" || exit 1
+            fi
+            case $fault in none|substituted)
+                image_dir=$3
+                verify_image "$guest" || exit 1
+                diff -r "$manual/saved" "$image_dir" || exit 1 ;;
+            esac
             echo recovery >"$manual/mutated"
         ) >"$manual/log" 2>&1; then
-            case $fault in none|override) [ -s "$manual/mutated" ] ;; *) die "manual $guest accepted $fault" ;; esac
+            case $fault in none|substituted|override) [ -s "$manual/mutated" ] ;; *) die "manual $guest accepted $fault" ;; esac
         else
-            case $fault in none|override) cat "$manual/log"; die "manual $guest rejected $fault" ;; esac
+            case $fault in none|substituted|override) cat "$manual/log"; die "manual $guest rejected $fault" ;; esac
             [ ! -e "$manual/mutated" ] || die 'manual rejection mutated state'
         fi
     done
     rm -rf "$manual/saved"
 done
-echo 'test-release-compat: manual signatures, release binding, identities, profiles, digests and explicit local override passed'
+echo 'test-release-compat: manual signatures, release binding, identities, profiles, digests, source substitution and explicit local override passed'
 )

@@ -13,7 +13,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
-applying= recovering= rebuilding= polling=
+applying= recovering= rebuilding= polling= manual_stage=
 step=setup
 . "$lib/fw-topology"
 . "$lib/fw-leases"
@@ -106,7 +106,7 @@ retry() {
                 ic console "$2" --show-log | tail -n 20 >&2
                 polling=
                 case $2 in fw1|fw2) echo "guests: next: sys firewall rebuild $2" >&2 ;;
-                wan) echo 'guests: next: guests update wan /var/lib/convergent/release-guests/guests/wan' >&2 ;; esac
+                wan) echo 'guests: next: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' >&2 ;; esac
                 ;;
             esac
             return 1
@@ -228,6 +228,7 @@ cleanup() {
     set +e
     [ "$result" = 0 ] || printf 'guests: %s: operation failed (status %s); cleaning up\n' "$failed_step" "$failed_status" >&2
     step=cleanup
+    [ -z "$manual_stage" ] || rm -rf "$manual_stage" || { fail "cannot remove $manual_stage"; result=1; }
     if [ -n "$work" ] && [ -d "$state/fw.topology" ]; then
         topology_recover || { fail 'pair rollback pending; both firewalls held; rerun guests apply'; exit 1; }
     fi
@@ -1780,7 +1781,17 @@ if [ "$1" = status ]; then
     exit
 fi
 # Authenticate manual input before archive recovery, journals or Incus can change.
-if [ "$1" = update ] && [ "${4:-}" != --trusted-local ]; then manual_image "$2" "$3"; fi
+if [ "$1" = update ] && [ "${4:-}" != --trusted-local ]; then
+    manual_stage=$(mktemp -d /var/tmp/guests.XXXXXX)
+    case $3 in /*) source_image=$3 ;; *) source_image=./$3 ;; esac
+    case $2 in remmina) manual_manifest=remmina.manifest ;; *) manual_manifest=guests.manifest ;; esac
+    mkdir "$manual_stage/guests"
+    cp -R "$source_image" "$manual_stage/guests/image"
+    cp "$source_image/../../$manual_manifest" "$source_image/../../$manual_manifest.sig" "$manual_stage/"
+    # Authenticate and consume the same private copy, including after the lock wait.
+    set -- "$1" "$2" "$manual_stage/guests/image"
+    manual_image "$2" "$3"
+fi
 mkdir -p "$state" /run/convergent
 [ -w "$state" ] || die 'state disk lost or read-only: reboot'
 exec 9>/run/convergent/guests.lock
