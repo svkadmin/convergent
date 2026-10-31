@@ -123,7 +123,10 @@ echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures 
     sed -n '/^rollback() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/rollback"
     sed -n '/^validate() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/validate"
     sed -n "/^domain='/,/^}'$/p" "$repo/tools/dns-push" >"$dns/domain"
-    for part in render stamp-source journal cache restore rollback validate domain; do sh -n "$dns/$part"; done
+    for part in render stamp-source journal cache restore rollback validate domain; do
+        [ -s "$dns/$part" ]
+        sh -n "$dns/$part"
+    done
     . "$dns/restore"
     . "$dns/rollback"
     . "$dns/domain"
@@ -220,6 +223,47 @@ echo 'test-networks: schema, rendering, CARP corruption and allow-list fixtures 
     echo 'other.net CNAME .' >"$dns/list.raw"
     mode=local
     . "$dns/stamp-source"
+    . "$dns/render"
+    if grep -q convergent-source-refreshed-seconds "$dns/blocklist.rpz"; then exit 1; fi
+    # A valid legacy stamp migrates through the cache transaction, regardless of mtime.
+    printf '$TTL 60\n@ SOA localhost. root.localhost. 1 2 3 4 5\n NS localhost.\nother.net CNAME .\n' >"$state/list.rpz"
+    cp "$state/list.rpz" "$dns/list.raw"
+    validate
+    for stamp in 1996400 2000000; do
+        echo "$stamp" >"$state/stamp"
+        . "$dns/stamp-source"
+        [ "$source_refreshed" = "$stamp" ]
+        [ ! -e "$state/list.refreshed" ]
+        . "$dns/render"
+        grep -qx "; convergent-source-refreshed-seconds $stamp" "$dns/blocklist.rpz"
+        . "$dns/journal"
+        . "$dns/cache"
+        : >"$state/committed"
+        rollback
+        [ "$(cat "$state/list.refreshed")" = "$stamp" ]
+        rm "$state/list.refreshed"
+    done
+    # Invalid or future legacy stamps cannot establish source age.
+    for stamp in '' invalid 0 -1 +1 ' 1' '1 2' '1
+2' 2000001 999999999999999999999999999999; do
+        printf '%s\n' "$stamp" >"$state/stamp"
+        . "$dns/stamp-source"
+        [ -z "$source_refreshed" ]
+        . "$dns/render"
+        if grep -q convergent-source-refreshed-seconds "$dns/blocklist.rpz"; then exit 1; fi
+    done
+    # Existing unknown metadata must not inherit the retry stamp.
+    echo 1996400 >"$state/stamp"
+    : >"$state/list.refreshed"
+    . "$dns/stamp-source"
+    [ -z "$source_refreshed" ]
+    rm "$state/list.refreshed"
+    # Interrupted legacy publication loses its stamp before migration.
+    : >"$state/pending"
+    rollback
+    [ ! -e "$state/stamp" ]
+    . "$dns/stamp-source"
+    [ -z "$source_refreshed" ]
     . "$dns/render"
     if grep -q convergent-source-refreshed-seconds "$dns/blocklist.rpz"; then exit 1; fi
     echo invalid >"$state/list.refreshed"
