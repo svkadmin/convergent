@@ -19,9 +19,11 @@ set)
 		overlaps_internal "$2" 32 && overlap=$2/32
 		shift 2
 	done
-	for gw in ${router:-}; do
-		overlaps_internal "$gw" 32 && overlap=$gw/32
-	done
+	if [ -z "${staticroutes:-}" ]; then
+		for gw in ${router:-}; do
+			overlaps_internal "$gw" 32 && overlap=$gw/32
+		done
+	fi
 	mkdir -p /run/wan
 	if [ -n "$overlap" ]; then
 		printf '%s\n' "$overlap" >"/run/wan/dhcp-overlap.$interface"

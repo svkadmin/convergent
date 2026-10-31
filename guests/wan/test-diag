@@ -6,6 +6,27 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 mkdir "$work/run" "$work/log"
+# Check only DHCP routes selected by default.script.
+(
+. "$here/rootfs/usr/local/lib/wan-lib.sh"
+sed -n '/^	overlap=$/,/^	mkdir -p \/run\/wan$/p' "$here/rootfs/usr/local/sbin/wan-dhcp-dns" |
+    sed '$d' >"$work/dhcp-overlap"
+[ -s "$work/dhcp-overlap" ]
+sh -n "$work/dhcp-overlap"
+INTERNAL_NET=100.80.0.0/16
+check_overlap() (
+    expected=$1 router=$2 staticroutes=$3
+    # The hook does not use errexit; inspect its overlap result.
+    if . "$work/dhcp-overlap"; then :; fi
+    [ "$overlap" = "$expected" ]
+)
+check_overlap '' 100.80.1.1 '0.0.0.0/0 192.168.1.1'
+check_overlap '' 192.168.1.1 ''
+check_overlap 100.80.1.1/32 100.80.1.1 ''
+check_overlap 100.80.1.1/32 192.168.1.1 '0.0.0.0/0 100.80.1.1'
+check_overlap 100.80.1.0/24 192.168.1.1 '100.80.1.0/24 192.168.1.1'
+echo 'wan-dhcp-dns: selected route overlap fixtures passed'
+)
 # Exercise the refusal loop with IWD stalled and independent cleanup failures.
 (
 . "$here/rootfs/usr/local/lib/wan-lib.sh"
