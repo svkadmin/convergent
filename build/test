@@ -3002,8 +3002,19 @@ for path in /home/browser/profile /home/browser/Downloads/def /home/browser/Down
 	mv "$path.saved" "$path"
 done
 rmdir /home/browser/Downloads/def
+# Simulate interruption after mkdir, before chown; preserve profile contents.
+touch /home/browser/profile/ownership-test
+chown 0:0 /home/browser/profile/ownership-test
+for path in /home/browser/profile /home/browser/Downloads; do
+	chown 0:0 "$path"
+	chmod 700 "$path"
+done
 /usr/local/sbin/browser-setup
-[ "$(stat -c '%u:%g:%a' /home/browser/Downloads/def)" = 1000:1000:700 ]
+for path in /home/browser/profile /home/browser/Downloads /home/browser/Downloads/def; do
+	[ "$(stat -c '%u:%g:%a' "$path")" = 1000:1000:700 ]
+done
+[ "$(stat -c '%u:%g' /home/browser/profile/ownership-test)" = 0:0 ]
+rm /home/browser/profile/ownership-test
 [ -f /run/browser-ready ]
 STATE
 step=subvolume-denial
@@ -3039,7 +3050,7 @@ for mode in normal portal; do
 		ic exec "$name" -- test ! -e /dev/dri/renderD128
 		ic exec "$name" -- grep -q '100.80.3.11/24' /etc/network/interfaces
 		ic exec "$name" -- grep -qx 'nameserver 100.80.0.10' /etc/resolv.conf
-		jq -e '.RestoreOnStartupURLs == ["http://neverssl.com/"] and .HttpsOnlyMode == "disallowed" and
+		jq -e '.RestoreOnStartupURLs == ["about:blank"] and .HttpsOnlyMode == "disallowed" and
 		    .AudioCaptureAllowed == false and .VideoCaptureAllowed == false and
 		    .DefaultSearchProviderEnabled == false and .ExtensionSettings["*"].installation_mode == "blocked"' "$run/policy"
 	else

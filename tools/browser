@@ -112,7 +112,10 @@ case $role in def|tmp|int|remmina) ;; *) die 'role must be def, tmp, int or remm
 portal_mode=
 if [ "$role" = tmp ] && [ "${1:-}" = --portal ]; then portal_mode=1; shift; fi
 [ $# -le 1 ] || die 'expected at most one URL'
-[ -z "$portal_mode" ] || [ $# = 1 ] || set -- http://neverssl.com/
+if [ -n "$portal_mode" ] && [ $# = 0 ]; then
+    gateway=$(/usr/local/sbin/portal gateway) || die 'cannot find the uplink gateway; give a portal URL'
+    set -- "http://$gateway/"
+fi
 for url do case $url in http://?*|https://?*) ;; *) die 'URL must be HTTP(S)' ;; esac; done
 case $role in
     remmina) [ $# = 0 ] || die 'remmina accepts no arguments' ;;
