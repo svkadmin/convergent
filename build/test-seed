@@ -24,6 +24,40 @@ CREDENTIALS
 sh -n "$scratch/credentials"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'initial credentials'; }
 cp -R "$state" "$scratch/good"
+# Retry before the CA's notBefore, as after a backward clock correction.
+cat >"$scratch/ca.conf" <<EOF
+[ca]
+default_ca = fixture
+[fixture]
+database = $scratch/index
+serial = $scratch/serial
+new_certs_dir = $scratch
+default_md = sha256
+policy = policy
+x509_extensions = extensions
+[policy]
+commonName = supplied
+[extensions]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+EOF
+: >"$scratch/index"
+openssl req -new -key "$tls/ca.key" -subj '/CN=Local CA' -out "$scratch/request"
+openssl ca -batch -notext -selfsign -rand_serial -config "$scratch/ca.conf" \
+    -keyfile "$tls/ca.key" -in "$scratch/request" -out "$tls/ca.crt" \
+    -startdate "$(date -u -d '+1 day' +%Y%m%d%H%M%SZ)" -days 3650 >"$scratch/log" 2>&1 ||
+    { cat "$scratch/log"; die 'future CA'; }
+cp "$tls/ca.crt" "$scratch/future-ca.crt"
+for cert in ca server incus-server incus-client; do
+    if openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >"$scratch/log" 2>&1; then
+        die "accepted future CA for $cert"
+    fi
+    grep -q 'not yet valid' "$scratch/log"
+    openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
+done
+sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }
+cmp "$tls/ca.crt" "$scratch/future-ca.crt"
+for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
 for fault in missing-pub wrong-pub empty-ca truncated-ca; do
     rm -rf "$state"
     cp -R "$scratch/good" "$state"

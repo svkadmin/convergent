@@ -333,12 +333,12 @@ credentials() {
         sync
     fi
     certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
-    openssl verify -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
+    openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
     for cert in server incus-server incus-client; do
         if [ -f "$tls/$cert.crt" ]; then
             if openssl x509 -in "$tls/$cert.crt" -checkend 2592000 -noout >/dev/null; then
                 certificate_pair "$tls/$cert.key" "$tls/$cert.crt" || die "invalid pair for $cert"
-                openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null || die "invalid certificate for $cert"
+                openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null || die "invalid certificate for $cert"
                 continue
             fi
             [ -s "$tls/$cert.key" ] || die "missing key for $cert"
