@@ -285,6 +285,13 @@ run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state
 loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
 run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 image_mounted=1
+# Compare with the selected release, not the builder's current topology.
+if [ -n "$image_install" ]; then
+	for kind in fw wan; do
+		cmp -s "$CONVERGENT_INSTALL_GUESTS/$kind/topology.sha256" "$work/image/etc/convergent/topology.sha256" ||
+			die "$kind image topology differs from host release"
+	done
+fi
 if [ "$state_size" != auto ]; then
 	[ -f "$work/image/usr/lib/convergent/install-options.sh" ] || die "release does not support bounded install.state_size"
 fi
