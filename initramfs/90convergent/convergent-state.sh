@@ -230,4 +230,12 @@ case $g in "" | *[!0-9]*) warn "state: no utmp group; /var/log/btmp skipped" ;; 
 		warn "state: could not prepare /var/log/btmp" ;;
 esac
 
+# Audit watches need the backing directory, not the covered /etc inodes.
+mkdir -p "$NEWROOT/var/lib/convergent/audit" &&
+	chown 0:0 "$NEWROOT/var/lib/convergent/audit" &&
+	chmod 0700 "$NEWROOT/var/lib/convergent/audit" &&
+	mkdir -p "$NEWROOT/var/lib/convergent/audit/etc" &&
+	mount --bind "$state/etc" "$NEWROOT/var/lib/convergent/audit/etc" ||
+	die "state: could not retain the audit backing directory"
+
 umount "$state"

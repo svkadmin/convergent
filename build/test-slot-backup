@@ -104,6 +104,41 @@ for mode in write rescue next; do
 done
 grep -q 'inst_multiple .* chattr' "$repo/initramfs/91convergent-rescue/module-setup.sh"
 
+# Retain the audit directory before dropping the state mount; every setup failure stops boot.
+sed -n '/^# Audit watches need/,$p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/audit"
+[ -s "$work/audit" ] || die 'missing audit backing directory'
+sh -n "$work/audit"
+(
+    NEWROOT=$work/root state=$work/state
+    audit=$NEWROOT/var/lib/convergent/audit
+    mkdir() { echo "mkdir $*" >>"$work/calls"; [ "$fault" != mkdir ]; }
+    chown() { echo "chown $*" >>"$work/calls"; [ "$fault" != chown ]; }
+    chmod() { echo "chmod $*" >>"$work/calls"; [ "$fault" != chmod ]; }
+    mount() { echo "mount $*" >>"$work/calls"; [ "$fault" != mount ]; }
+    umount() { echo "umount $*" >>"$work/calls"; }
+    for fault in none mkdir chown chmod mount; do
+        : >"$work/calls"
+        if (set +e; . "$work/audit") 2>"$work/error"; then
+            [ "$fault" = none ] || die "accepted audit $fault failure"
+        else
+            [ "$fault" != none ] || die 'audit setup failed'
+            grep -q 'could not retain the audit backing directory' "$work/error"
+            if grep -q '^umount ' "$work/calls"; then die 'continued after audit failure'; fi
+            continue
+        fi
+        printf '%s\n' "mkdir -p $audit" "chown 0:0 $audit" "chmod 0700 $audit" \
+            "mkdir -p $audit/etc" "mount --bind $state/etc $audit/etc" "umount $state" >"$work/expected"
+        cmp "$work/expected" "$work/calls"
+    done
+)
+rules=$repo/rootfs/etc/audit/rules.d/10-convergent.rules
+for entry in passwd shadow group gshadow subuid subgid usbguard/rules.conf; do
+    key=identity; [ "$entry" != usbguard/rules.conf ] || key=usb
+    grep -qx -- "-w /var/lib/convergent/audit/etc/$entry -p wa -k $key" "$rules"
+done
+if grep -q '^-w /etc/' "$rules"; then die 'audit watches covered inodes'; fi
+echo 'test-slot-backup: audit backing directory, failure gates and watches passed'
+
 # Run the boot cleanup, including both locations and the legacy empty placeholder.
 sed -n '/^# As in backup:/,/^# Prepare this release/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/boot-cleanup"
 [ -s "$work/boot-cleanup" ] || die 'missing boot cleanup'

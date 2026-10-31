@@ -49,7 +49,7 @@ cannot combine VLANs with IP filtering. Routing policy is in section 4.
 | Kernel interfaces | Restricted ptrace, perf, BPF, pointers and dmesg; protected links/FIFOs; no TIOCSTI, automatic line disciplines, redirects, source routing or core dumps; martian-packet logging; strict reverse-path filtering |
 | DMA | intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma; NVIDIA functions claimed by vfio-pci and runtime power management; Wi-Fi alone in its IOMMU group, no ACS override. Boot verification of Thunderbolt protection is planned |
 | Confinement | AppArmor plus Incus-generated guest profiles; host profile modes in section 5.3 |
-| Audit | Immutable rules cover identities, guest keys, checker baseline, DNS, authentication, privileges, boot files, modules, policy and root commands; forwarded to svc |
+| Audit | Immutable rules watch identity files, USB policy, guest keys, checker baseline, DNS state and the sudo log, and record root commands and module changes; authentication logging is separate from file watches; forwarded to svc |
 | Accounts | Root locked; owner in wheel/seat/audio/video/dialout; su restricted to wheel; sudo PTY, own log and five-minute ticket; yescrypt passwords; five failures lock login for 15 minutes; restrictive umask |
 | Session | seatd, greetd/tuigreet on tty1, Sway, foot, bemenu, mako, swaylock/swayidle, session PipeWire/WirePlumber; SOF firmware and ALSA UCM for SoundWire |
 | Virtualization | Incus uses QEMU/KVM for VMs and LXC for containers; UI assets pinned for Incus 7.0.1 |
