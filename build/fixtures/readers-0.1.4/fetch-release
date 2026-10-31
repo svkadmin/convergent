@@ -1,0 +1,372 @@
+#!/bin/sh
+# ARCHITECTURE 7.2
+# fetch-release: download the channel's newest signed release to the other slot. Its
+# changed guests wait for the reboot, or apply now if the booted release is newest.
+#   fetch-release [check]      check: only report whether a newer release exists
+#   fetch-release usb <dir>    stage a signed release from USB
+# Warn after 30 days until publication renews timestamps; future tolerance is 5 minutes.
+set -eu
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+umask 077
+conf=/etc/convergent/update.conf
+. /usr/lib/convergent/update.sh
+# Root's own directory on state: nothing the owner can create or rename in.
+work=/var/lib/convergent/update
+staged=/var/lib/convergent/guest-updates
+pointer=
+
+die() { logger -p user.err -t fetch-release "$*"; echo "fetch-release: $*" >&2; exit 1; }
+cleanup() {
+	_rc=$?
+	trap - 0
+	trap '' HUP INT TERM
+	[ -z "$pointer" ] || rm -rf "$pointer"
+	[ -z "$src_open" ] || close_src || { echo "fetch-release: a firewall kept the update source open; it expires within 4 hours" >&2; _rc=1; }
+	exit "$_rc"
+}
+field() { awk -v k="$1" -v f="${2:-}" '$1 == k && (f == "" || $2 == f) { print $NF; n++ } END { exit n != 1 }' "$3"; }
+num() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+have() { [ -f "$dir/$1" ] && stat -c %s "$dir/$1" || echo 0; }
+guest_path() {
+	printf '%s\n' "$1" | grep -Eq '^guests/((fw|wan|svc|browser|remmina)/[A-Za-z0-9._-]+|browser/incus/[A-Za-z0-9._-]+\.yaml)$' || return 1
+	case ${1##*/} in . | ..) return 1 ;; esac
+}
+bytes() { num "$1" && [ "${#1}" -le 12 ] && { [ "$1" = 0 ] || [ "${1#0}" = "$1" ]; }; }
+read_pointer() {
+	verify "$pointer/latest" || die "latest is not signed with this image's key"
+	latest=$(field release "" "$pointer/latest") && signed=$(field signed "" "$pointer/latest") &&
+		gsum=$(field guests "" "$pointer/latest") || die 'latest is malformed'
+	bytes "$latest" && bytes "$signed" || die 'latest is malformed'
+	case $gsum in none) ;; '' | *[!0-9a-f]*) die 'latest is malformed' ;; *) [ "${#gsum}" = 64 ] || die 'latest is malformed' ;; esac
+	rsum=none
+	if grep -q '^remmina ' "$pointer/latest"; then
+		rsum=$(field remmina "" "$pointer/latest") || die 'latest has duplicate Remmina entries'
+	fi
+	case $rsum in none) ;; '' | *[!0-9a-f]*) die 'invalid Remmina hash' ;; *) [ "${#rsum}" = 64 ] || die 'invalid Remmina hash' ;; esac
+	age=$(( $(date +%s) - signed ))
+	[ "$age" -ge -300 ] || die 'latest is signed more than 5 minutes in the future; check the clock'
+	signed_ago="signed $((age / 86400)) days ago"
+	current='up to date'
+	if [ "$age" -gt 2592000 ]; then
+		current="signed metadata is stale ($((age / 86400)) days old)"
+		echo "fetch-release: warning: latest is older than 30 days; $current; newer security updates may exist" >&2
+		signed_ago="$current; warning: latest is older than 30 days; newer security updates may exist"
+	fi
+	if [ -n "$usb" ]; then
+		cp "$usb/manifest" "$usb/manifest.sig" "$pointer/" || die 'cannot read USB manifest'
+		verify "$pointer/manifest" || die 'the USB manifest signature does not verify'
+		[ "$(field release "" "$pointer/manifest")" = "$latest" ] || die 'USB manifest does not match latest'
+	fi
+}
+# The signed list a file comes from: guest files only from guests.manifest.
+mf() { case $1 in guests/*) echo "$gm" ;; *) echo "$dir/manifest" ;; esac; }
+# A guest's identity: its artifacts' SHA256SUMS and its Incus profiles (build/guests: the same).
+ident() { (cd "$1" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1; }
+guest_valid() (
+	g=${1##*/}
+	[ "$(ident "$1")" = "$(field guest "$g" "$gm" | tr A-F a-f)" ] || return 1
+	# SHA256SUMS cannot name anything outside this guest's signed file list.
+	awk 'NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-fA-F]/ {exit 1}
+		{ sub(/^\*/, "", $2); print $2 }' "$1/SHA256SUMS" >"$dir/artifacts" || return 1
+	while read -r artifact; do
+		f=guests/$g/$artifact
+		guest_path "$f" || return 1
+		case " $2 " in *" $f "* | *" $f.zst "*) ;; *) return 1 ;; esac
+	done <"$dir/artifacts"
+	(cd "$1" && sha256sum -c --quiet SHA256SUMS)
+)
+staged_current() (
+	[ -d "$staged/$latest" ] || return 1
+	private "$staged"
+	private "$staged/$latest"
+	[ -z "$(find "$staged/$latest" -type l -print)" ] || return 1
+	paths=$(printf '%s\n' "$guest_files" | tr '\n' ' ')
+	for g in $changed; do [ -d "$staged/$latest/$g" ] || return 1; done
+	for g in fw wan svc browser remmina; do
+		[ -d "$staged/$latest/$g" ] || continue
+		guest_valid "$staged/$latest/$g" "$paths" || return 1
+	done
+)
+download() {
+	f=$1
+	size=$(field size "$f" "$(mf "$f")")
+	want=$(awk -v f="$f" '$2 == f && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {print tolower($1); n++} END {exit n != 1}' "$(mf "$f")") || die "no hash for $f"
+	mkdir -p "$(dirname "$dir/$f")"
+	if [ "$(have "$f")" != "$size" ]; then
+		echo "downloading $f"
+		# A dropped connection resumes next run; a refused or ignored range starts over.
+		if [ -n "$usb" ]; then
+			cp "$usb/$f" "$dir/$f" || die "cannot copy $f from USB"
+		else
+			get --max-time 7200 --max-filesize "$size" --retry 5 -C - -o "$dir/$f" "$url/$latest/$f" ||
+				{ rc=$?; case $rc in 22 | 33 | 36) rm -f "$dir/$f" ;; esac; die "download of $f failed; run again"; }
+		fi
+	fi
+	[ "$(have "$f")" = "$size" ] && [ "$(sha256sum <"$dir/$f" | cut -d' ' -f1)" = "$want" ] ||
+		{ rm -f "$dir/$f"; die "$f does not match the manifest; run again"; }
+}
+
+[ "$(id -u)" = 0 ] || die "run as root"
+usb=
+mode=${1:-write}
+case $mode:$# in
+usb:2)
+	usb=$(cd "$2" && pwd -P) || die 'no USB release directory'
+	mode='write'
+	;;
+write:0|write:1|check:1) ;;
+*) die 'usage: fetch-release [check] | usb <release-dir>' ;;
+esac
+if [ -z "$usb" ] && { [ ! -f "$conf" ] || [ ! -f "$key" ]; }; then
+	[ "$mode" != check ] || { echo 'this release has no online updates'; exit 0; }
+	die 'this release has no online updates; run sys update usb'
+fi
+[ -f "$key" ] || die 'this release trusts no release key'
+if [ -z "$usb" ]; then
+	. "$conf"
+	update_url
+fi
+lock_src
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+
+# Newer than both the booted release and the highest ever marked good, or slot write refuses.
+booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+highest=$(slot status | awk '$1 == "highest" { print $2 }') || highest=
+num "$booted" || die "the kernel command line names no release"
+# Invalidate old advisory evidence before attempting this online check.
+if [ "$mode" = check ] && [ -z "$usb" ]; then
+	. /usr/lib/convergent/release-status.sh
+	release_metrics 0 || die 'cannot write release metrics'
+fi
+num "$highest" || highest=0
+expr "$highest" '>' "$booted" >/dev/null && floor=$highest || floor=$booted
+
+[ -n "$usb" ] || open_src "$host"
+
+# The work directory: root's, a real directory, holding only this release.
+private "$work"
+pointer=$(mktemp -d /run/convergent/fetch.XXXXXX)
+if [ -n "$usb" ]; then
+	cp "$usb/latest" "$usb/latest.sig" "$pointer/" || die 'cannot read USB latest and signature'
+else
+	code=$(get --max-time 60 --max-filesize 1024 -o "$pointer/latest" -w '%{http_code}' "$url/latest" 2>"$pointer/error") || {
+		status=$?
+		reason=$(head -n 1 "$pointer/error" | cut -c1-160)
+		rm -rf "$pointer"
+		[ "$code" != 404 ] || die 'no release is published on this channel yet'
+		die "cannot reach $host (curl $status, HTTP ${code:-none}${reason:+: $reason})"
+	}
+	get --max-time 60 --max-filesize 1024 -o "$pointer/latest.sig" "$url/latest.sig" || { rm -rf "$pointer"; die "cannot download latest.sig from $host"; }
+fi
+read_pointer
+# Status failure is observability-only; it never blocks a release update.
+if [ "$mode" = check ] && [ -z "$usb" ]; then release_metrics 1 || die 'cannot write release metrics'; fi
+rm -rf "$pointer"
+uptodate="$current: release $booted (newest published: $latest, $signed_ago)"
+# Up to date, but the booted release's own guests may still be missing (host-only update).
+sync=
+if ! expr "$latest" '>' "$floor" >/dev/null; then
+	[ "$latest" = "$booted" ] || { echo "$uptodate"; exit 0; }
+	sync=1
+fi
+# Fail now, not after the download: a guest update holds this for up to half an hour.
+exec 8>/run/convergent/guests.lock
+flock -s -n 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
+exec 8>&-
+for _d in "$work"/* "$work"/.[!.]* "$work"/..?*; do
+	[ -e "$_d" ] || [ -L "$_d" ] || continue
+	[ "$_d" = "$work/$latest" ] && [ -d "$_d" ] && [ ! -L "$_d" ] || rm -rf "$_d"
+done
+dir=$work/$latest
+private "$dir"
+[ -z "$(find "$dir" -type l -print)" ] || die "$dir contains symlinks"
+if [ -n "$usb" ]; then
+	cp "$usb/manifest" "$usb/manifest.sig" "$dir/" || die 'cannot copy USB manifest'
+else
+	get --max-time 120 --max-filesize 65536 -o "$dir/manifest" "$url/$latest/manifest" &&
+		get --max-time 120 --max-filesize 1024 -o "$dir/manifest.sig" "$url/$latest/manifest.sig" ||
+		die "manifest download failed"
+fi
+verify "$dir/manifest" || { rm -rf "$dir"; die "the manifest signature does not verify"; }
+[ "$(field release "" "$dir/manifest")" = "$latest" ] || { rm -rf "$dir"; die "the manifest is not release $latest"; }
+version=$(field version "" "$dir/manifest") || version=
+available=${version:-$latest}
+[ -n "$sync" ] || [ "$mode" = check ] || echo "release $available ($latest; $signed_ago)"
+# Guests travel in a second signed file, which older releases' tools never read; none means none.
+gm=$dir/guests.manifest
+if [ ! -e /var/lib/convergent/guests/initialized ]; then
+	# Never created: sys guests setup makes them from the installed images, not from here.
+	echo 'guests are not set up yet; they come from sys guests setup, not from updates'
+	: >"$gm"
+elif [ "$gsum" = none ]; then
+	: >"$gm"
+else
+	rc=0
+	if [ -n "$usb" ]; then
+		cp "$usb/guests.manifest" "$usb/guests.manifest.sig" "$dir/" || die 'cannot copy USB guest manifest'
+		code=200
+	else
+		code=$(get --max-time 120 --max-filesize 65536 -o "$gm" -w '%{http_code}' "$url/$latest/guests.manifest" 2>/dev/null) || rc=$?
+	fi
+	case $rc,$code in
+	0,200)
+		[ -n "$usb" ] || get --max-time 120 --max-filesize 1024 -o "$gm.sig" "$url/$latest/guests.manifest.sig" || die "guests.manifest.sig download failed"
+		verify "$gm" || { rm -rf "$dir"; die "the guests.manifest signature does not verify"; }
+		[ "$(field release "" "$gm")" = "$latest" ] || { rm -rf "$dir"; die "guests.manifest is not release $latest"; }
+		;;
+	22,404) [ -z "$gsum" ] || die "guests.manifest is missing from the update server"; : >"$gm" ;;
+	# $dir stays: a cut-off or over-limit body is not a bad signature, and slot.img resumes.
+	*) die "guests.manifest download failed (curl $rc, HTTP ${code:-none}); run again" ;;
+	esac
+	# The signed latest names it, so a mirror can neither withhold nor swap it.
+	[ -z "$gsum" ] || [ "$(sha256sum <"$gm" | cut -d' ' -f1)" = "$gsum" ] ||
+		{ rm -rf "$dir"; die "guests.manifest is not the one latest names"; }
+fi
+
+# The old fetcher ignores this sidecar and its signed latest field.
+if [ -e /var/lib/convergent/guests/initialized ] && [ "$rsum" != none ]; then
+	rm=$dir/remmina.manifest
+	if [ -n "$usb" ]; then
+		cp "$usb/remmina.manifest" "$usb/remmina.manifest.sig" "$dir/" || die 'cannot copy Remmina manifest'
+	else
+		get --max-time 120 --max-filesize 65536 -o "$rm" "$url/$latest/remmina.manifest" &&
+			get --max-time 120 --max-filesize 1024 -o "$rm.sig" "$url/$latest/remmina.manifest.sig" || die 'Remmina manifest download failed'
+	fi
+	verify "$rm" && [ "$(field release "" "$rm")" = "$latest" ] &&
+		[ "$(sha256sum <"$rm" | cut -d' ' -f1)" = "$rsum" ] || die 'Remmina manifest verification failed'
+	awk '
+		$1 == "release" && NF == 2 {next}
+		$1 == "guest" && NF == 3 && $2 == "remmina" {next}
+		$1 ~ /^(size|unpacked)$/ && NF == 3 && $2 ~ /^guests\/remmina\/[A-Za-z0-9._-]+$/ {next}
+		length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ && NF == 2 && $2 ~ /^guests\/remmina\/[A-Za-z0-9._-]+$/ {next}
+		{exit 1}' "$rm" || die 'invalid Remmina sidecar'
+	cat "$gm" "$rm" >"$dir/guest-manifests"
+	gm=$dir/guest-manifests
+fi
+
+files="slot.img convergent-$latest-a.efi convergent-$latest-b.efi"
+[ -z "$sync" ] || files=
+guest_files=$(awk '$2 ~ /^guests\// {
+	if ($2 !~ /^guests\/((fw|wan|svc|browser|remmina)\/[A-Za-z0-9._-]+|browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ || $2 ~ /\/\.\.?$/) exit 1
+	if (length($1) == 64 && $1 !~ /[^0-9a-fA-F]/) {if (seen[$2]++) exit 1; print $2}
+}' "$gm") || die 'invalid guest path in guests.manifest'
+if [ -n "$usb" ] && [ -z "$guest_files" ] && [ -f /var/lib/convergent/guests/initialized ]; then
+	legacy=$(incus --force-local query '/1.0/instances?recursion=1&project=default') || die 'cannot list browsers'
+	volumes=$(incus --force-local --project default storage volume list default --format json) || die 'cannot list browser volumes'
+	profiles=$(incus --force-local --project default profile list --format json) || die 'cannot list browser profiles'
+	if printf '%s\n' "$legacy" "$volumes" "$profiles" | jq -se 'any(.[][];
+		.name == "web" or .name == "admin" or .name == "portal" or
+		.name == "browser-web-state" or .name == "browser-admin-state" or
+		.name == "browser-web" or .name == "browser-admin" or .name == "browser-portal")' >/dev/null; then
+		echo 'fetch-release: warning: this USB release carries no guests; legacy browsers stay unchanged; run sys update install, or sys update usb with a stick that carries the guests' >&2
+	fi
+fi
+changed=
+awk '$1 == "guest" {if (NF != 3 || $2 !~ /^(fw|wan|svc|browser|remmina)$/ || length($3) != 64 || $3 ~ /[^0-9a-fA-F]/ || seen[$2]++) exit 1; print $2, tolower($3)}' \
+	"$gm" >"$dir/guest-ids" || die 'invalid guest identity in guests.manifest'
+while read -r g guest_id; do
+	installed=
+	[ ! -f "/var/lib/convergent/release-guests/guests/$g/SHA256SUMS" ] ||
+		[ -e "/var/lib/convergent/release-guests/guests/$g.stale" ] ||
+		installed=$(ident "/var/lib/convergent/release-guests/guests/$g")
+	[ "$installed" != "$guest_id" ] || { rm -rf "$dir/guests/$g"; continue; }
+	changed="$changed $g"
+	paths=$(printf '%s\n' "$guest_files" | awk -v p="guests/$g/" 'index($0, p) == 1 {printf "%s ", $0}')
+	[ -n "$paths" ] || die "no files for $g"
+	files="$files $paths"
+done <"$dir/guest-ids"
+if [ -n "$sync" ] && [ -z "$changed" ]; then
+	rm -rf "$dir"
+	echo "$uptodate"
+	exit 0
+fi
+if [ "$mode" = check ]; then
+	if [ -n "$sync" ]; then
+		echo "$uptodate; guests to update:$changed (sys update install fetches them)"
+	else
+		echo "release $available is available ($latest; booted: $booted; $signed_ago)"
+		[ -z "$changed" ] || echo "guests to update after the reboot:$changed"
+	fi
+	exit 0
+fi
+if [ -n "$sync" ]; then
+	exec 8>/run/convergent/guests.lock
+	flock -s -w 600 8 || die 'another guests operation is running'
+	if staged_current; then
+		[ -z "$src_open" ] || close_src || die "a firewall kept the update source open; it expires within 4 hours"
+		rm -rf "$dir"
+		echo "updating the guests of release $latest now:$changed (already staged)"
+		exec 8>&- 9>&-
+		exec /usr/local/sbin/guests apply
+	fi
+	exec 8>&-
+fi
+if [ -d "$dir/guests" ]; then
+	find "$dir/guests" -type f | while IFS= read -r path; do
+		f=${path#"$dir/"}
+		case " $files " in *" $f "*) ;; *) rm -f "$path" ;; esac
+	done
+	find "$dir/guests" -depth -type d -empty -delete
+fi
+# Room for what is still missing, plus 1 GiB.
+need=0
+for f in $files; do
+	size=$(field size "$f" "$(mf "$f")") && bytes "$size" || { rm -rf "$dir"; die "the manifest gives no size for $f"; }
+	[ "$(have "$f")" -le "$size" ] || rm -f "$dir/$f"
+	need=$((need + size - $(have "$f")))
+	case $f in
+	*.zst)
+		unpacked=$(field unpacked "${f%.zst}" "$gm") && bytes "$unpacked" || die "no unpacked size for $f"
+		need=$((need + unpacked))
+		;;
+	esac
+done
+[ "$(( $(df -Pk "$work" | awk 'NR == 2 { print $4 }') * 1024 ))" -gt $((need + 1073741824)) ] ||
+	die "not enough free space in /var: $((need / 1048576)) MiB to download, plus 1 GiB"
+
+for f in $files; do download "$f"; done
+[ -z "$src_open" ] || close_src || die "a firewall kept the update source open; it expires within 4 hours"
+
+for g in $changed; do
+	for f in $files; do
+		case $f in guests/"$g"/*.zst) ;; *) continue ;; esac
+		unpacked=$(field unpacked "${f%.zst}" "$gm")
+		(rc=0; zstd -q -d --long=27 -c "$dir/$f" || rc=$?; echo "$rc" >"$dir/unpack-status") |
+			head -c $((unpacked + 1)) >"$dir/${f%.zst}"
+		[ "$(cat "$dir/unpack-status")" = 0 ] && [ "$(have "${f%.zst}")" = "$unpacked" ] ||
+			{ rm -f "$dir/${f%.zst}"; die "$f unpacked size mismatch"; }
+	done
+	guest_valid "$dir/guests/$g" "$files" || die "$g identity, artifact path or checksum mismatch"
+done
+# Staged before the slot write: a power loss after it still finds them at the next boot.
+exec 8>/run/convergent/guests.lock
+flock -w 600 8 || die 'another guests operation is running'
+private "$staged"
+for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
+	[ -e "$_d" ] || [ -L "$_d" ] || continue
+	[ ! -L "$_d" ] || die "$_d is a symlink"
+	rm -rf "$_d"
+done
+if [ -n "$changed" ]; then
+	# Transport copies stay until here, so a failed run resumes without downloading again.
+	find "$dir/guests" -type f -name '*.zst' -delete
+	mv "$dir/guests" "$staged/$latest"
+	chmod 0700 "$staged/$latest"
+	if [ -d "$staged/$latest/remmina" ] && [ "$rsum" != none ]; then
+		cp "$dir/remmina.manifest" "$dir/remmina.manifest.sig" "$staged/$latest/"
+	fi
+	sync -f "$staged" || die "could not sync staged guests"
+fi
+exec 8>&-
+if [ -n "$sync" ]; then
+	rm -rf "$dir"
+	# The booted release is good already: apply now, without this run's lock.
+	echo "updating the guests of release $latest now:$changed"
+	exec 9>&-
+	exec /usr/local/sbin/guests apply
+fi
+slot write "$dir"
+[ -z "$changed" ] || echo "guests will update after the reboot:$changed"
+rm -rf "$dir"

@@ -262,6 +262,28 @@ def firewall_version(guests):
     return version
 
 
+def legacy_release(release):
+    versions = re.findall(r'^version (\S+)$', (Path(release) / 'manifest').read_text(), re.M)
+    return len(versions) == 1 and re.fullmatch(r'0\.(0\.[0-9]+|1\.[0-6])(-rc[0-9]+)?', versions[0]) is not None
+
+
+def alpine_coverage(guests, guest, legacy=False):
+    imports = {}
+    if guest == 'svc':
+        with tarfile.open(guests / guest / 'rootfs.tar.gz', 'r:gz') as archive:
+            if legacy and not any(m.name.removeprefix('./') == 'etc/convergent/apk-imports' for m in archive):
+                return None
+            text = archive_text(archive, 'etc/convergent/apk-imports')
+        for line in text.splitlines():
+            fields = line.split()
+            require(len(fields) == 3, 'invalid imported package provenance')
+            name, version, repository = fields
+            require(name not in imports and repository in ('edge/main', 'edge/community', 'edge/testing'),
+                    'invalid/duplicate imported package provenance')
+            imports[name] = (version, repository)
+    return imports
+
+
 def targets(release, gate):
     if not gate:
         return ['fw', 'wan', 'svc', 'browser', 'remmina']
@@ -415,7 +437,7 @@ def gate_selftest():
             manifest += f'guest {guest} {"a" * 64}\n'
             manifest += ''.join(f'{"b" * 64}  guests/{guest}/{name}\n' for name in files)
         (work / 'guests.manifest').write_text(manifest)
-        (work / 'manifest').write_text('release 42\nversion 0.1.4\nkernel 6.18.9\n')
+        (work / 'manifest').write_text('release 42\nversion 0.1.7\nkernel 6.18.9\n')
         (work / 'packages').write_text('package app-containers/incus-7.0.1-r2 0\n')
         (guests / 'fw/openbsd.version').write_text('7.9\n')
         for machine in ('fw1', 'fw2'):
@@ -426,6 +448,7 @@ def gate_selftest():
         for guest in ('svc', 'browser', 'remmina'):
             with tarfile.open(guests / guest / 'rootfs.tar.gz', 'w:gz') as archive:
                 for name, text in [('etc/alpine-release', '3.24.2\n'),
+                                   ('etc/convergent/apk-imports', ''),
                                    ('lib/apk/db/installed', 'P:libssl3\nV:3.5.1-r2\no:openssl\n')]:
                     data = text.encode()
                     member = tarfile.TarInfo('./' + name)
@@ -447,6 +470,53 @@ def gate_selftest():
 
         secdb('3.5.1-r2')
         check(0)
+        svc = guests / 'svc/rootfs.tar.gz'
+        original = svc.read_bytes()
+        for imports in (None, 'victoria-logs 1.52.1-r0 edge/testing\n'):
+            with tarfile.open(fileobj=io.BytesIO(original), mode='r:gz') as source, tarfile.open(svc, 'w:gz') as archive:
+                for member in source:
+                    data = source.extractfile(member).read()
+                    if member.name == './etc/convergent/apk-imports':
+                        if imports is None:
+                            continue
+                        data = imports.encode()
+                    if member.name == './lib/apk/db/installed':
+                        data += b'\nP:victoria-logs\nV:1.52.1-r0\no:victoria-logs\n'
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+            output = check(2 if imports is None else 0)
+            require('UNKNOWN:' in output, 'missing/imported package coverage was clean')
+            status = work / 'unsupported.json'
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+            if imports is None:
+                require(result == 2 and not status.exists(), 'missing provenance was publishable')
+                host_manifest = work / 'manifest'
+                current = host_manifest.read_text()
+                host_manifest.write_text(current.replace('0.1.7', '0.1.6'))
+                with contextlib.redirect_stdout(io.StringIO()):
+                    result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
+                data = json.loads(status.read_text())
+                require(result == 0 and len(data['notes']) == 2, 'legacy scan did not produce coverage notes')
+                secdb('3.5.1-r10')
+                require('svc: libssl3 installed' in check(1), 'legacy scan skipped covered packages')
+                secdb('3.5.1-r2')
+                host_manifest.write_text(current)
+                status.unlink()
+            else:
+                require(result == 0 and status.exists(), 'accepted imports blocked publication')
+                data = json.loads(status.read_text())
+                require(not data['advisories'], 'coverage gap reported as an advisory')
+                require([p for p in data['packages'] if 'advisory_coverage' in p] == [
+                    dict(target='svc', package='victoria-logs', version='1.52.1-r0',
+                         advisory_coverage='UNKNOWN', repository='edge/testing')],
+                    'UNKNOWN must apply only to the imported package')
+                require('UNKNOWN: svc victoria-logs 1.52.1-r0 (edge/testing)' in output,
+                        'missing package coverage warning')
+                secdb('3.5.1-r10')
+                require('svc: libssl3 installed' in check(1), 'imports bypassed covered package gate')
+                secdb('3.5.1-r2')
+        svc.write_bytes(original)
         require('main-v3.24.json' in sources(guests, targets(work, True)), 'release branch selection')
         secdb('3.5.1-r10')
         output = check(1)
@@ -532,13 +602,18 @@ def gate_selftest():
 
 def report(work, release, guests, snapshot, branch, minirootfs, exception_file, gate=False, status=None):
     actions, unknown = [], []
-    findings = []
+    findings, uncovered = [], []
+    notes = []
+    legacy = legacy_release(release)
+    if legacy and not re.search(r'^manifest\s', (Path(release) / 'packages').read_text(), re.M):
+        notes.append('host: legacy inventory is not bound to the manifest')
     allowed = exceptions(Path(exception_file))
     selected = targets(release, gate)
 
     def section(name, checks):
         print(f'{name}:')
         items, errors = [], []
+        coverage_count = len(uncovered) + len(notes)
         for target, check in checks:
             try:
                 for detail in check():
@@ -563,7 +638,7 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
         targets = list(dict.fromkeys(item.split(':', 1)[0] for item in items))
         if items:
             print('  ACTION: rebuild ' + ', '.join(targets))
-        elif not errors:
+        elif not errors and len(uncovered) + len(notes) == coverage_count:
             print('  ok')
         for item in items:
             print('  ' + item)
@@ -623,6 +698,16 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
 
     def alpine(guest):
         guest_branch, packages = alpine_inventory(guests, guest)
+        imports = alpine_coverage(guests, guest, legacy)
+        if imports is None:
+            notes.append('svc: legacy apk-imports missing; imported package coverage is unknown')
+            imports = {}
+        for name, (version, repository) in imports.items():
+            require(any(p[0] == name and p[1] == version for p in packages),
+                    f'{name}: imported package inventory mismatch')
+            print(f'  UNKNOWN: {guest} {name} {version} ({repository}): no advisory coverage')
+            uncovered.append(dict(target=guest, package=name, version=version,
+                                  advisory_coverage='UNKNOWN', repository=repository))
         errors = []
         for repository in ('main', 'community'):
             try:
@@ -633,7 +718,7 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
                 for entry in database['packages']:
                     package = entry['pkg']
                     relevant = [(name, version, origin) for name, version, origin in packages
-                                if package['name'] in (name, origin)]
+                                if name not in imports and package['name'] in (name, origin)]
                     if not relevant:
                         continue
                     for fixed, ids in package['secfixes'].items():
@@ -681,13 +766,15 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
     if unknown:
         summary += '; UNKNOWN: ' + ', '.join(unknown)
     print('advisories: ' + summary)
+    for note in notes:
+        print(f'  UNKNOWN: {note}')
     if status:
         if unknown:
             return 2
         manifest = (Path(release) / 'manifest').read_text()
-        ids = re.findall(r'^release ([0-9]+)$', manifest, re.M)
+        ids = re.findall(r'^release (0|[1-9][0-9]{0,11})$', manifest, re.M)
         require(len(ids) == 1, 'invalid release id')
-        versions = []
+        versions = list(uncovered)
         for key in ('version', 'kernel'):
             for version in re.findall(r'^' + key + r' (\S+)$', manifest, re.M):
                 versions.append(dict(target='host', package=key, version=version))
@@ -701,10 +788,11 @@ def report(work, release, guests, snapshot, branch, minirootfs, exception_file, 
             else:
                 _, packages = alpine_inventory(guests, guest)
                 for name, version, _ in packages:
-                    if name in ('linux-lts', 'openssl', 'chromium', 'grafana', 'victoria-metrics', 'victoria-logs', 'remmina'):
+                    if name in ('linux-lts', 'openssl', 'chromium', 'grafana', 'victoria-metrics', 'victoria-logs', 'remmina') and not any(
+                            p['target'] == guest and p['package'] == name for p in uncovered):
                         versions.append(dict(target=guest, package=name, version=version))
         Path(status).write_text(json.dumps(dict(release=ids[0], generated=int(dt.datetime.now(dt.timezone.utc).timestamp()),
-                                               advisories=findings, packages=versions), sort_keys=True) + '\n')
+                                               advisories=findings, packages=versions, notes=notes), sort_keys=True) + '\n')
     return 1 if actions else 2 if unknown else 0
 
 
@@ -721,6 +809,8 @@ elif mode == 'host':
 elif mode == 'sources':
     for name, url in sources(Path(args[1]), targets(args[0], args[2] in ('gate', 'status'))).items():
         print(name, url)
+elif mode == 'legacy':
+    print(int(legacy_release(args[0])))
 else:
     try:
         sys.exit(report(Path(args[0]), args[1], Path(args[2]), *args[3:7], gate=args[7] in ('gate', 'status'),
@@ -766,8 +856,18 @@ guests=${2:-$BUILDER/stick/guests}
 [ -f "$release/manifest" ] || die "no release manifest"
 [ -s "$release/packages" ] || die "no package inventory in $release; rebuild the host image"
 openssl pkeyutl -verify -pubin -inkey "/etc/convergent/keys/$CHANNEL.pub" -rawin \
+	-in "$release/manifest" -sigfile "$release/manifest.sig" >/dev/null 2>&1 ||
+	die 'host manifest signature does not verify with the channel key'
+openssl pkeyutl -verify -pubin -inkey "/etc/convergent/keys/$CHANNEL.pub" -rawin \
 	-in "$release/packages" -sigfile "$release/packages.sig" >/dev/null 2>&1 ||
 	die 'package inventory signature does not verify with the channel key'
+dir=$release
+if [ "$mode" != gate ] && [ "$(python_run python3 - legacy "$release")" = 1 ] &&
+	! grep -q '^[[:space:]]*manifest\([[:space:]]\|$\)' "$dir/packages"; then
+	echo 'advisories: UNKNOWN: legacy inventory has no manifest binding' >&2
+else
+	. "$here/inventory-check"
+fi
 cache=/var/cache/convergent/advisories
 mkdir -p "$cache"
 work=$(mktemp -d "$cache/.run.XXXXXX")
@@ -801,7 +901,7 @@ fi
 
 # Publish a complete GLSA set; a failed sync must not replace the last fetch.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")
-if git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$glsa"; then
+if timeout -k 10 120 git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$glsa"; then
 	previous=$(readlink "$cache/glsa" 2>/dev/null || true)
 	ln -s "${glsa##*/}" "$work/glsa-link"
 	mv -Tf "$work/glsa-link" "$cache/glsa"

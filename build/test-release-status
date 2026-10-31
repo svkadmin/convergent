@@ -34,7 +34,7 @@ sed -e "s|/var/lib/node_exporter|$work/metrics|g" \
 status() {
     for release in 42 43; do
         mkdir -p "$work/source/$release"
-        printf '{"release":"%s","generated":%s,"advisories":[{"target":"wan","package":"openssl","installed_version":"1","advisory":"CVE-test","severity":null,"fixed_in":"2"}],"packages":[{"target":"host","package":"kernel","version":"6"}]}\n' \
+        printf '{"release":"%s","generated":%s,"advisories":[{"target":"wan","package":"openssl","installed_version":"1","advisory":"CVE-test","severity":null,"fixed_in":"2"}],"packages":[{"target":"host","package":"kernel","version":"6"},{"target":"svc","package":"victoria-logs","version":"1.52.1-r0","advisory_coverage":"UNKNOWN","repository":"edge/testing"}]}\n' \
             "$release" "$1" >"$work/source/$release/advisories.json"
         openssl pkeyutl -sign -inkey "$2" -rawin -in "$work/source/$release/advisories.json" \
             -out "$work/source/$release/advisories.json.sig"
@@ -46,7 +46,9 @@ for role in installed latest; do
     grep -q "cv_release_status_verified{role=\"$role\".*} 1$" "$work/metrics/release.prom"
     grep -q "cv_release_advisory_info{role=\"$role\"" "$work/metrics/release.prom"
     grep -q "cv_release_package_info{role=\"$role\"" "$work/metrics/release.prom"
+    grep -q "cv_release_package_advisory_coverage_unknown{role=\"$role\".*target=\"svc\",package=\"victoria-logs\",version=\"1.52.1-r0\",repository=\"edge/testing\"} 1$" "$work/metrics/release.prom"
 done
+[ "$(grep -c '^cv_release_package_advisory_coverage_unknown{' "$work/metrics/release.prom")" = 2 ]
 cp "$work/cache/42.json" "$work/accepted-42"
 cp "$work/cache/43.json" "$work/accepted-43"
 for fault in tampered wrong-key missing missing-signature replay; do
@@ -62,7 +64,7 @@ for fault in tampered wrong-key missing missing-signature replay; do
     for role in installed latest; do
         grep -q "cv_release_status_verified{role=\"$role\".*} 0$" "$work/metrics/release.prom"
     done
-    if grep -q 'cv_release_advisory_info\|cv_release_package_info\|cv_release_status_generated_seconds' "$work/metrics/release.prom"; then exit 1; fi
+    if grep -q 'cv_release_advisory_info\|cv_release_package_\|cv_release_status_generated_seconds' "$work/metrics/release.prom"; then exit 1; fi
     cmp "$work/cache/42.json" "$work/accepted-42"
     cmp "$work/cache/43.json" "$work/accepted-43"
     [ -z "$(find "$work/metrics" -name '.release.*' -print)" ]

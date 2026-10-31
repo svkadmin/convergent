@@ -276,11 +276,21 @@ listing = (repo / 'build/advisories-publish').read_text().split("<<'PY'\n", 1)[1
 xml = work / 'list.xml'
 xml.write_text('<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><IsTruncated>false</IsTruncated>'
                '<Contents><Key>beta/42/manifest</Key></Contents><Contents><Key>beta/42/guests.manifest</Key></Contents>'
-               '<Contents><Key>stable/43/manifest</Key></Contents><Contents><Key>beta/debug/manifest</Key></Contents></ListBucketResult>')
+               '<Contents><Key>stable/43/manifest</Key></Contents></ListBucketResult>')
 result = subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], text=True, capture_output=True, check=True)
-assert result.stdout.strip() == '42 1'
-xml.write_text(xml.read_text().replace('false', 'true'))
-assert subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], capture_output=True).returncode != 0
+assert result.stdout.strip() == '42 1 0'
+valid = xml.read_text()
+for extra, expected in [('<Contents><Key>beta/42/remmina.manifest</Key></Contents>', '42 1 1'),
+                        ('<Contents><Key>beta/41/manifest</Key></Contents>', '41 0 0\n42 1 0')]:
+    xml.write_text(valid.replace('</ListBucketResult>', extra + '</ListBucketResult>'))
+    result = subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], text=True, capture_output=True, check=True)
+    assert result.stdout.strip() == expected
+for invalid in [valid.replace('false', 'true'),
+                valid.replace('beta/42/manifest', 'beta/debug/manifest'),
+                valid.replace('beta/42/manifest', 'beta/43/manifest'),
+                valid.replace('guests.manifest', 'remmina.manifest')]:
+    xml.write_text(invalid)
+    assert subprocess.run([sys.executable, '-c', listing, str(xml), 'beta'], capture_output=True).returncode != 0
 
 sys.path.insert(0, str(repo / 'guests/svc/dashboards'))
 network = importlib.import_module('network').generate()

@@ -16,7 +16,8 @@ pub=/etc/convergent/keys/$CHANNEL.pub
 [ -f "$key" ] || die "no key $key"
 [ -f "$pub" ] || die "no public key $pub"
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
-case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
+case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
+[ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
 . "$here/release-check"
 # What the signature vouches for: the manifest and the files it lists.
 for f in manifest guests.manifest remmina.manifest; do

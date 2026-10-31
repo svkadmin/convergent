@@ -104,6 +104,8 @@ token to the bucket. Verified host/guest/Remmina payloads upload to <channel>/<r
 <channel>/latest binds release and guest-manifest hashes (none if absent). Download sizes are
 bounded. Signed-pointer replay can withhold releases; the client reports age.
 
+Signatures upload before their documents; an interruption between uploads leaves a pair readers reject, and rerunning the publisher repairs it.
+
 At most two releases/channel remain, with a 9-GiB bucket cap. Already-advertised releases are
 immutable: retries compare file sets/bytes including pointer/signatures and write nothing if
 identical. New content or re-signed pointers require a new ID. Retry comparisons download
@@ -126,13 +128,19 @@ Before uploads/pruning, publish runs `build/advisories --gate <release-dir>` aga
 each shipped Alpine branch's secdb and OpenBSD errata. Affected packages, missing
 patches/inventories, and fetch/parse failures block publication; previous successful scans do not
 authorize publishing. Only the builder fetches feeds; Portage matching runs in its chroot. Needs
-python3, git, curl/Portage; signing remains offline-capable.
+python3, git, curl/Portage and coreutils timeout; signing remains offline-capable. GLSA clone has
+a 120-second deadline and forced termination after another 10 seconds.
 
 Host packages/slots are inventoried before trimming in build-host-only packages/packages.sig;
-build/sign signs and the scanner verifies them. They are not published or in the host manifest.
+build/image binds them to the host manifest digest; build/sign and the scanner enforce the binding.
+They are not published or in the host manifest. Retained releases through signed version 0.1.6
+still get scans/status without bindings or apk-imports, with coverage notes; 0.1.7 builds require both.
 Svc/browser/Remmina inventories are in rootfs; WAN's wan.manifest and firewall version/patch lists
 are in signed guest payloads. Missing inventories need rebuild. Gate covers shipped guests only;
-kernel/pin freshness is weekly.
+kernel/pin freshness is weekly. Svc records edge imports in its rootfs. Missing or malformed
+provenance blocks publication. Accepted imports without supported advisory coverage
+(including edge/testing VictoriaLogs) are marked UNKNOWN per package in reports and signed status;
+they do not block publication or skip checks for covered packages.
 
 Exceptions use `target package advisory reason` in build/advisories.exceptions, one per target/ID:
 
@@ -154,7 +162,8 @@ packages.
 
 It signs/uploads advisories.json plus signature per release: ID/time, versions,
 advisories/exceptions. Failed/incomplete scans preserve previous status and fail. Mutable sidecars
-are excluded from release identity. Daily/weekly reports also compare pinned Gentoo
+are excluded from release identity. Bucket-listed Remmina requires its retained manifest and
+payloads. Daily/weekly reports also compare pinned Gentoo
 `www-apps/incus-ui` (upstream `incus-ui-canonical`) against Zabbly lts-7.0, verifying InRelease with
 4EFC590696CB15B87C73A3AD82CC8797C838DCFD; the publish gate excludes that freshness check. [Laptop
 evidence](USAGE.md#release-and-network-evidence).

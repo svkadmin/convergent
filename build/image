@@ -30,7 +30,8 @@ idle=$(cfg idle_lock_minutes)
 [ "$(id -u)" = 0 ] || die "run as root"
 
 release=${1:-$(date -u +%Y%m%d%H%M)}
-case $release in '' | *[!0-9]*) die "release must be digits: $release" ;; esac
+case $release in '' | *[!0-9]* | 0?*) die "invalid release: $release" ;; esac
+[ "${#release}" -le 12 ] || die "invalid release: $release"
 # Staging and image-root are shared with other builds.
 exec 9>/run/convergent-packages.lock
 flock 9
@@ -531,5 +532,6 @@ fi
 printf 'release-key %s\nupdate-channel %s\n' "$release_key" "${update_channel:-none}" >"$out/provenance"
 # Signed separately: build host only, never published or hashed in the host manifest.
 printf '%s\n' "$packages" >"$out/packages"
+printf 'manifest %s\n' "$(sha256sum <"$out/manifest" | cut -d' ' -f1)" >>"$out/packages"
 [ ! -f "$keys/$CHANNEL.key" ] || "$here/sign" "$out"
 echo "image: release $release in $out"

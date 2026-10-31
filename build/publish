@@ -20,7 +20,8 @@ env=/etc/convergent/r2-$CHANNEL.env
 [ $# = 1 ] || die "usage: build/publish <release-dir>"
 dir=$1
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest" 2>/dev/null) || :
-case $release in '' | *[!0-9]*) die "no release in $dir/manifest" ;; esac
+case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
+[ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
 files="slot.img convergent-$release-a.efi convergent-$release-b.efi manifest.sig manifest"
 [ -f "$pub" ] || die "no public key $pub"
 . "$here/release-check"
@@ -79,20 +80,21 @@ case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket"
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
 total=$(printf '%s\n' "$objects" | awk '{ s += $1 } END { print s + 0 }')
 new=0
-for f in $files; do
+for f in $files latest latest.sig; do
 	n=$(stat -c %s "$dir/$f")
 	[ "$n" -lt $((5 * 1024 * 1024 * 1024)) ] || die "$f is over R2's 5 GiB single upload"
 	new=$((new + n))
 done
 # Only a missing latest means none; any other failure stops here.
-latest=0
+latest=
 if cur=$(s3 "$ep/$CHANNEL/latest" 2>&1); then
-	latest=$(printf '%s\n' "$cur" | awk '$1 == "release" { print $2 }')
-	case $latest in '' | *[!0-9]*) die "the published latest is malformed" ;; esac
+	latest=$(printf '%s\n' "$cur" | awk '$1 == "release" {if (NF != 2) exit 1; print $2}') || die 'malformed published latest'
+	case $latest in '' | *[!0-9]* | 0?*) die "the published latest is malformed" ;; esac
+	[ "${#latest}" -le 12 ] || die 'malformed published latest'
 else
 	case $cur in *'returned error: 404'*) ;; *) die "cannot read the published latest: $cur" ;; esac
 fi
-expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
+[ -z "$latest" ] || expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
 
 keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { print k }'; }
 if [ "$release" = "$latest" ]; then
