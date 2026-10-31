@@ -226,6 +226,7 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     date() { echo 2000000; }
     sync() { :; }
     rsh() { [ "$remote_ok" = 1 ] || return 1; shift; sh -c 'rcctl() { :; }; unbound-control() { :; }; '"$*"; }
+    rsh_wait() { rsh "$@"; }
     lock= fws=fw remote_ok=1
     selftest=probe.test selftest_addr=127.0.0.2
     # A near-cap full push must leave a cache that passes local validation.
