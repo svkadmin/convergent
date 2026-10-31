@@ -417,13 +417,16 @@ sudo cat /var/lib/convergent/crash/<UTC-timestamp>/<record>
 
 Keep a copy before acknowledging a crash. Remove only its reviewed timestamp directory
 (`sudo rm -r /var/lib/convergent/crash/<UTC-timestamp>`). For BERT, persist an acknowledgment
-outside the archive before deleting the reviewed file (replace `<sha256>` with its hash):
+outside the archive before deleting the reviewed file (replace `<sha256>` with its hash).
+Take the collector's lock; if the 30-second wait expires, retry later:
 
 ```sh
-sudo install -d -m 0700 /var/lib/convergent/crash-ack &&
-sudo touch /var/lib/convergent/crash-ack/bert-<sha256> &&
-sudo sync &&
-sudo rm /var/lib/convergent/crash/bert-<sha256>
+sudo flock -w 30 /run/convergent/facts.lock sh -c '
+install -d -m 0700 /var/lib/convergent/crash-ack &&
+touch /var/lib/convergent/crash-ack/bert-<sha256> &&
+sync &&
+rm /var/lib/convergent/crash/bert-<sha256>
+'
 ```
 
 The marker permanently suppresses that hash, including future byte-identical BERT records.

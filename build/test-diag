@@ -74,14 +74,36 @@ sed -n '/^\tbert=\/sys/,/^\tfi$/p' "$repo/tools/facts" | sed "s|bert=/sys/firmwa
 . "$work/archive"
 [ "$(find "$arch" -type f | wc -l)" = 1 ] || die 'duplicate BERT archive'
 cmp "$work/record" "$arch"/bert-*
-# Run the documented acknowledgment, then collect the unchanged firmware again.
+# Run the documented acknowledgment while collection holds its lock, then retry.
 hash=$(sha256sum <"$work/record"); hash=${hash%% *}
-sed -n '/^sudo install -d -m 0700 \/var\/lib\/convergent\/crash-ack &&$/,/^sudo rm \/var\/lib\/convergent\/crash\/bert-/p' "$repo/RECOVERY.md" |
-    sed "s|/var/lib/convergent|$sdir|g; s|<sha256>|$hash|g" >"$work/ack"
+sed -n '/^sudo .*\(facts.lock\|crash-ack\)/,/^```/p' "$repo/RECOVERY.md" |
+    sed "\$d; s|^sudo ||; s|/var/lib/convergent|$sdir|g; s|/run/convergent|$work|g; s|<sha256>|$hash|g" >"$work/ack"
 [ -s "$work/ack" ]; sh -n "$work/ack"
-sudo() { "$@"; }
+# Shorten only the documented wait; keep the real flock and fail on a hung command.
+sed 's/flock -w 30 /flock -w 0.1 /' "$work/ack" >"$work/ack-busy"
+sh -n "$work/ack-busy"
+ack_overlap() {
+	status=0
+	timeout -k 1 5 sh "$work/ack-busy" 9>&- || status=$?
+	[ "$status" = 1 ] || die 'busy acknowledgment did not fail closed'
+	[ ! -e "$sdir/crash-ack/bert-${hash%% *}" ] || die 'busy acknowledgment wrote marker'
+	[ -f "$arch/bert-${hash%% *}" ] || die 'busy acknowledgment deleted archive'
+	: >"$work/overlapped"
+}
+# Pause after the marker check, before testing the archive's existence.
+sed 's/elif \[ -e "$target" \]; then/elif ack_overlap \&\& [ -e "$target" ]; then/' "$work/archive" >"$work/archive-overlap"
+grep -q 'elif ack_overlap' "$work/archive-overlap"
+sh -n "$work/archive-overlap"
+sed -n '/^exec 9>/p' "$repo/tools/facts" >"$work/lock"
+[ -s "$work/lock" ]; sh -n "$work/lock"
+(
+	run=$work
+	. "$work/lock"
+	flock -w 1 9
+	. "$work/archive-overlap"
+)
+[ -f "$work/overlapped" ] || die 'missed collection/acknowledgment overlap'
 . "$work/ack"
-unset -f sudo
 [ -f "$sdir/crash-ack/bert-$hash" ]
 . "$work/archive"
 [ "$(find "$arch" -type f | wc -l)" = 0 ] || die 'acknowledged BERT reimported'
