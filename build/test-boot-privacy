@@ -1,0 +1,313 @@
+#!/bin/sh
+# Boot and privacy fixtures; no root, hardware or virtual machines.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-boot-privacy: $*" >&2; exit 1; }
+check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
+
+# Capture the feeder's actual fd 3 writes, including TERM's magic close.
+(
+    . "$repo/rootfs/etc/init.d/convergent-watchdog"
+    printf '%s\n' "$loop" >"$work/loop"
+    check_script "$work/loop"
+    # A separate shell gives the TERM fixture its own PID.
+    cat >"$work/feeder" <<'EOF'
+set -u
+work=$1 mode=$2
+logger() { printf '%s\n' "$*" >"$work/logger"; }
+sleep() {
+    printf '%s\n' "$*" >>"$work/sleeps"
+    [ "$mode" != term ] || kill -TERM "$$"
+}
+. "$work/loop"
+EOF
+    check_script "$work/feeder"
+    : >"$work/sleeps"
+    sh "$work/feeder" "$work" expire 3>"$work/feeds"
+    [ "$(cat "$work/feeds")" = '....................' ]
+    [ "$(grep -cx 30 "$work/sleeps")" = 20 ]
+    [ "$(wc -l <"$work/sleeps")" -eq 20 ]
+    grep -q 'no bless within ten minutes' "$work/logger"
+    rm "$work/logger"
+    : >"$work/sleeps"
+    sh "$work/feeder" "$work" term 3>"$work/feeds"
+    [ "$(cat "$work/feeds")" = '.V' ]
+    [ "$(cat "$work/sleeps")" = 30 ]
+    [ ! -e "$work/logger" ]
+
+    # Only the device probe and daemon command are mocked for late stop.
+    sed -n '/^stop() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
+        sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ -c /[ -f /' \
+            -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
+    check_script "$work/stop"
+    . "$work/stop"
+    mock_daemon() { printf '%s\n' "$*" >"$work/daemon"; return 1; }
+    pidfile=$work/exited.pid
+    : >"$work/watchdog"
+    stop
+    [ "$(cat "$work/watchdog")" = V ]
+    [ "$(cat "$work/daemon")" = "--stop --quiet --retry TERM/5 --pidfile $pidfile" ]
+)
+echo 'test-boot-privacy: watchdog passed'
+
+# Fixture sysfs and commands; never touch a partition or mapping.
+sed -n '/^grow_state() {/,/^}/p' "$repo/initramfs/90convergent/convergent-state.sh" |
+    sed "s|/sys/class/block/|$work/sys/|g" >"$work/grow"
+check_script "$work/grow"
+(
+    . "$work/grow"
+    state=$work/state NEWROOT=$work/root dev=/dev/vda5 pass=fixture-secret
+    mkdir -p "$state" "$NEWROOT/usr/lib/convergent" "$work/sys/vda5" "$work/vda/vda5"
+    readlink() {
+        case "$*" in
+        '-f /dev/vda5') echo /dev/vda5 ;;
+        "-f $work/sys/vda5/..") echo "$work/vda" ;;
+        *) die "unexpected readlink: $*" ;;
+        esac
+    }
+    blockdev() {
+        case "$*" in
+        '--getss /dev/vda') echo "$sector" ;;
+        '--getsz /dev/mapper/cv-state') echo "$mapped" ;;
+        *) die "unexpected blockdev: $*" ;;
+        esac
+    }
+    sgdisk() {
+        printf 'sgdisk %s\n' "$*" >>"$work/calls"
+        case "$*" in
+        '-i 5 /dev/vda') printf 'First sector: %s\nPartition unique GUID: fixture-guid\n' "$((2048 * 512 / sector))" ;;
+        '-e /dev/vda') ;;
+        '-p /dev/vda') echo "First usable sector is 34, last usable sector is $((33554432 * 512 / sector - 34))" ;;
+        "-d 5 -n 5:$((2048 * 512 / sector)):$expected_target -t 5:8309 -c 5:cv-state -u 5:fixture-guid /dev/vda") ;;
+        *) die "unexpected sgdisk: $*" ;;
+        esac
+    }
+    partx() {
+        [ "$*" = '-u --nr 5 /dev/vda' ] || die "unexpected partx: $*"
+        printf 'partx %s\n' "$*" >>"$work/calls"
+        echo "$(((expected_target + 1) * sector / 512 - 2048))" >"$work/sys/vda5/size"
+    }
+    cryptsetup() {
+        [ "$*" = 'resize --key-file - cv-state' ] || die "unexpected cryptsetup: $*"
+        [ "$(cat)" = fixture-secret ] || die 'lost resize key'
+        printf 'cryptsetup %s\n' "$*" >>"$work/calls"
+    }
+    for scenario in legacy fixed percent auto capped capped4k partition-grown mapping-grown at-cap not-last small invalid-cap; do
+        sector=512 mapped=4161536 expected_target=33554398
+        echo 5 >"$work/sys/vda5/partition"
+        echo 2048 >"$work/sys/vda5/start"
+        echo 2048 >"$work/vda/vda5/start"
+        echo 4194304 >"$work/sys/vda5/size"
+        echo 33554432 >"$work/vda/size"
+        echo auto >"$state/install-state-size"
+        echo 0 >"$NEWROOT/usr/lib/convergent/state-max-gib"
+        rm -f "$work/vda/later/start"
+        case $scenario in
+        legacy) rm "$state/install-state-size" ;;
+        fixed) echo 8 >"$state/install-state-size" ;;
+        percent) echo '50%' >"$state/install-state-size" ;;
+        capped|capped4k) echo 4 >"$NEWROOT/usr/lib/convergent/state-max-gib"; expected_target=8390655
+            if [ "$scenario" = capped4k ]; then sector=4096; expected_target=1048831; fi ;;
+        partition-grown|mapping-grown) echo 33552351 >"$work/sys/vda5/size"
+            [ "$scenario" != mapping-grown ] || mapped=33519583 ;;
+        at-cap) echo 2 >"$NEWROOT/usr/lib/convergent/state-max-gib" ;;
+        not-last) mkdir -p "$work/vda/later"; echo 8388608 >"$work/vda/later/start" ;;
+        small) echo 6293504 >"$work/vda/size" ;;
+        invalid-cap) echo invalid >"$NEWROOT/usr/lib/convergent/state-max-gib" ;;
+        esac
+        : >"$work/calls"
+        if (grow_state); then
+            [ "$scenario" != invalid-cap ] || die 'accepted invalid cap'
+        else
+            [ "$scenario" = invalid-cap ] || die "grow failed: $scenario"
+        fi
+        : >"$work/expected"
+        case $scenario in
+        auto|capped|capped4k)
+            cat >"$work/expected" <<EOF
+sgdisk -i 5 /dev/vda
+sgdisk -e /dev/vda
+sgdisk -p /dev/vda
+sgdisk -d 5 -n 5:$((2048 * 512 / sector)):$expected_target -t 5:8309 -c 5:cv-state -u 5:fixture-guid /dev/vda
+partx -u --nr 5 /dev/vda
+cryptsetup resize --key-file - cv-state
+EOF
+            ;;
+        partition-grown) echo 'cryptsetup resize --key-file - cv-state' >"$work/expected" ;;
+        esac
+        cmp "$work/expected" "$work/calls" || die "wrong resize: $scenario"
+    done
+    # Btrfs must resume even when the mapping was already grown.
+    sed -n '/^btrfs -q filesystem resize max /,/^[[:space:]]*warn /p' \
+        "$repo/initramfs/90convergent/convergent-state.sh" >"$work/btrfs"
+    check_script "$work/btrfs"
+    btrfs() { printf '%s\n' "$*" >"$work/btrfs-call"; }
+    . "$work/btrfs"
+    [ "$(cat "$work/btrfs-call")" = "-q filesystem resize max $state" ]
+)
+echo 'test-boot-privacy: state growth passed'
+
+# Configuration coverage only; signed/bogus replies still need the firewall fixture.
+dns=$repo/guests/fw/site/var/unbound/etc
+awk '
+    /^[[:space:]]*#/ {next}
+    $1 == "module-config:" {modules++; if ($0 !~ /"respip validator iterator"[[:space:]]*$/) bad=1}
+    $1 == "auto-trust-anchor-file:" {anchors++; if ($2 != "\"/var/unbound/db/root.key\"") bad=1}
+    $1 == "harden-dnssec-stripped:" {harden++; if ($2 != "yes") bad=1}
+    $1 == "val-permissive-mode:" && $2 != "no" {bad=1}
+    $1 == "domain-insecure:" || $1 == "val-override-date:" {bad=1}
+    END {exit bad || modules != 1 || anchors != 1 || harden != 1}
+' "$dns/unbound.conf" "$dns/local-names.conf" "$dns/local-owner.conf" || die 'DNSSEC validation config weakened'
+echo 'test-boot-privacy: DNSSEC config passed'
+
+# Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.
+(
+    state=$work/recovery
+    mkdir -p "$state/etc"
+    stty() { :; }
+    sync() { :; }
+    chown() { printf 'chown %s\n' "$*" >>"$work/permissions"; }
+    chmod() { printf 'chmod %s\n' "$*" >>"$work/permissions"; command chmod "$@"; }
+    . "$repo/initramfs/90convergent/recovery-lib.sh"
+    for scenario in valid minimum maximum short long mismatch no-owner two-owners no-shadow two-shadows bad-group; do
+        printf 'root:x:0:0::/:/bin/sh\nowner:x:1000:1000::/home/owner:/bin/sh\nother:x:1001:1001::/:/bin/sh\n' >"$state/etc/passwd"
+        printf 'root:x:0:\nshadow:x:42:\n' >"$state/etc/group"
+        printf 'root:root-hash:1:2:3:4:5:6:7\nowner:old-hash:8:9:10:11:12:13:14\nother:other-hash:15:16:17:18:19:20:21\n' >"$state/etc/shadow"
+        password='a fixture password' repeat=
+        case $scenario in
+        minimum) password=123456789012 ;;
+        maximum) password=$(printf '%0256d' 0) ;;
+        short) password=12345678901 ;;
+        long) password=$(printf '%0257d' 0) ;;
+        mismatch) repeat='different password' ;;
+        no-owner) sed '/^owner:/d' "$state/etc/passwd" >"$work/passwd"; mv "$work/passwd" "$state/etc/passwd" ;;
+        two-owners) echo 'second:x:1000:1000::/:/bin/sh' >>"$state/etc/passwd" ;;
+        no-shadow) sed '/^owner:/d' "$state/etc/shadow" >"$work/shadow"; mv "$work/shadow" "$state/etc/shadow" ;;
+        two-shadows) echo 'owner:duplicate:1:2:3:4:5:6:7' >>"$state/etc/shadow" ;;
+        bad-group) echo 'shadow:x:bad:' >"$state/etc/group" ;;
+        esac
+        cp "$state/etc/shadow" "$work/before"
+        : >"$work/permissions"
+        printf '%s\n%s\n' "$password" "${repeat:-$password}" >"$work/input"
+        if reset_password <"$work/input" >"$work/reset-log"; then
+            case $scenario in valid|minimum|maximum) ;; *) die "accepted reset: $scenario" ;; esac
+            grep -qx 'Password changed for owner.' "$work/reset-log"
+            hash=$(awk -F: '$1 == "owner" {print $2}' "$state/etc/shadow")
+            case $hash in '$6$'*) ;; *) die 'not SHA-512' ;; esac
+            salt=${hash#\$6\$}; salt=${salt%%\$*}
+            [ "$hash" = "$(printf '%s\n' "$password" | openssl passwd -6 -salt "$salt" -stdin)" ]
+            sed 's/^owner:[^:]*:/owner:old-hash:/' "$state/etc/shadow" >"$work/restored"
+            cmp "$work/before" "$work/restored"
+            sed "s|$state/etc/.shadow\.[^ ]*|TEMP|" "$work/permissions" >"$work/actual"
+            printf 'chown 0:42 TEMP\nchmod 0640 TEMP\n' >"$work/expected"
+            cmp "$work/expected" "$work/actual"
+        else
+            case $scenario in valid|minimum|maximum) die "reset failed: $scenario" ;; esac
+            cmp "$work/before" "$state/etc/shadow"
+            [ ! -s "$work/permissions" ]
+        fi
+        for leftover in "$state/etc/".shadow.*; do [ ! -e "$leftover" ] || die 'reset left temporary shadow'; done
+    done
+)
+echo 'test-boot-privacy: password reset passed'
+
+# Redirect all camera paths; exec uses an explicit interpreter on noexec /tmp.
+mkdir -p "$work/camera/run" "$work/camera/sys/module/videodev"
+sed -n '/^camera_unload() {/,/^}/p; /^camera() {/,/^}/p' "$repo/tools/devices" |
+    sed -e "s|/var/lib/convergent/devices|$work/camera/state|g" \
+        -e "s|/run/convergent-camera|$work/camera/run/convergent-camera|g" \
+        -e "s|/sys/|$work/camera/sys/|g" \
+        -e "s|exec modprobe |exec sh \"$work/modprobe\" |" >"$work/camera-functions"
+check_script "$work/camera-functions"
+cat >"$work/modprobe" <<'EOF'
+set -eu
+printf '%s\n' "$*" >>"$work/modules"
+case "$*" in
+'-r videodev') printf 'choice=%s\n' "$(cat "$work/camera/state/camera")" >>"$work/modules"; exit 1 ;;
+'--ignore-install uvcvideo'|'uvcvideo') ;;
+*) exit 98 ;;
+esac
+EOF
+check_script "$work/modprobe"
+export work
+(
+    . "$work/camera-functions"
+    flock() { :; }
+    modprobe() { sh "$work/modprobe" "$@"; }
+    usage() { exit 2; }
+    : >"$work/modules"
+    (camera on)
+    [ "$(cat "$work/modules")" = uvcvideo ]
+    [ "$(cat "$work/camera/state/camera")" = on ]
+    : >"$work/modules"
+    (camera load uvcvideo)
+    [ "$(cat "$work/modules")" = '--ignore-install uvcvideo' ]
+    : >"$work/modules"
+    if (camera off) >"$work/off-log" 2>&1; then die 'busy camera reported disabled'; fi
+    grep -q 'camera disabled for future loads' "$work/off-log"
+    [ "$(cat "$work/camera/state/camera")" = off ]
+    printf '%s\n' '-r videodev' 'choice=off' '-r videodev' 'choice=off' >"$work/expected"
+    cmp "$work/expected" "$work/modules"
+    : >"$work/modules"
+    if (camera load uvcvideo) >"$work/load-log" 2>&1; then die 'loaded disabled camera'; fi
+    grep -q 'camera is off' "$work/load-log"
+    [ ! -s "$work/modules" ]
+)
+echo 'test-boot-privacy: camera passed'
+
+# Execute the shipped commands, substituting only the socket readiness probe.
+sway=$repo/rootfs/etc/sway/config.d/convergent
+sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
+    sed 's/\[ -S /[ -e /' >"$work/mic-init"
+sed -n 's/^bindsym --locked XF86AudioMicMute exec //p' "$sway" >"$work/mic-locked"
+check_script "$work/mic-init"
+check_script "$work/mic-locked"
+(
+    SWAYSOCK=$work/sway.sock
+    touch "$SWAYSOCK"
+    calls=0 sleeps=0 muted=0
+    timeout() { [ "$1 $2 $3" = '-k 1 2' ] || die 'wrong mute timeout'; shift 3; "$@"; }
+    sleep() { [ "$*" = 1 ] || die 'wrong mute delay'; sleeps=$((sleeps + 1)); [ "$sleeps" -le 2 ] || die 'mute never completed'; }
+    wpctl() {
+        [ "$*" = 'set-mute @DEFAULT_AUDIO_SOURCE@ 1' ] || die "unexpected wpctl: $*"
+        calls=$((calls + 1))
+        [ "$calls" -ge 3 ] || return 1
+        muted=1
+    }
+    . "$work/mic-init"
+    [ "$calls:$sleeps:$muted" = 3:2:1 ]
+    rm "$SWAYSOCK"
+    calls=0
+    . "$work/mic-init"
+    [ "$calls" = 0 ]
+
+    . "$repo/rootfs/usr/lib/convergent/sys/30-audio"
+    audio_session() { :; }
+    onearg() { [ "$#" = 2 ]; answer=$2; }
+    noargs() { [ "$#" = 0 ]; }
+    run() { "$@"; }
+    sys() { [ "$1" = audio ]; action=$2; shift 2; "audio_$action" "$@"; }
+    wpctl() {
+        calls=$((calls + 1))
+        case "$*" in
+        'set-mute @DEFAULT_AUDIO_SOURCE@ 1') muted=1 ;;
+        'set-mute @DEFAULT_AUDIO_SOURCE@ 0') muted=0 ;;
+        'set-mute @DEFAULT_AUDIO_SOURCE@ toggle') muted=$((1 - muted)) ;;
+        *) die "unexpected wpctl: $*" ;;
+        esac
+    }
+    # Prove the mock can unmute, then exercise both initial states.
+    muted=1
+    audio_micmute
+    [ "$muted" = 0 ]
+    for initial in 0 1; do
+        muted=$initial calls=0
+        . "$work/mic-locked"
+        [ "$calls:$muted" = 1:1 ]
+    done
+)
+echo 'test-boot-privacy: microphone passed'
