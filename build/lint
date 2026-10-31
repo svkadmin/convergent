@@ -13,6 +13,7 @@ offline_start=$(date +%s)
 for dependency in python3 jq openssl; do
     command -v "$dependency" >/dev/null 2>&1 || bad "offline preflight requires $dependency"
 done
+sh build/test-boot-privacy || bad 'boot and privacy selftest failed'
 sh build/test --networks || bad 'networks selftest failed'
 sh build/test-topology || bad 'topology selftest failed'
 sh build/test-leases || bad 'leases selftest failed'
