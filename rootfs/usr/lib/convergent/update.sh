@@ -15,7 +15,7 @@ lock_src() {
 close_src() {
 	_r=0
 	for _f in $fws; do
-		rsh "$_f" "pfctl -t update_src -T flush; pfctl -k label -k update" >/dev/null 2>&1 || _r=1
+		rsh "$_f" 'rc=0; pfctl -t update_src -T flush || rc=1; pfctl -k label -k update || rc=1; exit "$rc"' >/dev/null || _r=1
 	done
 	[ "$_r" = 1 ] || src_open=
 	return "$_r"

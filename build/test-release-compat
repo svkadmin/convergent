@@ -7,6 +7,56 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-release-compat: $*" >&2; exit 1; }
+# A failed flush must still kill states, retain tracking and allow cleanup to retry.
+(
+. "$repo/rootfs/usr/lib/convergent/update.sh"
+rsh() { fw=$1; (eval "$2"); }
+pfctl() {
+    printf '%s %s\n' "$fw" "$*" >>"$work/pf-calls"
+    case $* in
+    '-t update_src -T flush') op=flush ;;
+    '-k label -k update') op=kill ;;
+    *) exit 97 ;;
+    esac
+    if [ "$fw" = "$failed_fw" ] && { [ "$fault" = "$op" ] || [ "$fault" = both ]; }; then
+        echo "$fw $op failed" >&2
+        return 1
+    fi
+    rm -f "$work/$fw.$op"
+}
+for failed_fw in fw2 fw1; do
+    for fault in none flush kill both; do
+        : >"$work/pf-calls"
+        : >"$work/pf-want"
+        for fw in $fws; do
+            touch "$work/$fw.flush" "$work/$fw.kill"
+            printf '%s\n' "$fw -t update_src -T flush" "$fw -k label -k update" >>"$work/pf-want"
+        done
+        src_open=1
+        if close_src 2>"$work/pf-error"; then
+            [ "$fault" = none ] && [ -z "$src_open" ]
+        else
+            [ "$fault" != none ] && [ "$src_open" = 1 ]
+        fi
+        cmp "$work/pf-want" "$work/pf-calls"
+        for fw in $fws; do
+            for op in flush kill; do
+                if [ "$fw" = "$failed_fw" ] && { [ "$fault" = "$op" ] || [ "$fault" = both ]; }; then
+                    [ -f "$work/$fw.$op" ]
+                    grep -qx "$fw $op failed" "$work/pf-error"
+                else
+                    [ ! -e "$work/$fw.$op" ]
+                fi
+            done
+        done
+        fault=none
+        close_src
+        [ -z "$src_open" ]
+        for fw in $fws; do [ ! -e "$work/$fw.flush" ] && [ ! -e "$work/$fw.kill" ]; done
+    done
+done
+echo 'test-release-compat: update cleanup failure and retry fixtures passed'
+)
 if [ "$#" = 1 ]; then
     bundle=$1
 else
