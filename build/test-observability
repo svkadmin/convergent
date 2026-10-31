@@ -91,7 +91,7 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
 (
     . "$repo/rootfs/usr/lib/convergent/sys/80-security"
     . "$work/poll-alerts"
-    vmalert=http://100.80.2.10:8880 now=100000
+    vmalert=http://100.80.2.10:8880 now=100000 tmp=$work/rules
     noargs() { [ "$#" = 0 ]; }; cached() { echo unknown; }; usb_count() { echo 0; }
     sudo() { :; }; od() { :; }; logger() { :; }; fail() { return 1; }; probe() { "$@"; }
     curl() {
@@ -104,24 +104,30 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
         return "$reply"
     }
     prlimit() {
-        [ "$1:$2:$3" = '--as=134217728:--:jq' ] || exit 90
+        [ "$1" = --as=134217728 ] || exit 90
+        shift
+        if [ "$reader" = observe ]; then
+            [ "$1" = --fsize=1048576 ] || exit 90
+            shift
+        fi
+        [ "$1:$2" = '--:jq' ] || exit 90
         echo limited >"$work/limited"
         [ "$fault" != limit ] || return 1
-        shift 2
+        shift
         "$@"
     }
     timeout() {
         [ "$1:$2:$3:$4" = '-k:1:8:prlimit' ] || exit 90
         shift 3
         echo bounded >"$work/parser-timeout"
-        [ "$fault" != timeout ] || return 124
+        if [ "$fault" = timeout ]; then echo partial; return 124; fi
         "$@"
     }
     jq() {
         [ -s "$work/limited" ] && [ -s "$work/parser-timeout" ] || exit 90
         cat >/dev/null
         echo parsed >"$work/parsed"
-        [ "$fault" != parser ] || return 1
+        if [ "$fault" = parser ]; then echo partial; return 1; fi
         echo "$expected"
     }
     for reader in observe bar status list guests; do
@@ -142,22 +148,62 @@ for part in poll-alerts rules-read guest-reads; do [ -s "$work/$part" ]; sh -n "
             if [ "$fault" = none ]; then
                 [ -s "$work/parsed" ]
                 case $reader in
-                observe) grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result" ;;
+                observe)
+                    grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result"
+                    grep -qxF "$expected" "$work/result" ;;
                 *) grep -qF "$expected" "$work/result" ;;
                 esac
             else
                 case $fault in transfer|limit|timeout) [ ! -e "$work/parsed" ] ;; esac
                 case $reader in
-                observe) grep -qx 'cv_collector_success{collector="rules"} 0' "$work/result" ;;
+                observe)
+                    grep -qx 'cv_collector_success{collector="rules"} 0' "$work/result"
+                    if grep -qx partial "$work/result"; then exit 1; fi ;;
                 bar) grep -qx '?' "$work/result" ;;
                 status) grep -qx 'Alerts: unknown' "$work/result" ;;
                 list) grep -q 'Alert evaluation failure' "$work/result" ;;
                 esac
             fi
+            [ ! -e "$tmp.rules" ]
         done
     done
 )
 echo 'observability: svc response caps, transfer errors and parser limits passed'
+# Small rule replies must not amplify into published or unbounded scratch output.
+if command -v jq >/dev/null 2>&1 && command -v prlimit >/dev/null 2>&1; then
+    sed "s|/usr/lib/convergent/monitoring.jq|$repo/rootfs/usr/lib/convergent/monitoring.jq|" "$work/rules-read" >"$work/rules-real"
+    sh -n "$work/rules-real"
+    (
+        now=100000 tmp=$work/rules
+        logger() { :; }
+        curl() { cat "$work/reply"; }
+        rm() {
+            [ ! -f "$tmp.rules" ] || [ "$(wc -c <"$tmp.rules")" -le 1048576 ] || exit 1
+            command rm "$@"
+        }
+        for sample in valid amplified malformed; do
+            jq -n --arg sample "$sample" '
+                {status:"success",data:{groups:[{name:(if $sample == "amplified" then "x" * 2048 else "fixture" end),interval:60,
+                rules:[{health:"ok",lastEvaluation:"1970-01-02T03:46:40Z",alerts:
+                [range(if $sample == "amplified" then 1024 else 1 end) |
+                {state:"firing",labels:{alertname:"fixture"},activeAt:"1970-01-02T03:46:40Z"}]}]}]}}' >"$work/reply"
+            [ "$sample" != malformed ] || printf '{' >>"$work/reply"
+            [ "$(wc -c <"$work/reply")" -lt 1048576 ]
+            . "$work/rules-real" >"$work/result"
+            [ ! -e "$tmp.rules" ]
+            if [ "$sample" = valid ]; then
+                grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result"
+                grep -q '^cv_alert_active_since_seconds{' "$work/result"
+            else
+                grep -qx 'cv_collector_success{collector="rules"} 0' "$work/result"
+                if grep -q '^cv_rules_\|^cv_alert_' "$work/result"; then exit 1; fi
+            fi
+        done
+    )
+    echo 'observability: rule output cap and complete publication passed'
+else
+    echo 'observability: SKIP rule output cap fixtures (jq or prlimit is unavailable)' >&2
+fi
 # Maintenance publishes healing even when a full scan owns the report lock.
 (
     state=$work/merge
