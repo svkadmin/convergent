@@ -1,7 +1,8 @@
 #!/bin/sh
 # ARCHITECTURE 3.3, 8; called by check auto under the self-heal lock.
+. /usr/lib/convergent/guest-reply.sh
 heal_probe() {
-    reply=$(timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
+    reply=$(guest_reply 65536 timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
         set -e
         ifconfig carp
         pfctl -si

@@ -1,0 +1,160 @@
+#!/bin/sh
+# Guest readbacks must reject valid prefixes with excess bytes or failed transfers.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' 0
+trap 'exit 1' HUP INT TERM
+. "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
+mkdir "$scratch/tmp"
+TMPDIR=$scratch/tmp; export TMPDIR
+reply=$scratch/reply
+result=0
+transport() { cat "$reply"; return "$result"; }
+refuse() {
+    if "$@" >"$scratch/output"; then echo "accepted: $*" >&2; exit 1; fi
+    [ ! -s "$scratch/output" ]
+}
+for limit in 128 4096 65536 1048576; do
+    head -c "$limit" /dev/zero >"$reply"
+    guest_reply "$limit" transport >"$scratch/output"
+    cmp "$reply" "$scratch/output"
+    printf '\n' >>"$reply"
+    refuse guest_reply "$limit" transport
+done
+printf 'valid\n' >"$reply"
+result=7
+refuse guest_reply 128 transport
+: >"$reply"
+code=0
+guest_reply 128 transport || code=$?
+[ "$code" = 7 ]
+result=0
+# A streaming producer stops at the pipe limit, without filling shell memory.
+refuse guest_reply 128 timeout -k 1 5 yes valid
+[ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]
+
+# Exercise the production assignments, not copies of their byte limits.
+rsh() { transport; }
+ic() { transport; }
+ssh() { transport; }
+wan_probe() { transport; }
+timeout() { shift 3; "$@"; }
+bad() { return 1; }
+fail() { return 1; }
+die() { exit 1; }
+node=fw1 cmd=true kind=pf fw=fw1 rdir=/unused file=fixture want=valid
+work=$scratch
+sed -n '/^[[:space:]]*\(if \)\{0,1\}\(carp\|diag\|wifi\|portal\|actual\)=.*\$(/p' "$repo/tools/check" |
+    sed 's/^[[:space:]]*if / /; s/; then$//' >"$scratch/check-reads"
+[ "$(wc -l <"$scratch/check-reads")" = 5 ]
+sed -n '/stage hash differs on/p' "$repo/tools/dns-push" >>"$scratch/check-reads"
+while IFS= read -r line; do
+    printf '%s\n' "$line" >"$scratch/read"
+    sh -n "$scratch/read"
+    printf 'valid\n' >"$reply"
+    result=0
+    (. "$scratch/read")
+    for fault in overflow transfer; do
+        printf 'valid\n' >"$reply"
+        result=0
+        case $fault in overflow) head -c 65537 /dev/zero >>"$reply" ;; transfer) result=7 ;; esac
+        if (. "$scratch/read"); then echo "accepted $fault: $line" >&2; exit 1; fi
+    done
+done <"$scratch/check-reads"
+
+sed -n '/^seed_applied() {/,/^}/p' "$repo/tools/guests" >"$scratch/seed"
+[ -s "$scratch/seed" ]; sh -n "$scratch/seed"; . "$scratch/seed"
+state=$scratch/state
+mkdir -p "$state/seeds"
+for node in fw1 wan svc; do
+    echo valid >"$state/seeds/$node.id"
+    echo valid >"$reply"
+    result=0
+    seed_applied "$node"
+    # Command substitution drops newlines: an uncapped read would still match.
+    head -c 129 /dev/zero | tr '\000' '\n' >>"$reply"
+    if seed_applied "$node"; then exit 1; fi
+    echo valid >"$reply"
+    result=7
+    if seed_applied "$node"; then exit 1; fi
+done
+
+for module in 10-wifi 14-firewall; do
+    sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
+        "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
+    sh -n "$scratch/module"; . "$scratch/module"
+done
+run() { transport; }
+firewall_rsh() { transport; }
+printf 'Status: Enabled\nRUNNING defer: on\nhas address 100.80.2.10\n' >"$reply"
+result=0
+wifi_reply status >"$scratch/output"
+cmp "$reply" "$scratch/output"
+firewall_healthy fw1
+for fault in overflow transfer; do
+    case $fault in overflow) head -c 65537 /dev/zero >>"$reply" ;; transfer) echo valid >"$reply"; result=7 ;; esac
+    if wifi_reply status >/dev/null; then exit 1; fi
+    if firewall_healthy fw1; then exit 1; fi
+done
+
+for check in wifi uplink; do
+    sed -n "/check $check [0-9][0-9]* <<'CHECK'/,/^CHECK$/p" \
+        "$repo/rootfs/usr/lib/convergent/sys/99-selftest" | sed '1d;$d' |
+        sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" >"$scratch/selftest-body"
+    [ -s "$scratch/selftest-body" ]; sh -n "$scratch/selftest-body"
+    printf 'sudo() { cat "$REPLY"; return "$RESULT"; }\n' >"$scratch/selftest"
+    cat "$scratch/selftest-body" >>"$scratch/selftest"
+    for fault in none overflow transfer; do
+        printf 'State connected\ndefault via 192.168.1.1\n' >"$reply"
+        result=0
+        case $fault in overflow) head -c 65537 /dev/zero >>"$reply" ;; transfer) result=7 ;; esac
+        if REPLY=$reply RESULT=$result sh -eu "$scratch/selftest" >"$scratch/output"; then
+            [ "$fault" = none ]
+        else [ "$fault" != none ]; fi
+    done
+done
+
+# Console and keyscan readbacks are parsed from files before entering shell variables.
+sed -n '/^    .*ic console "\$1" --show-log >/p; /^    .*probe ssh-keyscan /p' \
+    "$repo/tools/guests" >"$scratch/pin-reads"
+[ "$(wc -l <"$scratch/pin-reads")" = 2 ]
+probe() { transport; }
+address=127.0.0.1
+read_pin() { set -- fw1; . "$scratch/read"; }
+while IFS= read -r line; do
+    printf '%s\n' "$line" >"$scratch/read"
+    sh -n "$scratch/read"
+    echo valid >"$reply"
+    result=0
+    read_pin
+    head -c 1048577 /dev/zero >>"$reply"
+    if read_pin; then exit 1; fi
+done <"$scratch/pin-reads"
+
+sed -n '/^upstream_net() {/,/^}/p; /^status_side() {/,/^}/p' "$repo/tools/portal" >"$scratch/portal"
+[ -s "$scratch/portal" ]; sh -n "$scratch/portal"; . "$scratch/portal"
+net_of() { printf '%s\n' "$1"; }
+result=0
+printf '== addresses\nwlan0 192.168.1.2/24\n== routes\ndefault via 192.168.1.1 dev wlan0\n' >"$reply"
+[ "$(upstream_net)" = 192.168.1.2/24 ]
+head -c 65537 /dev/zero >>"$reply"
+if upstream_net; then exit 1; fi
+echo on >"$reply"
+[ "$(status_side wan)" = on ]
+head -c 129 /dev/zero >>"$reply"
+if status_side wan; then exit 1; fi
+echo on >"$reply"
+result=7
+if status_side wan; then exit 1; fi
+sed -n '/printf .*unreachable:/p' "$repo/tools/portal" >"$scratch/portal-error"
+[ -s "$scratch/portal-error" ]; sh -n "$scratch/portal-error"
+run=$scratch _s=wan
+echo denied >"$run/portal.err"
+(. "$scratch/portal-error") >"$scratch/output"
+grep -q 'unreachable: denied' "$scratch/output"
+head -c 131072 /dev/zero | tr '\000' x >"$run/portal.err"
+(. "$scratch/portal-error") >"$scratch/output"
+[ "$(wc -c <"$scratch/output")" -lt 65600 ]
+echo 'test-guest-reply: byte limits, transfer failures, cleanup and production readbacks passed'

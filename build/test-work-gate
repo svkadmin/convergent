@@ -12,6 +12,7 @@ export PATH=$work/bin:$PATH
 sh "$here/networks" registry "$work/registry"
 lib=$repo/rootfs/usr/lib/convergent/incus
 sed -e "s|^lib=.*|lib=$lib|" -e "s|^state=.*|state=$work/state|" \
+	-e "s|/usr/lib/convergent/guest-reply.sh|$lib/../guest-reply.sh|g" \
 	-e "s|/run/convergent/work-gate|$work/gate|g" \
 	-e "s|/etc/convergent/topology.sha256|$work/expected|g" \
 	-e "s|/etc/convergent/segments|$work/registry/etc/convergent/segments|g" "$lib/work-gate" >"$work/gate"
@@ -32,8 +33,11 @@ case $cmd in
     [ ! -f "$GATE_FIXTURE/$node.hung" ] || exit 124
     printf 'pfsync0: flags=41<UP,RUNNING>\n defer: on\n'
     [ -f "$GATE_FIXTURE/$node.unhealthy" ] || echo CV-UNBOUND-OK
+    if [ -f "$GATE_FIXTURE/$node.liveflood" ]; then head -c 65537 /dev/zero; fi
     ;;
 esac
+if [ -f "$GATE_FIXTURE/$node.flood" ]; then head -c 65537 /dev/zero; fi
+if [ -f "$GATE_FIXTURE/$node.short" ]; then exit 1; fi
 SSH
 # The exact transactions: an open gate is a flushed chain, a closed one a flush plus the drop rule.
 cat >"$work/bin/nft" <<'NFT'
@@ -52,6 +56,23 @@ echo MASTER >"$work/fw1.role"
 echo BACKUP >"$work/fw2.role"
 sh "$work/gate"
 [ "$(cat "$work/verdict")" = open ]
+# Valid prefixes with trailing bytes or failed transfers must not preserve validation.
+for node in wan fw1 fw2; do
+    for fault in flood short; do
+        touch "$work/$node.$fault"
+        if sh "$work/gate"; then exit 1; fi
+        [ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+        rm "$work/$node.$fault"
+        sh "$work/gate"
+    done
+done
+for node in fw1 fw2; do
+    touch "$work/$node.liveflood"
+    if sh "$work/gate"; then exit 1; fi
+    [ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+    rm "$work/$node.liveflood"
+    sh "$work/gate"
+done
 touch "$work/fw2.down"
 sh "$work/gate"
 [ "$(cat "$work/verdict")" = open ]

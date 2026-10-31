@@ -2,6 +2,7 @@
 # ARCHITECTURE 4.5
 # Root-owned inputs: /var/lib/convergent/dns/{allow,records}.
 set -eu
+. /usr/lib/convergent/guest-reply.sh
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 umask 077
@@ -322,7 +323,7 @@ for fw in $fws; do
 	for file in blocklist.rpz local-owner.conf; do
 		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file"
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
-		[ "$(rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
+		[ "$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
 	done
 	rsh "$fw" "cd $rdir &&
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
