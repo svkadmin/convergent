@@ -191,7 +191,13 @@ if command -v jq >/dev/null 2>&1 && command -v prlimit >/dev/null 2>&1; then
         now=100000 tmp=$work/rules
         logger() { :; }
         curl() { cat "$work/reply"; }
-        # Privilege ordering is covered above; keep these parser fixtures rootless.
+        # Privilege ordering is covered above; keep these parser fixtures rootless. prlimit execs
+        # setpriv as a program, so the stand-in is an executable outside the noexec /tmp.
+        shim=$(mktemp -d /var/tmp/observability-shim.XXXXXX)
+        trap 'rm -rf "$shim"' 0
+        printf '#!/bin/sh\nshift 4\nexec "$@"\n' >"$shim/setpriv"
+        chmod 0755 "$shim/setpriv"
+        PATH=$shim:$PATH
         setpriv() { shift 4; "$@"; }
         rm() {
             [ ! -f "$tmp.rules" ] || [ "$(wc -c <"$tmp.rules")" -le 1048576 ] || exit 1

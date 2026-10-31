@@ -6,7 +6,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 # Stop before host cgroup collection.
-awk '/^    ok=1$/ && !started {started=1} started {print} /cv_collector_timestamp_seconds.*internet/ {exit}' "$here/../tools/observe" >"$work/probes"
+command awk '/^    ok=1$/ && !started {started=1} started {print} /cv_collector_timestamp_seconds.*internet/ {exit}' "$here/../tools/observe" >"$work/probes"
 [ -s "$work/probes" ]; sh -n "$work/probes"
 setpriv() (
     [ "$1:$2:$3:$4" = '--reuid=65534:--regid=65534:--clear-groups:--no-new-privs' ] || exit 90
