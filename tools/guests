@@ -72,8 +72,9 @@ locked() (
     code=$?
     exit "$code"
 )
+# A relinking firewall (nested tests: minutes at full CPU) can take longer than 30 s to answer a write.
 fw_mutate() {
-    locked timeout -k 5 30 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" ||
+    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
