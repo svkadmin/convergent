@@ -494,7 +494,7 @@ backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOV
 - **Rules:** Path/DNS 30 seconds; monitoring/capacity/logs/security-time one minute;
   boot/certificates/NVMe/scrub five minutes
 
-Metrics retain seven days without dedup. Recent scrapes cannot make old textfiles healthy. Closed def
+Metrics retain 14 days without dedup. Recent scrapes cannot make old textfiles healthy. Closed def
 means no HTTPS evidence, not failure; WAN probes measure transit, not Internet reachability.
 
 VictoriaLogs receives host/firewall/WAN TLS syslog plus host audit, with minute sender heartbeats.
