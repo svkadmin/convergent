@@ -1,8 +1,9 @@
 #!/bin/sh
 # ARCHITECTURE 3.3, 8; called by check auto under the self-heal lock.
 . /usr/lib/convergent/guest-reply.sh
+# $2: bound in seconds (default 10); the peer check right before a kill gets more.
 heal_probe() {
-    reply=$(guest_reply 65536 timeout -k 1 10 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
+    reply=$(guest_reply 65536 timeout -k 1 "${2:-10}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
         set -e
         ifconfig carp
         pfctl -si
@@ -50,7 +51,8 @@ heal_qemu() {
 # our hold, restarts the VM itself under a new QEMU.
 heal_kill() {
     if heal_probe "$1" >/dev/null; then return 1; fi
-    [ "$(heal_probe "$2")" = master ] && heal_allowed || return 1
+    # At load 17 the healthy peer's probe took the full 10 s and a frozen fw2 waited 16 more minutes.
+    [ "$(heal_probe "$2" 30)" = master ] && heal_allowed || return 1
     pid=$(heal_qemu "$1") || return 1
     [ "$pid" = "$3" ] || return 1
     kill -KILL "$pid" || return 1
