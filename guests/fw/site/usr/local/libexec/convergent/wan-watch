@@ -26,9 +26,9 @@ while :; do
 	want=$owned
 	case $want in 0|128) ;; *) want=128 ;; esac
 	# -w waits after the last probe; SIGINT preserves success on any reply.
-	# A resolver that stops answering local data demotes after ten rounds: a hung Unbound stays silent,
-	# a reload or a starved VM answers again within seconds.
-	if ! timeout -k 1 3 host -W 2 -t A svc.convergent.internal 127.0.0.1 >/dev/null 2>&1; then
+	# Local DNS or forwarding failure demotes after ten rounds; brief reloads do not.
+	if ! forwarding=$(sysctl -n net.inet.ip.forwarding) || [ "$forwarding" != 1 ] ||
+		! timeout -k 1 3 host -W 2 -t A svc.convergent.internal 127.0.0.1 >/dev/null 2>&1; then
 		good=0 dns_lost=$((dns_lost + 1))
 		[ "$dns_lost" -lt 10 ] || want=128
 	else

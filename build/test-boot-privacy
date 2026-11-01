@@ -4,7 +4,7 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
 work=$(mktemp -d)
-trap 'rm -rf "$work"' 0
+trap '[ -z "${holder:-}" ] || { kill "$holder" 2>/dev/null || :; wait "$holder" 2>/dev/null || :; }; rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-boot-privacy: $*" >&2; exit 1; }
 check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
@@ -44,27 +44,31 @@ for shape in stock missing duplicate changed; do
     fi
 done
 sh "$work/fw-stock" >"$work/fw-stock-rules"
-sed "s|/var/run/fw-pf-reload.lock|$work/reload.lock|" "$fw/usr/local/libexec/convergent/fw-pf-reload" >"$work/fw-reload"
+{ printf '. "%s/fw-mocks"\n' "$work"
+    sed "s|/var/run/fw-pf-reload.lock|$work/reload.lock|" "$fw/usr/local/libexec/convergent/fw-pf-reload"
+} >"$work/fw-reload"
 check_script "$work/fw-reload"
 grep -q "$work/reload.lock" "$work/fw-reload" || die 'reload lock not mapped'
-# An overlapping reload is refused before it touches forwarding.
-mkdir "$work/reload.lock"
-if (sysctl() { echo "$*" >>"$work/overlap"; }; pfctl() { :; }; . "$work/fw-reload") 2>/dev/null; then
-    die 'overlapping reload accepted'
-fi
-[ ! -s "$work/overlap" ] || die 'overlapping reload touched forwarding'
-rmdir "$work/reload.lock"
 sed -n "/^cat >\/etc\/rc.local <<'FIRSTBOOT'$/,/^FIRSTBOOT$/p" "$fw/install.site" |
-    sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|;s|/usr/local/libexec/convergent/fw-pf-reload|. "$work/fw-reload"|' >"$work/fw-boot"
+    sed '1d;$d;s|/usr/local/libexec/convergent/fw-seed|fw_seed|;s|/usr/local/libexec/convergent/fw-pf-reload|sh "$work/fw-reload"|' >"$work/fw-boot"
 check_script "$work/fw-boot"
-cat >"$work/fw-run" <<'FWBOOT'
-work=$1 fault=$2 mode=$3 rules=$4
-# PF sees the incoming SYN before the forwarding check. Reloads retain its state.
-state=0
-if grep -q 'pass in proto tcp from any to any port ssh keep state' "$rules"; then state=1; fi
+cat >"$work/fw-mocks" <<'FWMOCKS'
 pfctl() {
     case "$*" in
-    '-f /etc/pf.conf') echo load >>"$work/fw-events"; [ "$fault" != load ] ;;
+    '-f /etc/pf.conf')
+        echo load >>"$work/fw-events"
+        case $fault in
+        killed) kill -KILL "$$" ;;
+        hold)
+            touch "$work/holding"
+            attempts=0
+            while [ ! -e "$work/release" ]; do
+                attempts=$((attempts + 1))
+                [ "$attempts" -le 10 ] || exit 96
+                sleep 1
+            done ;;
+        esac
+        [ "$fault" != load ] ;;
     -si)
         echo status >>"$work/fw-events"
         case $fault in
@@ -96,9 +100,47 @@ sysctl() {
 sha256() { echo fixture; }
 syspatch() { [ "$*" = -l ]; }
 fw_seed() { echo seed >>"$work/fw-events"; }
-. "$work/fw-$mode"
+FWMOCKS
+check_script "$work/fw-mocks"
+cat >"$work/fw-run" <<'FWBOOT'
+work=$1 fault=$2 mode=$3 rules=$4
+# PF sees the incoming SYN before the forwarding check. Reloads retain its state.
+state=0
+if grep -q 'pass in proto tcp from any to any port ssh keep state' "$rules"; then state=1; fi
+export work fault state
+. "$work/fw-mocks"
+case $mode in
+boot) . "$work/fw-boot" ;;
+reload) exec sh "$work/fw-reload" ;;
+esac
 FWBOOT
 check_script "$work/fw-run"
+# A live holder refuses overlap without touching forwarding; SIGKILL leaves a reusable lock file.
+: >"$work/fw-events"
+sh -eu "$work/fw-run" "$work" hold reload "$work/fw-patched-rules" >"$work/holder-log" 2>&1 &
+holder=$!
+attempts=0
+while [ ! -e "$work/holding" ]; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -le 10 ] || { cat "$work/holder-log"; die 'reload never held lock'; }
+    sleep 1
+done
+cp "$work/fw-events" "$work/before-overlap"
+if sh -eu "$work/fw-run" "$work" none reload "$work/fw-patched-rules" >"$work/overlap-log" 2>&1; then
+    die 'overlapping reload accepted'
+fi
+grep -qx 'fw-pf-reload: another reload is running' "$work/overlap-log"
+cmp "$work/before-overlap" "$work/fw-events"
+touch "$work/release"
+wait "$holder"
+holder=
+: >"$work/fw-events"
+if sh -eu "$work/fw-run" "$work" killed reload "$work/fw-patched-rules" >"$work/killed-log" 2>&1; then
+    die 'reload survived SIGKILL'
+fi
+[ "$(cat "$work/fw-forwarding")" = 0 ] || die 'killed reload left forwarding on'
+[ -f "$work/reload.lock" ] || die 'missing persistent reload lock'
+# The next successful reload must acquire the stale file without removing it.
 for mode in boot reload; do
 for fault in none load disabled malformed status sysctl; do
     : >"$work/fw-events"
@@ -122,6 +164,55 @@ echo 0 >"$work/fw-forwarding"
 sh -eu "$work/fw-run" "$work" none boot "$work/fw-stock-rules" >"$work/fw-log" 2>&1
 grep -qx leak "$work/fw-events" || die 'SYN state survival control failed'
 echo 'test-boot-privacy: firewall forwarding passed'
+
+# Exercise the shipped local-health counters without daemon timing or network probes.
+sed -n '/^while :; do$/,/^[[:space:]]*# Reuse this round/p' "$fw/usr/local/libexec/convergent/wan-watch" |
+    sed '1d;$d' >"$work/wan-round"
+check_script "$work/wan-round"
+(
+    sysctl() {
+        [ "$*" = '-n net.inet.ip.forwarding' ] || exit 98
+        case $forward in error) echo 1; return 1 ;; *) printf '%s\n' "$forward" ;; esac
+    }
+    host() { [ "$dns" = up ]; }
+    ping() { [ "$wan_up" = 1 ]; }
+    timeout() {
+        case $1 in -k) shift 3 ;; -p) shift 4 ;; *) exit 98 ;; esac
+        "$@"
+    }
+    round() { . "$work/wan-round"; owned=$want; }
+    src=100.80.0.11 wan=100.80.0.10 wan_up=1
+    for failure in off empty malformed error dns; do
+        owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1
+        case $failure in
+        off) forward=0 ;;
+        empty) forward= ;;
+        malformed) forward=unknown ;;
+        error) forward=error ;;
+        dns) dns=down ;;
+        esac
+        for n in 1 2 3 4 5 6 7 8 9; do
+            round
+            [ "$owned:$dns_lost:$good" = "0:$n:0" ] || die "early local demotion: $failure/$n"
+        done
+        round
+        [ "$owned:$dns_lost" = 128:10 ] || die "missing local demotion: $failure"
+        forward=1 dns=up
+        for n in 1 2; do
+            round
+            [ "$owned:$dns_lost:$good" = "128:0:$n" ] || die "early local recovery: $failure/$n"
+        done
+        round
+        [ "$owned:$good" = 0:3 ] || die "missing local recovery: $failure"
+    done
+    # Short reloads reset the local failure streak without demotion.
+    for n in 1 2 3 4 5 6 7 8 9; do forward=0; round; [ "$owned" = 0 ]; done
+    forward=1; round
+    [ "$owned:$dns_lost" = 0:0 ]
+    forward=0; round
+    [ "$owned:$dns_lost" = 0:1 ]
+)
+echo 'test-boot-privacy: firewall local health passed'
 
 # Capture the feeder's actual fd 3 writes, including TERM's magic close.
 (

@@ -3,9 +3,14 @@
 set -eu
 export LC_ALL=C
 # One reload at a time: an overlapping success must not re-enable forwarding after another's failure.
-lock=/var/run/fw-pf-reload.lock
-mkdir "$lock" 2>/dev/null || { echo 'fw-pf-reload: another reload is running' >&2; exit 1; }
-trap 'rmdir "$lock"' 0
+[ "${1:-}" = --locked ] || exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '
+sysopen(my $lock, "/var/run/fw-pf-reload.lock", O_WRONLY|O_CREAT|O_NOFOLLOW, 0600) or exit 1;
+flock($lock, LOCK_EX|LOCK_NB) or die "fw-pf-reload: another reload is running\n";
+# Keep the lock across exec and in reload children; never unlink it.
+fcntl($lock, F_SETFD, 0) or exit 1;
+exec "/bin/sh", $ARGV[0], "--locked";
+exit 1;
+' "$0"
 trap 'exit 1' HUP INT TERM
 sysctl net.inet.ip.forwarding=0
 pfctl -f /etc/pf.conf
