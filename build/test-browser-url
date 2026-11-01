@@ -176,7 +176,7 @@ grep -q 'timeout -k 1 30 incus --force-local --project default exec "\$name" --'
     die 'compatibility probe is unbounded'
 sed -n '/^attempts=0$/,/^done$/p' "$repo/tools/browser" >"$work/readiness"
 check_script "$work/readiness"
-grep -qF 'timeout -k 1 5 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&-' "$work/readiness" ||
+grep -qF 'timeout -k 1 30 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&-' "$work/readiness" ||
     die 'readiness probe is unbounded'
 for succeed in 1 30 31; do
     : >"$work/attempts"
