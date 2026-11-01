@@ -81,14 +81,7 @@ if [ "$bad" -eq 0 ] && [ "$good" -eq 1 ]; then
 	rm -f "$d/refused"
 fi
 
-if [ -e "$d/portal" ]; then
-	since=$(cat "$d/portal" 2>/dev/null || echo 0)
-	if [ $(( $(date +%s) - since )) -gt $(( PORTAL_MAX_MIN * 60 )) ]; then
-		/usr/local/sbin/wan-portal off
-	else
-		/usr/local/sbin/wan-portal refresh
-	fi
-fi
+/usr/local/sbin/wan-portal expire || rc=1
 
 overlap=0
 [ -e "$d/refused" ] && overlap=1

@@ -46,6 +46,17 @@ EOF
 	echo "$ns"
 }
 
+# Decide after taking portal.lock; an owner may have renewed the session.
+if [ "${1:-}" = expire ]; then
+	[ -e "$d/portal" ] || exit 0
+	since=$(cat "$d/portal" 2>/dev/null || echo 0)
+	if [ $(( $(date +%s) - since )) -gt $(( PORTAL_MAX_MIN * 60 )) ]; then
+		set -- off
+	else
+		set -- refresh
+	fi
+fi
+
 case ${1:-} in
 on)
 	mkdir -p "$d"
@@ -80,7 +91,7 @@ status)
 	fi
 	;;
 *)
-	echo "usage: wan-portal on|off|refresh|status" >&2
+	echo "usage: wan-portal on|off|refresh|expire|status" >&2
 	exit 2
 	;;
 esac

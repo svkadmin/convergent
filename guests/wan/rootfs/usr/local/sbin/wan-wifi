@@ -47,6 +47,21 @@ read_security() {
 	case $security in ''|open|psk|8021x) ;; *) die "invalid security type" ;; esac
 }
 
+scan_wait() {
+	deadline=$(($(date +%s) + 15))
+	run 15 iwctl station "$WIFI_IF" scan >/dev/null || die "scan failed or timed out"
+	while :; do
+		remaining=$((deadline - $(date +%s)))
+		[ "$remaining" -gt 0 ] || die "scan timed out"
+		reply=$(run "$remaining" iwctl station "$WIFI_IF" show) || die "scan status failed or timed out"
+		case $(printf '%s\n' "$reply" | awk '$1 == "Scanning" {print $2}') in
+		no) break ;;
+		yes) sleep 1 ;;
+		*) die "scan status unavailable" ;;
+		esac
+	done
+}
+
 join() {
 	set -- "$1" "$ssid"
 	[ "$1" != connect ] || [ -z "$security" ] || set -- "$@" "$security"
@@ -58,7 +73,7 @@ join() {
 	rc=$?
 	if [ "$rc" != 0 ] && [ "$1" = connect-hidden ]; then
 		case $reply in
-		*AlreadyProvisioned*|*"Already provisioned"*) join connect; return $? ;;
+		*AlreadyProvisioned*|*"Already provisioned"*) scan_wait; join connect; return $? ;;
 		esac
 	fi
 	printf '%s\n' "$reply"
@@ -71,18 +86,7 @@ list)
 	run 10 iwctl known-networks list
 	;;
 scan)
-	run 10 iwctl station "$WIFI_IF" scan >/dev/null || exit $?
-	deadline=$(($(date +%s) + 15))
-	while :; do
-		remaining=$((deadline - $(date +%s)))
-		[ "$remaining" -gt 0 ] || die "scan timed out"
-		reply=$(run "$remaining" iwctl station "$WIFI_IF" show) || exit $?
-		case $(printf '%s\n' "$reply" | awk '$1 == "Scanning" {print $2}') in
-		no) break ;;
-		yes) sleep 1 ;;
-		*) die "scan status unavailable" ;;
-		esac
-	done
+	scan_wait
 	run 10 iwctl station "$WIFI_IF" get-networks
 	;;
 status)
@@ -125,7 +129,7 @@ disconnect)
 	run 10 iwctl station "$WIFI_IF" disconnect
 	;;
 auto)
-	run 10 iwctl station "$WIFI_IF" autoconnect on
+	run 10 rc-service iwd restart || die "iwd restart failed or timed out"
 	;;
 *)
 	echo "usage: wan-wifi list|scan|status|add|add-hidden|connect|connect-hidden|forget|disconnect|auto" >&2
