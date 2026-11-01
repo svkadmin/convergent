@@ -138,12 +138,12 @@ copy_rescue() {
 	conf=$esp/loader/loader.conf
 	if grep -qxF 'default convergent-*' "$conf"; then
 		sed 's/^default convergent-\*$/default convergent-[0-9]*/' "$conf" >"$conf.new" &&
-			sync && mv "$conf.new" "$conf" && sync || die "could not update loader default"
+			sync && mv "$conf.new" "$conf" && sync || { rm -f "$conf.new"; return 1; }
 	fi
 	dst=$esp/$linux/convergent-rescue.efi
 	cmp -s "$src" "$dst" && return 0
 	cp "$src" "$dst.new" && cmp -s "$src" "$dst.new" &&
-		sync && mv -f "$dst.new" "$dst" && sync || die "could not install rescue UKI"
+		sync && mv -f "$dst.new" "$dst" && sync || { rm -f "$dst.new"; return 1; }
 	log "rescue UKI refreshed from release $release"
 }
 
@@ -183,7 +183,7 @@ bless() {
 	esac
 	disarm
 	accept
-	copy_rescue
+	copy_rescue || log "could not refresh rescue; will retry on next bless"
 	echo "release $release is good" 2>/dev/null >/dev/console || :
 }
 
