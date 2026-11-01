@@ -68,6 +68,78 @@ driver-fail | driver-crash) exit 0 ;;
 esac
 EOF
 sh -n "$fixture/driver-check"
+# Check both budget layers and the generated smoke selection without booting.
+sed -n '/^[[:space:]]*cat >"\$var\/lib\/convergent\/test-release\/smoke-test"/,/^[[:space:]]*# Gentoo configures/p' "$here/test" | sed '$d' >"$fixture/smoke"
+[ -s "$fixture/smoke" ]
+for mode in guests guests-maint guests-update online; do
+    case $mode in guests) want=12600 ;; guests-maint) want=16200 ;; *) want=14400 ;; esac
+    (
+        . "$fixture/run-vm"
+        BUILDER= work=$fixture/budget-$mode
+        mkdir "$work"
+        pass=fixture qemu_id=1:1 runs=0
+        deadline=$(($(date +%s) + 30000))
+        die() { echo "$*" >&2; exit 1; }
+        cv_time() { :; }
+        # Console links are checked by the retry fixtures below.
+        ln() { :; }
+        chroot() {
+            cat >/dev/null
+            [ "$CVTEST_TIMEOUT" = "$want" ] || return 1
+            : >"$CVTEST_LOG"
+            echo timeout >"$work/ended-$CVTEST_RUN"
+        }
+        run_vm "$mode"
+        [ "$ended" = timeout ]
+        budget_case=$(sed -n '/^[[:space:]]*case \$mode in guests) budget=/p' "$here/test")
+        [ -n "$budget_case" ]
+        eval "$budget_case"
+        [ "$budget" = "$want" ]
+        var=$work
+        mkdir -p "$var/lib/convergent/test-release"
+        . "$fixture/smoke"
+        smoke=$var/lib/convergent/test-release/smoke-test
+        sh -n "$smoke"
+        for check in remmina-test pf-test incus-ui-test; do
+            case $mode in
+            guests | guests-maint) grep -q "\$release/$check" "$smoke" ;;
+            *) if grep -q "\$release/$check" "$smoke"; then exit 1; fi ;;
+            esac
+        done
+        for check in browser-test browser-migration-test backup-restore-test selftest-test; do
+            grep -q "\$release/$check" "$smoke"
+        done
+    )
+done
+echo 'test-vm-runner: guest budgets and smoke selection passed'
+# Timed firewall waits keep command replies and redirected logs intact.
+sed -n '/^# Mark bounded waits/,/^# Evidence while fw updates/p' "$here/test" | sed '$d' |
+    sed "s|/usr/local/sbin/guests|$here/../tools/guests|g" >"$fixture/timed"
+[ -s "$fixture/timed" ]
+(
+    release=$fixture
+    printf 'cv_time() { echo "CV-TIME $1 0"; }\n' >"$release/timing"
+    bad() { exit 1; }
+    . "$fixture/timed"
+    sh -n "$release/guests-fw-timed"
+    sed -n '/^retry() {/,/^}/p' "$release/guests-fw-timed" >"$fixture/retry"
+    [ -s "$fixture/retry" ]
+    . "$release/timing"
+    . "$fixture/retry"
+    boot_timeout=0 work=$fixture
+    fail() { return 1; }
+    reply=$(retry printf reply 3>"$fixture/progress")
+    [ "$reply" = reply ]
+    grep -qx 'CV-TIME firewall-update-printf 0' "$fixture/progress"
+    seed_applied() { printf reply; }
+    reply=$(retry seed_applied 3>"$fixture/progress")
+    [ "$reply" = reply ]
+    grep -qx 'CV-TIME firewall-update-seed-applied 0' "$fixture/progress"
+    if retry false 3>"$fixture/progress" >"$fixture/reply" 2>"$fixture/retry-log"; then exit 1; fi
+    grep -qx 'CV-TIME firewall-update-false 0' "$fixture/progress"
+    [ ! -s "$fixture/reply" ]
+)
+echo 'test-vm-runner: timed firewall waits preserve replies and failures'
 for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to kill init'; do
     export signature
     for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update online desktop update; do
@@ -104,6 +176,8 @@ echo 'test-vm-runner: unique consoles, bounded crash retries and other failures 
 python3 - "$here/test" <<'PY'
 import pathlib, re, sys, textwrap
 source = pathlib.Path(sys.argv[1]).read_text()
+driver = source[source.index("import json, os, re, select,"):].split("\nEOF", 1)[0]
+compile(driver, "run_vm", "exec")
 markers = source[source.index("markers = {"):source.index("\nverdicts = {}")]
 start = source.index("                    if guest_test and result is None:")
 end = source.index("                    # Releases before", start)
@@ -120,4 +194,57 @@ for guest in (None, 0, 1):
             want = None if guest is None or online is None else max(guest, online)
             assert state["result"] == want, (guest, online, order, state["result"])
 print("test-vm-runner: online requires both successful verdicts")
+
+# Use host monotonic time, never the guest's elapsed field or ordinary console output.
+start = source.index("                    timing += chunk")
+end = source.index("                    seen =", start)
+timing = textwrap.dedent(source[start:end])
+start = source.index("            left = deadline - time.monotonic()")
+end = source.index("            for stream in select.select", start)
+wait = "while True:\n" + textwrap.indent(textwrap.dedent(source[start:end]), "    ") + "    break\n"
+start = source.index('        if ended == "stopped":')
+end = source.index("\nfinally:", start)
+finish = textwrap.dedent(source[start:end])
+class Clock:
+    now = 0
+    def monotonic(self):
+        return self.now
+
+for goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update", "bless"):
+    clock = Clock()
+    state = dict(time=clock, re=re, timing=b"", last_progress=0, last_step="boot",
+                 deadline=20000, ended="stopped", result=0, verdicts={b"result": 0},
+                 drain_test=goal in ("guests", "guests-maint", "guests-update", "online"),
+                 print=lambda *args, **kwargs: None)
+    def feed(chunk):
+        state["chunk"] = chunk
+        exec(timing, state)
+    def tick(now):
+        clock.now = now
+        exec(wait, state)
+        return state["ended"]
+    assert tick(5999) == "stopped"
+    feed(b"CV-TIME pf-l2-start -42\r")
+    assert state["last_step"] == "boot"  # Partial lines do not count.
+    feed(b"\n")
+    assert state["last_progress"] == 5999
+    clock.now = 6001
+    feed(b"CV-DIAG alive\nCV-TIME invalid nope\nnoise CV-TIME fake 1\n")
+    assert state["last_progress"] == 5999
+    assert tick(11998) == "stopped"
+    want = "stalled after pf-l2-start" if state["drain_test"] else "stopped"
+    assert tick(11999) == want
+    if state["drain_test"]:
+        exec(finish, state)  # A stall must not wait again or become a successful poweroff.
+        assert state["ended"] == want
+    assert state["result"] == 0 and state["verdicts"] == {b"result": 0}
+    state.update(ended="stopped", last_progress=0, last_step="boot")
+    assert tick(6000) == ("stalled after boot" if state["drain_test"] else "stopped")
+    state.update(ended="stopped", deadline=6000)
+    assert tick(6000) == "timeout"
+    state.update(ended="stopped", deadline=20000)
+    feed(b"CV-TIME firewall-update 99999999\nCV-TIME wan-update 1\n")
+    assert state["last_step"] == "wan-update" and state["last_progress"] == 6000
+    assert tick(11999) == "stopped"
+print("test-vm-runner: progress stalls, split markers, noise and deadline precedence passed")
 PY
