@@ -119,7 +119,7 @@ for module in 10-wifi 14-firewall; do
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
     sh -n "$scratch/module"; . "$scratch/module"
 done
-# firewall_role reads the host registry: the firewall is asked only for ifconfig, and a hostile
+# firewall_role reads the host registry: the firewall answers only data (ifconfig, legacy probe); a hostile
 # reply never reaches awk's argument list.
 (
     awk() {
