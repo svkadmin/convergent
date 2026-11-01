@@ -1993,9 +1993,11 @@ LOCAL
     changer=$!
     # A failed iteration must not leave its changer running while the next rewrites the script.
     trap '[ -z "${changer:-}" ] || { kill "$changer"; wait "$changer"; } 2>/dev/null || :' 0
+    # Twelve health reads and, for remote-kill, the whole demotion come first: at fw1 load 16 they took
+    # 49 s, 55 s and just over the old 60 s (chain #5).
     n=0
     until grep -qx CV-MAINTENANCE-WAIT "$log"; do
-        n=$((n + 1)); [ "$n" -lt 60 ]; sleep 1
+        n=$((n + 1)); [ "$n" -lt 300 ]; sleep 1
     done
     if flock -n /run/convergent/guests.lock true; then exit 1; fi
     if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
