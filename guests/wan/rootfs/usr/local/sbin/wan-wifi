@@ -73,7 +73,10 @@ join() {
 	rc=$?
 	if [ "$rc" != 0 ] && [ "$1" = connect-hidden ]; then
 		case $reply in
-		*AlreadyProvisioned*|*"Already provisioned"*) scan_wait; join connect; return $? ;;
+		*AlreadyProvisioned*|*"Already provisioned"*)
+			# A cached network connects at once; one gone from the scan cache needs a scan first.
+			if reply=$(join connect); then printf '%s\n' "$reply"; return 0; fi
+			scan_wait; join connect; return $? ;;
 		esac
 	fi
 	printf '%s\n' "$reply"

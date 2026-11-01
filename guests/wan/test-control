@@ -70,6 +70,7 @@ for provisioned in AlreadyProvisioned 'Already provisioned'; do
             [ "$rc" = 0 ]
             grep -qx connected "$work/out"
             printf '%s\n' '45 iwctl station wlan0 connect-hidden saved' \
+                '45 iwctl station wlan0 connect saved' \
                 '10 iwctl station wlan0 scan' '15 iwctl station wlan0 show' \
                 '14 iwctl station wlan0 show' '13 iwctl station wlan0 show' \
                 '45 iwctl station wlan0 connect saved' >"$work/want"
@@ -80,12 +81,21 @@ for provisioned in AlreadyProvisioned 'Already provisioned'; do
             scan|show) [ "$rc" = 124 ] ;;
             *) [ "$rc" = 1 ]; grep -q '^wan-wifi: scan' "$work/err" ;;
             esac
-            if grep -q 'station wlan0 connect saved' "$work/calls"; then exit 1; fi
+            [ "$(grep -c 'station wlan0 connect saved' "$work/calls")" = 1 ]
             [ "$(cat "$work/clock")" -le 117 ]
             [ "$fault" != stalled ] || grep -qx 'wan-wifi: scan timed out' "$work/err"
         fi
     done
 done
+# A cached hidden network connects without a scan (a busy scan must not block it).
+fault=scan
+echo 100 >"$work/clock"
+: >"$work/calls"
+touch "$work/ready"
+printf 'saved\n' | sh "$work/wifi-driver" connect-hidden >"$work/out"
+grep -qx connected "$work/out"
+printf '%s\n' '45 iwctl station wlan0 connect-hidden saved' '45 iwctl station wlan0 connect saved' >"$work/want"
+cmp "$work/want" "$work/calls"
 # Initiation and completion have separate budgets in the scan command.
 init_delay=8 scan_done=116
 for fixture in none:0 scan:7 scan:124 show:9 show:124 unknown:1 stalled:1; do
