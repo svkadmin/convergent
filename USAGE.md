@@ -296,11 +296,15 @@ or grant suitable ACLs. Detach when finished. Resize the volume in Incus UI if n
 `sys wifi` controls wan over SSH; iwd roams between known networks. `sys wifi connect` offers
 scanned SSIDs/security/signal, then asks `Passphrase (empty for a known or open network):`. `sys
 wifi connect 'SSID with spaces'` skips selection; `sys wifi hidden` asks for an unscanned name.
+Saved hidden networks reconnect from the scan cache first, then rescan if needed.
 Credentials are stored in wan; replacement also stages root-only copies on encrypted host storage,
 which can remain until recovery or cleanup completes.
 Scan completion polls for 15 seconds after initiation; initiation/results
 have separate timeouts. Failures propagate with guidance; association without IPv4 reports DHCP
 failure.
+
+`sudo ssh -F /etc/convergent/ssh_config wan 'wifi auto'` restarts iwd to resume automatic
+connection to known networks; it interrupts the current Wi-Fi connection.
 
 Overlapping 100.80.0.0/16 leases raise UpstreamOverlap and are refused. After moving a refused wired
 adapter to a safe network, `sudo ssh -F /etc/convergent/ssh_config wan 'check retry'` retries
@@ -603,6 +607,9 @@ Work guests can communicate within their own VLAN; routing to other work VLANs i
 within the same family. System segments are blocked. Internet works; home-LAN access requires
 baked-in canonical RFC1918 prefixes. Topology updates stop both firewalls; failure
 restores both old images. Hash mismatch keeps work access closed.
+
+Host shutdown preserves ephemeral work guests. Running work guests with default or `last-state`
+autostart return at the next boot.
 
 ## Power and locking
 

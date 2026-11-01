@@ -434,7 +434,7 @@ done
 
 Start with `sys update check`: it names the newest version (or release ID for older manifests) and
 how old its signature is. `sys update install` stops with the reason; running it again resumes the
-download.
+download. A retry keeps that release's staged guests until their replacement is ready.
 
 | Message | Do |
 |---|---|
@@ -505,6 +505,8 @@ Power loss can split Incus operations. `guests` refuses commands; the bar shows 
 Close int, then run `sudo incus-ui cleanup` to retry orphan cleanup; `check auto` also retries
 each minute and boot cleanup runs before the greeter. Cleanup stops int before discarding its
 session journal; trust is revoked even if stopping fails, and the journal remains for retry.
+Cleanup also stops orphaned Grafana and restores svc's 350 MiB idle limit if its 768 MiB session
+limit was left behind.
 If a launcher still holds the session lock, close its terminal or use `sudo incus-ui revoke`
 to stop an unlocked session and invalidate its credential. Existing WebSockets require stopping
 int, not just removing the certificate. Never import the private key into persistent NSS state.

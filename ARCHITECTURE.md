@@ -95,7 +95,7 @@ firewall failures from host kernel failures.
   avoids bridge multicast dependence
 - **pfsync:** Sync link with defer preserves established connections across failover
 - **wan-watch:** rc.d service demotes wanwatch by 128 after two lost WAN probe rounds or ten rounds
-  without local DNS (hung Unbound, not a reload); three good rounds recover. Each round sends three
+  without local DNS or IPv4 forwarding; three good rounds recover. Each WAN probe round sends three
   probes 300 ms apart, bounded to one second; any reply passes. Group counter survives restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover
@@ -113,7 +113,8 @@ Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 
 The minute checker restarts a firewall after three minutes of failed checks only if its peer is
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
-restart, permits three attempts/hour, and is inhibited by guest journals, maintenance and shutdown.
+restart, permits three attempts/hour, and is inhibited by guest journals, DNS pushes, maintenance
+and shutdown.
 A QEMU unreadable by Incus is killed using its pid file after verifying the instance in its command
 line, then restarted; guest replacement uses the same stop procedure. Attempts appear in
 syslog and the checker report.
@@ -348,9 +349,10 @@ Rescue](RECOVERY.md#standalone-rescue-entry).
 
 The rescue UKI is built before EROFS at `/usr/lib/convergent/rescue.efi`, protected by slot verity.
 It adds no host manifest fields. After blessing, slot updates ESP EFI/Linux/convergent-rescue.efi
-via checked/synced .new and atomic rename; a failed release cannot replace it. Copy failure retains
-the old rescue and retries on later bless. The installer reserves space for two slot UKIs, two
-loader paths and two rescue copies. Releases without rescue remain installable.
+via checked/synced .new and atomic rename; a failed release cannot replace it. Refresh failure logs
+a warning and retries on the next bless; blessing succeeds and staged guest updates can proceed.
+The installer reserves space for two slot UKIs, two loader paths and two rescue copies. Releases
+without rescue remain installable.
 IMAGE_ID=zz-convergent-rescue sorts below bootable slots, above exhausted entries; the numbered
 default excludes it. Bless migrates the old `default convergent-*` setting. Secure Boot is off, so
 ESP rescue is independent of slot corruption but unauthenticated.
@@ -486,7 +488,7 @@ backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOV
   selectors, PSI/diskstats
 - **Incus:** 60 seconds; seven CPU/memory/network/disk resource families
 - **facts:** Boot; minute NTS/audit; hourly storage/scrub/qgroups; daily NVMe/certificates, failed
-  daily retries hourly; virtio absence expected
+  boot/daily collections retry hourly; virtio absence expected
 - **observe:** Minute rule API, ages, guest pressure/update phases, host DNS; verified HTTPS to
   `example.com` only through running def's network namespace, never starts a guest or affects
   recovery
