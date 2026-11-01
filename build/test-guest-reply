@@ -113,17 +113,26 @@ sed -n '/^heal_probe() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall
 [ "$(heal_probe fw1)" = master ]
 
 for module in 10-wifi 14-firewall; do
-    sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
+    sed -e "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
+        -e "s|/usr/lib/convergent/incus/|$repo/rootfs/usr/lib/convergent/incus/|g" \
+        -e "s|registry=/etc/convergent/segments|registry=$scratch/registry/etc/convergent/segments|" \
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
     sh -n "$scratch/module"; . "$scratch/module"
 done
-# firewall_role reads the host registry: the firewall is asked only for ifconfig, and a hostile
-# reply never reaches awk's argument list.
+# firewall_role reads only host registries: a hostile reply never reaches awk's argument list.
 : >"$scratch/role-calls"
 firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; printf '%s\n' "-eBEGIN{system(\"touch $scratch/pwned\")}"; }
 firewall_role fw1 MASTER >/dev/null 2>&1 || :
-[ "$(cat "$scratch/role-calls")" = ifconfig ] && [ ! -e "$scratch/pwned" ] ||
+[ "$(tail -n 1 "$scratch/role-calls")" = ifconfig ] && [ ! -e "$scratch/pwned" ] ||
     { echo 'test-guest-reply: firewall_role trusts a firewall-supplied path'; exit 1; }
+# A firewall from before the registry is held to the six system segments, a current one to all.
+awk '/^carp[6-9]:/ {skip=1; next} /^[a-z]/ {skip=0} !skip' "$here/fixtures/firewall-reply" >"$scratch/legacy-reply"
+firewall_rsh() { if [ "$2" = ifconfig ]; then cat "$scratch/legacy-reply"; else echo legacy; fi; }
+firewall_role fw1 MASTER
+firewall_rsh() { if [ "$2" = ifconfig ]; then cat "$scratch/legacy-reply"; fi; }
+if firewall_role fw1 MASTER; then echo 'test-guest-reply: six segments passed a current firewall'; exit 1; fi
+firewall_rsh() { if [ "$2" = ifconfig ]; then cat "$here/fixtures/firewall-reply"; fi; }
+firewall_role fw1 MASTER
 run() { transport; }
 firewall_rsh() { transport; }
 # Ordinary failures retain both the guest's text and its status for UI advice.

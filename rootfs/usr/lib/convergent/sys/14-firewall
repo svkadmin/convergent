@@ -33,10 +33,14 @@ exit 1;
 	exit "$code"
 )
 firewall_role() {
-	# The host's own registry: a path from the firewall reached awk's argument list (a reply of
-	# "-e..." ran as host root).
+	# The host's own registries: a path from the firewall reached awk's argument list (a reply of
+	# "-e..." ran as host root). The reply only picks one: a firewall from before the registry
+	# (0.1.3, until its update migrates it) runs the six system segments.
+	registry=/etc/convergent/segments
+	legacy=$(guest_reply 128 firewall_rsh "$1" 'test -f /etc/convergent/segments || echo legacy') || return
+	[ "$legacy" != legacy ] || registry=/usr/lib/convergent/incus/segments
 	output=$(guest_reply 65536 firewall_rsh "$1" ifconfig) || return
-	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
+	printf '%s\n' "$output" | awk -v want="$2" -f /usr/lib/convergent/incus/carp.awk "$registry" - >/dev/null
 }
 firewall_pair() { firewall_role "$1" MASTER && firewall_role "$2" BACKUP; }
 firewall_healthy() {
