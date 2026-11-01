@@ -47,30 +47,7 @@ read_security() {
 	case $security in ''|open|psk|8021x) ;; *) die "invalid security type" ;; esac
 }
 
-join() {
-	set -- "$1" "$ssid"
-	[ "$1" != connect ] || [ -z "$security" ] || set -- "$@" "$security"
-	if [ -n "$pass" ]; then
-		reply=$(run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$@")
-	else
-		reply=$(run 45 iwctl station "$WIFI_IF" "$@")
-	fi
-	rc=$?
-	if [ "$rc" != 0 ] && [ "$1" = connect-hidden ]; then
-		case $reply in
-		*AlreadyProvisioned*|*"Already provisioned"*) join connect; return $? ;;
-		esac
-	fi
-	printf '%s\n' "$reply"
-	return "$rc"
-}
-
-pass= security=
-case ${1:-} in
-list)
-	run 10 iwctl known-networks list
-	;;
-scan)
+scan_wait() {
 	run 10 iwctl station "$WIFI_IF" scan >/dev/null || exit $?
 	deadline=$(($(date +%s) + 15))
 	while :; do
@@ -83,6 +60,36 @@ scan)
 		*) die "scan status unavailable" ;;
 		esac
 	done
+}
+
+join() {
+	set -- "$1" "$ssid"
+	[ "$1" != connect ] || [ -z "$security" ] || set -- "$@" "$security"
+	if [ -n "$pass" ]; then
+		reply=$(run 45 iwctl --passphrase "$pass" station "$WIFI_IF" "$@")
+	else
+		reply=$(run 45 iwctl station "$WIFI_IF" "$@")
+	fi
+	rc=$?
+	if [ "$rc" != 0 ] && [ "$1" = connect-hidden ]; then
+		case $reply in
+		*AlreadyProvisioned*|*"Already provisioned"*)
+			# A cached network connects at once; one gone from the scan cache needs a scan first.
+			if reply=$(join connect); then printf '%s\n' "$reply"; return 0; fi
+			scan_wait; join connect; return $? ;;
+		esac
+	fi
+	printf '%s\n' "$reply"
+	return "$rc"
+}
+
+pass= security=
+case ${1:-} in
+list)
+	run 10 iwctl known-networks list
+	;;
+scan)
+	scan_wait
 	run 10 iwctl station "$WIFI_IF" get-networks
 	;;
 status)
@@ -125,7 +132,7 @@ disconnect)
 	run 10 iwctl station "$WIFI_IF" disconnect
 	;;
 auto)
-	run 10 iwctl station "$WIFI_IF" autoconnect on
+	run 10 rc-service iwd restart || die "iwd restart failed or timed out"
 	;;
 *)
 	echo "usage: wan-wifi list|scan|status|add|add-hidden|connect|connect-hidden|forget|disconnect|auto" >&2

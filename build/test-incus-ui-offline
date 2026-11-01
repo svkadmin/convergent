@@ -122,6 +122,68 @@ ic() { echo "$*" >>"$work/grafana-calls"; }
 incus_ui=
 . "$work/grafana"
 grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
+# Only the session limit triggers orphan recovery; failures are best-effort.
+sed -n '/^reconcile_svc() {/,/^}/p; /^        if \[ "$action" = cleanup \]/,/^        fi$/p' "$repo/tools/incus-ui" >"$work/orphan"
+[ -s "$work/orphan" ]
+sh -n "$work/orphan"
+cat >"$work/orphan-driver" <<'EOF'
+ic() {
+    echo "$*" >>"$work/orphan-calls"
+    case $* in
+    'config get svc limits.memory')
+        case $sample in
+        normal) echo 350MiB ;;
+        custom) echo 1GiB ;;
+        empty) echo '' ;;
+        missing) return 1 ;;
+        read-fail) echo 768MiB; return 1 ;;
+        *) echo 768MiB ;;
+        esac ;;
+    'query /1.0/instances/svc/state?project=default')
+        case $sample in
+        query-fail) return 1 ;;
+        stopped) echo '{"status":"Stopped"}' ;;
+        *) echo '{"status":"Running"}' ;;
+        esac ;;
+    'exec svc -- rc-service grafana stop')
+        [ "$sample" != stop-fail ] ;;
+    'config set svc limits.memory=350MiB')
+        [ "$sample" != shrink-fail ] ;;
+    *) exit 1 ;;
+    esac
+}
+logger() { echo "$*" >>"$work/orphan-errors"; return 1; }
+. "$work/orphan"
+EOF
+sh -n "$work/orphan-driver"
+for action in cleanup --reconcile --close revoke; do
+    for sample in normal custom empty missing read-fail running stopped query-fail stop-fail shrink-fail; do
+        : >"$work/orphan-calls"
+        : >"$work/orphan-errors"
+        (export work action sample; sh -eu "$work/orphan-driver")
+        : >"$work/expected"
+        case $action in
+        cleanup|--reconcile)
+            echo 'config get svc limits.memory' >"$work/expected"
+            case $sample in
+            running|stopped|query-fail|stop-fail|shrink-fail)
+                echo 'query /1.0/instances/svc/state?project=default' >>"$work/expected" ;;
+            esac
+            case $sample in
+            running|stop-fail|shrink-fail) echo 'exec svc -- rc-service grafana stop' >>"$work/expected" ;;
+            esac
+            case $sample in
+            running|stopped|shrink-fail) echo 'config set svc limits.memory=350MiB' >>"$work/expected" ;;
+            esac ;;
+        esac
+        cmp "$work/expected" "$work/orphan-calls"
+        case $action:$sample in
+        cleanup:query-fail|--reconcile:query-fail|cleanup:stop-fail|--reconcile:stop-fail|cleanup:shrink-fail|--reconcile:shrink-fail)
+            grep -qx -- '-p user.err -t incus-ui svc orphan recovery failed' "$work/orphan-errors" ;;
+        *) [ ! -s "$work/orphan-errors" ] ;;
+        esac
+    done
+done
 # Reap tmp orphans with a free slot lock, rechecking identity after locking.
 (
     sed -n '/^reap_tmp() (/,/^)/p' "$repo/tools/browser" |
@@ -211,9 +273,9 @@ for gate in open guests update stopping nonroot arguments; do
     esac
 done
 grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
-# One sweep before self-heal at most: a frozen QEMU holds each for its full bound.
-awk '/^    firewall_heal >/ {heal = NR} /browser --reap-tmp \|\|/ {sweep = NR}
-    END {exit !(heal && sweep > heal)}' "$repo/tools/check"
+# One sweep before self-heal at most (a frozen QEMU holds each for its full bound); UI cleanup after it.
+awk '/^    firewall_heal >/ {heal = NR} /browser --reap-tmp \|\|/ {sweep = NR} /incus-ui cleanup \|\|/ {ui = NR}
+    END {exit !(heal && sweep > heal && ui > heal)}' "$repo/tools/check"
 # Delayed events must be awaited; a permanently missing event must hit the deadline.
 sed -n '/^audit_ready() {/,/^done$/p' "$here/test-incus-ui" |
     sed "s|/var/log/messages|$work/messages|g; s/+ 60/+ 2/" >"$work/audit"

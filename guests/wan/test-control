@@ -1,0 +1,223 @@
+#!/bin/sh
+# Offline Wi-Fi recovery and locked portal expiry.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+export work
+for name in wan-wifi wan-portal; do
+    sed '/^PATH=/d; /^\. /d; s|^d=/run/wan$|d=$work/run|' \
+        "$here/rootfs/usr/local/sbin/$name" >"$work/$name"
+    sh -n "$work/$name"
+done
+cat >"$work/wifi-driver" <<'EOF'
+WIFI_IF=wlan0
+date() { cat "$work/clock"; }
+sleep() { echo "$(($(date) + $1))" >"$work/clock"; }
+timeout() {
+    printf '%s\n' "$*" >>"$work/calls"
+    bound=$1; shift
+    case $* in
+    'rc-service iwd restart') [ "$bound" = 10 ] || exit 97; return "$restart_rc" ;;
+    iwctl*) "$@" ;;
+    *) exit 97 ;;
+    esac
+}
+iwctl() {
+    case $* in
+    'station wlan0 connect-hidden saved') echo "$provisioned"; return 1 ;;
+    'station wlan0 scan')
+        [ "$bound" = 10 ] || exit 97
+        [ "$fault" != scan ] || return "$failure_rc"
+        sleep "$init_delay"
+        ;;
+    'station wlan0 show')
+        [ "$bound" = "$((100 + init_delay + 15 - $(date)))" ] || exit 97
+        case $fault in
+        show) return "$failure_rc" ;;
+        unknown) echo 'Scanning unknown' ;;
+        stalled) echo 'Scanning yes' ;;
+        *)
+            if [ "$(date)" -lt "$scan_done" ]; then echo 'Scanning yes'
+            else echo 'Scanning no'; touch "$work/ready"; fi
+            ;;
+        esac
+        ;;
+    'station wlan0 connect saved') [ -e "$work/ready" ] || return 96; echo connected ;;
+    'station wlan0 get-networks')
+        [ "$bound" = 10 ] && [ -e "$work/ready" ] || return 96
+        echo networks
+        ;;
+    *) exit 97 ;;
+    esac
+}
+. "$work/wan-wifi"
+EOF
+sh -n "$work/wifi-driver"
+export fault provisioned restart_rc
+export init_delay scan_done failure_rc
+init_delay=2 scan_done=104 failure_rc=124
+restart_rc=0
+for provisioned in AlreadyProvisioned 'Already provisioned'; do
+    for fault in none scan show unknown stalled; do
+        echo 100 >"$work/clock"
+        : >"$work/calls"
+        rm -f "$work/ready"
+        rc=0
+        printf 'saved\n' | sh "$work/wifi-driver" connect-hidden >"$work/out" 2>"$work/err" || rc=$?
+        if [ "$fault" = none ]; then
+            [ "$rc" = 0 ]
+            grep -qx connected "$work/out"
+            printf '%s\n' '45 iwctl station wlan0 connect-hidden saved' \
+                '45 iwctl station wlan0 connect saved' \
+                '10 iwctl station wlan0 scan' '15 iwctl station wlan0 show' \
+                '14 iwctl station wlan0 show' '13 iwctl station wlan0 show' \
+                '45 iwctl station wlan0 connect saved' >"$work/want"
+            cmp "$work/want" "$work/calls"
+        else
+            [ "$rc" != 0 ]
+            case $fault in
+            scan|show) [ "$rc" = 124 ] ;;
+            *) [ "$rc" = 1 ]; grep -q '^wan-wifi: scan' "$work/err" ;;
+            esac
+            [ "$(grep -c 'station wlan0 connect saved' "$work/calls")" = 1 ]
+            [ "$(cat "$work/clock")" -le 117 ]
+            [ "$fault" != stalled ] || grep -qx 'wan-wifi: scan timed out' "$work/err"
+        fi
+    done
+done
+# A cached hidden network connects without a scan (a busy scan must not block it).
+fault=scan
+echo 100 >"$work/clock"
+: >"$work/calls"
+touch "$work/ready"
+printf 'saved\n' | sh "$work/wifi-driver" connect-hidden >"$work/out"
+grep -qx connected "$work/out"
+printf '%s\n' '45 iwctl station wlan0 connect-hidden saved' '45 iwctl station wlan0 connect saved' >"$work/want"
+cmp "$work/want" "$work/calls"
+# Initiation and completion have separate budgets in the scan command.
+init_delay=8 scan_done=116
+for fixture in none:0 scan:7 scan:124 show:9 show:124 unknown:1 stalled:1; do
+    fault=${fixture%:*} failure_rc=${fixture#*:}
+    echo 100 >"$work/clock"
+    : >"$work/calls"
+    rm -f "$work/ready"
+    rc=0
+    sh "$work/wifi-driver" scan >"$work/out" 2>"$work/err" || rc=$?
+    [ "$rc" = "$failure_rc" ]
+    if [ "$fault" = none ]; then
+        grep -qx networks "$work/out"
+        [ "$(cat "$work/clock")" = 116 ]
+        {
+            echo '10 iwctl station wlan0 scan'
+            for bound in 15 14 13 12 11 10 9 8 7; do
+                echo "$bound iwctl station wlan0 show"
+            done
+            echo '10 iwctl station wlan0 get-networks'
+        } >"$work/want"
+        cmp "$work/want" "$work/calls"
+    else
+        if grep -q get-networks "$work/calls"; then exit 1; fi
+        [ "$fault" != stalled ] || {
+            [ "$(cat "$work/clock")" = 123 ]
+            grep -qx 'wan-wifi: scan timed out' "$work/err"
+        }
+    fi
+done
+for restart_rc in 0 1 124; do
+    : >"$work/calls"
+    rc=0
+    sh "$work/wifi-driver" auto >"$work/out" 2>"$work/err" || rc=$?
+    printf '10 rc-service iwd restart\n' >"$work/want"
+    cmp "$work/want" "$work/calls"
+    if [ "$restart_rc" = 0 ]; then [ "$rc" = 0 ]
+    else
+        [ "$rc" != 0 ]
+        grep -qx 'wan-wifi: iwd restart failed or timed out' "$work/err"
+    fi
+done
+echo 'wan-wifi: delayed scan, hidden discovery and checked restart fixtures passed'
+
+mkdir "$work/run"
+cat >"$work/portal-driver" <<'EOF'
+TRANSIT_IF=eth0 TRANSIT_ADDR=100.80.0.10 PORTAL_BROWSER=100.80.3.11 PORTAL_MAX_MIN=30
+locked=0
+flock() {
+    [ "$*" = '-x 8' ] && [ "$locked" = 0 ] || exit 97
+    # A replacement session wins the lock before the delayed expiry request.
+    [ "$fault" != renewed ] || echo 2999 >"$work/run/portal"
+    locked=1
+}
+cat() {
+    [ "$locked" = 1 ] || exit 97
+    command cat "$@"
+}
+date() { [ "$locked" = 1 ] || exit 97; echo 3000; }
+ip() {
+    [ "$*" = '-4 route show default' ] || exit 97
+    [ "$fault" != resolver ] || return 1
+    echo 'default via 192.168.1.1 dev wlan0'
+}
+is_ipv4() { [ "$1" = 192.168.1.1 ]; }
+overlaps_internal() { return 1; }
+nft() {
+    [ "$locked" = 1 ] && [ "$*" = '-f -' ] || exit 97
+    cat >"$work/nft"
+    [ "$fault" != close ]
+}
+logger() { [ "$locked" = 1 ] || exit 97; }
+. "$work/wan-portal"
+EOF
+sh -n "$work/portal-driver"
+printf 'nameserver 192.168.1.1\n' >"$work/run/resolv.wlan0.dns"
+cat >"$work/closed" <<'EOF'
+flush map inet wan portal_dns
+flush set inet wan portal_ns
+flush set inet wan portal_src
+EOF
+cat >"$work/refreshed" <<'EOF'
+flush map inet wan portal_dns
+flush set inet wan portal_ns
+add element inet wan portal_dns { 100.80.0.10 : 192.168.1.1 }
+add element inet wan portal_ns { 192.168.1.1 }
+flush set inet wan portal_src
+add element inet wan portal_src { 100.80.3.11 }
+EOF
+for fault in expired fresh boundary renewed absent resolver close; do
+    echo 1000 >"$work/run/portal"
+    case $fault in
+    fresh|resolver) echo 2999 >"$work/run/portal" ;;
+    boundary) echo 1200 >"$work/run/portal" ;;
+    absent) rm "$work/run/portal" ;;
+    esac
+    rm -f "$work/nft"
+    rc=0
+    sh "$work/portal-driver" expire >"$work/out" 2>"$work/err" || rc=$?
+    if [ "$fault" = close ]; then
+        [ "$rc" != 0 ] && [ -e "$work/run/portal" ]
+        grep -qx 'wan-portal: could not close portal DNS' "$work/err"
+        continue
+    fi
+    [ "$rc" = 0 ]
+    case $fault in
+    expired|resolver) [ ! -e "$work/run/portal" ]; cmp "$work/closed" "$work/nft" ;;
+    fresh|boundary|renewed)
+        [ -e "$work/run/portal" ]; cmp "$work/refreshed" "$work/nft"
+        [ "$fault" != renewed ] || [ "$(cat "$work/run/portal")" = 2999 ]
+        ;;
+    absent) [ ! -e "$work/nft" ] ;;
+    esac
+done
+# The periodic checker must delegate the decision, and report a failed close.
+sed -n '/^\/usr\/local\/sbin\/wan-portal expire/p' "$here/rootfs/usr/local/sbin/wan-check" |
+    sed 's|/usr/local/sbin/wan-portal|portal|' >"$work/expire"
+[ -s "$work/expire" ]
+sh -n "$work/expire"
+portal() { [ "$*" = expire ] || exit 97; return "$portal_rc"; }
+for portal_rc in 0 1; do
+    rc=0
+    . "$work/expire"
+    [ "$rc" = "$portal_rc" ]
+done
+echo 'wan-portal: locked expiry, renewal and resolver refresh fixtures passed'
