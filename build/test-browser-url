@@ -174,6 +174,37 @@ done
 # A hostile guest can stall the probe: it must stay bounded.
 grep -q 'timeout -k 1 30 incus --force-local --project default exec "\$name" --' "$work/services" ||
     die 'compatibility probe is unbounded'
+sed -n '/^attempts=0$/,/^done$/p' "$repo/tools/browser" >"$work/readiness"
+check_script "$work/readiness"
+grep -qF 'timeout -k 1 30 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&-' "$work/readiness" ||
+    die 'readiness probe is unbounded'
+for succeed in 1 30 31; do
+    : >"$work/attempts"
+    rc=0
+    (
+        name=fixture ready=/run/browser-ready
+        timeout() { shift 3; "$@"; }
+        incus() {
+            [ "$*" = "--force-local --project default exec $name -- test -f $ready" ] || exit 1
+            for fd in 6 7 8 9; do
+                if (eval ": >&$fd") 2>/dev/null; then die "readiness inherited lock $fd"; fi
+            done
+            echo probe >>"$work/attempts"
+            [ "$(wc -l <"$work/attempts")" -eq "$succeed" ] || return 124
+        }
+        sleep() { :; }
+        exec 6>"$work/lock6" 7>"$work/lock7" 8>"$work/lock8" 9>"$work/lock9"
+        . "$work/readiness"
+    ) >"$work/error" 2>&1 || rc=$?
+    if [ "$succeed" = 31 ]; then
+        [ "$rc" != 0 ] || die 'readiness exceeded 30 attempts'
+        [ "$(wc -l <"$work/attempts")" -eq 30 ]
+        grep -q 'browser setup timed out' "$work/error"
+    else
+        [ "$rc" = 0 ] || die "readiness rejected attempt $succeed"
+        [ "$(wc -l <"$work/attempts")" -eq "$succeed" ]
+    fi
+done
 # Guard placement matters: no earlier service opening may bypass it.
 awk '/^# Refuse argv-only guests / {guard = NR}
     /\/usr\/local\/sbin\/portal begin|\/usr\/local\/sbin\/incus-ui --unlock|rc-service grafana start/ {

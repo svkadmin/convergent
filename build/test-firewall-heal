@@ -6,6 +6,34 @@ repo=${here%/build}
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' 0
 trap 'exit 1' HUP INT TERM
+# Slow DNS still needs exact answers and a bounded retry.
+sed -n "/<<'REBIND'/,/^REBIND$/p" "$here/test" >"$scratch/rebind"
+grep -q 'timeout 300 ssh' "$scratch/rebind"
+grep -qF '[ "$n" -lt 119 ]' "$scratch/rebind"
+sed -n '/^answer() {/,/^}/p' "$scratch/rebind" >"$scratch/answer"
+[ -s "$scratch/answer" ]; sh -n "$scratch/answer"
+(
+    . "$scratch/answer"
+    date() { echo "$clock"; }
+    sleep() { clock=$((clock + 1)); }
+    query() {
+        [ "$*" = '1053 public A' ] || return 1
+        case $sample in
+        delayed) [ "$clock" -lt 29 ] || echo 93.184.216.34 ;;
+        wrong) echo 93.184.216.35 ;;
+        extra) printf '93.184.216.34\n127.0.0.1\n' ;;
+        esac
+    }
+    for sample in delayed wrong extra; do
+        clock=0
+        if answer 1053 public A 93.184.216.34; then
+            [ "$sample:$clock" = delayed:29 ]
+        else
+            [ "$sample" != delayed ]; [ "$clock" = 30 ]
+        fi
+    done
+)
+echo 'test-firewall-heal: rebinding retry bounds and exact answers passed'
 sh "$here/networks" registry "$scratch/registry"
 sed -e "s|/usr/lib/convergent/incus|$repo/rootfs/usr/lib/convergent/incus|g" \
     -e "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|g" \

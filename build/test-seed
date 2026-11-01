@@ -186,6 +186,7 @@ old_trust=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256s
 export scratch old_trust
 cat >"$scratch/deploy" <<'DEPLOY'
 . "$scratch/deploy-functions"
+. "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
 die() { echo "$*" >&2; exit 1; }
 sync() { :; }
 running() { [ "$1" = svc ]; }
@@ -198,6 +199,19 @@ healthy() {
 }
 rc_service() { echo host >>"$scratch/events"; [ "$fault" != host ]; }
 jq() { [ "$1 $2 $3" = '-e --arg fp' ] && [ "$4" = "$old_trust" ]; }
+timeout() {
+    [ "$1 $2 $3" = '-k 5 60' ] || exit 1
+    shift 3
+    for fd in 6 7 8 9; do
+        if (eval ": >&$fd") 2>/dev/null; then die "readback inherited lock $fd"; fi
+    done
+    "$@"
+}
+incus() {
+    [ "$1 $2 $3" = '--force-local --project default' ] || exit 1
+    shift 3
+    ic "$@"
+}
 ic() {
     case "$*" in
     'admin update-certificate '*) echo server >>"$scratch/events" ;;
@@ -205,8 +219,22 @@ ic() {
     'config trust add-certificate '*) echo add >>"$scratch/events" ;;
     "config trust remove $old_trust") echo remove >>"$scratch/events" ;;
     'exec svc -- true') : ;;
-    'exec svc -- cat '*) shift 4; cat "$scratch/svc$1" ;;
+    'exec svc -- cat '*)
+        shift 4
+        echo readback-stderr >&2
+        if [ "$1" = /etc/victoria-logs/tls/server.crt ]; then
+            case ${readback:-current} in
+                missing) return 1 ;;
+                timeout) return 124 ;;
+                oversized) head -c 65537 /dev/zero; return ;;
+                incomplete) cat "$tls/server.crt"; return 124 ;;
+            esac
+        fi
+        cat "$scratch/svc$1" ;;
     'exec svc -- sh -c '*)
+        case ${readback:-current} in
+            missing|timeout|oversized|incomplete) [ ! -s "$work/current.crt" ] || die 'partial readback retained' ;;
+        esac
         shift 5
         printf 'chown() { :; }; sync() { :; }\n%s\n' "$1" >"$scratch/payload"
         sh -n "$scratch/payload"
@@ -285,6 +313,23 @@ for fault in host fw1 fw2 wan none; do
         printf 'server\nadd\nlogs\nmetrics\nhealthy\nhost\nfw1\nfw2\nwan\nremove\n' >"$scratch/expected"
         cmp "$scratch/expected" "$scratch/events"
     fi
+done
+# Failed readbacks redeploy even when an incomplete reply matches the certificate.
+grep -qF 'guest_reply 65536 timeout -k 5 60 incus' "$scratch/deploy-functions"
+for readback in current missing timeout oversized incomplete; do
+    touch "$tls/pending"
+    : >"$scratch/events"
+    readback=$readback fault=none sh -eu "$scratch/deploy" \
+        6>"$scratch/lock6" 7>"$scratch/lock7" 8>"$scratch/lock8" 9>"$scratch/lock9" >"$scratch/log" 2>&1 ||
+        { cat "$scratch/log"; die "certificate readback $readback"; }
+    if grep -q readback-stderr "$scratch/log"; then die 'guest stderr escaped'; fi
+    if [ "$readback" = current ]; then
+        if grep -qx logs "$scratch/events"; then die 'redeployed matching certificate'; fi
+    else
+        grep -qx logs "$scratch/events" || die "did not redeploy $readback"
+        grep -qx healthy "$scratch/events"
+    fi
+    cmp "$tls/server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"
 done
 # A consumed seed still contains the future leaf; init must deploy before TLS health.
 cp "$scratch/future-server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"

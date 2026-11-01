@@ -1821,7 +1821,7 @@ CHECK
 cv_time rebinding-filter
 # A separate upstream serves local-data; the filtering resolver must treat it as remote.
 for f in fw1 fw2; do
-	timeout 30 ssh -F /etc/convergent/ssh_config "$f" sh -eu <<'REBIND' || bad $LINENO
+	timeout 300 ssh -F /etc/convergent/ssh_config "$f" sh -eu <<'REBIND' || bad $LINENO
 work=$(mktemp -d)
 up= down=
 cleanup() {
@@ -1872,12 +1872,19 @@ unbound-checkconf "$work/down.conf"
 unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
 unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
 query() { dig @127.0.0.1 -p "$1" "$2.rebind.example.net." "$3" +time=1 +tries=1 +short; }
+answer() {
+	deadline=$(($(date +%s) + 30))
+	until [ "$(query "$1" "$2" "$3")" = "$4" ]; do
+		[ "$(date +%s)" -lt "$deadline" ] || return 1
+		sleep 1
+	done
+}
 n=0
 until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
-	[ "$n" -lt 5 ]; n=$((n + 1)); sleep 1
+	[ "$n" -lt 119 ]; n=$((n + 1)); sleep 1
 done
-[ "$(query 1053 public AAAA)" = 2001:4860:4860::8888 ]
-[ "$(query 1054 loop A)" = 127.42.0.7 ]
+answer 1053 public AAAA 2001:4860:4860::8888
+answer 1054 loop A 127.42.0.7
 query 1054 mapped AAAA | grep -q '^::ffff:'
 for record in 'loop A' 'mapped AAAA'; do
 	set -- $record
@@ -1885,7 +1892,7 @@ for record in 'loop A' 'mapped AAAA'; do
 	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer"
 	grep -q 'ANSWER: 0,' "$work/answer"
 done
-[ "$(query 1053 public A)" = 93.184.216.34 ]
+answer 1053 public A 93.184.216.34
 REBIND
 done
 fw_unlocked() {
@@ -3807,8 +3814,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 # Hold the first save open while a second action tries to read the same file.
 (
-HOME=$work/home SWAYSOCK=fixture
-mkdir -p "$HOME/.config/sway/config.d"
+HOME=$work/home SWAYSOCK=fixture XDG_RUNTIME_DIR=$work/runtime
+mkdir -p "$HOME/.config/sway/config.d" "$XDG_RUNTIME_DIR"
 printf 'input type:touchpad dwt enabled\n' >"$HOME/.config/sway/config.d/touchpad"
 sed -n '/^save_config() ($/,/^)/p' /usr/local/sbin/sys >"$work/save-config"
 [ -s "$work/save-config" ]
@@ -3817,8 +3824,13 @@ sh -n "$work/save-config"
 . /usr/lib/convergent/sys/51-touchpad
 die() { echo "$*" >&2; exit 1; }
 sway() { :; }
-path() { :; }
+sed -n '/^path() {/,/^}/p' /usr/local/sbin/sys >"$work/path"
+[ -s "$work/path" ]; . "$work/path"
 text_valid() { :; }
+for runtime in '' relative; do
+	if (XDG_RUNTIME_DIR=$runtime; touchpad_set tap enabled) 2>"$work/err"; then exit 1; fi
+	grep -qx 'use an absolute path' "$work/err"
+done
 wait_file() {
 	n=0
 	while [ ! -e "$1" ] && [ "$n" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
@@ -3851,13 +3863,17 @@ wait_file "$work/second"
 : >"$work/release"
 wait "$first"
 wait "$second"
+[ -f "$XDG_RUNTIME_DIR/convergent-touchpad.lock" ]
+[ ! -e "$HOME/.config/sway/touchpad.lock" ]
 for option in dwt tap natural_scroll; do
 	grep -qx "input type:touchpad $option enabled" "$HOME/.config/sway/config.d/touchpad"
 done
 for out in tap scroll; do grep -q '^Saved:' "$work/$out.out"; done
 # The action must not retain its lock in the interactive caller.
+printf 'accepted\n' >"$HOME/.config/sway/touchpad.lock"
 touchpad_set natural_scroll enabled >"$work/scroll.out"
-command flock -n "$HOME/.config/sway/touchpad.lock" true
+grep -qx accepted "$HOME/.config/sway/touchpad.lock"
+command flock -n "$XDG_RUNTIME_DIR/convergent-touchpad.lock" true
 [ "$(find "$HOME/.config/sway/config.d" -type f | wc -l)" = 1 ]
 )
 sed -n '/printf.*json.*jq -e --arg key/,/not saved/p' /usr/lib/convergent/sys/51-touchpad >"$work/verify"
