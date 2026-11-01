@@ -1847,7 +1847,8 @@ maintenance_clean() {
     n=0
     while :; do
         rc=0; fw_unlocked || rc=$?
-        [ "$rc" = 1 ] || return 0
+        # 2: no lock file; 1 held, anything else (frozen fw1, SSH failure) proves nothing.
+        case $rc in 0|2) return 0 ;; esac
         [ "$n" -lt 60 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
         n=$((n + 1)); sleep 2
     done
@@ -3936,7 +3937,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=19800 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=19800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -4227,7 +4228,7 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=5400 ;; guests-update) budget=19800 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=19800 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
 	# past their limits. Both runs PF when the browser smoke passes; +1800 covers its wait for fw1's relink.
