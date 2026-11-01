@@ -31,7 +31,8 @@ capture() {
 	if rcctl check wan_watch >/dev/null 2>&1; then up=1; else up=0; fi
 	echo "convergent_wan_watch_up $up"
 	for group in carp wanwatch sysmaint upgrade handoff; do
-		case $group in sysmaint|handoff)
+		# These exist only while set: a handback removes upgrade and handoff from fw1 until its next boot.
+		case $group in sysmaint|upgrade|handoff)
 			if [ "$interfaces_ok" = 1 ]; then
 				case " $groups" in *" $group "*) ;; *)
 					echo "convergent_carp_group_present{group=\"$group\"} 0"
