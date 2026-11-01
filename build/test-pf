@@ -4,6 +4,8 @@
 set -eu
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
+test_start=$(date +%s)
+cv_time() { echo "CV-TIME pf-$1 $(($(date +%s) - test_start))"; }
 exec </dev/null
 result=0
 created=
@@ -18,6 +20,7 @@ cleanup() {
 	trap - 0
 	trap '' HUP INT TERM
 	set +e
+	cv_time cleanup
 	[ -z "${canary_pid:-}" ] || canary_end || r=1
 	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart
 		timeout -k 5 1800 sh -c 'until command ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'; } || r=1
@@ -314,18 +317,18 @@ done 3<"$work_rows"
 # A one-vCPU firewall relinks its kernel for minutes after booting; the L2 storm's PF logging on top
 # of that made CARP advertisements late and the pair flap into the first work probes. Let it finish.
 for f in fw1 fw2; do
+	cv_time "relink-$f"
 	timeout -k 5 1500 sh -c 'until ssh -n -F /etc/convergent/ssh_config "$1" "! pgrep -f [r]eorder_kernel >/dev/null"; do sleep 10; done' sh "$f" ||
 		{ echo "CV-PF FAIL $f still relinking its kernel after 25 minutes"; exit 1; }
 done
 test_start=$(date +%s)
-cv_time() { echo "CV-TIME pf-l2-$1 $(($(date +%s) - test_start))"; }
-cv_time start
+cv_time l2-start
 while read -r iface vhid parent label prefix gateway family <&3; do
 	created="pf-work-l2-${parent#vlan} $created"
 done 3<"$work_rows"
 rc=0
 timeout -k 5 1140 sh /var/lib/convergent/test-release/fixtures/pf-l2 "$work_rows" || rc=$?
-cv_time duration
+cv_time l2-duration
 [ "$rc" = 0 ] || exit "$rc"
 home_want=$(awk '
 function ip(s,a) {split(s,a,"."); return ((a[1]*256+a[2])*256+a[3])*256+a[4]}
@@ -368,6 +371,7 @@ for i in $(seq 30); do
 done
 timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:5999"
 for master in fw1 fw2; do
+	cv_time "work-$master"
 	if [ "$master" = fw2 ]; then
 		w1_maintenance=1
 		printf 'yes\n' | sys firewall maintenance || {
@@ -478,6 +482,7 @@ w1_maintenance=
 rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 # End work-network matrix.
 # The work matrix restarted fw1; its kernel relink saturated it for 30 minutes and slowed every probe.
+cv_time work-relink-fw1
 timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "! pgrep -f [r]eorder_kernel >/dev/null"; do sleep 10; done' ||
 	{ echo 'CV-PF FAIL fw1 still relinking its kernel after 30 minutes'; exit 1; }
 
@@ -498,6 +503,7 @@ udp_remote() {
     [ "$got" = "$1" ] || { echo "CV-REMOTE FAIL udp $2 $3:$4 want=$1 got=$got"; result=1; }
 }
 for master in fw1 fw2; do
+	cv_time "remote-$master"
     if [ "$master" = fw2 ]; then
         w1_maintenance=1
         printf 'yes\n' | sys firewall maintenance

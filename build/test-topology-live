@@ -4,7 +4,9 @@ set -eu
 release=/var/lib/convergent/test-release
 legacy=$release/legacy-fw
 [ -d "$legacy" ] || { echo 'CV-TOPOLOGY SKIP: no previous 0.1.3 firewall images on the rig'; exit 0; }
-awk '/^# Capture the command status/ {exit} {print}' /usr/local/sbin/guests >"$release/guest-functions"
+. "$release/timing"
+exec 3>&1
+awk '/^# Capture the command status/ {exit} {print}' "$release/guests-fw-timed" >"$release/guest-functions"
 (
     . "$release/guest-functions"
     work=$(mktemp -d "$state/work.XXXXXX")
@@ -41,6 +43,13 @@ awk '/^# Capture the command status/ {exit} {print}' /usr/local/sbin/guests >"$r
     done
     autorestart_clear
 )
+# Both just booted: undo's 30 s write to a relinking fw1 (load 5, fw2's CARP flapping) was cut off.
+deadline=$(($(date +%s) + 2400))
+for node in fw1 fw2; do
+    until timeout 30 ssh -n -F /etc/convergent/ssh_config "$node" '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
+done
 # Exercise the installed maintenance undo and interrupted handoff against old guest helpers.
 printf 'yes\n' | sys firewall maintenance
 printf 'yes\n' | sys firewall undo
@@ -55,8 +64,9 @@ printf 'yes\n' | sys firewall undo
 lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
 for fault in fw1 fw2 none; do
+    cv_time "topology-$fault"
     if [ "$fault" = none ]; then
-        cp /usr/local/sbin/guests "$release/guests-topology-run"
+        cp "$release/guests-fw-timed" "$release/guests-topology-run"
     else
         awk -v fault="$fault" '
             {print}
@@ -64,7 +74,7 @@ for fault in fw1 fw2 none; do
                 print "        [ \"$node\" != \"" fault "\" ] || die \"injected after rebuild\""; n++
             }
             END {exit n != 1}' "$lib/fw-topology" >"$release/fw-topology-fault"
-        sed "s|^\. \"\$lib/fw-topology\"|. \"$release/fw-topology-fault\"|" /usr/local/sbin/guests >"$release/guests-topology-run"
+        sed "s|^\. \"\$lib/fw-topology\"|. \"$release/fw-topology-fault\"|" "$release/guests-fw-timed" >"$release/guests-topology-run"
     fi
     rc=0
     sh -x "$release/guests-topology-run" update fw "$release/guests/fw" --trusted-local >"$release/topology-$fault.log" 2>&1 || rc=$?
