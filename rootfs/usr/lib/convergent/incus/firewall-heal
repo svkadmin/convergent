@@ -10,7 +10,7 @@ heal_probe() {
         ifconfig pfsync0
         rcctl check dhcpd >/dev/null
         rcctl check unbound >/dev/null
-        unbound-control status >/dev/null' 9>&- 8>&- 7>&- 2>/dev/null) || return 1
+        unbound-control status >/dev/null' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) || return 1
     printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
 }
 heal_allowed() {
@@ -26,10 +26,10 @@ heal_note() {
 }
 # The state as Incus reads it: a loaded host answers the second query late, a hung QEMU neither.
 heal_state() {
-    if rows=$(timeout -k 1 30 incus --force-local --project default list "$1" --format csv -c ns 9>&- 8>&- 7>&-); then
+    if rows=$(timeout -k 1 30 incus --force-local --project default list "$1" --format csv -c ns 9>&- 8>&- 7>&- 6>&-); then
         status=$(printf '%s\n' "$rows" | awk -F, -v name="$1" '$1 == name {print $2}')
     else
-        status=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- | jq -r .status) || return 1
+        status=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 9>&- 8>&- 7>&- 6>&- | jq -r .status) || return 1
     fi
     [ -n "$status" ] || return 1
     printf '%s\n' "$status" | tr '[:lower:]' '[:upper:]'
@@ -71,9 +71,9 @@ heal_unhold() (
     heal_allowed || exit 0
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
-    held=$(timeout -k 1 30 incus --force-local --project default config get "$1" user.convergent.autorestart 9>&- 8>&- 7>&-) || exit 1
+    held=$(timeout -k 1 30 incus --force-local --project default config get "$1" user.convergent.autorestart 9>&- 8>&- 7>&- 6>&-) || exit 1
     if [ "$held" = true ]; then
-        timeout -k 1 30 incus --force-local --project default config unset "$1" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- || exit 1
+        timeout -k 1 30 incus --force-local --project default config unset "$1" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- 6>&- || exit 1
         heal_note "$1 autorestart hold released"
     fi
     rm -f "$heal/$1.hold"
@@ -123,11 +123,19 @@ firewall_heal() (
         exec 8>/run/convergent/guests.lock
         if ! flock -n 8; then
             echo "SELF-HEAL $node: restart inhibited by guests lock"
+            exec 8>&-
+            continue
+        fi
+        exec 6>/run/convergent/dns-push.lock
+        if ! flock -n 6; then
+            echo "SELF-HEAL $node: restart inhibited by DNS push"
+            exec 6>&- 8>&-
             continue
         fi
         # Recheck immediately before mutation; never restart against a stale peer observation.
         if heal_probe "$node" >/dev/null || [ "$(heal_probe "$peer")" != master ] || ! heal_allowed; then
             rm -f "$heal/$node"
+            exec 6>&- 8>&-
             continue
         fi
         read -r uptime rest </proc/uptime
@@ -152,28 +160,29 @@ firewall_heal() (
             held=
             if [ "$1" != kill ]; then
                 timeout -k 1 30 incus --force-local --project default config set "$node" \
-                    boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- ||
+                    boot.autorestart=false user.convergent.autorestart=true 9>&- 8>&- 7>&- 6>&- ||
                     { heal_note "$node restart refused: autorestart hold not set"; exit 1; }
                 : >"$heal/$node.hold"
                 held=1
             fi
-            if [ "$1" != kill ] && ! timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; then
+            if [ "$1" != kill ] && ! timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; then
                 # Incus cannot drive a frozen monitor, --force included: end the QEMU itself.
                 if heal_qemu "$node" >/dev/null; then set -- kill; else set -- failed; fi
             fi
             if [ "$1" = kill ]; then
                 heal_kill "$node" "$peer" "$original_pid" && { [ "$(heal_state "$node")" = RUNNING ] ||
-                    timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&-; } || set -- failed
+                    timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&-; } || set -- failed
             fi
             [ "$1" != failed ] || { heal_note "$node restart failed or timed out${held:+; autorestart hold retained}"; exit 1; }
             if [ -z "$held" ]; then
                 heal_note "$node restart completed; awaiting health probes"
             elif timeout -k 1 30 incus --force-local --project default config unset "$node" \
-                boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&-; then
+                boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- 6>&-; then
                 rm -f "$heal/$node.hold"
                 heal_note "$node restart completed; awaiting health probes"
             else heal_note "$node restarted but autorestart hold could not be cleared"; fi
         ) >/dev/null 2>&1
+        exec 6>&- 8>&-
     done
     [ ! -f "$heal/event" ] || cat "$heal/event"
 )

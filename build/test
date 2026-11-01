@@ -801,7 +801,7 @@ sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" 
 . "$work/heal"
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
-flock() { [ "$busy" = 0 ]; }
+flock() { [ "$busy" = 0 ] && command flock "$@"; }
 timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; shift 3; "$@"; }
 sleep() { :; }
 # A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
@@ -901,7 +901,18 @@ busy=1; tick 6360
 [ "$(attempts)" = 4 ]
 grep -q 'inhibited by guests lock' "$work/report"
 busy=0 failed=0 test_status=STOPPED
-tick 6420
+(
+    exec 5>"$work/run/dns-push.lock"
+    command flock -n 5
+    cp "$work/calls" "$work/before-dns"
+    cp "$work/run/firewall-heal/attempts" "$work/before-attempts"
+    tick 6420
+    grep -qx 'SELF-HEAL fw2: restart inhibited by DNS push' "$work/report"
+    cmp "$work/calls" "$work/before-dns"
+    cmp "$work/run/firewall-heal/attempts" "$work/before-attempts"
+    command flock -n "$work/run/guests.lock" true
+)
+tick 6480
 grep -q 'default start fw2$' "$work/calls"
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
