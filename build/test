@@ -1079,10 +1079,15 @@ incus() {
             ephemeral=false)
                 [ "$8" = --property ]
                 [ "$clear_fail" = 0 ] || return 1
-                rm "$fixture/ephemeral" ;;
+                rm "$fixture/ephemeral"
+                [ "$clear_timeout" = 0 ] || return 124 ;;
             ephemeral=true) [ "$8" = --property ]; touch "$fixture/ephemeral" ;;
             boot.autorestart=false) touch "$fixture/held" ;;
-            volatile.last_state.power=RUNNING) [ -f "$fixture/stopped" ] ;;
+            volatile.last_state.power=RUNNING)
+                [ -f "$fixture/stopped" ] || return 1
+                grep -Eq 'config (unset wan boot.autorestart|set wan boot.autorestart=false)$' "$fixture/calls" || return 1
+                grep -Eq 'config (unset wan user.convergent.autorestart|set wan user.convergent.autorestart=true)$' "$fixture/calls" || return 1
+                [ "$last_state_fail" = 0 ] || return 1 ;;
             user.convergent.autorestart=true) : ;;
             *) return 1 ;;
             esac ;;
@@ -1098,7 +1103,7 @@ incus() {
     *) return 1 ;;
     esac
 }
-stuck=0 clear_fail=0 query_fail=0
+stuck=0 clear_fail=0 clear_timeout=0 query_fail=0 last_state_fail=0
 stop_one default wan - - false 3 false
 grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
 grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
@@ -1125,32 +1130,37 @@ grep -q 'query /1.0/instances?recursion=1&project=owner' "$fixture/calls"
 grep -q -- '--project owner config set wan boot.autorestart=false' "$fixture/calls"
 grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
 # Preserve ephemeral owners, including cleanup after failed stops or queries.
-for fault in none clear stop query missing; do
+for fault in none clear clear-timeout stop query missing last-state; do
     rm -f "$fixture/stopped" "$fixture/deleted"
     : >"$fixture/calls"
+    : >"$fixture/timeouts"
     touch "$fixture/ephemeral"
-    clear_fail=0 stuck=0 query_fail=0
+    clear_fail=0 clear_timeout=0 stuck=0 query_fail=0 last_state_fail=0
     case $fault in
     clear) clear_fail=1 ;;
+    clear-timeout) clear_timeout=1 ;;
     stop) stuck=1 ;;
     query) query_fail=1 ;;
     missing) touch "$fixture/deleted" ;;
+    last-state) last_state_fail=1 ;;
     esac
     if [ "$fault" = none ]; then stop_one owner wan - - true 0 true
     elif stop_one owner wan - - true 0 true; then exit 1; fi
     [ -f "$fixture/ephemeral" ]
     grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
-    if [ "$fault" = clear ]; then
+    grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"
+    grep -q '^-k 1 30 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
+    if [ "$fault" = clear ] || [ "$fault" = clear-timeout ]; then
         if grep -q 'stop wan\|boot.autorestart' "$fixture/calls"; then exit 1; fi
-    else grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"; fi
-    if [ "$fault" = none ]; then
+    fi
+    if [ "$fault" = none ] || [ "$fault" = last-state ]; then
         [ ! -f "$fixture/deleted" ]
         grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
         grep -q 'config unset wan boot.autorestart$' "$fixture/calls"
         grep -q 'config unset wan user.convergent.autorestart$' "$fixture/calls"
     elif grep -q 'volatile.last_state.power\|config unset' "$fixture/calls"; then exit 1; fi
 done
-clear_fail=0 stuck=0 query_fail=0
+clear_fail=0 clear_timeout=0 stuck=0 query_fail=0 last_state_fail=0
 rm -f "$fixture/ephemeral" "$fixture/deleted" "$fixture/stopped"
 : >"$fixture/calls"
 stop_one owner wan - - false 0 false
@@ -1182,14 +1192,16 @@ stop_one() {
 }
 eval "$(sed -n '/^result=0/,/^note /p' /usr/lib/convergent/incus/shutdown | sed '$d')"
 awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1}' "$work/drained"
-# Only running owners with expanded last-state autostart remember RUNNING.
-for status in Running Frozen Stopped; do
+# Active owners with expanded last-state autostart remember RUNNING.
+for status in Running Ready Frozen Stopped Error; do
     for auto in '' last-state true false; do
         printf '[{"name":"owner","status":"%s","config":{"boot.autostart":"last-state"},"expanded_config":{"boot.autostart":"%s"},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","network":"work"}}}]\n' "$status" "$auto" >"$work/instances"
         eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
         if [ "$status" = Stopped ]; then [ ! -s "$work/order" ]; continue; fi
         remember=false
-        case $status:$auto in Running:|Running:last-state) remember=true ;; esac
+        case $status:$auto in
+        Running:|Running:last-state|Ready:|Ready:last-state|Frozen:|Frozen:last-state) remember=true ;;
+        esac
         printf '0\tdefault\towner\t-\t-\tfalse\t%s\n' "$remember" >"$work/expected"
         cmp "$work/expected" "$work/order"
     done

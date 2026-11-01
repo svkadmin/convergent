@@ -9,8 +9,8 @@ note() { logger -t guests "shutdown: $*" 2>/dev/null || :; }
 stop_one() (
     project=$1 node=$2 old_auto=$3 old_hold=$4 ephemeral=$5 group=$6 remember=$7
     if [ "$group" = 0 ] && [ "$ephemeral" = true ]; then
-        ic config set "$node" ephemeral=false --property || exit 1
         trap 'ic config set "$node" ephemeral=true --property || exit 1' 0
+        ic config set "$node" ephemeral=false --property || exit 1
         ephemeral=false
     fi
     ic config set "$node" boot.autorestart=false user.convergent.autorestart=true || exit 1
@@ -25,14 +25,14 @@ stop_one() (
         if length == 0 then $e == "true" else length == 1 and .[0].status == "Stopped" end' >/dev/null ||
         { note "$project/$node did not stop; autorestart hold retained"; exit 1; }
     [ "$ephemeral" != true ] || exit 0
-    if [ "$remember" = true ]; then
-        ic config set "$node" volatile.last_state.power=RUNNING || exit 1
-    fi
     # Restore only our override; an interrupted update may already own a hold.
     if [ "$old_auto" = - ]; then ic config unset "$node" boot.autorestart
     else ic config set "$node" boot.autorestart="$old_auto"; fi
     if [ "$old_hold" = - ]; then ic config unset "$node" user.convergent.autorestart
     else ic config set "$node" user.convergent.autorestart="$old_hold"; fi
+    if [ "$remember" = true ]; then
+        ic config set "$node" volatile.last_state.power=RUNNING || exit 1
+    fi
 )
 mkdir -p /run/convergent
 touch /run/convergent/guests-stopping
@@ -51,7 +51,7 @@ jq -r '.[] | select(.status != "Stopped") | (.project // "default") as $project 
      else empty end) as $stage |
     [$stage, $project, .name, (.config["boot.autorestart"] // "-"),
      (.config["user.convergent.autorestart"] // "-"), .ephemeral,
-     ($stage == 0 and .status == "Running" and
+     ($stage == 0 and .status != "Stopped" and .status != "Error" and
       ((.expanded_config["boot.autostart"] // "") | . == "" or . == "last-state"))] | @tsv' "$work/instances" >"$work/order"
 result=0
 for stage in 0 1 2 3 4; do
