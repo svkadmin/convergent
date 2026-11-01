@@ -1693,6 +1693,18 @@ apply() {
     case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
     staged=/var/lib/convergent/guest-updates
     [ ! -L "$staged" ] || die "$staged is a symlink"
+    # A retry can stop between renames, even for a release not booted yet.
+    for entry in "$staged"/*.old; do
+        [ -e "$entry" ] || [ -L "$entry" ] || continue
+        name=${entry##*/}
+        name=${name%.old}
+        case $name in ''|*[!0-9]*) continue ;; esac
+        [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
+        [ ! -L "$entry" ] && [ "$(stat -c '%u %a %F' "$entry")" = '0 700 directory' ] || die "$entry is not root's private directory"
+        [ ! -L "$staged/$name" ] || die "$staged/$name is a symlink"
+        [ -e "$staged/$name" ] || mv -T "$entry" "$staged/$name"
+        sync -f "$staged" || die 'could not sync recovered guests'
+    done
     [ -d "$staged/$booted" ] || maintenance_due || return 0
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock

@@ -360,29 +360,45 @@ done
 exec 8>/run/convergent/guests.lock
 flock -w 600 8 || die 'another guests operation is running'
 private "$staged"
-for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
-	[ -e "$_d" ] || [ -L "$_d" ] || continue
-	[ ! -L "$_d" ] || die "$_d is a symlink"
-	rm -rf "$_d"
-done
+[ ! -L "$staged/$latest" ] && [ ! -L "$staged/$latest.old" ] || die 'staged guests is a symlink'
+if [ -e "$staged/$latest.old" ]; then
+	private "$staged/$latest.old"
+	[ -e "$staged/$latest" ] || mv -T "$staged/$latest.old" "$staged/$latest"
+	sync -f "$staged" || die 'could not sync recovered guests'
+fi
 if [ -n "$changed" ]; then
 	# Transport copies stay until here, so a failed run resumes without downloading again.
 	find "$dir/guests" -type f -name '*.zst' -delete
-	mv "$dir/guests" "$staged/$latest"
-	chmod 0700 "$staged/$latest"
-	if [ -d "$staged/$latest/remmina" ] && [ "$rsum" != none ]; then
-		cp "$dir/remmina.manifest" "$dir/remmina.manifest.sig" "$staged/$latest/"
+	chmod 0700 "$dir/guests"
+	if [ -d "$dir/guests/remmina" ] && [ "$rsum" != none ]; then
+		cp "$dir/remmina.manifest" "$dir/remmina.manifest.sig" "$dir/guests/"
 	fi
+	# Publication must be a rename, never a partial cross-filesystem copy.
+	guest_dev=$(stat -c %d "$dir/guests") && [ "$guest_dev" = "$(stat -c %d "$staged")" ] || die 'guest staging is on another filesystem'
+	sync -f "$dir/guests" || die 'could not sync replacement guests'
+	if [ -e "$staged/$latest" ]; then
+		private "$staged/$latest"
+		rm -rf "$staged/$latest.old"
+		mv -T "$staged/$latest" "$staged/$latest.old"
+		sync -f "$staged" || die 'could not sync previous guests'
+	fi
+	mv -T "$dir/guests" "$staged/$latest"
 	sync -f "$staged" || die "could not sync staged guests"
+	rm -rf "$staged/$latest.old"
 fi
-exec 8>&-
 if [ -n "$sync" ]; then
 	rm -rf "$dir"
 	# The booted release is good already: apply now, without this run's lock.
 	echo "updating the guests of release $latest now:$changed"
-	exec 9>&-
+	exec 8>&- 9>&-
 	exec /usr/local/sbin/guests apply
 fi
 slot write "$dir"
+for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
+	[ -e "$_d" ] || [ -L "$_d" ] || continue
+	[ ! -L "$_d" ] || die "$_d is a symlink"
+	[ "$_d" = "$staged/$latest" ] || rm -rf "$_d"
+done
+exec 8>&-
 [ -z "$changed" ] || echo "guests will update after the reboot:$changed"
 rm -rf "$dir"
