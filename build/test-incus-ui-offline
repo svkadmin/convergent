@@ -273,9 +273,9 @@ for gate in open guests update stopping nonroot arguments; do
     esac
 done
 grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
-# One sweep before self-heal at most: a frozen QEMU holds each for its full bound.
-awk '/^    firewall_heal >/ {heal = NR} /browser --reap-tmp \|\|/ {sweep = NR}
-    END {exit !(heal && sweep > heal)}' "$repo/tools/check"
+# One sweep before self-heal at most (a frozen QEMU holds each for its full bound); UI cleanup after it.
+awk '/^    firewall_heal >/ {heal = NR} /browser --reap-tmp \|\|/ {sweep = NR} /incus-ui cleanup \|\|/ {ui = NR}
+    END {exit !(heal && sweep > heal && ui > heal)}' "$repo/tools/check"
 # Delayed events must be awaited; a permanently missing event must hit the deadline.
 sed -n '/^audit_ready() {/,/^done$/p' "$here/test-incus-ui" |
     sed "s|/var/log/messages|$work/messages|g; s/+ 60/+ 2/" >"$work/audit"
