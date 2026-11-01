@@ -201,6 +201,94 @@ echo 'test-networks: offline clock recovery ordering and failures passed'
     done
 )
 echo 'test-networks: DNS automatic refresh clock boundaries passed'
+# Guest durability must precede journal progress, including recovery.
+(
+    rdir=$dns/durable-remote state=$dns/durable-state
+    mkdir "$rdir" "$state"
+    sed -n '/^durable=/,/^}"$/p' "$repo/tools/dns-push" >"$dns/durable"
+    sed -n '/^unlock=/,/^# Keep backups/ { /^# Keep backups/d; p; }' "$repo/tools/dns-push" >"$dns/lock"
+    sed -n '/^restore=/,/^rollback() / { /^rollback() /d; p; }' "$repo/tools/dns-push" >"$dns/restore"
+    sed -n '/^rollback() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/rollback"
+    sed -n '/rsh_wait "\$fw" "\$durable$/,/^done$/ { /^done$/d; p; }' "$repo/tools/dns-push" >"$dns/stage"
+    sed -n '/rsh_wait "\$fw" "\$lock$/,/|| die "activation/p' "$repo/tools/dns-push" >"$dns/activate"
+    for part in durable lock restore rollback stage activate; do
+        [ -s "$dns/$part" ]
+        sh -n "$dns/$part"
+    done
+    . "$dns/durable"
+    . "$dns/lock"
+    . "$dns/restore"
+    . "$dns/rollback"
+    printf '%s\n' "$lock" "$restore" >"$dns/remote-script"
+    sh -n "$dns/remote-script"
+    lock="set -e
+$durable"
+    unlock=:
+    fw=fw fws=fw
+    export sync_log=$dns/sync-log fail_sync=
+    cat >"$dns/remote-tools" <<'REMOTE'
+perl() {
+    command perl -MIO::Handle -e '
+        BEGIN { no warnings "redefine"; my $n = 0;
+            *IO::Handle::sync = sub {
+                my $path = (@ARGV, ".")[$n++];
+                open my $log, ">>", $ENV{sync_log} or die $!;
+                print $log "$path\n";
+                return undef if $path eq $ENV{fail_sync};
+                return "0 but true";
+            };
+        }
+    ' "$@"
+}
+rcctl() { :; }
+reload() { echo reload >>"$sync_log"; }
+alias unbound-control=reload
+checkconf() { :; }
+alias unbound-checkconf=checkconf
+REMOTE
+    sh -n "$dns/remote-tools"
+    rsh_wait() {
+        printf '%s\n' "$2" >"$dns/remote-script"
+        sh -n "$dns/remote-script" || return
+        sh -c '. "$1"; . "$2"' sh "$dns/remote-tools" "$dns/remote-script"
+    }
+    die() { echo "$*" >&2; exit 1; }
+    : >"$rdir/unbound.conf"
+    for file in blocklist.rpz local-owner.conf; do
+        echo old >"$rdir/$file"
+        echo new >"$rdir/$file.new"
+    done
+    printf '%s\n' blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev . >"$dns/stage-want"
+    : >"$sync_log"
+    . "$dns/stage"
+    cmp "$dns/stage-want" "$sync_log"
+    for fail_sync in blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev .; do
+        if (. "$dns/stage"); then die "stage ignored fsync failure: $fail_sync"; fi
+    done
+    fail_sync=
+    printf '%s\n' blocklist.rpz local-owner.conf . reload >"$dns/live-want"
+    : >"$sync_log"
+    . "$dns/activate"
+    cmp "$dns/live-want" "$sync_log"
+    grep -qx new "$rdir/blocklist.rpz"
+    for fail_sync in blocklist.rpz local-owner.conf .; do
+        for file in blocklist.rpz local-owner.conf; do echo new >"$rdir/$file.new"; done
+        if (. "$dns/activate"); then die "activation ignored fsync failure: $fail_sync"; fi
+        : >"$state/pending"
+        if rollback; then die "restore ignored fsync failure: $fail_sync"; fi
+        [ -e "$state/pending" ]
+    done
+    fail_sync=
+    : >"$sync_log"
+    rollback
+    cmp "$dns/live-want" "$sync_log"
+    [ ! -e "$state/pending" ]
+    grep -qx old "$rdir/blocklist.rpz"
+    grep -qx old "$rdir/local-owner.conf"
+    # Missing files must fail before success.
+    if (cd "$rdir"; eval "$durable"; durable missing); then die 'fsync accepted missing file'; fi
+)
+echo 'test-networks: DNS guest durability and failure fixtures passed'
 # Source age follows the RPZ, including cached edits and interrupted commits.
 (
     work=$dns
@@ -227,7 +315,7 @@ echo 'test-networks: DNS automatic refresh clock boundaries passed'
     die() { echo "test-networks: $*" >&2; exit 1; }
     date() { echo 2000000; }
     sync() { :; }
-    rsh() { [ "$remote_ok" = 1 ] || return 1; shift; sh -c 'rcctl() { :; }; unbound-control() { :; }; '"$*"; }
+    rsh() { [ "$remote_ok" = 1 ] || return 1; shift; sh -c 'durable() { :; }; rcctl() { :; }; unbound-control() { :; }; '"$*"; }
     rsh_wait() { rsh "$@"; }
     lock= fws=fw remote_ok=1
     selftest=probe.test selftest_addr=127.0.0.2

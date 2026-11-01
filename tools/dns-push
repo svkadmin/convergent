@@ -32,12 +32,21 @@ close_src() {
 	[ "$_closed" = 0 ] || return 1
 	src_open=
 }
+# Flush guest files and their directory before advancing the host journal.
+durable="durable() {
+	perl -MIO::Handle -e 'for my \$path (@ARGV, \".\") {
+		open my \$fh, \"<\", \$path or die \"open \$path: \$!\";
+		\$fh->sync or die \"fsync \$path: \$!\";
+		close \$fh or die \"close \$path: \$!\";
+	}' \"\$@\"
+}"
 # Serialize remote swaps and recovery; OpenBSD clears /var/run on boot.
 unlock="if [ \"\$(cat /var/run/convergent-dns.lock/pid 2>/dev/null)\" = \"\$\$\" ]; then
 	rm -f /var/run/convergent-dns.lock/pid
 	rmdir /var/run/convergent-dns.lock
 fi"
 lock="set -e
+$durable
 cd $rdir
 i=0
 until mkdir /var/run/convergent-dns.lock 2>/dev/null; do
@@ -60,6 +69,7 @@ trap 'exit 1' HUP INT TERM"
 # OpenBSD 7.9's Unbound 1.24.2 retains caches when sizes and thread count are unchanged.
 restore="cd $rdir && if [ -e blocklist.rpz.prev ]; then cp -p blocklist.rpz.prev blocklist.rpz &&
 cp -p local-owner.conf.prev local-owner.conf &&
+durable blocklist.rpz local-owner.conf &&
 (rcctl check unbound >/dev/null || rcctl start unbound) && unbound-control reload_keep_cache >/dev/null; fi"
 rollback() {
 	if [ -e "$state/committed" ]; then
@@ -345,10 +355,12 @@ for fw in $fws; do
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
 		[ "$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
 	done
-	rsh_wait "$fw" "cd $rdir &&
+	rsh_wait "$fw" "$durable
+		cd $rdir &&
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
 		unbound-checkconf $rdir/dns-check.conf >/dev/null &&
-		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev"
+		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev &&
+		durable blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev"
 done
 # Journal both firewalls before activation.
 mkdir "$state/cache.before"
@@ -365,6 +377,7 @@ for fw in $fws; do
 		cd $rdir
 		mv blocklist.rpz.new blocklist.rpz
 		mv local-owner.conf.new local-owner.conf
+		durable blocklist.rpz local-owner.conf
 		unbound-checkconf $rdir/unbound.conf >/dev/null
 		rcctl check unbound >/dev/null || rcctl start unbound
 		unbound-control reload_keep_cache >/dev/null" || die "activation failed on $fw; its previous data is restored"
