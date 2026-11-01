@@ -1054,7 +1054,9 @@ HEAL
 sh -eu <<'DRAIN' || bad $LINENO
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' 0
-eval "$(sed -n '/^ic()/p; /^note()/p; /^stop_one() (/,/^)/p' /usr/lib/convergent/incus/shutdown)"
+functions=$(sed -n '/^ic()/p; /^note()/p; /^stop_one() (/,/^)/p' /usr/lib/convergent/incus/shutdown)
+[ -n "$functions" ]
+eval "$functions"
 logger() { :; }
 timeout() {
     printf '%s\n' "$*" >>"$fixture/timeouts"
@@ -1064,49 +1066,100 @@ incus() {
     echo "$*" >>"$fixture/calls"
     case $2 in
     query)
-        if [ "$ephemeral" = true ] && [ -f "$fixture/stopped" ]; then echo '[]'
+        [ "$query_fail" = 0 ] || return 1
+        if [ -f "$fixture/deleted" ]; then echo '[]'
         else
             status=Running; [ ! -f "$fixture/stopped" ] || status=Stopped
             printf '[{"name":"wan","status":"%s"}]\n' "$status"
         fi ;;
     --project)
         case $4:$5 in
-        config:set) touch "$fixture/held" ;;
+        config:set)
+            case $7 in
+            ephemeral=false)
+                [ "$8" = --property ]
+                [ "$clear_fail" = 0 ] || return 1
+                rm "$fixture/ephemeral" ;;
+            ephemeral=true) [ "$8" = --property ]; touch "$fixture/ephemeral" ;;
+            boot.autorestart=false) touch "$fixture/held" ;;
+            volatile.last_state.power=RUNNING) [ -f "$fixture/stopped" ] ;;
+            user.convergent.autorestart=true) : ;;
+            *) return 1 ;;
+            esac ;;
+        config:unset) : ;;
         stop:wan)
             [ -f "$fixture/held" ]
             [ "$6" = --force ] || return 1
             [ "$stuck" = 0 ] || return 1
-            touch "$fixture/stopped" ;;
+            touch "$fixture/stopped"
+            if [ -f "$fixture/ephemeral" ]; then touch "$fixture/deleted"; fi ;;
+        *) return 1 ;;
         esac ;;
     *) return 1 ;;
     esac
 }
-stuck=0
-stop_one default wan - - false
+stuck=0 clear_fail=0 query_fail=0
+stop_one default wan - - false 3 false
 grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
 grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
 grep -q 'config unset wan boot.autorestart' "$fixture/calls"
 grep -q 'config unset wan user.convergent.autorestart' "$fixture/calls"
 rm "$fixture/stopped"; : >"$fixture/calls"
-stop_one default wan false true false
+stop_one default wan false true false 3 false
 grep -q 'config set wan boot.autorestart=false$' "$fixture/calls"
 grep -q 'config set wan user.convergent.autorestart=true$' "$fixture/calls"
 rm "$fixture/stopped"; : >"$fixture/calls"
 stuck=1
-if stop_one default wan - - false; then exit 1; fi
+if stop_one default wan - - false 3 false; then exit 1; fi
 if grep -q 'config unset' "$fixture/calls"; then exit 1; fi
 stuck=0
-stop_one default wan - - true
+touch "$fixture/ephemeral"
+stop_one default wan - - true 1 false
+[ -f "$fixture/deleted" ]
+if grep -q 'ephemeral=.*--property\|config unset\|volatile.last_state.power' "$fixture/calls"; then exit 1; fi
+rm "$fixture/deleted" "$fixture/ephemeral"
 rm "$fixture/stopped"; : >"$fixture/calls"
-stop_one owner wan false true false
+stop_one owner wan false true false 0 true
 grep -q -- '--project owner stop wan' "$fixture/calls"
 grep -q 'query /1.0/instances?recursion=1&project=owner' "$fixture/calls"
 grep -q -- '--project owner config set wan boot.autorestart=false' "$fixture/calls"
+grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
+# Preserve ephemeral owners, including cleanup after failed stops or queries.
+for fault in none clear stop query missing; do
+    rm -f "$fixture/stopped" "$fixture/deleted"
+    : >"$fixture/calls"
+    touch "$fixture/ephemeral"
+    clear_fail=0 stuck=0 query_fail=0
+    case $fault in
+    clear) clear_fail=1 ;;
+    stop) stuck=1 ;;
+    query) query_fail=1 ;;
+    missing) touch "$fixture/deleted" ;;
+    esac
+    if [ "$fault" = none ]; then stop_one owner wan - - true 0 true
+    elif stop_one owner wan - - true 0 true; then exit 1; fi
+    [ -f "$fixture/ephemeral" ]
+    grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
+    if [ "$fault" = clear ]; then
+        if grep -q 'stop wan\|boot.autorestart' "$fixture/calls"; then exit 1; fi
+    else grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"; fi
+    if [ "$fault" = none ]; then
+        [ ! -f "$fixture/deleted" ]
+        grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
+        grep -q 'config unset wan boot.autorestart$' "$fixture/calls"
+        grep -q 'config unset wan user.convergent.autorestart$' "$fixture/calls"
+    elif grep -q 'volatile.last_state.power\|config unset' "$fixture/calls"; then exit 1; fi
+done
+clear_fail=0 stuck=0 query_fail=0
+rm -f "$fixture/ephemeral" "$fixture/deleted" "$fixture/stopped"
+: >"$fixture/calls"
+stop_one owner wan - - false 0 false
+if grep -q 'volatile.last_state.power\|boot.autostart' "$fixture/calls"; then exit 1; fi
 # Exercise work NICs, duplicate names across projects, browsers and unrelated instances.
 work=$fixture
 cat >"$work/instances" <<'JSON'
 [{"name":"wan","project":"owner","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","network":"work"}}},
- {"name":"build","project":"other","status":"Running","config":{},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","parent":"work"}}},
+ {"name":"build","project":"other","status":"Running","config":{"boot.autostart":"false"},"expanded_config":{"boot.autostart":"last-state"},"ephemeral":true,"expanded_devices":{"eth0":{"type":"nic","parent":"work"}}},
  {"name":"fw1","project":"owner","status":"Running","config":{},"ephemeral":false},
  {"name":"remmina","status":"Running","config":{},"ephemeral":false},
  {"name":"def","status":"Running","config":{},"ephemeral":false},
@@ -1119,14 +1172,28 @@ cat >"$work/instances" <<'JSON'
  {"name":"unrelated","status":"Running","config":{},"ephemeral":false}]
 JSON
 eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
-printf '0\towner\twan\t-\t-\tfalse\n0\tother\tbuild\t-\t-\tfalse\n1\tdefault\tremmina\t-\t-\tfalse\n1\tdefault\tdef\t-\t-\tfalse\n1\tdefault\ttmp-23\t-\t-\ttrue\n2\tdefault\tsvc\t-\t-\tfalse\n3\tdefault\twan\tfalse\ttrue\tfalse\n4\tdefault\tfw1\t-\t-\tfalse\n4\tdefault\tfw2\t-\t-\tfalse\n' >"$work/expected"
+printf '0\towner\twan\t-\t-\tfalse\ttrue\n0\tother\tbuild\t-\t-\ttrue\ttrue\n1\tdefault\tremmina\t-\t-\tfalse\tfalse\n1\tdefault\tdef\t-\t-\tfalse\tfalse\n1\tdefault\ttmp-23\t-\t-\ttrue\tfalse\n2\tdefault\tsvc\t-\t-\tfalse\tfalse\n3\tdefault\twan\tfalse\ttrue\tfalse\tfalse\n4\tdefault\tfw1\t-\t-\tfalse\tfalse\n4\tdefault\tfw2\t-\t-\tfalse\tfalse\n' >"$work/expected"
 cmp "$work/expected" "$work/order"
 stop_one() {
+    [ "$6" = "$stage" ]
+    if [ "$stage" = 0 ]; then [ "$7" = true ]; else [ "$7" = false ]; fi
     [ "$stage" != 0 ] || sleep .1
     printf '%s:%s/%s\n' "$stage" "$1" "$2" >>"$work/drained"
 }
 eval "$(sed -n '/^result=0/,/^note /p' /usr/lib/convergent/incus/shutdown | sed '$d')"
 awk -F: 'NR > 1 && $1 < previous {exit 1} {previous=$1} END {if (NR != 9) exit 1}' "$work/drained"
+# Only running owners with expanded last-state autostart remember RUNNING.
+for status in Running Frozen Stopped; do
+    for auto in '' last-state true false; do
+        printf '[{"name":"owner","status":"%s","config":{"boot.autostart":"last-state"},"expanded_config":{"boot.autostart":"%s"},"ephemeral":false,"expanded_devices":{"eth0":{"type":"nic","network":"work"}}}]\n' "$status" "$auto" >"$work/instances"
+        eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
+        if [ "$status" = Stopped ]; then [ ! -s "$work/order" ]; continue; fi
+        remember=false
+        case $status:$auto in Running:|Running:last-state) remember=true ;; esac
+        printf '0\tdefault\towner\t-\t-\tfalse\t%s\n' "$remember" >"$work/expected"
+        cmp "$work/expected" "$work/order"
+    done
+done
 DRAIN
 # Failed WAN mounts must leave cleanup able to detach before rollback.
 sh -eu <<'WAN_MOUNT' || bad $LINENO
