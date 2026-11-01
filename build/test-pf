@@ -480,14 +480,14 @@ rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 # The target's own allow probe before each Remmina probe is the listener's control: a bind that failed
 # shows there, not as a denial. A sender or receiver that could not run is a test error, never a denial.
 udp_remote() {
-    ic exec "$target" -- sh -c 'rm -f /run/cv-udp; timeout 6 nc -lu -p "$1" </dev/null >/run/cv-udp 2>/dev/null &' sh "$4" ||
+    ic exec "$target" -- sh -c 'rm -f /run/cv-udp; timeout 20 nc -lu -p "$1" </dev/null >/run/cv-udp 2>/dev/null & echo $! >/run/cv-udp.pid' sh "$4" ||
         { echo "CV-REMOTE ERROR udp listener $target:$4"; result=1; return; }
     sleep 1
     sent=$(timeout -k 1 8 incus --force-local --project "$(project "$2")" exec "$2" -- sh -c \
         'printf "cv-remmina\n" | nc -u -w 1 "$1" "$2"; echo CV-UDP-SENT' sh "$3" "$4" 2>/dev/null) &&
         [ "$sent" = CV-UDP-SENT ] || { echo "CV-REMOTE ERROR udp sender $2"; result=1; return; }
     sleep 1
-    delivered=$(ic exec "$target" -- cat /run/cv-udp) || { echo "CV-REMOTE ERROR udp receiver $target"; result=1; return; }
+    delivered=$(ic exec "$target" -- sh -c 'kill "$(cat /run/cv-udp.pid)" && cat /run/cv-udp') || { echo "CV-REMOTE ERROR udp receiver $target"; result=1; return; }
     if printf '%s\n' "$delivered" | grep -qx cv-remmina; then got=allow; else got=deny; fi
     [ "$got" = "$1" ] || { echo "CV-REMOTE FAIL udp $2 $3:$4 want=$1 got=$got"; result=1; }
 }

@@ -5,6 +5,51 @@ here=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
+# An expired UDP receiver is an error even when its output is empty.
+sed -n '/^udp_remote() {/,/^}/p' "$here/test-pf" >"$work/udp"
+[ -s "$work/udp" ]; sh -n "$work/udp"
+(
+    . "$work/udp"
+    target=fixture
+    project() { echo default; }
+    sleep() { :; }
+    timeout() { shift 3; "$@"; }
+    incus() { echo CV-UDP-SENT; }
+    ic() (
+        shift 3
+        kill() { [ "$1" = 123 ] && [ "$sample" != dead ]; }
+        cat() {
+            case $1 in
+            /run/cv-udp.pid) echo 123 ;;
+            /run/cv-udp) [ "$sample" != allow ] || echo cv-remmina ;;
+            *) return 1 ;;
+            esac
+        }
+        if [ "$1" = sh ]; then
+            case $3 in
+            'rm -f '*)
+                printf '%s\n' "$3" | grep -qF 'timeout 20 nc -lu' &&
+                printf '%s\n' "$3" | grep -qF '& echo $! >/run/cv-udp.pid'
+                return ;;
+            esac
+            eval "$3"
+        else
+            [ "$*" = 'cat /run/cv-udp' ] && "$@"
+        fi
+    )
+    for sample in allow deny dead; do
+        result=0 want=$sample
+        [ "$sample" != dead ] || want=deny
+        udp_remote "$want" source 100.80.40.1 1234 >"$work/udp-out"
+        if [ "$sample" = dead ]; then
+            [ "$result" = 1 ]
+            grep -qx 'CV-REMOTE ERROR udp receiver fixture' "$work/udp-out"
+        else
+            [ "$result" = 0 ]; [ ! -s "$work/udp-out" ]
+        fi
+    done
+)
+echo 'CV-REMOTE unit UDP receiver survival ok'
 # Cage alone drops supplementary groups; the owner keeps its primary GID.
 sed -n '/^owner() {/,/^}/p' "$here/../tools/browser" >"$work/owner"
 [ -s "$work/owner" ]; sh -n "$work/owner"

@@ -13,7 +13,7 @@ touchpad_status() {
 	printf '%s\n' "$json" | page jq '.[] | select(.type == "touchpad") | {identifier, libinput, scroll_factor}'
 }
 touchpad_set() (
-	sway; path "$HOME"
+	sway; path "$HOME"; path "${XDG_RUNTIME_DIR:-}"
 	if [ "$#" = 0 ]; then
 		touchpad_status || return
 		ask 'Option (pointer_accel/accel_profile/tap/natural_scroll/dwt/scroll_method/scroll_factor/middle_emulation)'; setting=$answer
@@ -42,7 +42,7 @@ touchpad_set() (
 	*) die 'invalid touchpad option or value' ;;
 	esac
 	run mkdir -p "$HOME/.config/sway" || return
-	exec 9>"$HOME/.config/sway/touchpad.lock" || return
+	exec 9>"$XDG_RUNTIME_DIR/convergent-touchpad.lock" || return
 	flock -x 9 || return
 	file=$HOME/.config/sway/config.d/touchpad
 	settings=
