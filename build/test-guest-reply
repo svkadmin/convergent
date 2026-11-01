@@ -124,13 +124,14 @@ done
 (
     awk() {
         # Refuse unexpected operands before a regression could open /dev/zero.
-        [ "$#" = 6 ] && [ "$5" = /etc/convergent/segments ] || {
+        [ "$#" = 6 ] && [ "$5" = "$scratch/registry/etc/convergent/segments" ] || {
             echo unsafe >"$scratch/role-operand"; return 1;
         }
         command awk "$1" "$2" "$3" "$repo/rootfs/usr/lib/convergent/incus/carp.awk" \
             "$scratch/registry/etc/convergent/segments" "$6"
     }
-    firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; cat "$reply"; }
+    # A current firewall answers the legacy probe with nothing.
+    firewall_rsh() { printf '%s\n' "$2" >>"$scratch/role-calls"; [ "$2" = ifconfig ] || return 0; cat "$reply"; }
     for sample in good device; do
         : >"$scratch/role-calls"
         case $sample in
