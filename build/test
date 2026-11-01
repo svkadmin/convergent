@@ -1149,7 +1149,7 @@ for fault in none clear clear-timeout stop query missing last-state; do
     [ -f "$fixture/ephemeral" ]
     grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
     grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"
-    grep -q '^-k 1 30 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
+    grep -q '^-k 1 10 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
     if [ "$fault" = clear ] || [ "$fault" = clear-timeout ]; then
         if grep -q 'stop wan\|boot.autorestart' "$fixture/calls"; then exit 1; fi
     fi
