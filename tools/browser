@@ -367,7 +367,7 @@ mapping=$(ic config get "$name" volatile.idmap.current)
 guest_uid=$(printf '%s\n' "$mapping" | jq -er '.[] | select(.Isuid and .Nsid <= 1000 and (.Nsid + .Maprange) > 1000) | .Hostid + 1000 - .Nsid')
 setfacl -m "u:$guest_uid:rw" "$wayland_socket" "$run/sockets/pulse-0"
 attempts=0
-until ic exec "$name" -- test -f "$ready"; do
+until timeout -k 1 5 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&-; do
     attempts=$((attempts + 1))
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1

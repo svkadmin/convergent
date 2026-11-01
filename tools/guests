@@ -420,7 +420,8 @@ certificates_apply() (
     for entry in 'server.crt victoria-logs vmlogs server.crt' \
         'incus-client.crt victoria-metrics vmmetrics incus-client.crt' 'ca.crt victoria-metrics vmmetrics incus-ca.crt'; do
         set -- $entry
-        if ic exec svc -- cat "/etc/$2/tls/$4" >"$work/current.crt" && cmp -s "$tls/$1" "$work/current.crt"; then continue; fi
+        if guest_reply 65536 timeout -k 5 60 incus --force-local --project default exec svc -- cat "/etc/$2/tls/$4" \
+            9>&- 8>&- 7>&- 6>&- >"$work/current.crt" 2>/dev/null && cmp -s "$tls/$1" "$work/current.crt"; then continue; fi
         # Retry restarts even if interrupted after installing the certificates.
         touch "$tls/deploy"
         sync
