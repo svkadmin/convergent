@@ -16,12 +16,13 @@ state=$tls/incus-ui
 run=/run/convergent/incus-ui
 [ ! -e "$state" ] && [ ! -e "$state.previous" ] && [ ! -e "$state.next" ]
 work=$(mktemp -d /run/convergent/ui-test.XXXXXX)
-created=
+created= svc_stopped=
 cleanup() {
     r=$?
     trap - 0
     trap '' HUP INT TERM
     set +e
+    [ -z "$svc_stopped" ] || ic start svc || r=1
     ic profile delete w2-audit-native >/dev/null 2>&1 || :
     /usr/local/sbin/incus-ui --close 8>&- || r=1
     if [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" != Stopped ]; then ic stop int --force || r=1; fi
@@ -127,8 +128,12 @@ if grep 'incus-audit' /var/log/messages | grep -q W2_AUDIT_SECRET; then exit 1; 
 nsenter -t "$pid" -n curl -qfsS --noproxy '*' --max-time 10 --cacert "$tls/ca.crt" \
     https://100.80.1.10:8443/ui/ >"$work/index"
 grep -qi '<html' "$work/index"
+ic config set svc limits.memory=768MiB
+ic exec svc -- rc-service grafana start
 /usr/local/sbin/incus-ui cleanup 8>&-
 [ -d "$run" ]
+[ "$(ic config get svc limits.memory)" = 768MiB ]
+ic exec svc -- rc-service grafana status
 ic config trust remove "$fp"
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 403 ]
 ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
@@ -145,10 +150,29 @@ sh "$work/helper" --unlock
 start_int
 /usr/local/sbin/incus-ui --import 8>&-
 exec 8>&-
+# A failed stop must preserve the session limit without failing cleanup.
+sed 's/ic exec svc -- rc-service grafana stop || return/false || return/' \
+    /usr/local/sbin/incus-ui >"$work/stop-fail"
+sh "$work/stop-fail" cleanup
+[ "$(ic config get svc limits.memory)" = 768MiB ]
+ic exec svc -- rc-service grafana status
 /usr/local/sbin/incus-ui cleanup
+[ "$(ic config get svc limits.memory)" = 350MiB ]
+if ic exec svc -- rc-service grafana status; then exit 1; fi
 [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
 [ ! -e "$run" ]
 ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
+# A stopped orphan needs only its limit restored.
+ic stop svc
+svc_stopped=1
+ic config set svc limits.memory=768MiB
+/usr/local/sbin/incus-ui --reconcile
+[ "$(ic config get svc limits.memory)" = 350MiB ]
+[ "$(ic query '/1.0/instances/svc/state?project=default' | jq -r .status)" = Stopped ]
+ic start svc
+svc_stopped=
+/usr/local/sbin/incus-ui cleanup
+[ "$(ic config get svc limits.memory)" = 350MiB ]
 # Simulate a reboot (no /run journal) and an interrupted credential-directory rotation.
 ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
 mv "$state" "$state.previous"

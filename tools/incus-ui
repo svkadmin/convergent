@@ -79,6 +79,18 @@ close_session() {
     done
     [ -z "$fps" ] || logger -t incus-ui 'session trust removed'
 }
+reconcile_svc() {
+    svc_memory=$(ic config get svc limits.memory 2>/dev/null) || return 0
+    [ "$svc_memory" = 768MiB ] || return 0
+    svc_state=$(ic query '/1.0/instances/svc/state?project=default') || return
+    svc_status=$(printf '%s\n' "$svc_state" | jq -er .status) || return
+    case $svc_status in
+        Running) ic exec svc -- rc-service grafana stop || return ;;
+        Stopped) ;;
+        *) return 1 ;;
+    esac
+    ic config set svc limits.memory=350MiB
+}
 recover() {
     if [ ! -d "$state" ] && [ -d "$state.previous" ]; then mv "$state.previous" "$state"; fi
     rm -rf -- "$state.next" "$state.previous"
@@ -112,6 +124,9 @@ case $action in
         ;;
     cleanup|--reconcile|--close|revoke)
         close_session
+        if [ "$action" = cleanup ] || [ "$action" = --reconcile ]; then
+            reconcile_svc || logger -p user.err -t incus-ui 'svc orphan recovery failed' || :
+        fi
         recover
         if [ "$action" = revoke ]; then
             rm -rf -- "$state"
