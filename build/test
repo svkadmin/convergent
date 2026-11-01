@@ -802,7 +802,7 @@ sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" 
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
 flock() { [ "$busy" = 0 ]; }
-timeout() { shift 3; "$@"; }
+timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; shift 3; "$@"; }
 sleep() { :; }
 # A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
 kill() {
@@ -930,12 +930,14 @@ for scenario in hung hung-autorestart foreign-name foreign-pidfile gone; do
     foreign-pidfile) qemu 4242 fw2 "$work/incus/wan/qemu.pid" ;;
     gone) rm -r "$work/proc/4242" ;;
     esac
-    : >"$work/calls"
+    : >"$work/calls"; bounds=$work/probe-bounds; : >"$bounds"
     for t in 1000 1060 1120 1180; do tick "$t"; done
     # No hold first: Incus would answer the change only once the QEMU ran again.
     if [ "$scenario" = hung ]; then
         printf '%s\n' 'kill -KILL 4242' '--force-local --project default start fw2' >"$work/expected"
         cmp "$work/calls" "$work/expected"
+        # The peer check right before the kill gets 30 s; a loaded MASTER took the full 10.
+        grep -qx '30 fw1' "$bounds"
         grep -q 'restart completed' "$work/run/firewall-heal/event"
     elif [ "$scenario" = hung-autorestart ]; then
         printf '%s\n' 'kill -KILL 4242' >"$work/expected"
@@ -1975,7 +1977,8 @@ for failure in timeout host-kill remote-kill; do
 (
     set -e
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance'
-    rm -f /run/convergent/maintenance-test-returned
+    # An earlier iteration's pid must never be the one host-kill signals.
+    rm -f /run/convergent/maintenance-test-returned /run/convergent/maintenance-test.pid
     {
         cat <<'LOCAL'
 run() { "$@"; rc=$?; [ "$2" != -k ] || touch /run/convergent/maintenance-test-returned; return "$rc"; }
@@ -1986,6 +1989,10 @@ LOCAL
         awk -v failure="$failure" '
             function pause() {
                 print "trap \"\" HUP"
+                # Trace the remote holder in the firewall syslog: it once vanished seconds after WAIT.
+                print "logger -t cv-maint-test \"wait pid $$\""
+                print "trap \"logger -t cv-maint-test signal; exit 1\" INT TERM"
+                print "trap \"logger -t cv-maint-test exit \\$?\" 0"
                 print "echo CV-MAINTENANCE-WAIT"
                 print "n=0"
                 print "until [ -f /tmp/convergent-test-maintenance ]; do"
@@ -2007,6 +2014,8 @@ LOCAL
         ' /usr/lib/convergent/sys/14-firewall
         echo 'firewall_maintenance'
     } >"$release/maintenance-test"
+    # Every host-side step of this block, tagged in the console; it has failed every chain since 0.1.5.
+    PS4='+CV-MX '; set -x
     log=/var/log/firewall-maintenance-$failure.log
     sh "$release/maintenance-test" >"$log" 2>&1 &
     changer=$!
@@ -2059,7 +2068,7 @@ LOCAL
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
     if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
 )
-[ "$?" = 0 ] || { fw_diag; bad $LINENO; }
+[ "$?" = 0 ] || { tail -n 20 "/var/log/firewall-maintenance-$failure.log" | sed "s/^/CV-MXLOG $failure: /"; fw_diag; bad $LINENO; }
 done
 cv_time maintenance-reboot
 # Maintenance must survive a reboot and fw-seed, then release before replacement.
