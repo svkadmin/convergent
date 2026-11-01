@@ -1142,6 +1142,14 @@ rebuild_root() {
     ic query "/1.0/instances/$1/snapshots?recursion=1" >"$work/snapshots" || return
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots" || return
     while read -r old_snapshot; do ic snapshot delete "$1" "$old_snapshot" || return; done <"$work/old-snapshots"
+    # A stopped container's file server keeps the old root for up to 15 s after the last file call, and
+    # Incus 7.0 does not stop it on rebuild: the launcher check below would read the replaced root.
+    tries=0
+    while server=$(cat "/run/incus/$1/forkfile.pid" 2>/dev/null) && kill -0 "$server" 2>/dev/null; do
+        tries=$((tries + 1))
+        [ "$tries" -le 60 ] || { fail "a file server still holds the old root of $1"; return 1; }
+        sleep 1
+    done
     locked ic rebuild "$2" "$1" || return
     case $1 in
     wan)
