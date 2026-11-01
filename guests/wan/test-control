@@ -28,23 +28,27 @@ iwctl() {
     case $* in
     'station wlan0 connect-hidden saved') echo "$provisioned"; return 1 ;;
     'station wlan0 scan')
-        [ "$bound" = 15 ] || exit 97
-        [ "$fault" != scan ] || return 124
-        sleep 2
+        [ "$bound" = 10 ] || exit 97
+        [ "$fault" != scan ] || return "$failure_rc"
+        sleep "$init_delay"
         ;;
     'station wlan0 show')
-        [ "$bound" = "$((115 - $(date)))" ] || exit 97
+        [ "$bound" = "$((100 + init_delay + 15 - $(date)))" ] || exit 97
         case $fault in
-        show) return 124 ;;
+        show) return "$failure_rc" ;;
         unknown) echo 'Scanning unknown' ;;
         stalled) echo 'Scanning yes' ;;
         *)
-            if [ "$(date)" -lt 104 ]; then echo 'Scanning yes'
+            if [ "$(date)" -lt "$scan_done" ]; then echo 'Scanning yes'
             else echo 'Scanning no'; touch "$work/ready"; fi
             ;;
         esac
         ;;
     'station wlan0 connect saved') [ -e "$work/ready" ] || return 96; echo connected ;;
+    'station wlan0 get-networks')
+        [ "$bound" = 10 ] && [ -e "$work/ready" ] || return 96
+        echo networks
+        ;;
     *) exit 97 ;;
     esac
 }
@@ -52,6 +56,8 @@ iwctl() {
 EOF
 sh -n "$work/wifi-driver"
 export fault provisioned restart_rc
+export init_delay scan_done failure_rc
+init_delay=2 scan_done=104 failure_rc=124
 restart_rc=0
 for provisioned in AlreadyProvisioned 'Already provisioned'; do
     for fault in none scan show unknown stalled; do
@@ -64,18 +70,50 @@ for provisioned in AlreadyProvisioned 'Already provisioned'; do
             [ "$rc" = 0 ]
             grep -qx connected "$work/out"
             printf '%s\n' '45 iwctl station wlan0 connect-hidden saved' \
-                '15 iwctl station wlan0 scan' '13 iwctl station wlan0 show' \
-                '12 iwctl station wlan0 show' '11 iwctl station wlan0 show' \
+                '10 iwctl station wlan0 scan' '15 iwctl station wlan0 show' \
+                '14 iwctl station wlan0 show' '13 iwctl station wlan0 show' \
                 '45 iwctl station wlan0 connect saved' >"$work/want"
             cmp "$work/want" "$work/calls"
         else
             [ "$rc" != 0 ]
-            grep -q '^wan-wifi: scan' "$work/err"
+            case $fault in
+            scan|show) [ "$rc" = 124 ] ;;
+            *) [ "$rc" = 1 ]; grep -q '^wan-wifi: scan' "$work/err" ;;
+            esac
             if grep -q 'station wlan0 connect saved' "$work/calls"; then exit 1; fi
-            [ "$(cat "$work/clock")" -le 115 ]
+            [ "$(cat "$work/clock")" -le 117 ]
             [ "$fault" != stalled ] || grep -qx 'wan-wifi: scan timed out' "$work/err"
         fi
     done
+done
+# Initiation and completion have separate budgets in the scan command.
+init_delay=8 scan_done=116
+for fixture in none:0 scan:7 scan:124 show:9 show:124 unknown:1 stalled:1; do
+    fault=${fixture%:*} failure_rc=${fixture#*:}
+    echo 100 >"$work/clock"
+    : >"$work/calls"
+    rm -f "$work/ready"
+    rc=0
+    sh "$work/wifi-driver" scan >"$work/out" 2>"$work/err" || rc=$?
+    [ "$rc" = "$failure_rc" ]
+    if [ "$fault" = none ]; then
+        grep -qx networks "$work/out"
+        [ "$(cat "$work/clock")" = 116 ]
+        {
+            echo '10 iwctl station wlan0 scan'
+            for bound in 15 14 13 12 11 10 9 8 7; do
+                echo "$bound iwctl station wlan0 show"
+            done
+            echo '10 iwctl station wlan0 get-networks'
+        } >"$work/want"
+        cmp "$work/want" "$work/calls"
+    else
+        if grep -q get-networks "$work/calls"; then exit 1; fi
+        [ "$fault" != stalled ] || {
+            [ "$(cat "$work/clock")" = 123 ]
+            grep -qx 'wan-wifi: scan timed out' "$work/err"
+        }
+    fi
 done
 for restart_rc in 0 1 124; do
     : >"$work/calls"
@@ -89,7 +127,7 @@ for restart_rc in 0 1 124; do
         grep -qx 'wan-wifi: iwd restart failed or timed out' "$work/err"
     fi
 done
-echo 'wan-wifi: hidden discovery and checked restart fixtures passed'
+echo 'wan-wifi: delayed scan, hidden discovery and checked restart fixtures passed'
 
 mkdir "$work/run"
 cat >"$work/portal-driver" <<'EOF'

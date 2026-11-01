@@ -48,12 +48,12 @@ read_security() {
 }
 
 scan_wait() {
+	run 10 iwctl station "$WIFI_IF" scan >/dev/null || exit $?
 	deadline=$(($(date +%s) + 15))
-	run 15 iwctl station "$WIFI_IF" scan >/dev/null || die "scan failed or timed out"
 	while :; do
 		remaining=$((deadline - $(date +%s)))
 		[ "$remaining" -gt 0 ] || die "scan timed out"
-		reply=$(run "$remaining" iwctl station "$WIFI_IF" show) || die "scan status failed or timed out"
+		reply=$(run "$remaining" iwctl station "$WIFI_IF" show) || exit $?
 		case $(printf '%s\n' "$reply" | awk '$1 == "Scanning" {print $2}') in
 		no) break ;;
 		yes) sleep 1 ;;
