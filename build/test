@@ -3693,6 +3693,11 @@ for action in connect disconnect forget; do
 	if "bluetooth_$action" AA:BB:CC:DD:EE:FF; then exit 1; else [ "$?" = 124 ]; fi
 done
 fault=none
+# Pairing checks the daemon (bounded) before its unbounded interactive agent.
+fault=show
+if bluetooth_device pair AA:BB:CC:DD:EE:FF </dev/null; then exit 1; else [ "$?" = 124 ]; fi
+if grep -q -- --agent "$work/calls"; then exit 1; fi
+fault=none
 # Pairing itself needs a terminal; exercise its noninteractive trust step.
 bluetooth_device() { answer=AA:BB:CC:DD:EE:FF; }
 bluetooth_pair

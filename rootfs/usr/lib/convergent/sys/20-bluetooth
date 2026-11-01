@@ -53,6 +53,8 @@ bluetooth_device() {
 	fi
 	mac "$answer"
 	if [ "$operation" = pair ]; then
+		# The interactive agent waits forever for an absent daemon.
+		run timeout -k 1 10 bluetoothctl show >/dev/null || return
 		[ -t 0 ] || die 'Bluetooth pairing needs a terminal; run sys bluetooth pair there'
 		printf 'After Agent registered, enter: pair %s\nAnswer the PIN/passkey prompts, then enter quit.\n' "$answer"
 		run bluetoothctl --agent KeyboardDisplay || return
