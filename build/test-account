@@ -1,0 +1,89 @@
+#!/bin/sh
+# Offline password durability and shadow bind fixtures.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+trap 'exit 1' HUP INT TERM
+die() { echo "test-account: $*" >&2; exit 1; }
+
+sed -n '/^die()/,/^trap .*HUP INT TERM$/p' "$repo/tools/account" >"$work/cleanup"
+sed -n '/^refresh=1$/,$p' "$repo/tools/account" >"$work/change"
+for part in cleanup change; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+cat >"$work/run" <<'ACCOUNT'
+set -eu
+work=$1 scenario=$2
+stm=$work/state saved= refresh= pass=fixture-password user=owner
+bound=1 current=old attempts=0
+. "$work/cleanup"
+mountpoint() {
+    [ "$1" = -q ] && [ "$#" = 2 ] || exit 90
+    case $2 in /etc/shadow) [ "$bound" = 1 ] ;; "$stm") return 0 ;; *) exit 90 ;; esac
+}
+stat() {
+    [ "$1" = -Lc ] && [ "$2" = '%d:%i' ] && [ "$#" = 3 ] || exit 90
+    case $3 in /etc/shadow) echo "$current" ;; "$stm/etc/shadow") echo new ;; *) exit 90 ;; esac
+}
+chpasswd() {
+    [ "$*" = "-P $stm -c YESCRYPT -s 5" ] || exit 90
+    [ "$(cat)" = 'owner:fixture-password' ] || exit 90
+    echo hash >>"$work/events"
+    printf 'owner:$y$new:1:2:3:4:5:6:7\n' >"$stm/etc/shadow"
+}
+sync() {
+    [ "$#" = 2 ] && [ "$1" = -f ] && [ "$2" = "$stm/etc/shadow" ] || exit 90
+    echo sync >>"$work/events"
+    [ "$scenario" != sync-fail ]
+}
+umount() {
+    case $* in
+    '/etc/shadow')
+        echo busy >>"$work/events"
+        return 1 ;;
+    '-l /etc/shadow')
+        [ "$bound" = 1 ] || exit 90
+        echo detach >>"$work/events"
+        bound=0 ;;
+    "$stm")
+        [ "$current" = new ] && [ "$bound" = 1 ] || exit 90
+        echo unmount-state >>"$work/events"
+        rm "$stm/etc/shadow"
+        rmdir "$stm/etc" ;;
+    *) exit 90 ;;
+    esac
+}
+mount() {
+    [ "$#" = 3 ] && [ "$1" = --bind ] && [ "$2" = "$stm/etc/shadow" ] &&
+        [ "$3" = /etc/shadow ] && [ "$bound" = 0 ] || exit 90
+    echo bind >>"$work/events"
+    attempts=$((attempts + 1))
+    if [ "$scenario" = bind-fail ] && [ "$attempts" = 1 ]; then return 1; fi
+    bound=1 current=new
+}
+. "$work/change"
+ACCOUNT
+sh -n "$work/run"
+for scenario in busy sync-fail bind-fail; do
+    mkdir -p "$work/state/etc"
+    : >"$work/events"
+    if sh "$work/run" "$work" "$scenario" >"$work/log" 2>&1; then
+        [ "$scenario" = busy ] || die "$scenario reported success"
+        grep -qx 'account: password changed for owner' "$work/log"
+    else
+        [ "$scenario" != busy ] || { cat "$work/log" >&2; die 'busy shadow blocked password change'; }
+        if grep -q 'password changed' "$work/log"; then die "$scenario announced success"; fi
+        case $scenario in
+        sync-fail) grep -qx 'account: cannot sync shadow' "$work/log" ;;
+        bind-fail) grep -qx 'account: cannot rebind shadow' "$work/log" ;;
+        esac
+    fi
+    {
+        printf 'hash\nsync\ndetach\nbind\n'
+        [ "$scenario" != bind-fail ] || echo bind
+        echo unmount-state
+    } >"$work/expected"
+    cmp "$work/expected" "$work/events"
+    [ ! -d "$work/state" ] || die "$scenario left state mounted"
+done
+echo 'account: busy shadow, failed sync and bind recovery passed'
