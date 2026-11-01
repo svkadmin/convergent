@@ -85,6 +85,22 @@ sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
             else [ ! -e "$out/due" ]; fi
         done
     done
+    # A failed collection from this boot is retried, then a success is kept.
+    clock=100000
+    boot() {
+        echo called >>"$out/boot-calls"
+        echo "cv_collector_success{collector=\"boot\"} $success" >"$out/boot.prom"
+    }
+    success=0; boot
+    success=1; auto
+    grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"
+    [ "$(wc -l <"$out/boot-calls")" = 2 ]
+    auto
+    [ "$(wc -l <"$out/boot-calls")" = 2 ]
+    : >"$out/boot.prom"
+    auto
+    grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"
+    [ "$(wc -l <"$out/boot-calls")" = 3 ]
 )
 echo 'observability: scan publication failures, retry intervals and backward clocks passed'
 # Check every svc reader before parsing; a failed transfer may still return valid JSON.

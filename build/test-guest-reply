@@ -225,13 +225,28 @@ if status_side wan; then exit 1; fi
 echo on >"$reply"
 result=7
 if status_side wan; then exit 1; fi
-sed -n '/printf .*unreachable:/p' "$repo/tools/portal" >"$scratch/portal-error"
-[ -s "$scratch/portal-error" ]; sh -n "$scratch/portal-error"
-run=$scratch _s=wan
-echo denied >"$run/portal.err"
-(. "$scratch/portal-error") >"$scratch/output"
-grep -q 'unreachable: denied' "$scratch/output"
-head -c 131072 /dev/zero | tr '\000' x >"$run/portal.err"
-(. "$scratch/portal-error") >"$scratch/output"
-[ "$(wc -c <"$scratch/output")" -lt 65600 ]
+sed -n '/^status() {/,/^}/p' "$repo/tools/portal" >"$scratch/portal-status"
+[ -s "$scratch/portal-status" ]; sh -n "$scratch/portal-status"
+(
+    . "$scratch/portal-status"
+    run=$scratch stamp=$scratch/no-stamp reason=$scratch/no-reason
+    expire() { :; }
+    rsh() {
+        head -c 131072 /dev/zero | tr '\000' x >&2
+        case $1 in wan) echo off ;; *) echo 'dns 0 lan 0' ;; esac
+        [ "$1" != "$failed" ]
+    }
+    for failed in none wan fw1 fw2; do
+        code=0
+        status >"$scratch/output" 2>"$scratch/error" || code=$?
+        [ ! -e "$run/portal.err" ]
+        [ ! -s "$scratch/error" ]
+        if [ "$failed" = none ]; then
+            [ "$code" = 0 ]; grep -qx 'portal: off' "$scratch/output"
+        else
+            [ "$code" = 1 ]; grep -qx 'portal: unknown' "$scratch/output"
+            grep -qx "$failed  unreachable: status probe failed" "$scratch/output"
+        fi
+    done
+)
 echo 'test-guest-reply: byte limits, transfer failures, cleanup and production readbacks passed'

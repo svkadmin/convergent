@@ -159,11 +159,11 @@ status() {
 	expire
 	n_on=0 n_off=0 n_bad=0
 	for _s in wan fw1 fw2; do
-		if _r=$(status_side "$_s" 2>"$run/portal.err"); then
+		if _r=$(status_side "$_s" 2>/dev/null); then
 			printf '%-4s %s\n' "$_s" "$_r"
 			case $_r in on*) n_on=$((n_on + 1)) ;; *) n_off=$((n_off + 1)) ;; esac
 		else
-			printf '%-4s unreachable: %s\n' "$_s" "$(head -c 65536 "$run/portal.err" | head -n 1)"
+			printf '%-4s unreachable: status probe failed\n' "$_s"
 			n_bad=$((n_bad + 1))
 		fi
 	done

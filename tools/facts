@@ -294,7 +294,8 @@ age() { _m=$(stat -c %Y "$1" 2>/dev/null) || { echo 999999999; return; }; echo $
 auto() {
 	storage
 	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
-	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ]; then
+	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ] ||
+		! grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"; then
 		boot
 	fi
 	daily_age=$(age "$out/daily.prom")
