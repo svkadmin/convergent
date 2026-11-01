@@ -3819,7 +3819,8 @@ sed -n '/^path() {/,/^}/p' /usr/local/sbin/sys >"$work/path"
 [ -s "$work/path" ]; . "$work/path"
 text_valid() { :; }
 for runtime in '' relative; do
-	if (XDG_RUNTIME_DIR=$runtime; touchpad_set tap enabled); then exit 1; fi
+	if (XDG_RUNTIME_DIR=$runtime; touchpad_set tap enabled) 2>"$work/err"; then exit 1; fi
+	grep -qx 'use an absolute path' "$work/err"
 done
 wait_file() {
 	n=0
