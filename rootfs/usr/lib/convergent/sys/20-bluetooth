@@ -10,22 +10,22 @@ disconnect	Pick a device to disconnect [MAC]
 forget	Pick a device to forget [MAC]	confirm'
 
 bluetooth_state() {
-	value=$(timeout -k 0.2 1 bluetoothctl show 2>/dev/null) || value=
+	value=$(timeout -k 1 10 bluetoothctl show 2>/dev/null) || { result=$?; echo 'Bluetooth: unknown'; return "$result"; }
 	value=$(printf '%s\n' "$value" | awk '$1 == "Powered:" {if ($2 == "yes") print "on"; else if ($2 == "no") print "off"; exit}')
 	printf 'Bluetooth: %s\n' "${value:-unknown}"
 }
 bluetooth_status() { noargs "$@"; page bluetooth_show; }
-bluetooth_show() { run bluetoothctl show && run bluetoothctl devices; }
-bluetooth_on() { noargs "$@"; run bluetoothctl power on; }
-bluetooth_off() { noargs "$@"; run bluetoothctl power off; }
+bluetooth_show() { run timeout -k 1 10 bluetoothctl show && run timeout -k 1 10 bluetoothctl devices; }
+bluetooth_on() { noargs "$@"; run timeout -k 1 10 bluetoothctl power on; }
+bluetooth_off() { noargs "$@"; run timeout -k 1 10 bluetoothctl power off; }
 bluetooth_scan() {
 	noargs "$@"
-	reply=$(run bluetoothctl --timeout 10 scan on); result=$?
+	reply=$(run timeout -k 1 15 bluetoothctl --timeout 10 scan on); result=$?
 	printf '%s\n' "$reply" | tr -d '\000-\010\013-\037\177'
 	return "$result"
 }
 bluetooth_pick() {
-	devices=$(run bluetoothctl devices) || return
+	devices=$(run timeout -k 1 10 bluetoothctl devices) || return
 	devices=$(printf '%s\n' "$devices" | tr -d '\000-\010\013-\037\177' | sed -n 's/^Device //p')
 	[ -n "$devices" ] || die 'no devices; turn Bluetooth on and scan first'
 	if [ -t 0 ]; then
@@ -56,13 +56,13 @@ bluetooth_device() {
 		[ -t 0 ] || die 'Bluetooth pairing needs a terminal; run sys bluetooth pair there'
 		printf 'After Agent registered, enter: pair %s\nAnswer the PIN/passkey prompts, then enter quit.\n' "$answer"
 		run bluetoothctl --agent KeyboardDisplay || return
-		reply=$(run bluetoothctl info "$answer") || return
+		reply=$(run timeout -k 1 10 bluetoothctl info "$answer") || return
 		printf '%s\n' "$reply" | grep -Eq '^[[:space:]]*Paired: yes$' || die 'device is not paired'
 	else
-		run bluetoothctl "$operation" "$answer"
+		run timeout -k 1 10 bluetoothctl "$operation" "$answer"
 	fi
 }
-bluetooth_pair() { bluetooth_device pair "$@" && run bluetoothctl trust "$answer"; }
+bluetooth_pair() { bluetooth_device pair "$@" && run timeout -k 1 10 bluetoothctl trust "$answer"; }
 bluetooth_connect() { bluetooth_device connect "$@"; }
 bluetooth_disconnect() { bluetooth_device disconnect "$@"; }
 bluetooth_forget() { bluetooth_device remove "$@"; }

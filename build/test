@@ -3655,7 +3655,108 @@ for collector in cpu meminfo filesystem netdev stat time timex textfile sysctl; 
 done
 # Works without a Bluetooth adapter in QEMU; pairing still needs hardware.
 t timeout 10 dbus-send --system --print-reply --dest=org.bluez / org.freedesktop.DBus.ObjectManager.GetManagedObjects
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+. /usr/lib/convergent/sys/20-bluetooth
+run() { "$@"; }
+noargs() { [ "$#" = 0 ]; }
+sway() { :; }
+mac() { [ "$1" = AA:BB:CC:DD:EE:FF ]; }
+text_valid() { :; }
+bemenu() { cat; }
+fzf() { cat; }
+timeout() (
+	[ "$1:$2:$4" = '-k:1:bluetoothctl' ] || exit 97
+	case $5 in --timeout) [ "$3:$6:$7:$8" = '15:10:scan:on' ] ;; *) [ "$3" = 10 ] ;; esac || exit 97
+	shift 3
+	bounded=yes
+	"$@"
+)
+bluetoothctl() {
+	[ "${bounded:-}" = yes ] || return 98
+	printf '%s\n' "$*" >>"$work/calls"
+	[ "$fault" != "$1" ] || return 124
+	case $1 in show) echo 'Powered: yes' ;; devices) echo 'Device AA:BB:CC:DD:EE:FF Test' ;; esac
+}
+fault=none
+[ "$(bluetooth_state)" = 'Bluetooth: on' ]
+bluetooth_show
+bluetooth_on
+bluetooth_off
+bluetooth_scan
+bluetooth_pick </dev/null
+[ "$answer" = AA:BB:CC:DD:EE:FF ]
+for action in connect disconnect forget; do "bluetooth_$action" AA:BB:CC:DD:EE:FF; done
+for action in connect disconnect forget; do
+	fault=$action; [ "$action" != forget ] || fault=remove
+	if "bluetooth_$action" AA:BB:CC:DD:EE:FF; then exit 1; else [ "$?" = 124 ]; fi
+done
+fault=none
+# Pairing itself needs a terminal; exercise its noninteractive trust step.
+bluetooth_device() { answer=AA:BB:CC:DD:EE:FF; }
+bluetooth_pair
+for call in show devices 'power on' 'power off' '--timeout 10 scan on' \
+	'connect AA:BB:CC:DD:EE:FF' 'disconnect AA:BB:CC:DD:EE:FF' \
+	'remove AA:BB:CC:DD:EE:FF' 'trust AA:BB:CC:DD:EE:FF'; do
+	grep -qxF -- "$call" "$work/calls"
+done
+for action in state show on off scan pick pair; do
+	case $action in state|show) fault=show ;; on|off) fault=power ;; scan) fault=--timeout ;; pick) fault=devices ;; pair) fault=trust ;; esac
+	if "bluetooth_$action"; then exit 1; else [ "$?" = 124 ]; fi
+done
+fault=devices
+if bluetooth_show; then exit 1; else [ "$?" = 124 ]; fi
+CHECK
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+cat >"$work/evdev.lst" <<'XKB'
+! layout
+  us English (US)
+  de German
+  hu Hungarian
+! variant
+  nodeadkeys de: German (no dead keys)
+  dvorak us: English (Dvorak)
+XKB
+sed "s|/usr/share/X11/xkb/rules/evdev.lst|$work/evdev.lst|g" /usr/lib/convergent/sys/50-keyboard >"$work/keyboard"
+sh -n "$work/keyboard"
+. "$work/keyboard"
+die() { echo "$*" >&2; exit 1; }
+sway() { :; }
+onearg() { answer=$2; }
+swayrun() { printf '%s\n' "$*" >>"$work/calls"; }
+save_config() { cat >"$work/saved"; }
+for bad in 'us(nosuchvariant)' 'us(nodeadkeys)' 'de(nodeadkeys),us(nosuchvariant)' 'zz' 'us,zz'; do
+	: >"$work/calls"
+	echo previous >"$work/saved"
+	if (keyboard_set "$bad"); then exit 1; fi
+	[ ! -s "$work/calls" ]
+	grep -qx previous "$work/saved"
+done
+# Empty variants keep their positions, and valid transitions clear the old variant.
+for good in 'de(nodeadkeys)' 'us,de(nodeadkeys),hu' 'us(dvorak),de' 'us'; do
+	: >"$work/calls"
+	keyboard_set "$good"
+	case $good in
+	'de(nodeadkeys)') layout=de variant=nodeadkeys ;;
+	'us,de(nodeadkeys),hu') layout=us,de,hu variant=,nodeadkeys, ;;
+	'us(dvorak),de') layout=us,de variant=dvorak, ;;
+	us) layout=us variant= ;;
+	esac
+	printf 'input type:keyboard xkb_variant ""\ninput type:keyboard xkb_layout "%s"\ninput type:keyboard xkb_variant "%s"\n' "$layout" "$variant" >"$work/expected"
+	cmp "$work/expected" "$work/calls"
+	cmp "$work/expected" "$work/saved"
+done
+rm "$work/evdev.lst"
+: >"$work/calls"
+if (keyboard_set us); then exit 1; fi
+[ ! -s "$work/calls" ]
+CHECK
 t timeout -k 5 60 sh /var/lib/convergent/test-release/desktop-sockets
+# Keyboard changes refuse to run without the layout list.
+t test -s /usr/share/X11/xkb/rules/evdev.lst
 for p in sway swaybar swaylock swayidle foot bemenu bemenu-run grim slurp wl-copy wpctl mako jq fzf \
 	gentoo-pipewire-launcher dbus-run-session sys browser bar greetd tuigreet vim git mc mcedit tio notes; do t command -v "$p"; done
 t sh -c "! command -v nano"
