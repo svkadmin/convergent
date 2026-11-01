@@ -1865,7 +1865,14 @@ cv_time firewall-self-heal
     broken= inhibited= frozen=
     trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
-    [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]
+    # Traced to a file; this block failed in every 0.1.7 chain, each time differently.
+    PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
+    # One 10 s probe each, beside the minute checker's and the diagnostics' SSH on a one-vCPU firewall,
+    # failed the block in 17 s (fw2 was BACKUP). Wait for the pair with the pre-kill bound.
+    deadline=$(($(date +%s) + 600))
+    until [ "$(heal_probe fw1 30)" = master ] && [ "$(heal_probe fw2 30)" = backup ]; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
     before=$(fw_pid fw2)
     broken=fw2
     fwssh fw2 'rcctl stop unbound'
@@ -1918,7 +1925,9 @@ cv_time firewall-self-heal
     fwssh fw2 'rcctl stop unbound'
     deadline=$(($(date +%s) + 240))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        [ "$(fw_pid fw1)" = "$pid1" ] && [ "$(fw_pid fw2)" = "$pid2" ]
+        # Separate tests: set -e ignores a failure before the last && of a list.
+        [ "$(fw_pid fw1)" = "$pid1" ]
+        [ "$(fw_pid fw2)" = "$pid2" ]
         cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
         sleep 10
     done
@@ -1930,7 +1939,7 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
 )
-[ "$?" = 0 ] || bad $LINENO
+[ "$?" = 0 ] || { grep '^+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
@@ -2869,37 +2878,27 @@ for step in journal rebuilt; do
     ' /usr/local/sbin/guests >"$release/guests-rebuild-kill"
     grep -q '^ *kill -KILL "\$\$"$' "$release/guests-rebuild-kill" || bad $LINENO
     sh "$release/guests-rebuild-kill" rebuild fw1 >"/var/log/guests-rebuild-kill-$step.log" 2>&1
-    [ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || bad $LINENO
+    # Every later step needs this journal; a stuck pair would otherwise wait out each step's bounds.
+    [ "$?" = 137 ] && awk '$1 == "fw1" && $2 ~ /-rebuild$/ && NF == 3 {f=1} END {exit !f}' "$state/pending" || { fw_diag; bad $LINENO; break; }
     if [ "$step" = journal ]; then
         [ ! -e "$state/fw.handoff" ] || bad $LINENO
         trap 'ic config unset fw1 boot.autorestart; ic config unset fw2 boot.autorestart' 0
         trap 'exit 1' HUP INT TERM
-        # A boot with the peer unavailable must leave the running target and journal alone.
+        # A boot with the peer unavailable must leave the running target and journal alone. The replay sees fw2
+        # down; stopping the real one cost its boot and 20-minute relink, and the guest run its time limit.
+        awk '{print} $0 == "running() {" {print "    [ \"$1\" != fw2 ] || return 1"; n++} END {exit n != 1}' \
+            /usr/local/sbin/guests >"$release/guests-peer-down" || bad $LINENO
         ic config unset fw1 user.convergent.autorestart || bad $LINENO
         ic config set fw1 boot.autorestart=false && ic config set fw2 boot.autorestart=false || bad $LINENO
-        ic start fw1 && ic stop fw2 --force || bad $LINENO
-        [ "$(incus --force-local query /1.0/instances/fw2/state | jq -r .status)" = Stopped ] || bad $LINENO
+        ic start fw1 || bad $LINENO
         cp "$state/pending" "$release/rebuild-pending" || bad $LINENO
-        sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-peer.log
+        sh -x "$release/guests-peer-down" apply 2>/var/log/guests-rebuild-replay-no-peer.log
         [ "$?" = 1 ] && cmp "$state/pending" "$release/rebuild-pending" || bad $LINENO
         grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-peer.log || bad $LINENO
         ! grep -Eq '^\+ ic (stop|rebuild) ' /var/log/guests-rebuild-replay-no-peer.log || bad $LINENO
         incus --force-local query /1.0/instances/fw1/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
-        ic stop fw1 --force && ic start fw2 || bad $LINENO
+        ic stop fw1 --force || bad $LINENO
         [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Stopped ] || bad $LINENO
-        deadline=$(($(date +%s) + 1500))
-        until timeout 30 ssh -F /etc/convergent/ssh_config fw2 ifconfig 2>/dev/null |
-            awk -v want=MASTER -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null; do
-            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
-            sleep 2
-        done
-        # The restarted fw2 relinks its kernel for ~20 minutes and stopped answering for ~15 s at the end:
-        # the resume's lease writes to it timed out. Let it finish first.
-        deadline=$(($(date +%s) + 2400))
-        until timeout 30 ssh -F /etc/convergent/ssh_config fw2 '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
-            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
-            sleep 10
-        done
     fi
     if [ "$step" = rebuilt ]; then
         awk '{print}
@@ -2909,9 +2908,10 @@ for step in journal rebuilt; do
             END {exit n != 1}' /usr/local/sbin/guests >"$release/guests-release-kill" || bad $LINENO
         sh "$release/guests-release-kill" apply >"/var/log/guests-rebuild-release-kill.log" 2>&1
         [ "$?" = 137 ] && [ -s "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
-        deadline=$(($(date +%s) + 1500))
+        # fw1 passed its health checks before the kill; the pair settles in seconds (chain #4).
+        deadline=$(($(date +%s) + 600))
         until pair_ok; do
-            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break 2; }
             sleep 2
         done
         (
@@ -2928,17 +2928,20 @@ for step in journal rebuilt; do
         )
         [ "$?" = 0 ] || bad $LINENO
     fi
-    sh -x /usr/local/sbin/guests apply 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
+    resumed=1
+    sh -x /usr/local/sbin/guests apply 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { resumed=; tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
     if [ "$step" = journal ]; then
         # The rollback's own hold may already have cleared fw1's key.
         for f in fw1 fw2; do [ -z "$(ic config get "$f" boot.autorestart)" ] || ic config unset "$f" boot.autorestart || bad $LINENO; done
         trap - 0 HUP INT TERM
     fi
+    [ -n "$resumed" ] || break
     grep -q '^+ ic rebuild [0-9a-f]* fw1$' "/var/log/guests-rebuild-kill-$step-resume.log" || bad $LINENO
     [ ! -e "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
-    deadline=$(($(date +%s) + 1500))
+    # The resume waited for fw1's health and released its demotion.
+    deadline=$(($(date +%s) + 600))
     until pair_ok; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+        [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break 2; }
         sleep 2
     done
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/demote' || bad $LINENO
@@ -3937,7 +3940,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=19800 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=30600 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -4228,10 +4231,12 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=12600 ;; guests-update) budget=19800 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=30600 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
 	# past their limits. Both runs PF when the browser smoke passes; +1800 covers its wait for fw1's relink.
+	# guests-update reached its firewall rebuild interruptions at 4.1 h (chain #4); they boot fw1 three times
+	# (~1 h), and the topology migration after them about eight times (~2.5 h).
 	budget=$((budget + 3660))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
