@@ -18,7 +18,7 @@ cleanup() {
 	[ -z "$saved" ] || stty "$saved" <&3
 	if [ -n "$refresh" ] && { ! mountpoint -q /etc/shadow ||
 		[ "$(stat -Lc '%d:%i' "$stm/etc/shadow")" != "$(stat -Lc '%d:%i' /etc/shadow)" ]; }; then
-		if mountpoint -q /etc/shadow; then umount /etc/shadow || exit 1; fi
+		if mountpoint -q /etc/shadow; then umount -l /etc/shadow || exit 1; fi
 		mount --bind "$stm/etc/shadow" /etc/shadow || { echo "account: cannot rebind shadow; state kept at $stm" >&2; exit 1; }
 	fi
 	if [ -n "$stm" ]; then
@@ -65,7 +65,8 @@ printf '%s:%s\n' "$user" "$pass" | chpasswd -P "$stm" -c YESCRYPT -s 5 || die 'c
 unset pass
 awk -F: -v u="$user" '$1 == u && $2 ~ /^\$y\$/ {ok=1} END {exit !ok}' "$stm/etc/shadow" ||
 	die 'password is not yescrypt'
-umount /etc/shadow || die 'cannot unmount shadow'
+sync -f "$stm/etc/shadow" || die 'cannot sync shadow'
+umount -l /etc/shadow || die 'cannot unmount shadow'
 mount --bind "$stm/etc/shadow" /etc/shadow || die 'cannot rebind shadow'
 refresh=
 echo "account: password changed for $user"

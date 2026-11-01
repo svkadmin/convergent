@@ -7,6 +7,107 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-release-compat: $*" >&2; exit 1; }
+# Retrying an installed release must retain a complete stage across every rename.
+(
+stagework=$work/stage-retry
+mkdir "$stagework"
+sed -n '/^# Staged before the slot write:/,$p' "$repo/tools/fetch-release" |
+    sed "s|/run/convergent/guests.lock|$stagework/lock|g" >"$stagework/publish"
+grep -q '^slot write ' "$stagework/publish"
+{
+    echo 'recover() {'
+    sed -n '/^    staged=\/var\/lib\/convergent\/guest-updates$/,/^    # Nothing changes/p' "$repo/tools/guests" |
+        sed 's|staged=/var/lib/convergent/guest-updates|staged=$root/stages|'
+    sed -n '/^    for entry in "\$staged"\/\* "\$staged"\/\./,/^    done$/p' "$repo/tools/guests"
+    echo '}'
+    echo 'recover'
+} >"$stagework/recover"
+grep -q 'maintenance_due || return 0' "$stagework/recover"
+grep -q 'rm -rf' "$stagework/recover"
+cat >"$stagework/run" <<'STAGE'
+set -eu
+root=$1 fault=$2 action=$3 booted=${4:-43}
+dir=$root/download staged=$root/stages latest=43 changed=remmina rsum=signed sync=
+die() { echo "$*" >&2; exit 1; }
+flock() { :; }
+maintenance_due() { return 1; }
+# Only ownership and flushing are simulated; moves and removals use real files.
+stat() {
+    if [ "$2" = '%u %a %F' ]; then
+        [ -d "$3" ] && [ ! -L "$3" ] || return 1
+        echo '0 700 directory'
+    elif [ "$fault" = stat ]; then return 1
+    elif [ "$fault" = cross-device ] && [ "$3" = "$dir/guests" ]; then
+        echo other-device
+    else command stat "$@"; fi
+}
+private() { [ ! -L "$1" ] && [ -d "$1" ] || die 'invalid private directory'; }
+sync() {
+    if [ "$fault" = flush ] && [ -d "$staged/43.old" ] && [ -d "$staged/43" ]; then return 1; fi
+}
+cp() {
+    [ "$fault" != sidecar ] || return 1
+    command cp "$@"
+}
+mv() {
+    if [ "$fault" = move ] && [ "$2" = "$dir/guests" ]; then return 1; fi
+    command mv "$@"
+    if [ "$fault" = cut ] && [ "$3" = "$staged/43.old" ]; then exit 73; fi
+}
+rm() {
+    command rm "$@"
+    # The original deletion window must fail the same interruption fixture.
+    if [ "$fault" = cut ] && [ "$2" = "$staged/43" ]; then exit 73; fi
+}
+slot() {
+    [ "$*" = "write $dir" ] || die 'unexpected slot call'
+    for release in 42 44; do [ -f "$staged/$release/keep" ] || die 'pruned before slot write'; done
+    [ "$(cat "$staged/43/remmina/payload")" = new ] || die 'missing replacement'
+    for file in remmina.manifest remmina.manifest.sig; do
+        [ "$(cat "$staged/43/$file")" = "$file" ] || die 'incomplete replacement'
+    done
+    [ "$fault" != slot ] || return 1
+    touch "$root/accepted"
+}
+. "$action"
+STAGE
+for script in publish recover run; do sh -n "$stagework/$script"; done
+for fault in none cut move slot sidecar flush cross-device stat; do
+    root=$stagework/$fault
+    mkdir -p "$root/download/guests/remmina" "$root/stages/43/remmina" "$root/stages/42" "$root/stages/44"
+    echo old >"$root/stages/43/remmina/payload"
+    echo new >"$root/download/guests/remmina/payload"
+    touch "$root/stages/42/keep" "$root/stages/44/keep"
+    for file in remmina.manifest remmina.manifest.sig; do echo "$file" >"$root/download/$file"; done
+    if sh "$stagework/run" "$root" "$fault" "$stagework/publish" >"$stagework/log" 2>&1; then
+        [ "$fault" = none ] || die "accepted $fault stage publication"
+        [ -f "$root/accepted" ]
+        [ ! -e "$root/stages/42" ] && [ ! -e "$root/stages/44" ]
+        [ ! -e "$root/stages/43.old" ]
+    else
+        [ "$fault" != none ] || { cat "$stagework/log"; exit 1; }
+        [ ! -e "$root/accepted" ]
+        [ -f "$root/stages/42/keep" ] && [ -f "$root/stages/44/keep" ]
+    fi
+    # Immediate reboot, including fallback with and without a stage of its own.
+    for boot in 43 42 41; do
+        reboot=$stagework/$fault-boot-$boot
+        mkdir "$reboot"
+        cp -R "$root/stages" "$reboot/"
+        sh "$stagework/run" "$reboot" none "$stagework/recover" "$boot"
+        case $fault in none|slot|flush) want=new ;; *) want=old ;; esac
+        [ "$(cat "$reboot/stages/43/remmina/payload")" = "$want" ] || die "lost $fault stage on boot $boot"
+        [ ! -d "$reboot/stages/43/guests" ] || die 'nested replacement stage'
+    done
+    # A fetch retry must also recover an aside without nesting the new directory.
+    case $fault in cut|move)
+        sh "$stagework/run" "$root" none "$stagework/publish" >"$stagework/log" 2>&1 || { cat "$stagework/log"; exit 1; }
+        [ -f "$root/accepted" ] && [ ! -e "$root/stages/43.old" ]
+        ;;
+    esac
+done
+echo 'test-release-compat: stage interruption, move failure, reboot recovery and post-slot pruning passed'
+)
 # USB reads stay bounded even before signatures or artifact hashes are checked.
 sed -n '/^usb_copy() {/,/^}/p' "$repo/tools/fetch-release" >"$work/usb-copy"
 [ -s "$work/usb-copy" ]

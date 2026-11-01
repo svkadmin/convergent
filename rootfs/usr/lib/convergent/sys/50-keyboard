@@ -20,13 +20,18 @@ keyboard_set() {
 		for (i=1;i<=NF;i++) if ($i !~ /^[a-z]{2,5}(\([A-Za-z0-9_-]+\))?$/) exit 1
 		if (!NF) exit 1
 	}' || die 'invalid layout list'
+	for pair in $(printf '%s' "$layouts" | tr , ' '); do
+		layout=${pair%%(*}; variant=
+		case $pair in *'('*) variant=${pair#*(}; variant=${variant%)} ;; esac
+		awk -v code="$layout" -v variant="$variant" '
+			$1 == "!" {section=$2}
+			section == "layout" && $1 == code {layout=1}
+			section == "variant" && $1 == variant && $2 == code ":" {found=1}
+			END {exit !(layout && (variant == "" || found))}
+		' /usr/share/X11/xkb/rules/evdev.lst || die "unknown layout/variant: $pair"
+	done
 	variants=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
 	layouts=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
-	if [ -r /usr/share/X11/xkb/rules/evdev.lst ]; then
-		for layout in $(printf '%s' "$layouts" | tr , ' '); do
-			awk -v code="$layout" '$1 == "!" {section=$2} section == "layout" && $1 == code {found=1} END {exit !found}' /usr/share/X11/xkb/rules/evdev.lst || die "unknown layout: $layout"
-		done
-	fi
 	swayrun input type:keyboard xkb_variant '""' || return
 	swayrun input type:keyboard xkb_layout "\"$layouts\"" || return
 	swayrun input type:keyboard xkb_variant "\"$variants\"" || return

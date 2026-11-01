@@ -9,6 +9,84 @@ trap 'exit 1' HUP INT TERM
 die() { echo "test-slot-backup: $*" >&2; exit 1; }
 guid=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
 export work guid
+# Rescue refresh is best-effort only after the blessing commits.
+for fn in ukis uki_release num put accept copy_rescue bless; do
+    case $fn in
+    uki_release|num|put) sed -n "/^$fn() {/p" "$repo/tools/slot" >"$work/$fn" ;;
+    *) sed -n "/^$fn() {/,/^}/p" "$repo/tools/slot" >"$work/$fn" ;;
+    esac
+    [ -s "$work/$fn" ] || die "missing $fn"
+    cat "$work/$fn"
+done >"$work/bless-source"
+sed -e "s|/usr/lib/convergent/rescue.efi|$work/rescue.efi|" \
+    -e "s|/dev/console|$work/console|g" "$work/bless-source" >"$work/bless-functions"
+sh -n "$work/bless-functions"
+cat >"$work/bless-driver" <<'BLESS'
+set -eu
+fault=$1
+esp=$work/bless/esp stm=$work/bless/state linux=EFI/Linux
+die() { echo "$*" >&2; exit 1; }
+log() { echo "$*"; }
+booted() { release=123 slot=a; }
+esp_mount() { :; }
+state_mount() { :; }
+healthy() { [ "$fault" != health ]; }
+disarm() { touch "$work/bless/disarmed"; }
+prune() { :; }
+sync() { :; }
+mv() {
+    case "$fault:$*" in
+    highest:*'/highest.new '*|good:*'/good.new '*|rename:*'+3.efi '*|loader:*'/loader.conf.new '*) return 1 ;;
+    esac
+    command mv "$@"
+}
+cp() {
+    if [ "$fault" = copy ]; then
+        [ "$(cat "$stm/highest")" = 123 ] && [ "$(cat "$stm/good")" = 123 ] || exit 97
+        [ -f "$esp/$linux/convergent-123-a.efi" ] && [ -f "$work/bless/disarmed" ] || exit 97
+        echo partial >"$2"
+        return 1
+    fi
+    command cp "$@"
+}
+. "$work/bless-functions"
+bless
+BLESS
+sh -n "$work/bless-driver"
+for fault in none health highest rename good loader copy; do
+    rm -rf "$work/bless"
+    esp=$work/bless/esp stm=$work/bless/state
+    mkdir -p "$esp/EFI/Linux" "$esp/loader" "$stm"
+    echo 122 >"$stm/highest"
+    echo 122 >"$stm/good"
+    echo host >"$esp/EFI/Linux/convergent-123-a+3.efi"
+    echo old >"$esp/EFI/Linux/convergent-rescue.efi"
+    echo new >"$work/rescue.efi"
+    echo 'default convergent-*' >"$esp/loader/loader.conf"
+    if sh "$work/bless-driver" "$fault" >"$work/bless-out" 2>&1; then
+        case $fault in none|loader|copy) ;; *) die "blessed despite $fault failure" ;; esac
+    else
+        case $fault in none|loader|copy) cat "$work/bless-out"; die "bless failed: $fault" ;; esac
+        grep -qx 122 "$stm/good"
+        grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
+        continue
+    fi
+    grep -qx 123 "$stm/highest"
+    grep -qx 123 "$stm/good"
+    [ -f "$esp/EFI/Linux/convergent-123-a.efi" ]
+    [ ! -e "$esp/EFI/Linux/convergent-123-a+3.efi" ]
+    [ -f "$work/bless/disarmed" ]
+    [ ! -e "$esp/EFI/Linux/convergent-rescue.efi.new" ]
+    [ ! -e "$esp/loader/loader.conf.new" ]
+    if [ "$fault" != none ]; then
+        grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
+        grep -q 'could not refresh rescue' "$work/bless-out"
+        sh "$work/bless-driver" none >"$work/bless-out" 2>&1
+    fi
+    cmp "$work/rescue.efi" "$esp/EFI/Linux/convergent-rescue.efi"
+    grep -qxF 'default convergent-[0-9]*' "$esp/loader/loader.conf"
+done
+echo 'test-slot-backup: committed blessing survives rescue failure and retries passed'
 # Grafana's restored database must keep both secrets, including future seeds.
 sed -n '/^# Keep Grafana/,/^done$/p' "$repo/tools/backup" |
     sed "s|/var/lib/convergent/guests/tls/|$work/tls/|" >"$work/backup-secrets"
