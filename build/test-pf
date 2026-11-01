@@ -21,8 +21,12 @@ cleanup() {
 	[ -z "${canary_pid:-}" ] || canary_end || r=1
 	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart
 		timeout -k 5 1800 sh -c 'until command ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'; } || r=1
-	# Restore the preferred master if a work probe fails during maintenance.
-	[ -z "${w1_maintenance:-}" ] || printf 'yes\n' | sys firewall undo || r=1
+	# Restore the preferred master if a work probe fails during maintenance. Undo refuses while a firewall
+	# fails its health check (the restarted fw1 relinks for 30 minutes), so retry before giving up.
+	if [ -n "${w1_maintenance:-}" ]; then
+		for try in $(seq 20); do printf 'yes\n' | sys firewall undo && break; sleep 30; done
+		[ ! -e /var/lib/convergent/firewall-maintenance ] || r=1
+	fi
 	# portal retries a node it could not reach; one retry here, as cron would.
 	portal off || { sleep 30; portal off; } || r=1
 	ic exec svc -- sh -c '
@@ -473,7 +477,9 @@ printf 'yes\n' | sys firewall undo
 w1_maintenance=
 rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 # End work-network matrix.
-
+# The work matrix restarted fw1; its kernel relink saturated it for 30 minutes and slowed every probe.
+timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "! pgrep -f [r]eorder_kernel >/dev/null"; do sleep 10; done' ||
+	{ echo 'CV-PF FAIL fw1 still relinking its kernel after 30 minutes'; exit 1; }
 
 # Remmina work-network matrix; the topology renderer supplies VLANs and PF tables.
 # Delivery, not echo: BusyBox nc (1.10 mode) has no -k, and a UDP listener binds to its first peer.
@@ -495,6 +501,9 @@ for master in fw1 fw2; do
     if [ "$master" = fw2 ]; then
         w1_maintenance=1
         printf 'yes\n' | sys firewall maintenance
+        # The failover closes work access until the gate validates the new pair; the first three
+        # Remmina probes once landed in that window.
+        timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
     fi
     for f in fw1 fw2; do
         if [ "$f" = "$master" ]; then want=MASTER; else want=BACKUP; fi
