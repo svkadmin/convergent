@@ -768,6 +768,8 @@ local_list() {
         print "$TTL 300\n@ SOA localhost. root.localhost. 1 3600 600 86400 300\n  NS localhost."
         for (i=1; i<=n; i++) print "test-" i ".example.net CNAME ."
     }' >"$dns/list.rpz"
+    # A download records its time beside the list; without it firewall facts fail and their panels stay empty.
+    date +%s >"$dns/list.refreshed"
 }
 fw_diag() {
     for f in fw1 fw2; do
@@ -1991,6 +1993,26 @@ fw_unlocked() {
         exit(flock($lock, LOCK_EX|LOCK_NB) ? 0 : 1);
     '\'''
 }
+# A failed step must not leave maintenance armed for the next: it inhibits self-heal and refuses the
+# next maintenance. Undo needs both firewalls healthy, which a relinking one is not for minutes.
+maintenance_clean() {
+    n=0
+    while [ -e /var/lib/convergent/firewall-maintenance ]; do
+        [ "$n" -lt 40 ] || { echo 'CV-MAINT maintenance still recorded'; return 1; }
+        printf 'yes\n' | sys firewall undo >/dev/null 2>&1 || sleep 15
+        n=$((n + 1))
+    done
+    # A previous holder may still run on fw1 for its 90 s pause.
+    n=0
+    while :; do
+        rc=0; fw_unlocked || rc=$?
+        # 2: no lock file; 1 held, anything else (frozen fw1, SSH failure) proves nothing.
+        case $rc in 0|2) return 0 ;; esac
+        [ "$n" -lt 60 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
+        n=$((n + 1)); sleep 2
+    done
+}
+maintenance_clean || bad $LINENO
 cv_time firewall-self-heal
 # A firewall that stops serving while its QEMU still answers: only the minute checker recovers it.
 (
@@ -2071,6 +2093,7 @@ cv_time firewall-self-heal
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
+maintenance_clean || bad $LINENO
 (
     set -e
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance'
@@ -2116,6 +2139,8 @@ LOCAL
     log=/var/log/firewall-maintenance-$failure.log
     sh "$release/maintenance-test" >"$log" 2>&1 &
     changer=$!
+    # A failed iteration must not leave its changer running while the next rewrites the script.
+    trap '[ -z "${changer:-}" ] || { kill "$changer"; wait "$changer"; } 2>/dev/null || :' 0
     n=0
     until grep -qx CV-MAINTENANCE-WAIT "$log"; do
         n=$((n + 1)); [ "$n" -lt 60 ]; sleep 1
@@ -2127,6 +2152,7 @@ LOCAL
     remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(cat /var/run/convergent-maintenance.lock)"' ;;
     esac
     if wait "$changer"; then exit 1; fi
+    changer=
     if [ "$failure" = host-kill ]; then
         if flock -n /run/convergent/guests.lock true; then exit 1; fi
         if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
@@ -2167,6 +2193,7 @@ LOCAL
 )
 [ "$?" = 0 ] || { tail -n 20 "/var/log/firewall-maintenance-$failure.log" | sed "s/^/CV-MXLOG $failure: /"; fw_diag; bad $LINENO; }
 done
+maintenance_clean || bad $LINENO
 cv_time maintenance-reboot
 # Maintenance must survive a reboot and fw-seed, then release before replacement.
 (
@@ -2280,6 +2307,7 @@ cv_time dns-wan-return
     done
 )
 [ "$?" = 0 ] || bad $LINENO
+maintenance_clean || bad $LINENO
 cv_time handoff-interruptions
 # Kill while SSH is waiting, both before and after adding the handoff groups.
 for phase in delayed partial; do
@@ -2887,7 +2915,10 @@ sleep 125
 # After an svc replacement, rule health and facts take collector cycles: six tries, a minute apart.
 dash=1
 for try in 1 2 3 4 5 6; do
-    sh "$release/dashboard-check" "$release/dashboards" http://100.80.2.10:9428 guests && { dash=0; break; }
+    # Facts from both firewalls: panels pass with one, which hid a failing fw1.
+    sh "$release/dashboard-check" "$release/dashboards" http://100.80.2.10:9428 guests &&
+        curl -qfsS --noproxy '*' --max-time 10 -G --data-urlencode 'query=count(convergent_fw_facts_success{node=~"fw1|fw2"} == 1)' \
+            http://100.80.2.10:9428/api/v1/query | jq -e '.data.result[0].value[1] == "2"' >/dev/null && { dash=0; break; }
     [ "$try" = 6 ] || sleep 60
 done
 [ "$dash" = 0 ] || {
@@ -3020,6 +3051,13 @@ for step in journal rebuilt; do
             awk -v want=MASTER -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null; do
             [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
             sleep 2
+        done
+        # The restarted fw2 relinks its kernel for ~20 minutes and stopped answering for ~15 s at the end:
+        # the resume's lease writes to it timed out. Let it finish first.
+        deadline=$(($(date +%s) + 2400))
+        until timeout 30 ssh -F /etc/convergent/ssh_config fw2 '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
+            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break; }
+            sleep 10
         done
     fi
     if [ "$step" = rebuilt ]; then
@@ -3228,7 +3266,8 @@ cleanup() {
 		ic config set def security.protection.delete=false && ic delete def || { step=delete; r=1; }
 	fi
 	rm -rf "$run" || { step=cleanup; r=1; }
-	if [ "$r" = 0 ]; then echo 'CV-BROWSER ok'; else echo "CV-BROWSER failed: $step"; fi
+	if [ "$r" = 0 ]; then echo 'CV-BROWSER ok'; else echo "CV-BROWSER failed: $step"; r=1; fi
+	# 124 from a step's own timeout would read as the smoke deadline.
 	exit "$r"
 }
 trap cleanup 0
@@ -3348,6 +3387,9 @@ step=tmp
 for mode in normal portal; do
 	name=tmp-20
 	[ "$mode" != portal ] || name=tmp-portal
+	# As a launcher does: the minute reaper stopped (and so deleted) a tmp browser whose slot lock was free.
+	exec 7>"/run/convergent/browser/$name.lock"
+	flock -w 60 7
 	ic init candidate-browser "$name" --ephemeral -p browser-base -p browser-tmp
 	quota "$pool/containers/$name" 2147483648
 	if [ "$mode" = portal ]; then
@@ -3375,6 +3417,7 @@ for mode in normal portal; do
 		if ic exec "$name" -- env BROWSER_ROLE=tmp BROWSER_IPV4=100.80.3.11 /usr/local/sbin/browser-setup; then exit 1; fi
 	fi
 	ic stop "$name" --force
+	exec 7>&-
 done
 step=portal
 portal_test=1
@@ -3459,8 +3502,9 @@ if [ "$r" = 0 ]; then
 	# Remmina: private state, keyring and share; its session waits up to 1500 s for the work gate.
 	timeout -k 10 2000 sh "$release/remmina-test" smoke || { echo 'CV-REMOTE smoke failed'; result=1; }
 	# End Remmina.
-	# A deadline kill must leave PF time to undo its maintenance round and delete its probes (int's MAC).
-	timeout -k 1200 4740 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
+	# A deadline kill must leave PF time to undo its maintenance round and delete its probes (int's MAC);
+	# its fw1 relink wait (up to 30 min) needs the longer deadline.
+	timeout -k 2400 6600 sh "$release/pf-test" || { echo 'CV-PF FAIL: test setup or deadline'; result=1; }
 	# Real TLS, per-session NSS and orphan recovery.
 	timeout -k 30 600 sh "$release/incus-ui-test" || { echo 'CV-INCUS-UI failed'; result=1; }
 	# End Incus UI checks.
@@ -4167,7 +4211,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=5400 ;; guests-maint | online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=18000 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=19800 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -4458,10 +4502,10 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=5400 ;; guests-update) budget=18000 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=19800 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
-	# past their limits.
+	# past their limits. Both runs PF when the browser smoke passes; +1800 covers its wait for fw1's relink.
 	budget=$((budget + 3660))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1

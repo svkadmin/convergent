@@ -91,10 +91,12 @@ timeout() {
 	if [ "$*" = "$failed" ]; then echo partial; return 124; fi
 	case $1 in unbound-control) shift; unbound_control "$@" ;; *) "$@" ;; esac
 }
+carp_groups=${carp_groups:-carp wanwatch upgrade}
 ifconfig() {
 	case $* in
-	'') printf 'carp0: flags=41<UP,RUNNING>\n groups: carp wanwatch upgrade\n carp: MASTER carpdev vio0 vhid 1 advskew 0\n' ;;
-	'-g '*) echo 'carp: carp demote count 0' ;;
+	'') printf 'carp0: flags=41<UP,RUNNING>\n groups: %s\n carp: MASTER carpdev vio0 vhid 1 advskew 0\n' "$carp_groups" ;;
+	# As on OpenBSD, a group without members does not exist.
+	'-g '*) case " $carp_groups " in *" $2 "*) echo "$2: carp demote count 0" ;; *) return 1 ;; esac ;;
 	pfsync0) printf 'pfsync0: flags=41<UP,RUNNING>\n defer: on\n' ;;
 	esac
 }
@@ -154,4 +156,9 @@ for kind in absent not-last; do
 	failed= calls=$work/calls sh "$work/run"
 	grep -qx 'convergent_dns_source_refreshed_seconds 0' "$work/convergent_fw.prom"
 done
+# A handback leaves fw1 without the upgrade group: its facts still succeed.
+echo '; convergent-source-refreshed-seconds 1000' >"$work/blocklist.rpz"
+carp_groups='carp wanwatch' failed= calls=$work/calls sh "$work/run"
+grep -qx 'convergent_fw_facts_success 1' "$work/convergent_fw.prom"
+grep -qx 'convergent_carp_group_present{group="upgrade"} 0' "$work/convergent_fw.prom"
 echo 'fw-facts: bounded probes, publication and source-age fixtures passed'
