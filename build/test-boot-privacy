@@ -211,6 +211,9 @@ check_script "$work/wan-round"
     [ "$owned:$dns_lost" = 0:0 ]
     forward=0; round
     [ "$owned:$dns_lost" = 0:1 ]
+    # A local failure right after one lost WAN round must not skip the pacing sleep.
+    forward=1; wan_up=0; round; [ "$lost" = 1 ]
+    forward=0; round; [ "$lost" = 0 ]
 )
 echo 'test-boot-privacy: firewall local health passed'
 
