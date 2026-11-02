@@ -175,12 +175,16 @@ for fault in none oversized short hash io directory; do
 done
 # A dropped online download still keeps its partial file for resumption.
 usb= url=https://fixture.invalid latest=43
+# Each online file refreshes the opening first, so the 4-hour expiry never cuts a long release.
+refresh_src() { touch "$work/refreshed"; }
 get() {
     [ "$*" = "--max-time 7200 --max-filesize 4 --retry 5 -C - -o $dir/slot.img $url/43/slot.img" ] || exit 97
+    [ -f "$work/refreshed" ] || exit 96
     printf go >"$dir/slot.img"
     return 18
 }
 if (download slot.img) >"$work/log" 2>&1; then die 'accepted dropped online download'; fi
+[ -f "$work/refreshed" ] || die 'online download did not refresh the update source'
 [ "$(cat "$dir/slot.img")" = go ]
 )
 # The anti-rollback floor is not evidence that the running release is current.
@@ -210,6 +214,7 @@ pfctl() {
     case $* in
     '-t update_src -T flush') op=flush ;;
     '-k label -k update') op='kill' ;;
+    '-q -t update_src -T zero') op=zero ;;
     *) exit 97 ;;
     esac
     if [ "$fw" = "$failed_fw" ] && { [ "$fault" = "$op" ] || [ "$fault" = both ]; }; then
@@ -249,7 +254,20 @@ for failed_fw in fw2 fw1; do
         for fw in $fws; do [ ! -e "$work/$fw.flush" ] && [ ! -e "$work/$fw.kill" ]; done
     done
 done
-echo 'test-release-compat: update cleanup failure and retry fixtures passed'
+# A refresh clears the expiry stamp on both firewalls; a failed one stops the download.
+for failed_fw in none fw2 fw1; do
+    : >"$work/pf-calls"
+    if (fault=zero; refresh_src) 2>"$work/pf-error"; then
+        [ "$failed_fw" = none ] || die "accepted a failed refresh on $failed_fw"
+        printf '%s\n' 'fw2 -q -t update_src -T zero' 'fw1 -q -t update_src -T zero' | cmp - "$work/pf-calls"
+    else
+        [ "$failed_fw" != none ] || { cat "$work/pf-error"; exit 1; }
+        grep -q "could not refresh the update source on $failed_fw" "$work/pf-error"
+    fi
+done
+# A manual pfctl -f reloads a file-backed table empty: the opening lives only in the kernel.
+grep -Eqx 'table <update_src>[[:space:]]+persist' "$repo/guests/fw/site/etc/pf.conf" || die 'update_src is not a plain persist table'
+echo 'test-release-compat: update cleanup failure, retry and refresh fixtures passed'
 )
 if [ "$#" = 1 ]; then
     bundle=$1
