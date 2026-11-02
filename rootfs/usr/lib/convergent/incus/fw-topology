@@ -3,7 +3,7 @@
 topology_hold() {
     leases_hold || return
     for node in fw1 fw2; do
-        ic config set "$node" boot.autostart=false boot.autorestart=false || return
+        hold_set "$node" boot.autostart=false boot.autorestart=false || return
     done
     for node in fw1 fw2; do
         stopped "$node" || locked force_stop "$node" || return

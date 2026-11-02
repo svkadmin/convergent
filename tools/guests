@@ -132,7 +132,24 @@ stopped() {
 }
 autorestart_hold() {
     # Mark in the same update; imports and renames keep ownership of the override.
-    ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
+    hold_set "$1" boot.autorestart=false user.convergent.autorestart=true
+}
+# Incus answers no read or change of a frozen monitor: an unbounded hold hung under the guests lock, with
+# the checker's heal inhibited. End that QEMU first, verified as this instance's right before the signal
+# as the healer does, then hold the instance that outlives it and continue the stop.
+hold_set() {
+    hold_mark "$@" && return
+    case $1 in fw1|fw2|wan) ;; *) return 1 ;; esac
+    if heal_state "$1" >/dev/null; then return 1; fi
+    pid=$(heal_qemu "$1") || return 1
+    kill -KILL "$pid" || return 1
+    echo "guests: $1 QEMU $pid no longer answers Incus; killed before the hold" >&2
+    logger -p user.err -t guests "$step: $1 QEMU $pid no longer answers Incus; killed before the hold" 2>/dev/null || :
+    hold_mark "$@"
+}
+hold_mark() {
+    timeout -k 1 120 incus --force-local --project default config set "$@" 9>&- 8>&- 7>&- 6>&- ||
+        { code=$?; fail "incus config set $* failed (status $code)" || return "$code"; }
 }
 autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
@@ -272,7 +289,7 @@ cleanup() {
 dns_restore() {
     [ -f "$state/dns.stale" ] && [ -f /var/lib/convergent/dns/list.rpz ] || return 0
     exec 8>&-
-    dns-push local 9>&- 7>&- 6>&- || { fail 'the DNS push failed; run sudo dns-push local'; return 1; }
+    dns-push local 9>&- 7>&- 6>&- || { code=$?; fail "the DNS push failed (status $code); run sudo dns-push local"; return 1; }
     exec 8>/run/convergent/dns-push.lock
     flock -w 120 8 || { fail 'a DNS push is still running'; return 1; }
 }

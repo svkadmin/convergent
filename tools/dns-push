@@ -28,7 +28,8 @@ close_src() {
 	_closed=0
 	for _f in $fws; do
 		# Flows the table admitted meanwhile end with it, as the update source's cleanup does.
-		rsh "$_f" "pfctl -t blocklist_src -T flush && pfctl -q -k label -k blocklist" >/dev/null || _closed=1
+		rsh "$_f" "pfctl -t blocklist_src -T flush && pfctl -q -k label -k blocklist" >/dev/null ||
+			{ echo "dns-push: cannot close the blocklist source on $_f (status $?)" >&2; _closed=1; }
 	done
 	[ "$_closed" = 0 ] || return 1
 	src_open=
@@ -245,7 +246,7 @@ mkdir -p "$state" "$run"
 exec 9>"$run/dns-push.lock"
 flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
 trap cleanup 0
-trap 'exit 1' HUP INT TERM
+trap 'echo "dns-push: interrupted" >&2; exit 1' HUP INT TERM
 rollback || die "recover both firewalls before another push"
 rm -rf "$state/edit.before.new"
 if [ "$mode" = list ]; then
@@ -326,7 +327,8 @@ for fw in $fws; do
 	for file in blocklist.rpz local-owner.conf; do
 		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file" || die "cannot stage $file on $fw (status $?)"
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
-		[ "$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
+		have=$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new") || die "cannot hash $file on $fw (status $?)"
+		[ "$have" = "$want" ] || die "stage hash differs on $fw"
 	done
 	rsh_wait "$fw" "cd $rdir &&
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
