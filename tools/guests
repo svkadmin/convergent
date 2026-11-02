@@ -141,6 +141,8 @@ hold_set() {
     hold_mark "$@" && return
     case $1 in fw1|fw2|wan) ;; *) return 1 ;; esac
     if heal_state "$1" >/dev/null; then return 1; fi
+    # A firewall that still answers is healthy: Incus is the one stuck, never kill it then (as the healer).
+    case $1 in fw1|fw2) if heal_probe "$1" >/dev/null; then return 1; fi ;; esac
     pid=$(heal_qemu "$1") || return 1
     kill -KILL "$pid" || return 1
     echo "guests: $1 QEMU $pid no longer answers Incus; killed before the hold" >&2
