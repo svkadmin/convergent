@@ -297,6 +297,8 @@ or grant suitable ACLs. Detach when finished. Resize the volume in Incus UI if n
 scanned SSIDs/security/signal, then asks `Passphrase (empty for a known or open network):`. `sys
 wifi connect 'SSID with spaces'` skips selection; `sys wifi hidden` asks for an unscanned name.
 Saved hidden networks reconnect from the scan cache first, then rescan if needed.
+After a network's passphrase changes, `sys wifi forget` it first, or the first connect fails
+on the old passphrase and a retry succeeds.
 Credentials are stored in wan; replacement also stages root-only copies on encrypted host storage,
 which can remain until recovery or cleanup completes.
 Scan completion polls for 15 seconds after initiation; initiation/results
@@ -317,7 +319,8 @@ most 32 KiB.
 `sys portal on` or `browser tmp --portal [url]` opens a dedicated browser and its firewall/WAN
 DNS rules. The default URL is `http://<gateway>/`, using the selected uplink's DHCP gateway;
 an explicit HTTP/HTTPS URL is optional. Without a usable gateway, supply an uplink-local URL.
-HTTP/HTTPS destinations remain restricted to the selected uplink subnet. Portals requiring
+Destinations are limited to ports 80 and 443 only, in the selected uplink subnet (/8 to /30; a
+/31 or /32 lease is refused). Portals requiring
 interception of public HTTP requests or publicly hosted login pages are unsupported.
 Mode ends on close, `sys portal off`, or after 30 minutes; bar: PORTAL. Wired and Wi-Fi work.
 DNS uses only the selected default uplink's first nameserver: IPv4 outside 100.80.0.0/16. An

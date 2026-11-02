@@ -36,12 +36,12 @@ browser_active() {
 	(exec 8>"$run/browser/tmp-portal.lock"; ! flock -n 8)
 }
 
-# Normalize an external IPv4 /16..30 network.
+# Normalize an external IPv4 /8..30 network.
 net_of() {
 	case $1 in */*) ;; *) return 1 ;; esac
 	_l=${1#*/}
 	case $_l in '' | *[!0-9]*) return 1 ;; esac
-	[ "$_l" -ge 16 ] && [ "$_l" -le 30 ] || return 1
+	[ "$_l" -ge 8 ] && [ "$_l" -le 30 ] || return 1
 	_n=$(
 		IFS=.
 		# shellcheck disable=SC2086
@@ -53,9 +53,11 @@ net_of() {
 		done
 		_a=$(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
 		_a=$(( _a & ((0xFFFFFFFF << (32 - _l)) & 0xFFFFFFFF) ))
+		# Refuse any overlap with the internal /16.
+		_m=$_l; [ "$_m" -le 16 ] || _m=16
+		[ $(( _a >> (32 - _m) )) != $(( ((${net%.*} << 24) + (${net#*.} << 16)) >> (32 - _m) )) ] || exit 1
 		echo "$(( _a >> 24 )).$(( (_a >> 16) & 255 )).$(( (_a >> 8) & 255 )).$(( _a & 255 ))"
 	) || return 1
-	case $_n in "$net".*) return 1 ;; esac
 	echo "$_n/$_l"
 }
 
@@ -69,6 +71,7 @@ upstream_net() {
 			for (i=1;i<NF;i++) if ($i == "dev" && address[$(i+1)] != "") {print address[$(i+1)], gateway; exit}
 		}')
 	_a=${_route% *}
+	case ${_a#*/} in 31 | 32) echo "portal: the uplink lease is a /${_a#*/} without a subnet; portal mode needs /8 to /30" >&2; return 1 ;; esac
 	_upstream=$(net_of "$_a") || return 1
 	if [ "${1:-}" = gateway ]; then
 		_gateway=${_route#* }
@@ -121,7 +124,7 @@ on() {
 	# Always clean stale remote rules, even if the last host process lost its journal.
 	off 'recovering previous session' || return
 	if [ $# -ge 1 ]; then
-		lan=$(net_of "$1") || die "not an IPv4 network of 16 to 30 bits outside $net.0.0/16: $1"
+		lan=$(net_of "$1") || die "not an IPv4 network of 8 to 30 bits outside $net.0.0/16: $1"
 	else
 		lan=$(upstream_net) || die "wan has no upstream address to take the network from; give it: portal on A.B.C.D/LEN"
 	fi

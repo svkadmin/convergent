@@ -29,13 +29,13 @@ iwctl() {
     'station wlan0 connect-hidden saved') echo "$provisioned"; return 1 ;;
     'station wlan0 scan')
         [ "$bound" = 10 ] || exit 97
-        [ "$fault" != scan ] || return "$failure_rc"
+        [ "$fault" != scan ] || { echo 'Operation failed: Busy'; return "$failure_rc"; }
         sleep "$init_delay"
         ;;
     'station wlan0 show')
         [ "$bound" = "$((100 + init_delay + 15 - $(date)))" ] || exit 97
         case $fault in
-        show) return "$failure_rc" ;;
+        show) echo 'Operation failed: NotAvailable'; return "$failure_rc" ;;
         unknown) echo 'Scanning unknown' ;;
         stalled) echo 'Scanning yes' ;;
         *)
@@ -119,6 +119,8 @@ for fixture in none:0 scan:7 scan:124 show:9 show:124 unknown:1 stalled:1; do
         cmp "$work/want" "$work/calls"
     else
         if grep -q get-networks "$work/calls"; then exit 1; fi
+        [ "$fault" != scan ] || grep -qx 'wan-wifi: scan request failed: Operation failed: Busy' "$work/err"
+        [ "$fault" != show ] || grep -qx 'wan-wifi: scan status failed: Operation failed: NotAvailable' "$work/err"
         [ "$fault" != stalled ] || {
             [ "$(cat "$work/clock")" = 123 ]
             grep -qx 'wan-wifi: scan timed out' "$work/err"

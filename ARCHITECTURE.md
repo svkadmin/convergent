@@ -68,8 +68,9 @@ Alpine LTS kernel, ext4 root and e2fsprogs. Owns the VFIO radio, runs iwd/upstre
 NAT. A passed-through USB Ethernet adapter provides the optional wired uplink via
 `devices wired attach`, with Incus USB `required=false` and included Realtek NIC firmware.
 
-- Random MAC per network, regulatory country, protected management frames where offered; no DHCP
-  hostname, mDNS or LLMNR, to reduce upstream identification.
+- Wi-Fi: random MAC per network, regulatory country, protected management frames where offered;
+  no DHCP hostname, mDNS or LLMNR, to reduce upstream identification. The wired uplink sends no
+  hostname either, but keeps the adapter's fixed MAC and udhcpc's default vendor class.
 - Credentials arrive over SSH stdin and are stored in wan; replies are sanitized. Replacement also
   stages root-only copies on encrypted host storage, which can remain until recovery or cleanup
   completes. The host checks Wi-Fi IPv4 six times, five seconds apart after association. Saved
