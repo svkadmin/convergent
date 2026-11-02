@@ -688,6 +688,8 @@ assert '2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",sever
 assert security_expr.startswith('clamp_max(') and security_expr.endswith(') or vector(0)) == bool 0), 2)'), security_expr
 assert '((max(cv_release_advisories) > bool 0) or vector(0))' in security_expr
 assert '+ on() ((count((max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800)' in security_expr
+# A release without online updates satisfies the release term, bound to the booted release.
+assert ') or (max(cv_release_status_not_applicable_release) == max(cv_release_number{which="booted"}))) or vector(0)) == bool 0), 2)' in security_expr
 resolver = next(c for p in network['panels'] for c in [p] + p.get('panels', []) if c['title'] == 'Resolver input ages')
 assert resolver['targets'][0]['expr'] == 'max by (node) (time() - convergent_dns_source_refreshed_seconds)'
 columns = panels['Active alerts - explanations']['transformations'][1]['options']['includeByName']

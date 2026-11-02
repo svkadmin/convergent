@@ -88,7 +88,20 @@ status 1002 "$work/key"
 release_metrics 1
 grep -q 'cv_release_status_verified{role="latest",release="43"} 1$' "$work/metrics/release.prom"
 [ "$(cat "$work/cache/43.generated")" = 1002 ]
+# Without online updates, check marks status not applicable for the booted release only.
+sed -n '/^if \[ -z "\$usb" \] && { \[ ! -f "\$conf" \]/,/^fi$/p' "$repo/tools/fetch-release" |
+    sed "s|/usr/lib/convergent/release-status.sh|$work/metrics.sh|" >"$work/offline"
+[ -s "$work/offline" ]; sh -n "$work/offline"
+(
+    usb= mode=check conf=$work/no-conf
+    num() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
+    die() { exit 1; }
+    tr() { echo convergent.release=44; }
+    . "$work/offline"
+) >"$work/offline.out"
+grep -qx 'this release has no online updates' "$work/offline.out"
+[ "$(cat "$work/metrics/release.prom")" = 'cv_release_status_not_applicable_release 44' ]
 release_metrics 0
 grep -qx 'cv_release_check_success 0' "$work/metrics/release.prom"
-if grep -q 'cv_release_status_verified\|cv_release_advisory_info' "$work/metrics/release.prom"; then exit 1; fi
+if grep -q 'cv_release_status_verified\|cv_release_advisory_info\|not_applicable' "$work/metrics/release.prom"; then exit 1; fi
 echo 'observability: real signed ingestion, cache, publication and replay fixtures passed'

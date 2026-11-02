@@ -49,3 +49,16 @@ release_metrics() (
 	chmod 644 "$tmp"
 	mv "$tmp" "$out/release.prom"
 )
+# No online updates: release status does not apply, but only to the booted release named here.
+release_offline() (
+	set -eu
+	out=/var/lib/node_exporter
+	mkdir -p "$out"
+	chmod 755 "$out"
+	tmp=$(mktemp "$out/.release.XXXXXX")
+	trap 'rm -f "$tmp"' 0
+	trap 'exit 1' HUP INT TERM
+	printf 'cv_release_status_not_applicable_release %s\n' "$booted" >"$tmp"
+	chmod 644 "$tmp"
+	mv "$tmp" "$out/release.prom"
+)

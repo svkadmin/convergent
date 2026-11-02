@@ -129,7 +129,14 @@ write:0|write:1|check:1) ;;
 *) die 'usage: fetch-release [check] | usb <release-dir>' ;;
 esac
 if [ -z "$usb" ] && { [ ! -f "$conf" ] || [ ! -f "$key" ]; }; then
-	[ "$mode" != check ] || { echo 'this release has no online updates'; exit 0; }
+	if [ "$mode" = check ]; then
+		booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+		num "$booted" || die "the kernel command line names no release"
+		. /usr/lib/convergent/release-status.sh
+		release_offline || die 'cannot write release metrics'
+		echo 'this release has no online updates'
+		exit 0
+	fi
 	die 'this release has no online updates; run sys update usb'
 fi
 [ -f "$key" ] || die 'this release trusts no release key'
