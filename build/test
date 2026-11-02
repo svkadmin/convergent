@@ -1069,6 +1069,12 @@ for scenario in frozen slow foreign-name; do
     cmp "$work/calls" "$work/expected"
     grep -qx '120 boot.autorestart=false' "$bounds"
 done
+# A firewall that still answers its health probe is never killed, even while Incus answers nothing.
+rm -rf "$work/proc/4242" "$work/incus"; qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
+test_status=unknown hold_failed=0 test_target=BACKUP sample=; : >"$work/calls"
+if stop_guest fw2 2>/dev/null; then exit 1; fi
+if grep -q '^kill' "$work/calls"; then exit 1; fi
+test_target=down
 bounds=
 # Every stop and state read of a VM runs under its bound; an expired bound ends the attempt.
 # Function mocks only: a fake binary under /tmp (noexec) once fell through to the real incus and stopped fw2.
