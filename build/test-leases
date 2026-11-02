@@ -105,6 +105,7 @@ rebuild_root() {
     echo rebuild >>"$work/mutations"
 }
 rsh() {
+    [ "$scenario:$1" != silent:fw1 ] || return 255
     case $2 in
     *'rcctl disable dhcpd'*) rm -f "$work/dhcp.$1"; cat "$work/live/$1" ;;
     *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;;
@@ -115,7 +116,8 @@ rsh() {
     *) return 1 ;;
     esac
 }
-for scenario in held frozen unheld topology carp resume-failed peer-down; do
+# silent: the running target answers no SSH (a killed rebuild's new root); its replacement must still proceed.
+for scenario in held frozen silent unheld topology carp resume-failed peer-down; do
     mkdir -p "$state/leases"
     touch "$state/leases/held" "$state/leases/quiesced" "$state/known_hosts.before"
     rm -f "$work/dhcp.fw1" "$work/dhcp.fw2"
@@ -126,7 +128,7 @@ for scenario in held frozen unheld topology carp resume-failed peer-down; do
     : >"$work/mutations"
     killed=
     if rollback; then
-        [ "$scenario" = held ] || [ "$scenario" = frozen ]
+        [ "$scenario" = held ] || [ "$scenario" = frozen ] || [ "$scenario" = silent ]
         grep -qx 'stop fw1 --force' "$work/mutations"
         [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
         if [ "$scenario" != frozen ] && grep -q '^kill ' "$work/mutations"; then exit 1; fi
@@ -134,6 +136,7 @@ for scenario in held frozen unheld topology carp resume-failed peer-down; do
         [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
     else
         [ "$scenario" != held ]
+        [ "$scenario" != silent ]
         [ -e "$state/pending" ] && [ ! -s "$work/mutations" ]
     fi
 done

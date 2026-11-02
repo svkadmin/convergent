@@ -27,8 +27,7 @@ ic() {
     if [ -n "$polling" ]; then
         case "$*" in
         'query /1.0'|'console fw1 --show-log'|'console fw2 --show-log'|'console wan --show-log'|\
-        'exec svc -- true'|'exec svc -- cat /var/lib/convergent/seeded'|\
-        'exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health')
+        'exec svc -- true'|'exec svc -- cat /var/lib/convergent/seeded')
             case $1 in
             query) probe incus --force-local "$@" ;;
             *) probe incus --force-local --project default "$@" ;;
@@ -40,6 +39,11 @@ ic() {
     query) incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
     *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
     esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
+}
+# A wedged svc must not hang a mutator under the locks: a timeout counts as failed.
+svc_exec() {
+    timeout -k 5 120 incus --force-local --project default exec svc -- "$@" 9>&- 8>&- 7>&- 6>&- ||
+        { code=$?; fail "incus exec svc -- $* failed (status $code)" || return "$code"; }
 }
 svc_storage_check() (
     for path in "$pool/containers/svc" "$pool/custom/default_svc-metrics" "$pool/custom/default_svc-logs" "$pool/custom/default_svc-grafana"; do
@@ -207,7 +211,8 @@ rollback() {
                     { fail "$peer must be healthy on all registered segments; run sys firewall rebuild $guest"; return 1; }
                 ;;
             esac
-            case $guest in fw1|fw2) leases_hold || return ;; esac
+            # The target is replaced next: a silent one must not hold the rollback forever.
+            case $guest in fw1|fw2) (rebuilding=$guest; leases_hold) || return ;; esac
             autorestart_hold "$guest" || return
             stopped "$guest" || force_stop "$guest" || return
             seed_remove "$guest" || return
@@ -449,7 +454,7 @@ certificates_apply() (
         # Retry restarts even if interrupted after installing the certificates.
         touch "$tls/deploy"
         sync
-        ic exec svc -- sh -c '
+        svc_exec sh -c '
             set -eu
             umask 077
             cat >"$1.new"
@@ -460,8 +465,8 @@ certificates_apply() (
         ' sh "/etc/$2/tls/$4" "$3" <"$tls/$1"
     done
     if [ -f "$tls/deploy" ]; then
-        ic exec svc -- rc-service victoria-logs restart
-        ic exec svc -- rc-service victoria-metrics restart
+        svc_exec rc-service victoria-logs restart
+        svc_exec rc-service victoria-metrics restart
         retry healthy svc
         rm "$tls/deploy"
         sync
@@ -645,7 +650,7 @@ healthy() {
     fw1|fw2) rsh "$1" true ;;
     wan) rsh wan check ;;
     svc)
-        ic exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || { fail 'VictoriaMetrics health check failed'; return 1; }
+        probe incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || { fail 'VictoriaMetrics health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:8880/health >/dev/null || { fail 'metrics proxy health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null || { fail 'VictoriaLogs query check failed'; return 1; }
         probe_limit=5 probe openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
@@ -1638,7 +1643,8 @@ ifconfig -g handoff carpdemote 128'
             logger -t guests 'update browser deferred: browser is running' 2>/dev/null || :
             browser_pending=1
             recovering=
-            exec 6>&-
+            # Apply keeps its lock: certificates_apply still runs under it.
+            [ -n "$applying" ] || exec 6>&-
             return
         fi
         browser_migrate
@@ -1662,7 +1668,7 @@ ifconfig -g handoff carpdemote 128'
         sync
         browser_commit
         recovering=
-        exec 6>&-
+        [ -n "$applying" ] || exec 6>&-
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;;
     esac

@@ -175,6 +175,8 @@ done
 sed -n '/^secret_valid() {/,/^verify_image() {/p' "$repo/tools/guests" | sed '$d' |
     sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g; s/rc-service /rc_service /g" >"$scratch/deploy-functions"
 [ -s "$scratch/deploy-functions" ]
+sed -n '/^svc_exec() {/,/^}/p' "$repo/tools/guests" >>"$scratch/deploy-functions"
+grep -qx 'svc_exec() {' "$scratch/deploy-functions"
 sh -n "$scratch/deploy-functions"
 sed -n '/^seed_finish() {/,/^}/p' "$repo/tools/guests" >"$scratch/init-finish"
 sed -n '/^    seed_finish wan$/,/^    ca_hash=/p' "$repo/tools/guests" | sed '$d' |
@@ -199,13 +201,18 @@ healthy() {
 }
 rc_service() { echo host >>"$scratch/events"; [ "$fault" != host ]; }
 jq() { [ "$1 $2 $3" = '-e --arg fp' ] && [ "$4" = "$old_trust" ]; }
+# Installs and restarts get 120 s like readbacks get 60 s: a wedged svc must not hang them.
 timeout() {
-    [ "$1 $2 $3" = '-k 5 60' ] || exit 1
+    case "$1 $2 $3" in '-k 5 60'|'-k 5 120') ;; *) exit 1 ;; esac
+    bound=$3
     shift 3
     for fd in 6 7 8 9; do
-        if (eval ": >&$fd") 2>/dev/null; then die "readback inherited lock $fd"; fi
+        if (eval ": >&$fd") 2>/dev/null; then die "svc exec inherited lock $fd"; fi
     done
-    "$@"
+    code=0
+    "$@" || code=$?
+    bound=
+    return "$code"
 }
 incus() {
     [ "$1 $2 $3" = '--force-local --project default' ] || exit 1
@@ -232,6 +239,7 @@ ic() {
         fi
         cat "$scratch/svc$1" ;;
     'exec svc -- sh -c '*)
+        [ "${bound:-}" = 120 ] || die 'unbounded certificate install'
         case ${readback:-current} in
             missing|timeout|oversized|incomplete) [ ! -s "$work/current.crt" ] || die 'partial readback retained' ;;
         esac
@@ -240,8 +248,9 @@ ic() {
         sh -n "$scratch/payload"
         shift 2
         sh -eu "$scratch/payload" "$scratch/svc$1" "$2" ;;
-    'exec svc -- rc_service victoria-logs restart') echo logs >>"$scratch/events" ;;
-    'exec svc -- rc_service victoria-metrics restart') echo metrics >>"$scratch/events" ;;
+    'exec svc -- rc_service victoria-logs restart'|'exec svc -- rc_service victoria-metrics restart')
+        [ "${bound:-}" = 120 ] || die 'unbounded svc restart'
+        echo "${5#victoria-}" >>"$scratch/events" ;;
     *) die "unexpected Incus call: $*" ;;
     esac
 }

@@ -1758,17 +1758,22 @@ sh -n "$work/verify-image"
 (
 	tls=$work/tls
 	mkdir "$tls"
-	eval "$(sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p' /usr/local/sbin/guests)"
+	sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p; /^svc_exec() {/,/^}/p' /usr/local/sbin/guests >"$work/cert-functions"
+	[ "$(grep -c '^certificates_due() {$\|^certificates_apply() ($\|^svc_exec() {$' "$work/cert-functions")" = 3 ]
+	. "$work/cert-functions"
 	certificate_current() { return 0; }
 	certificates_prepare() { trust=new; echo prepare >>"$work/cert-events"; }
 	running() { return 1; }
 	retry() { "$@"; }
 	healthy() { :; }
-	ic() {
+	fail() { return 1; }
+	ic() { echo "$*" >>"$work/cert-events"; }
+	# A wedged svc exec must be bounded: installs and restarts only through timeout.
+	timeout() { case "$*" in '-k 5 120 incus --force-local --project default exec svc -- '*) shift 10; svc_mock "$@" ;; *) return 1 ;; esac; }
+	svc_mock() {
 		case "$*" in
-		'exec svc -- cat '*) return 1 ;; # Missing deployed certificates are repairable.
-		'exec svc -- sh '*) cat >/dev/null; echo install >>"$work/cert-events" ;;
-		'exec svc -- rc-service '*) echo restart >>"$work/cert-events"; [ -z "$restart_failure" ] ;;
+		'sh '*) cat >/dev/null; echo install >>"$work/cert-events" ;;
+		'rc-service '*) echo restart >>"$work/cert-events"; [ -z "$restart_failure" ] ;;
 		*) echo "$*" >>"$work/cert-events" ;;
 		esac
 	}
@@ -1826,6 +1831,30 @@ sh -n "$work/verify-image"
 	[ "$(cat "$work/order")" = "$(printf 'prepare\nreplace svc\ndeploy')" ]
 	update wan "$work" >"$work/order"
 	[ "$(cat "$work/order")" = 'replace wan' ]
+	# A deferred browser keeps apply's lock for certificates_apply; a manual update releases it.
+	ic() { echo '[{"name":"def","status":"Running","profiles":["browser-base","browser-def"]}]'; }
+	applying=1
+	update browser "$work" >/dev/null
+	[ "$browser_pending" = 1 ]
+	(true >&6) 2>/dev/null
+	applying=
+	update browser "$work" >/dev/null
+	if (true >&6) 2>/dev/null; then exit 1; fi
+)
+# svc health is bounded outside retry too (soak); a timeout is unhealthy.
+(
+	sed -n '/^healthy() {/,/^}/p' /usr/local/sbin/guests >"$work/healthy"
+	[ -s "$work/healthy" ]
+	. "$work/healthy"
+	tls=$work/tls
+	fail() { return 1; }
+	ic() { echo "ic $*" >>"$work/health-events"; }
+	probe() { echo "$*" >>"$work/health-events"; }
+	healthy svc
+	grep -qx 'incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health' "$work/health-events"
+	if grep -q '^ic ' "$work/health-events"; then exit 1; fi
+	probe() { case "$*" in *' wget '*) return 124 ;; esac; }
+	if healthy svc; then exit 1; fi
 )
 # Only recorded, now-unaliased images may be reaped.
 (
