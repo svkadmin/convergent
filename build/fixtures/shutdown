@@ -4,7 +4,7 @@ set -eu
 release=/var/lib/convergent/test-release
 state=$release/shutdown
 # Incus 7.0.1 refuses --project with query: the project goes in the URL there.
-ic() { case $1 in query) timeout -k 1 10 incus --force-local "$@" ;; *) timeout -k 1 10 incus --force-local --project default "$@" ;; esac; }
+ic() { case $1 in query) timeout -k 1 10 incus --force-local "$@" 7>&- 8>&- ;; *) timeout -k 1 10 incus --force-local --project default "$@" 7>&- 8>&- ;; esac; }
 cv_time() { echo "CV-TIME shutdown-$1 $(($(date +%s) - test_start))"; }
 case $1 in
 prepare)
@@ -13,6 +13,13 @@ prepare)
     mkdir "$state"
     echo "$test_start" >"$state/start"
     [ -e /run/openrc/started/convergent-setup ]
+    # check auto (remote reap, browser --reap-tmp) stops a Remmina or tmp container whose launcher lock is
+    # free: hold both as the launcher does; the sleeper keeps them until the drain is done.
+    mkdir -p /run/convergent/browser
+    exec 7>/run/convergent/browser/remmina.lock 8>/run/convergent/browser/tmp-98.lock
+    flock -w 60 7
+    flock -w 60 8
+    sleep 1800 &
     ic query '/1.0/instances?recursion=1&project=default' >"$state/inventory"
     for name in def int remmina; do
         if ! jq -e --arg n "$name" 'any(.[]; .name == $n)' "$state/inventory" >/dev/null; then
@@ -31,7 +38,7 @@ prepare)
     for name in wan fw2; do ic config set "$name" boot.autorestart=false user.convergent.autorestart=true; done
     ic query '/1.0/instances?recursion=1&project=default' >"$state/before"
     jq -e '[.[] | select(.name | test("^(def|int|remmina|tmp-98|svc|wan|fw1|fw2)$"))] |
-        length == 8 and all(.[]; .status == "Running")' "$state/before" >/dev/null
+        length == 8 and all(.[]; .status == "Running")' "$state/before" >/dev/null || { echo 'CV-SHUTDOWN prepare: not all eight guests running'; exit 1; }
     cp /usr/lib/convergent/incus/shutdown "$state/original"
     awk -v check="$release/shutdown-test" '
         {print}

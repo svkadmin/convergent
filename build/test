@@ -1035,7 +1035,7 @@ done
 eval "$(sed -n '/^autorestart_hold() {/,/^}/p; /^hold_set() {/,/^}/p; /^hold_mark() {/,/^}/p' /usr/local/sbin/guests)"
 step=test
 fail() { echo "guests: $*" >&2; return 1; }
-ic() { incus --force-local --project default "$@"; }
+ic() { case $1 in query) incus --force-local "$@" ;; *) incus --force-local --project default "$@" ;; esac; }
 incus() {
     case $2 in query) shift 1 ;; *) shift 3 ;; esac
     echo "ic $*" >>"$work/calls"
