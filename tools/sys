@@ -98,7 +98,7 @@ save_config() (
 	run mkdir -p "$config" || exit 1
 	# A power cut leaves a temp file the autostart scan would inventory; writers serialize here.
 	exec 8<"$config" && flock -x 8 || exit 1
-	run rm -f "$config/.$1".?????? || exit 1
+	run rm -f "$config"/.outputs.?????? "$config"/.input.?????? "$config"/.touchpad.?????? || exit 1
 	file=$(mktemp "$config/.$1.XXXXXX") || exit 1
 	trap 'rm -f "$file"' 0
 	trap 'exit 1' HUP INT TERM
