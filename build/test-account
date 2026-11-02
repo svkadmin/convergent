@@ -10,7 +10,14 @@ die() { echo "test-account: $*" >&2; exit 1; }
 
 sed -n '/^die()/,/^trap .*HUP INT TERM$/p' "$repo/tools/account" >"$work/cleanup"
 sed -n '/^refresh=1$/,$p' "$repo/tools/account" >"$work/change"
-for part in cleanup change; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+sed -n '/^\[ "\${#pass}" -[gl]e /p' "$repo/tools/account" >"$work/length"
+for part in cleanup change length; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+# Same 12..256 bytes as install and recovery.
+for n in 11 12 256 257; do
+    code=0
+    (LC_ALL=C; die() { exit 1; }; pass=$(head -c "$n" /dev/zero | tr '\000' x); . "$work/length") || code=$?
+    case $n:$code in 11:1|12:0|256:0|257:1) ;; *) die "a $n-byte password gave $code" ;; esac
+done
 cat >"$work/run" <<'ACCOUNT'
 set -eu
 work=$1 scenario=$2

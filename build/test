@@ -3956,6 +3956,56 @@ CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+. /usr/lib/convergent/sys/70-browser
+die() { echo "$*" >&2; exit 1; }
+trace() { :; }
+noargs() { [ "$#" = 0 ]; }
+setsid() {
+	[ "$1:$2:$3:$4" = -f:-w:/usr/local/sbin/browser:def ] || return 97
+	echo 'browser: fixture failure' >&2
+	[ "$fault" = late ] || return 1
+	sleep 4; return 1
+}
+XDG_RUNTIME_DIR=$work
+fault=early
+if browser_def 2>"$work/error"; then exit 1; fi
+grep -qx 'browser: fixture failure' "$work/error"
+[ -z "$(find "$work" -name 'sys-browser-*')" ]
+# A launch that fails after the check keeps its log and names it.
+fault=late
+browser_def >"$work/output"
+log=$(sed -n 's/^Browser is starting; if it does not open, see //p' "$work/output")
+[ -n "$log" ]
+sleep 3
+grep -qx 'browser: fixture failure' "$log"
+CHECK
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+. /usr/lib/convergent/sys/40-display
+die() { echo "$*" >&2; exit 1; }
+run() { "$@"; }
+noargs() { [ "$#" = 0 ]; }
+path() { :; }
+display_json() { echo '[{"name":"eDP-1","make":"A","model":"B","serial":"1"}]'; }
+HOME=$work XDG_RUNTIME_DIR=$work
+displays=$work/.config/convergent/displays
+mkdir -p "$work/.config/sway/config.d" "$displays"
+echo manual >"$work/.config/sway/config.d/outputs"
+key=$(display_json | display_key)
+echo '{}' >"$displays/$key.json"
+echo '{}' >"$displays/other.json"
+# Reset removes only this set's profile; a hand-written outputs file stays until the first save.
+display_reset >"$work/output"
+grep -qx 'Profile removed for this monitor set; the live layout is unchanged.' "$work/output"
+[ ! -e "$displays/$key.json" ] && [ -f "$displays/other.json" ] && [ -f "$work/.config/sway/config.d/outputs" ]
+display_reset >"$work/output"
+grep -qx 'No profile saved for this monitor set.' "$work/output"
+[ -f "$work/.config/sway/config.d/outputs" ]
+CHECK
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
 cat >"$work/evdev.lst" <<'XKB'
 ! layout
   us English (US)

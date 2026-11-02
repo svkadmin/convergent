@@ -214,7 +214,10 @@ display_reset() (
 	noargs "$@"; display_lock
 	json=$(display_json) || exit 1
 	key=$(printf '%s\n' "$json" | display_key) || exit 1
-	run rm -f "$profiles/$key.json" "$HOME/.config/sway/config.d/outputs"
+	# Only this set's profile: a hand-written outputs file stays until the first save.
+	[ -f "$profiles/$key.json" ] || { echo 'No profile saved for this monitor set.'; exit 0; }
+	run rm -f "$profiles/$key.json" || exit 1
+	echo 'Profile removed for this monitor set; the live layout is unchanged.'
 )
 display_watch() (
 	noargs "$@"; sway; path "${XDG_RUNTIME_DIR:-}"
