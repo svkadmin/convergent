@@ -285,7 +285,7 @@ write() {
 
 	# Remove the old UKI before overwriting its image.
 	[ -n "$esp" ] || esp_mount
-	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"+*.efi.new; do
+	for f in $(ukis "$inactive") "$esp/$linux"/convergent-*-"$inactive"*.efi.new; do
 		if [ -e "$f" ]; then rm "$f"; fi
 	done
 	sync -f "$esp" || die "could not sync the ESP"
