@@ -491,6 +491,7 @@ timeout -k 5 1800 sh -c 'until ssh -n -F /etc/convergent/ssh_config fw1 "! pgrep
 # The target's own allow probe before each Remmina probe is the listener's control: a bind that failed
 # shows there, not as a denial. A sender or receiver that could not run is a test error, never a denial.
 udp_remote() {
+    for attempt in 1 2 3; do
     ic exec "$target" -- sh -c 'rm -f /run/cv-udp; timeout 6 nc -lu -p "$1" </dev/null >/run/cv-udp 2>/dev/null &' sh "$4" ||
         { echo "CV-REMOTE ERROR udp listener $target:$4"; result=1; return; }
     sleep 1
@@ -500,6 +501,10 @@ udp_remote() {
     sleep 1
     delivered=$(ic exec "$target" -- cat /run/cv-udp) || { echo "CV-REMOTE ERROR udp receiver $target"; result=1; return; }
     if printf '%s\n' "$delivered" | grep -qx cv-remmina; then got=allow; else got=deny; fi
+    # A CARP flap loses a datagram: an expected allow gets three tries, as the TCP probes do; denies stay single.
+    [ "$1:$got" = allow:deny ] || break
+    sleep 2
+    done
     [ "$got" = "$1" ] || { echo "CV-REMOTE FAIL udp $2 $3:$4 want=$1 got=$got"; result=1; }
 }
 for master in fw1 fw2; do
@@ -547,7 +552,7 @@ for master in fw1 fw2; do
             case $port in 3389) want=allow ;; *) want=deny ;; esac
             udp_remote "$want" "$rem" "$address.1" "$port"
         done
-        ic exec "$rem" -- ping -c 1 -W 3 "$address.1" || result=1
+        ic exec "$rem" -- ping -c 3 -W 3 "$address.1" || result=1
         # Each denied port answers its own node first.
         for host in 49 50 62; do
             case $host in 49) node=fw1 ;; 50) node=fw2 ;; *) node=$master ;; esac

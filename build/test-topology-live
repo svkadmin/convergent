@@ -44,12 +44,15 @@ awk '/^# Capture the command status/ {exit} {print}' "$release/guests-fw-timed" 
     autorestart_clear
 )
 # Both just booted: undo's 30 s write to a relinking fw1 (load 5, fw2's CARP flapping) was cut off.
-deadline=$(($(date +%s) + 2400))
-for node in fw1 fw2; do
-    until timeout 30 ssh -n -F /etc/convergent/ssh_config "$node" '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
-        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+relinked() {
+    deadline=$(($(date +%s) + 2400))
+    for node in fw1 fw2; do
+        until timeout 30 ssh -n -F /etc/convergent/ssh_config "$node" '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
+            [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+        done
     done
-done
+}
+relinked
 # Exercise the installed maintenance undo and interrupted handoff against old guest helpers.
 printf 'yes\n' | sys firewall maintenance
 printf 'yes\n' | sys firewall undo
@@ -64,6 +67,8 @@ printf 'yes\n' | sys firewall undo
 lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
 for fault in fw1 fw2 none; do
+    # A fault's rollback reboots the pair: a relinking fw1 missed adverts and fw2 was MASTER for 8 s.
+    relinked
     cv_time "topology-$fault"
     if [ "$fault" = none ]; then
         cp "$release/guests-fw-timed" "$release/guests-topology-run"
