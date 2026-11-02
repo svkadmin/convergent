@@ -1320,7 +1320,8 @@ rebuild() {
             die 'another guest update or rebuild is pending; finish it first'
         resuming=1
     done
-    [ ! -e "$state/fw.handoff" ] || { [ "$1" = fw1 ] && [ -f "$state/pending" ]; } ||
+    # A handoff without a journal (fw1 demoted, its replacement not yet journaled) only a rebuild of fw1 can release.
+    [ ! -e "$state/fw.handoff" ] || [ "$1" = fw1 ] ||
         die 'a firewall handoff is pending; finish the guest update first'
     image_dir=/var/lib/convergent/release-guests/guests/fw
     [ -d "$image_dir" ] || die 'installed firewall images are missing'
@@ -1336,7 +1337,7 @@ rebuild() {
         touch "$state/dns.stale"
         sync
     else
-        [ ! -f "$state/committed" ] || die 'committed rebuild is unhealthy; inspect sys firewall status'
+        # A committed node that stays unhealthy is redone whole from the same image; its marker outlives the redo.
         if ! carp "$peer" MASTER; then
             if stopped "$1"; then die "$peer must be MASTER on all registered segments before rebuilding $1"; fi
             # The peer takes over only with coherent CARP (MASTER or BACKUP) on every registered segment.

@@ -222,3 +222,60 @@ fi
     if fw_release; then exit 1; fi
 )
 echo 'test-topology: recovery removes only stale probe routes'
+# A handoff left without a journal is released by rebuilding fw1 alone; a committed node that stays
+# unhealthy is redone instead of refused. The handoff must be gone before the commit.
+(
+    awk '/^rebuild\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" |
+        awk -v dir="$scratch/images" '$0 == "    image_dir=/var/lib/convergent/release-guests/guests/fw" {$0 = "    image_dir=" dir; n++} {print} END {exit n != 1}' >"$scratch/rebuild"
+    [ -s "$scratch/rebuild" ]
+    sh -n "$scratch/rebuild"
+    . "$scratch/rebuild"
+    mkdir -p "$scratch/images"
+    touch "$state/initialized"
+    echo secret >"$state/carp-pass"
+    die() { echo "$*" >&2; exit 1; }
+    verify_image() { :; }
+    guest_reply() { sha256sum "$state/carp-pass" | awk '{print $1}'; }
+    carp() { [ ! -e "$scratch/$1.unhealthy" ]; }
+    pair() { carp "$1" && carp "$2"; }
+    fw_check() { carp "$1"; }
+    stopped() { return 1; }
+    stop_guest() { return 1; }
+    replace() { echo "replace $1 pending=${pending:-}" >>"$log"; rm -f "$scratch/$1.unhealthy"; [ "$rebuilding" != fw1 ] || touch "$state/fw.handoff"; }
+    fw_release() { echo fw_release >>"$log"; rm -f "$state/fw.handoff"; }
+    commit_update() { echo commit >>"$log"; [ ! -e "$state/fw.handoff" ] || return 1; rm -f "$state/pending" "$state/committed" "$state/fw.rebuilt"; }
+    dns_restore() { :; }
+    soak() { :; }
+    backup_soak() { :; }
+    clean() { rm -f "$state/pending" "$state/committed" "$state/fw.rebuilt" "$state/fw.handoff" "$state/dns.stale" "$scratch"/fw?.unhealthy; : >"$log"; }
+    finished() { [ ! -e "$state/pending" ] && [ ! -e "$state/committed" ] && [ ! -e "$state/fw.handoff" ] && grep -qx commit "$log"; }
+    # Killed between the fw2 commit and fw1's journal: fw1 demoted, nothing pending.
+    clean
+    touch "$state/fw.handoff"
+    if (rebuild fw2) 2>"$scratch/err"; then exit 1; fi
+    grep -q 'handoff is pending' "$scratch/err"
+    [ -e "$state/fw.handoff" ]
+    (rebuild fw1) >/dev/null
+    finished
+    awk '$1 == "replace" {r=NR} $1 == "fw_release" {f=NR} $1 == "commit" {c=NR} END {exit !(r && r < f && f < c)}' "$log"
+    # A committed rebuild whose node stays unhealthy is redone from its journal.
+    clean
+    printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
+    cp "$state/committed" "$state/pending"
+    touch "$state/fw.rebuilt" "$scratch/fw1.unhealthy"
+    (rebuild fw1) >/dev/null
+    finished
+    grep -qx 'replace fw1 pending=1' "$log"
+    # A healthy committed node is committed without a redo; a foreign journal is still refused.
+    clean
+    printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
+    (rebuild fw1) >/dev/null
+    finished
+    if grep -q '^replace ' "$log"; then exit 1; fi
+    clean
+    printf '%s\n' 'fw1 guests-20250101T000000-1 image' >"$state/committed"
+    if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
+    grep -q 'another guest update or rebuild is pending' "$scratch/err"
+    clean
+)
+echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhealthy committed node'
