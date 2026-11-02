@@ -48,9 +48,10 @@ svc_storage_check() (
     done
 )
 # Fresh connections only: a shared one could still reach a guest this tool replaced. The config's 5 s
-# also bounds the SSH banner, which a loaded, relinking firewall missed: wait half the probe's bound.
+# also bounds the SSH banner, which a loaded, relinking firewall missed: wait half the probe's bound,
+# and let its stalls run into the outer bound rather than the 10 s keepalive.
 rsh() {
-    probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" "$@" ||
+    probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=24 "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 # Only read-only probes use the retry budget; mutators must finish under their locks.
@@ -78,7 +79,7 @@ locked() (
 )
 # A relinking firewall (nested tests: minutes at full CPU) can take longer than 30 s to answer a write.
 fw_mutate() {
-    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 "$@" ||
+    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=24 "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
