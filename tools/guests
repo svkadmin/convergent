@@ -47,8 +47,12 @@ svc_storage_check() (
         [ -z "$nested" ] || { fail "nested subvolumes in $path; remove them before starting svc"; return 1; }
     done
 )
-# Fresh connections only: a shared one could still reach a guest this tool replaced.
-rsh() { probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
+# Fresh connections only: a shared one could still reach a guest this tool replaced. The config's 5 s
+# also bounds the SSH banner, which a loaded, relinking firewall missed: wait half the probe's bound.
+rsh() {
+    probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" "$@" ||
+        { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
+}
 # Only read-only probes use the retry budget; mutators must finish under their locks.
 probe() (
     limit=${probe_limit:-30}
@@ -74,7 +78,7 @@ locked() (
 )
 # A relinking firewall (nested tests: minutes at full CPU) can take longer than 30 s to answer a write.
 fw_mutate() {
-    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" ||
+    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
