@@ -119,9 +119,82 @@ role=int incus_ui=1
 . "$work/grafana"
 [ ! -e "$work/grafana-calls" ]
 ic() { echo "$*" >>"$work/grafana-calls"; }
+# Grafana start and stop in svc are bounded: a stuck svc must not keep the session locks.
+timeout() { echo "timeout $1 $2 $3" >>"$work/grafana-calls"; [ "$1 $2 $3" = '-k 1 60' ]; shift 3; "$@"; }
+incus() { [ "$1 $2 $3" = '--force-local --project default' ]; shift 3; ic "$@"; }
 incus_ui=
 . "$work/grafana"
-grep -qx 'exec svc -- rc-service grafana start' "$work/grafana-calls"
+printf '%s\n' 'config set svc limits.memory=768MiB' 'timeout -k 1 60' 'exec svc -- rc-service grafana start' >"$work/expected"
+cmp "$work/expected" "$work/grafana-calls"
+sed -n '/^    if \[ -n "\$grafana" \]; then$/,/^    fi$/p' "$repo/tools/browser" >"$work/grafana-stop"
+[ -s "$work/grafana-stop" ]
+sh -n "$work/grafana-stop"
+for sample in ok stuck; do
+    : >"$work/grafana-calls"
+    ic() { echo "$*" >>"$work/grafana-calls"; [ "$sample:$1" != stuck:exec ]; }
+    grafana=1 result=0
+    . "$work/grafana-stop"
+    case $sample in
+    ok) [ "$result" = 0 ]
+        printf '%s\n' 'timeout -k 1 60' 'exec svc -- rc-service grafana stop' 'config set svc limits.memory=350MiB' >"$work/expected" ;;
+    stuck) [ "$result" = 1 ]
+        printf '%s\n' 'timeout -k 1 60' 'exec svc -- rc-service grafana stop' >"$work/expected" ;;
+    esac
+    cmp "$work/expected" "$work/grafana-calls"
+done
+unset -f timeout incus
+# A running int left by a killed Grafana launcher must not block incus-ui open; the role check stops it before unlock.
+sed -n '/^if \[ "$role" = int \]; then$/,/^fi$/p' "$repo/tools/browser" |
+    sed 's|/usr/local/sbin/incus-ui|incus_ui_call|' >"$work/int-open"
+[ -s "$work/int-open" ]
+sh -n "$work/int-open"
+(
+    die() { echo "$*" >&2; exit 1; }
+    incus_ui_call() { echo "$*" >>"$work/int-calls"; }
+    instances_json() { echo '[{"name":"int","status":"Running","type":"container","profiles":["browser-base","browser-int"]}]'; }
+    role=int incus_ui=1
+    . "$work/int-open"
+    grep -qx -- --close "$work/int-calls"
+)
+awk '/^    stop_container$/ {stop = NR} /^    \/usr\/local\/sbin\/incus-ui --unlock / {unlock = NR}
+    END {exit !(stop && unlock > stop)}' "$repo/tools/browser"
+# A UI lock timeout (a passphrase prompt) is busy, not a trust mismatch: check retries instead of failing.
+sed -n '/^flock -w 30 7 /p' "$repo/tools/incus-ui" >"$work/ui-lock"
+[ "$(wc -l <"$work/ui-lock")" = 1 ]
+for held in 0 1; do
+    rc=0
+    ( flock() { [ "$held" = 0 ]; }; . "$work/ui-lock" ) 2>"$work/error" || rc=$?
+    case $held in 0) [ "$rc" = 0 ] ;; 1) [ "$rc" = 75 ]; grep -q 'another UI operation' "$work/error" ;; esac
+done
+sed -n '/^# A UI lock timeout is not a trust mismatch/,/^esac$/p' "$repo/tools/check" |
+    sed 's|/usr/local/sbin/incus-ui|incus_ui_call|' >"$work/audit-call"
+[ -s "$work/audit-call" ]
+sh -n "$work/audit-call"
+for sample in ok busy-auto busy mismatch; do
+    : >"$work/audit-report"
+    rc=0
+    (
+        # check runs without -e.
+        set +e
+        die() { echo "die $*" >>"$work/audit-report"; exit 1; }
+        bad() { echo "bad $*" >>"$work/audit-report"; }
+        incus_ui_call() {
+            [ "$*" = --audit ] || return 1
+            case $sample in ok) return 0 ;; mismatch) return 1 ;; *) return 75 ;; esac
+        }
+        set --
+        [ "$sample" != busy-auto ] || set -- auto
+        . "$work/audit-call"
+        echo continued >>"$work/audit-report"
+    ) || rc=$?
+    case $sample in
+    ok) [ "$rc" = 0 ]; grep -qx continued "$work/audit-report" ;;
+    busy-auto) [ "$rc" = 0 ] && [ ! -s "$work/audit-report" ] ;;
+    busy) [ "$rc" = 1 ]; grep -qx 'die an Incus UI operation is running' "$work/audit-report" ;;
+    mismatch) [ "$rc" = 0 ]; grep -qx 'bad Incus trust differs from metrics and unlocked int session' "$work/audit-report" ;;
+    esac
+    if grep -q '^bad' "$work/audit-report" && [ "$sample" != mismatch ]; then exit 1; fi
+done
 # Only the session limit triggers orphan recovery; failures are best-effort.
 sed -n '/^reconcile_svc() {/,/^}/p; /^        if \[ "$action" = cleanup \]/,/^        fi$/p' "$repo/tools/incus-ui" >"$work/orphan"
 [ -s "$work/orphan" ]

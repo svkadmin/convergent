@@ -215,7 +215,10 @@ cleanup() {
         /usr/local/sbin/incus-ui --close 9>&- 8>&- 7>&- 6>&- || result=1
     fi
     if [ -n "$grafana" ]; then
-        if ic exec svc -- rc-service grafana stop; then ic config set svc limits.memory=350MiB || result=1; else result=1; fi
+        # Bounded: a stuck svc must not keep the session locks.
+        if timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana stop 9>&- 8>&- 7>&- 6>&-; then
+            ic config set svc limits.memory=350MiB || result=1
+        else result=1; fi
     fi
     if [ -n "$portal" ]; then
         if [ "$result" = 0 ]; then why=closed; else why=interrupted; fi
@@ -249,14 +252,9 @@ cleanup() {
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
+# A running int left by a killed launcher is stopped below, before any unlock.
 if [ "$role" = int ]; then
     /usr/local/sbin/incus-ui --close 9>&- 8>&- 7>&- 6>&-
-    if [ -n "$incus_ui" ]; then
-        instances=$(instances_json)
-        if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
-            die 'stop int before unlocking an Incus session'
-        fi
-    fi
 fi
 
 # The privileged half touches only fixed, root-owned paths.
@@ -389,7 +387,7 @@ if [ -n "$incus_ui" ]; then
 fi
 if [ "$role" = int ] && [ -z "$incus_ui" ]; then
     ic config set svc limits.memory=768MiB
-    grafana=1; ic exec svc -- rc-service grafana start
+    grafana=1; timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana start 9>&- 8>&- 7>&- 6>&-
 fi
 [ -z "$portal_mode" ] || portal_on || die 'portal mode ended during startup'
 # A dead proxy shows only as a confusing Chromium error ("Connection refused").

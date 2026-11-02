@@ -20,16 +20,17 @@ close|reap)
     exec 9>/run/convergent/guests.lock
     flock -s -n 9 || { echo 'remote: guest update in progress' >&2; exit 1; }
     exec 6>/run/convergent/browser-update.lock
-    flock -s -n 6 || exit 1
+    flock -s -n 6 || { echo 'remote: browser update in progress' >&2; exit 1; }
     if [ "$1" = reap ]; then
         mkdir -p /run/convergent/browser
         exec 8>/run/convergent/browser/remmina.lock
         flock -n 8 || exit 0
     fi
     instances=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 6>&- 8>&-)
-    printf '%s\n' "$instances" | jq -e 'all(.[] | select(.name == "remmina"); .type == "container" and .profiles == ["remmina"])' >/dev/null
+    printf '%s\n' "$instances" | jq -e 'all(.[] | select(.name == "remmina"); .type == "container" and .profiles == ["remmina"])' >/dev/null ||
+        { echo 'remote: the remmina instance is not the shipped one' >&2; exit 1; }
     if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
-        incus --force-local --project default stop remmina --force
+        timeout -k 5 60 incus --force-local --project default stop remmina --force 9>&- 6>&- 8>&-
         [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
     fi
     [ "$1" != reap ] || rm -rf /run/convergent/browser/remmina

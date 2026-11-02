@@ -221,7 +221,13 @@ address=$(timeout -k 1 30 incus --force-local config get core.https_address) &&
     [ "$address" = 100.80.1.10:8443 ] || bad 'Incus UI listener differs'
 address=$(timeout -k 1 30 incus --force-local config get core.metrics_address) &&
     [ "$address" = 100.80.1.10:8444 ] || bad 'Incus metrics listener differs'
-/usr/local/sbin/incus-ui --audit 9>&- 8>&- 7>&- || bad 'Incus trust differs from metrics and unlocked int session'
+# A UI lock timeout is not a trust mismatch: retry the whole scan later.
+/usr/local/sbin/incus-ui --audit 9>&- 8>&- 7>&-
+case $? in
+    0) ;;
+    75) [ "${1:-}" = auto ] && exit 0; die 'an Incus UI operation is running' ;;
+    *) bad 'Incus trust differs from metrics and unlocked int session' ;;
+esac
 [ ! -f "$state/firewall-heal" ] || cat "$state/firewall-heal" >>"$work/report"
 [ "$net_ok" = 1 ] || bad 'host network repair failed (default route or sysctls)'
 
