@@ -134,8 +134,8 @@ a 120-second deadline and forced termination after another 10 seconds.
 
 Host packages/slots are inventoried before trimming in build-host-only packages/packages.sig;
 build/image binds them to the host manifest digest; build/sign and the scanner enforce the binding.
-They are not published or in the host manifest. Retained releases through signed version 0.1.6
-still get scans/status without bindings or apk-imports, with coverage notes; 0.1.7 builds require both.
+They are not published or in the host manifest. Retained releases through signed version 0.1.4
+still get scans/status without bindings or apk-imports, with coverage notes; 0.1.5 builds require both.
 Svc/browser/Remmina inventories are in rootfs; WAN's wan.manifest and firewall version/patch lists
 are in signed guest payloads. Missing inventories need rebuild. Gate covers shipped guests only;
 kernel/pin freshness is weekly. Svc records edge imports in its rootfs. Missing or malformed

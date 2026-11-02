@@ -264,7 +264,7 @@ def firewall_version(guests):
 
 def legacy_release(release):
     versions = re.findall(r'^version (\S+)$', (Path(release) / 'manifest').read_text(), re.M)
-    return len(versions) == 1 and re.fullmatch(r'0\.(0\.[0-9]+|1\.[0-6])(-rc[0-9]+)?', versions[0]) is not None
+    return len(versions) == 1 and re.fullmatch(r'0\.(0\.[0-9]+|1\.[0-4])(-rc[0-9]+)?', versions[0]) is not None
 
 
 def alpine_coverage(guests, guest, legacy=False):
@@ -437,7 +437,7 @@ def gate_selftest():
             manifest += f'guest {guest} {"a" * 64}\n'
             manifest += ''.join(f'{"b" * 64}  guests/{guest}/{name}\n' for name in files)
         (work / 'guests.manifest').write_text(manifest)
-        (work / 'manifest').write_text('release 42\nversion 0.1.7\nkernel 6.18.9\n')
+        (work / 'manifest').write_text('release 42\nversion 0.1.5\nkernel 6.18.9\n')
         (work / 'packages').write_text('package app-containers/incus-7.0.1-r2 0\n')
         (guests / 'fw/openbsd.version').write_text('7.9\n')
         for machine in ('fw1', 'fw2'):
@@ -493,7 +493,7 @@ def gate_selftest():
                 require(result == 2 and not status.exists(), 'missing provenance was publishable')
                 host_manifest = work / 'manifest'
                 current = host_manifest.read_text()
-                host_manifest.write_text(current.replace('0.1.7', '0.1.6'))
+                host_manifest.write_text(current.replace('0.1.5', '0.1.4'))
                 with contextlib.redirect_stdout(io.StringIO()):
                     result = report(work, str(work), guests, '20000101', 'v3.99', 'unused', str(exempt), gate=True, status=status)
                 data = json.loads(status.read_text())
