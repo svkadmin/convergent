@@ -56,6 +56,9 @@ build/stick <release> $g <out.img> [size]          # default 30G
 zstd -T0 <out.img>
 ```
 
+Alpine builds keep the pinned minirootfs and svc's verified edge apks in /var/cache/convergent/alpine
+(CACHE_DIR). Keep it: edge serves only its newest build. Network failures get three tries.
+
 Stick asks for owner password then LUKS passphrase, 12–256 bytes each.
 The LUKS passphrase must use printable ASCII (space through `~`). Owner selection:
 CONVERGENT_INSTALL_OWNER, owner_login, then prompt. It installs on a loop device and
