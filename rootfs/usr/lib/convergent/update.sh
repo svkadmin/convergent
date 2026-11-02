@@ -5,8 +5,9 @@ key=/etc/convergent/release.pub
 fws="fw2 fw1"
 src_open=
 
-# Shared SSH connections must not inherit locks.
-rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&-; }
+# Own connections, lock fds closed, as in dns-push: a shared master's death or the config's 15 s connect
+# and 30 s keepalive must not cut a source write (or its close) inside 120 s.
+rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&-; }
 lock_src() {
 	mkdir -p /run/convergent
 	exec 9>/run/convergent/fetch-release.lock
