@@ -92,15 +92,15 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	# Legacy inventories remain scannable, but cannot be substituted into new releases.
 	sed '/^manifest /d' "$work/packages" >"$dir/packages"
 	openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/packages" -out "$dir/packages.sig"
-	for version in 0.1.4 0.1.6 0.1.6-rc1 0.1.7 0.1.7-rc1 0.2.0; do
+	for version in 0.1.3 0.1.4 0.1.4-rc1 0.1.5 0.1.5-rc1 0.2.0; do
 		sed "s/^version .*/version $version/" "$work/manifest" >"$dir/manifest"
 		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/manifest" -out "$dir/manifest.sig"
 		case $version in
-		0.1.4|0.1.6|0.1.6-rc1) (release=$dir; . "$work/scan-binding") ;;
+		0.1.3|0.1.4|0.1.4-rc1) (release=$dir; . "$work/scan-binding") ;;
 		*) (release=$dir; refuse "$work/scan-binding" 'unbound new inventory' 'inventory does not match') ;;
 		esac
 	done
-	sed 's/^version .*/version 0.1.6/' "$work/manifest" >"$dir/manifest"
+	sed 's/^version .*/version 0.1.4/' "$work/manifest" >"$dir/manifest"
 	(release=$dir; refuse "$work/scan-binding" 'unsigned version downgrade' 'host manifest signature')
 	cp "$work/manifest" "$dir/manifest"
 	cp "$work/packages" "$dir/packages"
@@ -2134,7 +2134,7 @@ answer() {
 	done
 }
 # The upstream answers before the forwarder starts: started together, a forwarder that asked it first
-# cached the SERVFAIL for 5 s, as long as its wait (fw2, 0.1.7 chain #7).
+# cached the SERVFAIL for 5 s, as long as its wait.
 unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
 n=0
 until [ "$(query 1054 public A)" = 93.184.216.34 ]; do
@@ -2194,7 +2194,7 @@ cv_time firewall-self-heal
     broken= inhibited= frozen=
     trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
-    # Traced to a file; this block failed in every 0.1.7 chain, each time differently.
+    # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
     # One 10 s probe each, beside the minute checker's and the diagnostics' SSH on a one-vCPU firewall,
     # failed the block in 17 s (fw2 was BACKUP). Wait for the pair with the pre-kill bound.
@@ -2315,7 +2315,7 @@ LOCAL
         ' /usr/lib/convergent/sys/14-firewall
         echo 'firewall_maintenance'
     } >"$release/maintenance-test"
-    # Every host-side step of this block, tagged in the console; it has failed every chain since 0.1.5.
+    # Every host-side step of this block, tagged in the console.
     PS4='+CV-MX '; set -x
     log=/var/log/firewall-maintenance-$failure.log
     sh "$release/maintenance-test" >"$log" 2>&1 &
@@ -2323,7 +2323,7 @@ LOCAL
     # A failed iteration must not leave its changer running while the next rewrites the script.
     trap '[ -z "${changer:-}" ] || { kill "$changer"; wait "$changer"; } 2>/dev/null || :' 0
     # Twelve health reads and, for remote-kill, the whole demotion come first: at fw1 load 16 they took
-    # 49 s, 55 s and just over the old 60 s (chain #5).
+    # 49 s, 55 s and just over the old 60 s.
     n=0
     until grep -qx CV-MAINTENANCE-WAIT "$log"; do
         n=$((n + 1)); [ "$n" -lt 300 ]; sleep 1
@@ -3246,7 +3246,7 @@ for step in journal rebuilt; do
             END {exit n != 1}' "$release/guests-fw-timed" >"$release/guests-release-kill" || bad $LINENO
         sh "$release/guests-release-kill" apply 3>&1 >"/var/log/guests-rebuild-release-kill.log" 2>&1
         [ "$?" = 137 ] && [ -s "$state/pending" ] && [ ! -e "$state/fw.handoff" ] || bad $LINENO
-        # fw1 passed its health checks before the kill; the pair settles in seconds (chain #4).
+        # fw1 passed its health checks before the kill; the pair settles in seconds.
         deadline=$(($(date +%s) + 600))
         until pair_ok; do
             [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break 2; }
