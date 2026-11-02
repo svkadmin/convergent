@@ -2,7 +2,7 @@
 . "$here/../alpine.conf"
 alpine_mounts=
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin   # for commands run in the chroots
-
+# Network failures only: curl retries DNS, refused connections, timeouts and HTTP 408/429/500/502/503/504; callers verify pins.
 # Network failures only: curl retries DNS, refused connections, timeouts and HTTP 408/429/5xx; callers verify pins.
 alpine_curl() { curl --retry 2 --retry-delay 5 --retry-connrefused "$@"; }
 # Three tries while apk names a network cause (apk 3 messages); any signature or integrity error stops at once.
@@ -14,7 +14,7 @@ alpine_retry() {
 		"$@" 2>"$mini/apk.err" || alpine_rc=$?
 		cat "$mini/apk.err" >&2
 		[ "$alpine_rc" != 0 ] && [ "$alpine_try" -lt 3 ] && grep -Eq "$alpine_net" "$mini/apk.err" &&
-			! grep -Eiq 'signature|integrity|checksum' "$mini/apk.err" || return "$alpine_rc"
+			! grep -Eiq 'signature|integrity|checksum|format|crypto|untrusted' "$mini/apk.err" || return "$alpine_rc"
 		echo "alpine: network failure; try $((alpine_try + 1)) of 3 in $((alpine_try * 5)) s" >&2
 		sleep $((alpine_try * 5))
 		alpine_try=$((alpine_try + 1))
@@ -93,7 +93,7 @@ alpine_edge() {
 	[ "$(sha256sum <"$alpine_apk_file" | cut -d' ' -f1)" = "$4" ] || die "$1 $3 does not match its pinned sha256"
 	mkdir -p "$5"
 	alpine_part=$(mktemp "$alpine_cached.part.XXXXXX")
-	cp "$alpine_apk_file" "$alpine_part"
+	cp "$alpine_apk_file" "$alpine_part" || { rm -f "$alpine_part"; die "cannot cache $1 $3"; }
 	mv "$alpine_part" "$alpine_cached"
 }
 

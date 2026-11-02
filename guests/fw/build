@@ -66,13 +66,13 @@ trap 'exit 1' HUP INT TERM
 
 # Verify sets with the pinned release key before serving. curl retries network failures only.
 echo "build: fetching OpenBSD $ver"
-curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/openbsd-$v-base.pub"
+curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/key.pub" "$OPENBSD_KEY_MIRROR/$ver/openbsd-$v-base.pub"
 seen=$(sha256sum "$dl/key.pub" | awk '{print $1}')
 [ "$seen" = "${OPENBSD_KEY_SHA256:-}" ] ||
 	die "openbsd-$v-base.pub has SHA256 $seen, pinned: '${OPENBSD_KEY_SHA256:-}'; check it, then set OPENBSD_KEY_SHA256 in pins"
 files="BUILDINFO bsd bsd.mp bsd.rd base$v.tgz BOOTX64.EFI"
 for f in SHA256 SHA256.sig $files; do
-	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/$f" "$base/$f"
+	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/$f" "$base/$f"
 done
 (cd "$dl" && "$signify" -C -q -p key.pub -x SHA256.sig $files) || die "signify: the downloaded files do not verify"
 echo "build: sets verified"
@@ -94,7 +94,7 @@ cp "$dl/SHA256" "$dl/SHA256.sig" "$dl/BUILDINFO" "$dl/bsd" "$dl/bsd.mp" "$dl/bas
 pkgbase=$OPENBSD_MIRROR/$ver/packages/amd64
 tar -xzOf "$dl/base$v.tgz" "./etc/signify/openbsd-$v-pkg.pub" >"$dl/pkg.pub" || die "package key missing from base set"
 for f in SHA256 SHA256.sig; do
-	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/pkg-$f" "$pkgbase/$f" || die "package $f download failed"
+	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --tlsv1.2 -o "$dl/pkg-$f" "$pkgbase/$f" || die "package $f download failed"
 done
 "$signify" -V -e -q -p "$dl/pkg.pub" -x "$dl/pkg-SHA256.sig" -m "$dl/pkg-SHA256.verified" ||
 	die "package manifest signature does not verify"
@@ -109,7 +109,7 @@ fetchpkg() {
 	awk -v f="($1)" '$1 == "SHA256" && $2 == f && $3 == "=" && NF == 4 {n++} END {if (n != 1) exit 1}' "$dl/pkg-SHA256" ||
 		die "package $1 has no unique signed checksum"
 	[ ! -f "$www/pkg/$1" ] || return 0
-	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-connrefused --proto =https --tlsv1.2 -o "$www/pkg/$1" "$pkgbase/$1" || die "package $1 download failed"
+	curl -fsS --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --tlsv1.2 -o "$www/pkg/$1" "$pkgbase/$1" || die "package $1 download failed"
 	(cd "$www/pkg" && "$signify" -C -q -p "$dl/pkg.pub" -x "$dl/pkg-SHA256.sig" "$1") ||
 		die "package $1 does not match its signed checksum"
 	tar -xzOf "$www/pkg/$1" +CONTENTS | awk -F: '/^@depend/ { print $3 ".tgz" }' |
