@@ -51,10 +51,10 @@ def generate():
     p.table("Default route · presence and next hop", [target('max by (node,gateway) (convergent_default_route_info)')],
             grid(0, 18, 8, 5), ["node", "gateway"], ["route"],
             "Source: fw-facts route -n show -inet; one current row per firewall/next hop. This confirms presence, not a policy comparison.", [ov("route", mappings=UP)])
-    p.stat("Resolver input ages", [target('max by (node) (time() - convergent_dns_file_mtime_seconds{file="blocklist.rpz"})', "RPZ · {{node}}"),
+    p.stat("Resolver input ages", [target('max by (node) (time() - convergent_dns_source_refreshed_seconds)', "RPZ · {{node}}"),
                                     target('max by (node) (time() - convergent_fw_facts_timestamp_seconds)', "facts · {{node}}"),
                                     target('max by (node) (convergent_default_route_present and on(node) (' + FW + '))', "default · {{node}}")],
-           grid(8, 18, 8, 5), "Source: fw-facts RPZ file mtime, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.", unit="s",
+           grid(8, 18, 8, 5), "Source: fw-facts RPZ source refresh, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.", unit="s",
            overrides=[ov("RPZ · " + n, thresholds=thresholds(("text", None), (AMBER, 864000))) for n in ("fw1", "fw2")] +
                      [ov("facts · " + n, thresholds=thresholds(("text", None), (AMBER, 180))) for n in ("fw1", "fw2")] +
                      [ov("default · " + n, unit="none", mappings=UP) for n in ("fw1", "fw2")])

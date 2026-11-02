@@ -15,7 +15,8 @@ def generate():
         value = verdict(groups, gate)
         if name == 'Security / Updates':
             release = '(max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800) and (max(cv_release_check_timestamp_seconds) <= time() + 60) and (count(cv_release_status_verified == 1) == 2) and (min(cv_release_status_generated_seconds) > time() - 172800)'
-            value = 'clamp_max((' + value + ') + on() (2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))) + on() (max(cv_release_advisories) > bool 0), 2) and on() (' + release + ')'
+            # Release status comes only from a manual check: stale or missing degrades, never blanks.
+            value = 'clamp_max((' + value + ') + on() (2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))) + on() ((max(cv_release_advisories) > bool 0) or vector(0)) + on() ((count(' + release + ') or vector(0)) == bool 0), 2)'
         panel = known(p.stat(name, [target(value, name)], grid(i * 5, 0, 4 if i == 4 else 5, 3),
                        'OK requires recent successful evidence and healthy rule evaluation. Failed collection is UNKNOWN; open the domain for source age and failures.', mappings=HEALTH))
         panel['links'] = [{'title': name, 'url': url + '?${__url_time_range}'}]

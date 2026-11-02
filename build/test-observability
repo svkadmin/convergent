@@ -102,6 +102,18 @@ sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
     grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"
     [ "$(wc -l <"$out/boot-calls")" = 3 ]
 )
+# auto waits out the per-minute nts lock instead of skipping its hour.
+sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"
+[ -s "$work/facts-case" ]; sh -n "$work/facts-case"
+(
+    flock() { echo "$*" >"$work/facts-flock"; }
+    auto() { echo ran >"$work/facts-ran"; }
+    usage() { exit 2; }
+    set -- auto
+    . "$work/facts-case"
+)
+[ "$(cat "$work/facts-flock")" = '-w 60 9' ]
+grep -qx ran "$work/facts-ran"
 echo 'observability: scan publication failures, retry intervals and backward clocks passed'
 # Check every svc reader before parsing; a failed transfer may still return valid JSON.
 grep -qx '>=net-misc/curl-8.4.0' "$repo/portage/sets/convergent"
@@ -425,6 +437,11 @@ grep -q 'time() - convergent_dns_source_refreshed_seconds.* > 864000' "$work/blo
 grep -q 'unless on(node) convergent_dns_source_refreshed_seconds' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* <= 0' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* > time()' "$work/blocklist-rule"
+# A skipped WAN probe is a local fault; the transit alert reads probe_up only.
+sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up == 0'
+sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok == 0'
+# The Guests table's VM uptime needs node_boot_time_seconds on every VM.
+grep -q -- '--collector.stat ' "$repo/guests/wan/rootfs/etc/conf.d/node-exporter"
 echo 'observability: scrub superblock, persistent grace and alert assertions passed'
 # Run the checker's reads with successful and timed-out replies, including partial output.
 sed -n '/^# The management endpoint/,/^\/usr\/local\/sbin\/incus-ui/ {
@@ -665,7 +682,14 @@ security = importlib.import_module('security').generate()
 overview = importlib.import_module('overview').generate()
 panels = {p['title']: p for p in overview['panels']}
 assert 'cv_https_probe_available == 1' in panels['Network']['targets'][0]['expr']
-assert '2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))' in panels['Security / Updates']['targets'][0]['expr']
+security_expr = panels['Security / Updates']['targets'][0]['expr']
+assert '2 * (count(cv_alert_active_since_seconds{alertname="CheckerFailed",severity="critical"}) or vector(0))' in security_expr
+# Stale or missing release status degrades the card; it never gates it into UNKNOWN.
+assert security_expr.startswith('clamp_max(') and security_expr.endswith(') or vector(0)) == bool 0), 2)'), security_expr
+assert '((max(cv_release_advisories) > bool 0) or vector(0))' in security_expr
+assert '+ on() ((count((max(cv_release_check_success) == 1) and (max(cv_release_check_timestamp_seconds) > time() - 172800)' in security_expr
+resolver = next(c for p in network['panels'] for c in [p] + p.get('panels', []) if c['title'] == 'Resolver input ages')
+assert resolver['targets'][0]['expr'] == 'max by (node) (time() - convergent_dns_source_refreshed_seconds)'
 columns = panels['Active alerts - explanations']['transformations'][1]['options']['includeByName']
 assert columns['exported_node'] and 'node' not in columns
 dashlib = importlib.import_module('dashlib')
@@ -724,6 +748,13 @@ if command -v jq >/dev/null 2>&1; then
 	if parse 42 1000 0 "$work/duplicate.json" >/dev/null 2>&1; then exit 1; fi
 	jq '.advisories[0].package="bad\nlabel"' "$work/status.json" >"$work/bad.json"
 	if parse 42 1000 0 "$work/bad.json" >/dev/null 2>&1; then exit 1; fi
+	# Control characters in firing alerts must not emit escapes the exposition parser rejects.
+	jq -n '{status:"success",data:{groups:[{name:"g\tx",interval:60,rules:[{health:"ok",lastEvaluation:"1970-01-02T03:46:40Z",
+	    alerts:[{state:"firing",labels:{alertname:"a\tb",node:"n\r",project:"p\u0001",name:"x\u007f"},
+	    annotations:{summary:"s\nt"},activeAt:"1970-01-02T03:46:40Z"}]}]}]}}' |
+	    jq -er --argjson now 100000 -f "$repo/rootfs/usr/lib/convergent/monitoring.jq" >"$work/alerts.prom"
+	grep -q '^cv_alert_active_since_seconds{alertgroup="g x",alertname="a b",node="n ",project="p ",name="x ",.*summary="s t"' "$work/alerts.prom"
+	if grep -q '\\' "$work/alerts.prom"; then exit 1; fi
 	echo 'observability: jq schema, release binding, clock and replay fixtures passed'
 else
 	echo 'observability: SKIP jq fixtures (jq is unavailable)' >&2
