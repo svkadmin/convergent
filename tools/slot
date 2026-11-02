@@ -280,10 +280,7 @@ write() {
 	[ "$(head -c "$size" "$part" | sha256sum | cut -d' ' -f1)" = "$sum" ] ||
 		die "slot $inactive does not read back as slot.img"
 
-	# Stage the UKI before exposing its three-try boot entry.
-	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
-	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
-		sync -f "$esp" && mv "$dst.new" "$dst" && sync -f "$esp" || die "could not install the UKI"
+	# Clear persistent entry overrides before the new entry exists: a failure leaves no UKI to try.
 	if [ -z "${rescue_target:-}" ]; then
 		vars_mount
 		for name in LoaderEntryDefault LoaderEntryPreferred; do
@@ -292,6 +289,10 @@ write() {
 			chattr -i "$var" && rm "$var" || die "cannot clear $name"
 		done
 	fi
+	# Stage the UKI before exposing its three-try boot entry.
+	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
+	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
+		sync -f "$esp" && mv "$dst.new" "$dst" && sync -f "$esp" || die "could not install the UKI"
 	for d in $mounted; do umount "$d" || die "could not unmount $d"; done
 	mounted=
 	log "release $new is in slot $inactive with three tries; reboot to try it"
