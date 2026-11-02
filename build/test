@@ -1761,7 +1761,7 @@ CHECK
 cv_time rebinding-filter
 # A separate upstream serves local-data; the filtering resolver must treat it as remote.
 for f in fw1 fw2; do
-	timeout 30 ssh -F /etc/convergent/ssh_config "$f" sh -eu <<'REBIND' || bad $LINENO
+	timeout 60 ssh -F /etc/convergent/ssh_config "$f" sh -eu <<'REBIND' || bad $LINENO
 work=$(mktemp -d)
 up= down=
 cleanup() {
@@ -1809,9 +1809,15 @@ forward-zone:
 CONF
 unbound-checkconf "$work/up.conf"
 unbound-checkconf "$work/down.conf"
-unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
-unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
 query() { dig @127.0.0.1 -p "$1" "$2.rebind.example.net." "$3" +time=1 +tries=1 +short; }
+# The upstream answers before the forwarder starts: started together, a forwarder that asked it first
+# cached the SERVFAIL for 5 s, as long as the wait below (fw2, chain #7).
+unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
+n=0
+until [ "$(query 1054 public A)" = 93.184.216.34 ]; do
+	[ "$n" -lt 20 ]; n=$((n + 1)); sleep 1
+done
+unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
 n=0
 until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
 	[ "$n" -lt 5 ]; n=$((n + 1)); sleep 1
