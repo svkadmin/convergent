@@ -5,6 +5,8 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 out=/var/lib/node_exporter
 mkdir -p "$out" /run/convergent || exit 1
+# A 0600 lock: a world-readable one lets the owner flock it and stall the job.
+umask 077
 exec 9>/run/convergent/observe.lock
 flock -n 9 || exit 0
 umask 022

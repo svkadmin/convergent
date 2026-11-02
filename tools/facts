@@ -19,7 +19,10 @@ usage() { echo "usage: facts boot | daily | nts | auto" >&2; exit 2; }
 
 umask 022
 mkdir -p "$out" "$run" "$sdir" || die "could not create the state directories"
+# A 0600 lock: a world-readable one lets the owner flock it and stall the job.
+umask 077
 exec 9>"$run/facts.lock"
+umask 022
 
 buf=
 ok=1

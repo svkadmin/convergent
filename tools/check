@@ -19,12 +19,11 @@ if awk '$2 == "/var" && $3 == "btrfs" && $4 ~ /(^|,)ro(,|$)/ {found=1}
     die 'state disk lost or read-only: reboot'
 fi
 if [ "${1:-}:$#" = status:1 ]; then
-    umask 022
     status=/run/convergent/status
     install -d -m 0755 /run/convergent "$status" || die 'cannot create status directory'
+    # Locks stay 0600 (umask 077 above): a world-readable lock lets the owner flock it and stall the job.
     exec 9>"$status/lock"; flock -n 9 || exit 0
     # Wait out expiry's WAN probe; leave 25 seconds plus kill grace for collection.
-    umask 077
     exec 8>/run/convergent/portal.lock
     umask 022
     portal_locked=0

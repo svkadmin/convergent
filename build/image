@@ -268,6 +268,12 @@ chmod 0600 "$root/etc/audit/audit.rules"
 # USB decisions share auditd's local log and existing syslog forwarding.
 sed -i '/^[[:space:]#]*AuditBackend[[:space:]]*=/d' "$root/etc/usbguard/usbguard-daemon.conf"
 printf '\nAuditBackend=LinuxAudit\n' >>"$root/etc/usbguard/usbguard-daemon.conf"
+# USB decisions stay root's: a package update must not reopen the IPC to wheel (or any user or group).
+[ "$(grep -c '^[[:space:]]*IPCAllowedUsers[[:space:]]*=' "$root/etc/usbguard/usbguard-daemon.conf")" = 1 ] &&
+	grep -qx 'IPCAllowedUsers=root' "$root/etc/usbguard/usbguard-daemon.conf" || die 'usbguard IPC is not limited to root'
+if grep -E '^[[:space:]]*IPCAllowedGroups[[:space:]]*=' "$root/etc/usbguard/usbguard-daemon.conf" | grep -qvx 'IPCAllowedGroups='; then
+	die 'usbguard IPC is open to a group'
+fi
 # What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"

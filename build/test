@@ -4071,6 +4071,9 @@ t sh -c '
 # cronie skips a group-writable cron.d file; the status job must have run on its own.
 t sh -c '[ "$(stat -c %a /etc/cron.d/convergent)" = 644 ] && ! find /etc /usr/local -xdev ! -type l ! -perm -1000 -perm /022 | grep .'
 t sh -c 'i=0; until [ -s /run/convergent/status/guestmem ] || [ $i -ge 150 ]; do sleep 5; i=$((i + 5)); done; [ -s /run/convergent/status/guestmem ]'
+# Root locks under /run are 0600: a readable lock could be flocked by the owner to stall or skip root jobs.
+t sh -c 'for f in /run/convergent/status/lock /run/convergent/facts.lock /run/convergent/observe.lock /run/convergent-power.lock /run/convergent-slot.lock; do [ -f "$f" ] || exit 1; done
+	! find /run/convergent /run/convergent-*.lock -maxdepth 2 \( -name "*.lock" -o -name lock \) ! -type l -perm /077 | grep .'
 t grep -qxF 'output * bg #000000 solid_color' /etc/sway/config.d/convergent
 t sh -c '[ "$(stat -c "%U:%G %a" /etc/shadow)" = "root:shadow 640" ] && [ "$(stat -c "%G %A" /usr/sbin/unix_chkpwd)" = "shadow -rwxr-sr-x" ]'
 t sh -c '. /etc/profile.env; [ "$LANG" = C.UTF-8 ] && locale -a | grep -qix c.utf8'

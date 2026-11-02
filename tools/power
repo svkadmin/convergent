@@ -142,8 +142,11 @@ thermal() {
 	esac
 }
 
+# A 0600 lock: a world-readable one lets the owner flock it and block every power run; bounded for that too.
+umask 077
 exec 9>/run/convergent-power.lock
-flock -x 9 || exit 1
+umask 022
+flock -x -w 60 9 || exit 1
 case ${1:-} in
 '') [ "$#" = 0 ] || exit 2; src=$(source_now) ;;
 ac|battery) [ "$#" = 1 ] || exit 2; src=$1 ;;

@@ -56,6 +56,10 @@ echo MASTER >"$work/fw1.role"
 echo BACKUP >"$work/fw2.role"
 sh "$work/gate"
 [ "$(cat "$work/verdict")" = open ]
+# The lock is created 0600 whatever the caller's umask: a readable lock could be flocked by the owner.
+rm -f "$work/gate.lock"
+(umask 022; sh "$work/gate")
+[ "$(stat -c %a "$work/gate.lock")" = 600 ] || { echo 'work-gate lock is not 0600' >&2; exit 1; }
 # Valid prefixes with trailing bytes or failed transfers must not preserve validation.
 for node in wan fw1 fw2; do
     for fault in flood short; do
