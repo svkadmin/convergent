@@ -68,6 +68,6 @@ while :; do
 		read_owned
 		logger -t wan-watch "wanwatch $op $step" || :
 	fi
-	# After a first loss, the next round runs at once.
-	[ "$good" -ne 0 ] || [ "$lost" = 1 ] || sleep 1
+	# After a first loss, the next round runs at once; a good round's probes took 0.6 s of its second.
+	if [ "$good" -ne 0 ]; then sleep 0.4; elif [ "$lost" != 1 ]; then sleep 1; fi
 done

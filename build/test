@@ -4091,6 +4091,18 @@ for sample in fresh stale missing malformed recovered; do
 	XDG_RUNTIME_DIR="$work" timeout 2 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
 	sed -n 3p "$work/out" | jq -er '.[].full_text' | grep -q "$expected"
 done
+# Sensors are read every 20 s, not every 5 s frame: a temperature change is not in the third frame yet.
+mkdir "$work/hwmon0"
+echo 50000 >"$work/hwmon0/temp1_input"
+sed -i "s|/sys/class/hwmon/hwmon\*/temp\*_input|$work/hwmon*/temp*_input|" "$work/bar"
+grep -q "$work/hwmon" "$work/bar"
+echo 0 >"$work/guestmem"
+{ sleep 2; echo 90000 >"$work/hwmon0/temp1_input"; } &
+XDG_RUNTIME_DIR="$work" timeout 14 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
+wait
+[ "$(wc -l <"$work/out")" -ge 5 ]
+sed -n 3p "$work/out" | jq -er '.[0].full_text' | grep -q ' -/50C$'
+sed -n 5p "$work/out" | sed 's/^,//' | jq -er '.[0].full_text' | grep -q ' -/50C$'
 sed -n '/^wait "\$browser"/,$p' /usr/local/sbin/browser >"$work/wait"
 for code in 0 7 21 31 37 42; do
 	if (role=def; die() { echo "$*"; exit 1; }; (exit "$code") & browser=$!; . "$work/wait") >"$work/out"; then

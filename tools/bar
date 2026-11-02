@@ -182,8 +182,8 @@ while :; do
 		if (prev[1] != "" && total>prev[1] && idle>=prev[2] && idle-prev[2]<=total-prev[1])
 			busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
 		lo=""; hi=""; package=prev[8]; hottest=prev[9]
-		# Temperature reads can wake idle cores.
-		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=5
+		# Temperature reads can wake idle cores: every 20 s, not every 5 s frame.
+		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=20
 		if (refresh) {package="-"; hottest="-"}
 		for (i=1;i<ARGC;i++) {
 			path=ARGV[i]
