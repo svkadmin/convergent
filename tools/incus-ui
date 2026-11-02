@@ -50,7 +50,8 @@ case $action in
         fi ;;
 esac
 exec 7>/run/convergent/incus-ui.lock
-flock -w 30 7 || die 'another UI operation is running'
+# 75: busy, not failed; check retries the audit (a prompt can hold the lock).
+flock -w 30 7 || { echo 'incus-ui: another UI operation is running' >&2; exit 75; }
 fingerprint() {
     digest=$(openssl x509 -in "$1" -noout -fingerprint -sha256) || return
     printf '%s\n' "$digest" | cut -d= -f2 | tr -d ':' | tr A-F a-f

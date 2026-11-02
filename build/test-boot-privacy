@@ -172,6 +172,11 @@ check_script "$work/wan-round"
 sed -n '/^[[:space:]]*# After a first loss/,/^done$/p' "$fw/usr/local/libexec/convergent/wan-watch" |
     sed '1d;$d' >"$work/wan-pace"
 check_script "$work/wan-pace"
+sed -n '/^[[:space:]]*# Reuse this round/,/^[[:space:]]*if \[ "\$want" != "\$owned" \]; then$/p' "$fw/usr/local/libexec/convergent/wan-watch" |
+    sed "1d;\$d; s|/var/node_exporter/textfile|$work/textfile|; s|/usr/local/libexec/convergent/wan-probe.awk|$fw/usr/local/libexec/convergent/wan-probe.awk|" >"$work/wan-publish"
+check_script "$work/wan-publish"
+grep -q "$work/textfile" "$work/wan-publish" || die 'wan-watch textfile path not replaced'
+mkdir "$work/textfile"
 (
     sysctl() {
         [ "$*" = '-n net.inet.ip.forwarding' ] || exit 98
@@ -226,6 +231,19 @@ check_script "$work/wan-pace"
     wan_up=0; round; round
     forward=0; round
     printf '0.4\n0.4\n1\n1\n' | cmp - "$work/wan-sleeps" || die 'wan-watch rounds are not paced'
+    # A round without a probe publishes a local fault, never a failed transit probe.
+    prom=$work/textfile/wan-watch.prom
+    for c in local:0:- lost:1:0 up:1:1; do
+        owned=0 good=0 lost=0 dns_lost=0 dns=up forward=1 wan_up=1 metrics_at=0
+        case ${c%%:*} in local) forward=0 ;; lost) wan_up=0 ;; esac
+        . "$work/wan-round"; . "$work/wan-publish"
+        grep -qx "convergent_wan_watch_local_ok $(echo "$c" | cut -d: -f2)" "$prom" || die "local_ok: $c"
+        up=${c##*:}
+        if [ "$up" = - ]; then
+            if grep -q '^convergent_wan_watch_probe_up' "$prom"; then die "probe_up without a probe: $c"; fi
+        else grep -qx "convergent_wan_watch_probe_up $up" "$prom" || die "probe_up: $c"; fi
+        grep -q '^convergent_wan_watch_probe_timestamp_seconds [0-9]' "$prom" || die "probe timestamp: $c"
+    done
 )
 echo 'test-boot-privacy: firewall local health passed'
 

@@ -35,7 +35,7 @@ jq -r --arg fixture "${3:-}" --argjson def_stopped "$def_stopped" '.uid as $uid 
             (
              ($uid == "cv-security" and $p == "Boot evidence" and (.expr | contains(" and on() "))) or
              ($uid == "cv-overview" and $p == "Security / Updates"))
-        then "guest fixture: no firmware boot evidence or online release status in QEMU"
+        then "guest fixture: no firmware boot evidence in QEMU"
         elif $fixture == "guests" and $def_stopped and $uid == "cv-overview" and $p == "Network"
         then "guest fixture: def is not running; HTTPS evidence unavailable" else "required" end), (.expr | @base64)] | @tsv' "$dir/"*.json >"$work/targets"
 [ -s "$work/targets" ] || { echo 'dashboards: no metric targets'; exit 1; }

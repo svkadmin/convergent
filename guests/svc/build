@@ -21,7 +21,8 @@ cleanup() {
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
+cache=${CACHE_DIR:-/var/cache/convergent/alpine}
+alpine_bootstrap "$work/mini" "$cache"
 root=$mini/target
 alpine_prepare
 mkdir -p "$mini/apks"
@@ -36,16 +37,10 @@ while read -r name repository version sha rest; do
     if alpine_apk search --exact --quiet "$name" | grep -q .; then
         alpine_apk add "$name"
     else
-        # Not in 3.24: fetch the pinned signed edge build; its dependencies come from 3.24.
-        # Edge keeps only its newest build, so a moved edge stops here until its pin is updated.
+        # Not in 3.24: the pinned signed edge build, cached or fetched; its dependencies come from 3.24.
+        # A moved edge without a cached copy stops here until its pin is updated.
         [ -n "$version" ] && [ -n "$sha" ] || die "$name: no version and sha256 pin in packages"
-        chroot "$mini" /sbin/apk --repositories-file /dev/null \
-            --repository "$ALPINE_MIRROR/edge/$repository" \
-            --no-cache fetch --output /apks "$name" || die "cannot fetch $name from edge"
-        # Fetch by name; a version constraint makes apk resolve dependencies edge alone lacks.
-        [ -f "$mini/apks/$name-$version.apk" ] || die "$name $version is no longer on edge; update its pin"
-        [ "$(sha256sum <"$mini/apks/$name-$version.apk" | cut -d' ' -f1)" = "$sha" ] ||
-            die "$name $version does not match its pinned sha256"
+        alpine_edge "$name" "$repository" "$version" "$sha" "$cache/edge"
         alpine_apk add "/apks/$name-$version.apk"
         printf '%s %s edge/%s\n' "$name" "$version" "$repository" >>"$root/etc/convergent/apk-imports"
     fi
@@ -55,7 +50,7 @@ done <"$here/packages"
 plugin_version=0.32.0
 plugin_sha256=e100b767f19cd614ac8ac3860458a3fb33f5aa7a876e924d0340010e40d1c0d4
 plugin_archive=victoriametrics-logs-datasource-v$plugin_version.tar.gz
-curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
+alpine_curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
     --output "$work/$plugin_archive" \
     "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v$plugin_version/$plugin_archive"
 printf '%s  %s\n' "$plugin_sha256" "$work/$plugin_archive" | sha256sum -c -

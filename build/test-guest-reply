@@ -203,6 +203,29 @@ for fault in overflow transfer; do
     if wifi_reply status >/dev/null; then exit 1; fi
     if firewall_healthy fw1; then exit 1; fi
 done
+# Status bounds both replies and tells a silent node from a bad reply before advising a rebuild.
+(
+    id() { echo 0; }
+    noargs() { [ "$#" = 0 ]; }
+    firewall_rsh() {
+        case $2 in
+        ifconfig) [ "$fault" = bad ] || return 124; head -c 65537 /dev/zero ;;
+        *) echo 'Status: Enabled'; [ "$fault" = silent ] || head -c 131072 /dev/zero | tr '\000' x ;;
+        esac
+    }
+    for fault in silent bad; do
+        code=0
+        FIREWALL_SSH_TIMEOUT=30 firewall_status >"$scratch/output" || code=$?
+        [ "$code" = 1 ]
+        [ "$(wc -c <"$scratch/output")" -lt 4096 ]
+        [ "$(grep -c '^retry, check sys guests status and /var/log/incus/fw[12]/console.log before sys firewall rebuild fw[12]$' "$scratch/output")" = 2 ]
+        case $fault in
+        silent) grep -qx 'fw1: no answer within 30 s' "$scratch/output"; grep -qx 'Status: Enabled' "$scratch/output" ;;
+        bad) grep -qx 'fw1 sent a bad (oversized or malformed) reply' "$scratch/output"
+            if grep -q 'Status: Enabled' "$scratch/output"; then exit 1; fi ;;
+        esac
+    done
+)
 
 for check in wifi uplink; do
     sed -n "/check $check [0-9][0-9]* <<'CHECK'/,/^CHECK$/p" \

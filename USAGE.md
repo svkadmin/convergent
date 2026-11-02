@@ -542,6 +542,7 @@ version and timestamp release ID; timestamp controls ordering. Reports carry bot
 `sys update check` reports newest/up-to-date and signed metadata age; over 30 days reports stale.
 `sys update install` verifies/downloads the channel host and changed guests, writes the other slot
 and offers reboot. Root equivalent: `sudo fetch-release`; check only reports/refreshes evidence.
+On online installs, Overview's Security / Updates card degrades two days after the last update check. Installs without online updates show DEGRADED until `sys update check` runs once after each install or USB update.
 [Failures](RECOVERY.md#12-an-online-update-fails).
 
 USB: copy latest/latest.sig, manifest/manifest.sig, slot.img, both release .efi files, guests/,

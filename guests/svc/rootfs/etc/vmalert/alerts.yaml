@@ -24,6 +24,11 @@ groups:
         for: 2m
         labels: {severity: warning}
         annotations: {summary: 'Sampled firewall-to-WAN transit probe failing: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: WanWatchLocalFailed
+        expr: convergent_wan_watch_local_ok == 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: 'Firewall forwarding off or local resolver not answering; WAN probe skipped: {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: CarpSplit
         expr: sum by (interface,vhid) (convergent_carp_state{node=~"fw1|fw2"} == bool 2) != 1
         for: 1m

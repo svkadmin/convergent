@@ -9,5 +9,7 @@ profile way-secure /usr/bin/way-secure flags=(complain) {
   owner /run/user/[0-9]*/wayland-[0-9]* rw,
   # tools/browser gives the listener to Sway through security-context-v1.
   owner /run/convergent/browser/{def,int,remmina,tmp-portal,tmp-[2-9][0-9]}/sockets/wayland-0 rw,
+  # Remmina's listener is Cage's host display, not a guest socket.
+  owner /run/convergent/browser/remmina/state/wayland-host rw,
   /run/convergent/browser/{def,int,remmina,tmp-portal,tmp-[2-9][0-9]}/wayland.log w,
 }

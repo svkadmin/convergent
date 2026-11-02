@@ -53,7 +53,8 @@ IFS= read -r again <&3 || die 'input cancelled'
 printf '\n' >&3
 stty "$saved" <&3
 saved=
-[ -n "$pass" ] && [ "${#pass}" -ge 8 ] || die 'password must be at least 8 characters'
+[ "${#pass}" -ge 12 ] || die 'password must be at least 12 bytes'
+[ "${#pass}" -le 256 ] || die 'password must be at most 256 bytes'
 [ "$pass" = "$again" ] || die 'passwords differ'
 unset again
 

@@ -27,7 +27,7 @@ alpine_apk add --virtual .remmina-build build-base cmake samurai patch gettext-d
     avahi-ui-dev curl-dev freerdp freerdp-dev fuse3-dev gnutls-dev gtk+3.0-dev json-glib-dev \
     libayatana-appindicator-dev libgcrypt-dev libjpeg-turbo-dev libsecret-dev libsodium-dev \
     libssh-dev libvncserver-dev libxkbfile-dev openssl-dev pcre2-dev python3-dev vte3-dev zlib-dev
-curl -fsSL --proto '=https' --proto-redir '=https' \
+alpine_curl -fsSL --proto '=https' --proto-redir '=https' \
     https://gitlab.com/Remmina/Remmina/-/archive/v1.4.43/Remmina-v1.4.43.tar.gz -o "$work/remmina.tar.gz"
 printf '%s  %s\n' \
     8d96f4ef89ef36bf6ebb548a5d36a58828c09b54dcc4e76494e6110f3a683d84291f449ed59efc8414b5c4f646fa9f8432d0fa97e9d4ac745d737741c3549c42 \
@@ -35,8 +35,9 @@ printf '%s  %s\n' \
 mkdir -p "$root/tmp/remmina-build"
 tar -xzf "$work/remmina.tar.gz" --strip-components=1 -C "$root/tmp/remmina-build"
 cp "$here/secret-service-only.patch" "$root/tmp/remmina-build/"
-curl -fsSL --proto '=https' --proto-redir '=https' \
-    https://raw.githubusercontent.com/alpinelinux/aports/3.24-stable/community/remmina/remmina-1.0.0-dsofix.patch \
+# Alpine's patch from a 3.24-stable commit; a branch path can change or vanish.
+alpine_curl -fsSL --proto '=https' --proto-redir '=https' \
+    https://raw.githubusercontent.com/alpinelinux/aports/35f5eb2864e50dd4448758d31f3e2a32f733ab84/community/remmina/remmina-1.0.0-dsofix.patch \
     -o "$root/tmp/remmina-build/dsofix.patch"
 printf '%s  %s\n' \
     47657c9e2db48db1c6498fd177426ea2121b2fef3f4ab09e967f6f75fd1e64758ea68cbb036d20e9375b8d7618f63aad53fd14e367aafb2c44d865a6f220f47d \

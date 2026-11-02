@@ -318,6 +318,9 @@ echo 'CV-REMOTE unit live Cage cleanup ok'
 )
 grep -qx '    source: /run/convergent/browser/remmina/cage/wayland-0' "$here/../guests/remmina/incus.yaml"
 if grep -q 'cage\|WLR_BACKENDS' "$here/../guests/remmina/rootfs/usr/local/bin/remmina-launch"; then exit 1; fi
+# way-secure's profile must allow Remmina's listener once it enforces.
+grep -q '^ *outer_socket=\$run/state/wayland-host$' "$work/sockets"
+grep -qx '  owner /run/convergent/browser/remmina/state/wayland-host rw,' "$here/../rootfs/etc/apparmor.d/usr.bin.way-secure"
 echo 'CV-REMOTE unit host Cage socket boundary ok'
 
 if command -v jq >/dev/null 2>&1; then
@@ -338,4 +341,41 @@ EOF
         .[0].devices.wayland.source == "/run/convergent/browser/remmina/cage/wayland-0" and
         .[0].devices.share.source == "share"' "$work/incus.raw" >/dev/null
     echo 'CV-REMOTE unit checker inventory ok'
+    # remote close says why it refuses, and bounds its stop under the shared guests lock.
+    mkdir "$work/remote-bin" "$work/remote-run"
+    sed "s|^PATH=|PATH=$work/remote-bin:|; s|/run/convergent|$work/remote-run|g" "$here/../tools/remote" >"$work/remote"
+    sh -n "$work/remote"
+    grep -q "^PATH=$work/remote-bin:" "$work/remote"
+    printf '#!/bin/sh\necho 0\n' >"$work/remote-bin/id"
+    printf '#!/bin/sh\n[ "$SAMPLE:$*" != "update:-s -n 6" ]\n' >"$work/remote-bin/flock"
+    printf '#!/bin/sh\necho "timeout $1 $2 $3" >>"$CALLS"\nshift 3\nexec "$@"\n' >"$work/remote-bin/timeout"
+    cat >"$work/remote-bin/incus" <<'EOF'
+#!/bin/sh
+case $* in
+*' query '*)
+    profiles='["remmina"]' status=Running
+    [ "$SAMPLE" != foreign ] || profiles='["default"]'
+    [ "$SAMPLE" != stopped ] || status=Stopped
+    printf '[{"name":"remmina","type":"container","status":"%s","profiles":%s}]\n' "$status" "$profiles" ;;
+*) echo "$*" >>"$CALLS"; [ "$SAMPLE" != stuck ] ;;
+esac
+EOF
+    chmod +x "$work/remote-bin/"*
+    for SAMPLE in running stopped update foreign stuck; do
+        CALLS=$work/remote-calls
+        : >"$CALLS"
+        export SAMPLE CALLS
+        rc=0
+        sh "$work/remote" close >"$work/remote-out" 2>&1 || rc=$?
+        case $SAMPLE in
+        running) [ "$rc" = 0 ]
+            printf '%s\n' 'timeout -k 1 30' 'timeout -k 5 60' '--force-local --project default stop remmina --force' >"$work/expected"
+            cmp "$work/expected" "$CALLS" ;;
+        stopped) [ "$rc" = 0 ]; printf 'timeout -k 1 30\n' >"$work/expected"; cmp "$work/expected" "$CALLS" ;;
+        update) [ "$rc" = 1 ]; grep -qx 'remote: browser update in progress' "$work/remote-out"; [ ! -s "$CALLS" ] ;;
+        foreign) [ "$rc" = 1 ]; grep -qx 'remote: the remmina instance is not the shipped one' "$work/remote-out" ;;
+        stuck) [ "$rc" = 1 ]; grep -qx 'timeout -k 5 60' "$CALLS" ;;
+        esac
+    done
+    echo 'CV-REMOTE unit remote close ok'
 fi

@@ -85,7 +85,7 @@ cp "$here/rootfs/etc/mkinitfs/mkinitfs.conf" "$target/etc/mkinitfs/mkinitfs.conf
 # shellcheck disable=SC2086
 alpine_apk --initdb add $PACKAGES
 # Build tools stay in the disposable Alpine chroot.
-chroot "$mini" /sbin/apk add --no-cache qemu-img grub grub-efi
+alpine_retry chroot "$mini" /sbin/apk add --no-cache qemu-img grub grub-efi
 
 inchroot() { chroot "$target" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root "$@"; }
 inchroot sh -c 'command -v flock' >/dev/null || die "flock is missing after install"

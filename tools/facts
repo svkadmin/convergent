@@ -313,6 +313,7 @@ case ${1:-} in
 boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; daily; storage; hourly; nts; boot ;;
 daily) [ $# = 1 ] || usage; flock -w 120 9 || die "another facts is running"; daily ;;
 nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts ;;
-auto) [ $# = 1 ] || usage; flock -n 9 || exit 0; auto ;;
+# nts holds the lock for seconds each minute: wait for it rather than skip an hour.
+auto) [ $# = 1 ] || usage; flock -w 60 9 || exit 0; auto ;;
 *) usage ;;
 esac

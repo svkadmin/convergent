@@ -2828,7 +2828,7 @@
             "w": 8,
             "h": 5
           },
-          "description": "Source: fw-facts RPZ file mtime, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.",
+          "description": "Source: fw-facts RPZ source refresh, collection timestamp and route presence. A missing route is DOWN; RPZ warns at ten days, facts at three minutes.",
           "datasource": {
             "type": "prometheus",
             "uid": "metrics"
@@ -2836,7 +2836,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "max by (node) (time() - convergent_dns_file_mtime_seconds{file=\"blocklist.rpz\"})",
+              "expr": "max by (node) (time() - convergent_dns_source_refreshed_seconds)",
               "datasource": {
                 "type": "prometheus",
                 "uid": "metrics"

@@ -150,13 +150,15 @@ done
 echo 'test-bootstrap: signed package manifest, rejection, dependency closure and cycle passed'
 
 # Bad downloads and legacy cache entries must not prevent the next retry.
-sed -n '/^alpine_bootstrap() {$/,/^}$/p; /^alpine_repositories() {$/,/^}$/p' \
+sed -n '/^alpine_curl() /p; /^alpine_bootstrap() {$/,/^}$/p; /^alpine_repositories() {$/,/^}$/p' \
 	"$repo/guests/alpine.sh" >"$work/alpine"
+grep -q '^alpine_curl() ' "$work/alpine" || die 'alpine_curl not extracted'
 cat >"$work/alpine-run" <<'SH'
 die() { echo "$*" >&2; exit 1; }
 MINIROOTFS=mini.tar.gz MINIROOTFS_SHA256=$2 ALPINE_MIRROR=https://fixture ALPINE_BRANCH=fixture
 mode=$1
 curl() {
+	[ "$1 $2 $3 $4 $5" = '--retry 2 --retry-delay 5 --retry-connrefused' ] || return 1
 	while [ "$1" != -o ]; do shift; done
 	printf '%s\n' "$2" >>"$work/downloads"
 	[ ! -f "$work/cache/$MINIROOTFS" ] || return 1
@@ -196,3 +198,89 @@ deny "$work/alpine-run" cached "$digest"
 sh -eu "$work/alpine-run" good "$digest"
 cmp "$work/mini.good" "$work/cache/mini.tar.gz"
 echo 'test-bootstrap: Alpine rejection, eviction, retry and cache hit passed'
+
+# Pinned edge apks: the cache outlives edge; wrong bytes are never kept; only network failures retry.
+sed -n '/^alpine_net=/p; /^alpine_retry() {$/,/^}$/p; /^alpine_edge() {$/,/^}$/p' \
+	"$repo/guests/alpine.sh" >"$work/edge"
+for part in 'alpine_net=' 'alpine_retry() {' 'alpine_edge() {'; do
+	grep -q "^$part" "$work/edge" || die "$part not extracted"
+done
+cat >"$work/edge-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+mode=$1 mini=$work/edge-mini ALPINE_MIRROR=https://fixture
+mkdir -p "$mini/apks"
+sleep() { echo "sleep $1" >>"$work/tries"; }
+chroot() {
+	[ "$*" = "$mini /sbin/apk --repositories-file /dev/null --repository https://fixture/edge/testing --no-cache fetch --output /apks pkg" ] || return 1
+	echo fetch >>"$work/tries"
+	case $mode in
+	good) cp "$work/pkg.good" "$mini/apks/pkg-1-r1.apk" ;;
+	moved) cp "$work/pkg.good" "$mini/apks/pkg-1-r2.apk" ;;
+	bad) printf corrupt >"$mini/apks/pkg-1-r1.apk" ;;
+	flaky)
+		if [ "$(grep -c fetch "$work/tries")" -lt 3 ]; then
+			echo 'WARNING: fetching https://fixture/edge/testing/x86_64/APKINDEX.tar.gz: DNS: name does not exist' >&2
+			return 1
+		fi
+		cp "$work/pkg.good" "$mini/apks/pkg-1-r1.apk" ;;
+	down) echo 'ERROR: pkg-1-r1: Operation timed out' >&2; return 1 ;;
+	untrusted) echo 'WARNING: fetching https://fixture/edge/testing/x86_64/APKINDEX.tar.gz: UNTRUSTED signature' >&2; return 1 ;;
+	missing) echo 'ERROR: pkg-1-r1: HTTP 404: Not Found' >&2; return 1 ;;
+	mixed) printf '%s\n' 'WARNING: fetching https://fixture/edge/main/x86_64/APKINDEX.tar.gz: DNS: name does not exist' \
+		'WARNING: fetching https://fixture/edge/testing/x86_64/APKINDEX.tar.gz: UNTRUSTED signature' >&2; return 1 ;;
+	esac
+}
+. "$work/edge"
+alpine_edge pkg testing 1-r1 "$2" "$work/edge-cache"
+SH
+for part in edge edge-run; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+printf 'signed apk\n' >"$work/pkg.good"
+digest=$(sha256sum "$work/pkg.good" | awk '{print $1}')
+edge_case() { rm -rf "$work/edge-mini"; : >"$work/tries"; }
+uncached() { [ -z "$(find "$work/edge-cache" -type f 2>/dev/null)" ]; }
+edge_case
+sh -eu "$work/edge-run" good "$digest"
+cmp "$work/pkg.good" "$work/edge-mini/apks/pkg-1-r1.apk"
+cmp "$work/pkg.good" "$work/edge-cache/pkg-1-r1.apk"
+[ "$(cat "$work/tries")" = fetch ]
+# Edge rebuilt the pin as r2: the cached copy serves, edge is not asked.
+edge_case
+sh -eu "$work/edge-run" moved "$digest"
+cmp "$work/pkg.good" "$work/edge-mini/apks/pkg-1-r1.apk"
+[ ! -s "$work/tries" ]
+# A cached copy off its pin is evicted and refetched.
+edge_case
+printf corrupt >"$work/edge-cache/pkg-1-r1.apk"
+sh -eu "$work/edge-run" good "$digest" 2>"$work/error"
+grep -q 'does not match its pin; removed' "$work/error"
+cmp "$work/pkg.good" "$work/edge-cache/pkg-1-r1.apk"
+[ "$(cat "$work/tries")" = fetch ]
+edge_case
+printf corrupt >"$work/edge-cache/pkg-1-r1.apk"
+deny "$work/edge-run" moved "$digest"
+grep -q 'pkg 1-r1 is no longer on edge; update its pin' "$work/error"
+uncached
+[ ! -e "$work/edge-mini/apks/pkg-1-r1.apk" ]
+edge_case
+deny "$work/edge-run" bad "$digest"
+grep -q 'does not match its pinned sha256' "$work/error"
+uncached
+# Network failures: three tries with a backoff; other failures: one.
+edge_case
+sh -eu "$work/edge-run" flaky "$digest" 2>"$work/error"
+printf 'fetch\nsleep 5\nfetch\nsleep 10\nfetch\n' | cmp - "$work/tries"
+grep -q 'network failure; try 3 of 3' "$work/error"
+cmp "$work/pkg.good" "$work/edge-cache/pkg-1-r1.apk"
+rm -rf "$work/edge-cache"
+edge_case
+deny "$work/edge-run" down "$digest"
+grep -q 'cannot fetch pkg from edge' "$work/error"
+[ "$(grep -c fetch "$work/tries")" = 3 ]
+uncached
+for mode in untrusted missing mixed; do
+	edge_case
+	deny "$work/edge-run" "$mode" "$digest"
+	[ "$(cat "$work/tries")" = fetch ]
+	uncached
+done
+echo 'test-bootstrap: pinned edge apk cache, eviction, refusal and network-only retries passed'

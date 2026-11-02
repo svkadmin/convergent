@@ -60,8 +60,15 @@ firewall_status() (
 		echo "$fw:"
 		if output=$(guest_reply 65536 firewall_rsh "$fw" ifconfig); then
 			printf '%s\n' "$output" | awk -v mode=status -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - || result=1
-		else echo "$fw unreachable; recovery: sys firewall rebuild $fw"; result=1; fi
-		firewall_rsh "$fw" 'set -e; info=$(pfctl -si); printf "%s\n" "$info" | sed -n "/^Status:/p; /current entries/p"; rcctl check unbound; unbound-control status' || result=1
+		else
+			# One failed probe is not a silent node (relink, load): no rebuild advice first.
+			if [ "$?" = 125 ]; then echo "$fw sent a bad (oversized or malformed) reply"
+			else echo "$fw: no answer within ${FIREWALL_SSH_TIMEOUT:-30} s"; fi
+			echo "retry, check sys guests status and /var/log/incus/$fw/console.log before sys firewall rebuild $fw"
+			result=1
+		fi
+		guest_reply --display 65536 firewall_rsh "$fw" 'set -e; info=$(pfctl -si); printf "%s\n" "$info" | sed -n "/^Status:/p; /current entries/p"; rcctl check unbound; unbound-control status' ||
+			{ echo "$fw: status command failed or its reply was oversized"; result=1; }
 	done
 	printf 'Last successful DNS push to both (UTC): '
 	cat /var/lib/convergent/dns/last-push 2>/dev/null || echo unknown
