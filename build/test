@@ -386,6 +386,19 @@ if [ "${1:-}" = --install-options ]; then
 			grep -q "not built with: CONFIG_$symbol=y" "$work/kernel-error"
 		done
 	done
+	# USBGuard IPC stays root's: an IPCAccessControl.d file grants it whatever IPCAllowed* says.
+	sed -n "/^# USB decisions stay root's/,/IPCAccessControl.d files'\$/p" "$here/image" >"$work/usbguard-check"
+	grep -q 'IPCAccessControl.d files' "$work/usbguard-check"
+	sh -n "$work/usbguard-check"
+	(
+	root=$work/usbguard
+	mkdir -p "$root/etc/usbguard/IPCAccessControl.d"
+	printf 'IPCAllowedUsers=root\nIPCAllowedGroups=\n' >"$root/etc/usbguard/usbguard-daemon.conf"
+	. "$work/usbguard-check"
+	printf 'Devices=modify,list\n' >"$root/etc/usbguard/IPCAccessControl.d/:wheel"
+	if (. "$work/usbguard-check") 2>"$work/usbguard-error"; then die 'accepted an IPCAccessControl.d grant'; fi
+	grep -q 'granted by IPCAccessControl.d' "$work/usbguard-error"
+	)
 	# Media must match the selected slot, including older releases.
 	sed -n '/^# Compare with the selected release/,/^fi$/p' "$here/../install/install" >"$work/topology-check"
 	[ -s "$work/topology-check" ]

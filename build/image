@@ -274,6 +274,10 @@ printf '\nAuditBackend=LinuxAudit\n' >>"$root/etc/usbguard/usbguard-daemon.conf"
 if grep -E '^[[:space:]]*IPCAllowedGroups[[:space:]]*=' "$root/etc/usbguard/usbguard-daemon.conf" | grep -qvx 'IPCAllowedGroups='; then
 	die 'usbguard IPC is open to a group'
 fi
+# Files in IPCAccessControl.d grant IPC whatever IPCAllowed* says.
+acl=$root/etc/usbguard/IPCAccessControl.d
+[ ! -e "$acl" ] && [ ! -L "$acl" ] || { list=$(ls -A "$acl") && [ -z "$list" ]; } ||
+	die 'usbguard IPC is granted by IPCAccessControl.d files'
 # What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"
