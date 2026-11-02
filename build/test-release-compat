@@ -178,7 +178,7 @@ usb= url=https://fixture.invalid latest=43
 # Each online file refreshes the opening first, so the 4-hour expiry never cuts a long release.
 refresh_src() { touch "$work/refreshed"; }
 get() {
-    [ "$*" = "--max-time 7200 --max-filesize 4 --retry 5 -C - -o $dir/slot.img $url/43/slot.img" ] || exit 97
+    [ "$*" = "--max-time 7200 --max-filesize 4 --retry 5 --retry-max-time 7200 -C - -o $dir/slot.img $url/43/slot.img" ] || exit 97
     [ -f "$work/refreshed" ] || exit 96
     printf go >"$dir/slot.img"
     return 18
