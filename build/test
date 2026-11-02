@@ -1888,6 +1888,7 @@ sh -n "$work/verify-image"
 	[ "$(cat "$work/order")" = 'replace wan' ]
 	# A deferred browser keeps apply's lock for certificates_apply; a manual update releases it.
 	ic() { echo '[{"name":"def","status":"Running","profiles":["browser-base","browser-def"]}]'; }
+	exec 6>"$work/browser.lock"
 	applying=1
 	update browser "$work" >/dev/null
 	[ "$browser_pending" = 1 ]

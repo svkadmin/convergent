@@ -108,7 +108,8 @@ download() {
 		if [ -n "$usb" ]; then
 			usb_copy "$f" "$dir/$f" "$size" || die "cannot copy $f from USB"
 		else
-			get --max-time 7200 --max-filesize "$size" --retry 5 -C - -o "$dir/$f" "$url/$latest/$f" ||
+			refresh_src
+			get --max-time 7200 --max-filesize "$size" --retry 5 --retry-max-time 7200 -C - -o "$dir/$f" "$url/$latest/$f" ||
 				{ rc=$?; case $rc in 22 | 33 | 36) rm -f "$dir/$f" ;; esac; die "download of $f failed; run again"; }
 		fi
 	fi

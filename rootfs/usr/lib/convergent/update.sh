@@ -52,6 +52,12 @@ open_src() {
 	done
 	res=$(echo $ips | tr ' ' ',')
 }
+# The firewalls expire an opening 4 hours after its stats were cleared: a long download clears them per file.
+refresh_src() {
+	for _f in $fws; do
+		rsh "$_f" 'pfctl -q -t update_src -T zero' >/dev/null || die "could not refresh the update source on $_f"
+	done
+}
 get() {
 	curl -q --silent --show-error --fail --noproxy '*' --proto =https --proto-redir =https --tlsv1.2 \
 		--connect-timeout 15 --resolve "$host:443:$res" "$@"

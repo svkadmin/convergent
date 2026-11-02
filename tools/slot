@@ -168,9 +168,9 @@ bless() {
 		case ${2##*/} in
 		convergent-"$release"-"$slot"+*)
 			cmp -s "$1" "$2" || die "the counted and uncounted UKIs of slot $slot differ"
-			rm "$2" && sync -f "$esp" || die "could not remove the counted UKI"
-			log "removed the counted UKI left by an interrupted bless"
-			set -- "$1"
+			# Keep the counted entry, so the watchdog stays armed through the health checks; the copy
+			# install below replaces the uncounted name and removes the counted one only after them.
+			set -- "$2"
 			;;
 		esac
 	fi

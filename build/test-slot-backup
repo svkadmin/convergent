@@ -30,7 +30,7 @@ log() { echo "$*"; }
 booted() { release=123 slot=a; }
 esp_mount() { :; }
 state_mount() { :; }
-healthy() { [ "$fault" != health ]; }
+healthy() { case $fault in health|cuthealth) return 1 ;; esac; }
 disarm() { touch "$work/bless/disarmed"; }
 prune() { :; }
 sync() { :; }
@@ -56,7 +56,7 @@ bless
 BLESS
 sh -n "$work/bless-driver"
 # cut/differ: a power loss left both names of the booted release (a verified copy, or not).
-for fault in none health highest rename good loader copy cut differ; do
+for fault in none health highest rename good loader copy cut differ cuthealth; do
     rm -rf "$work/bless"
     esp=$work/bless/esp stm=$work/bless/state
     mkdir -p "$esp/EFI/Linux" "$esp/loader" "$stm"
@@ -64,7 +64,7 @@ for fault in none health highest rename good loader copy cut differ; do
     echo 122 >"$stm/good"
     echo host >"$esp/EFI/Linux/convergent-123-a+3.efi"
     case $fault in
-    cut|differ)
+    cut|differ|cuthealth)
         mv "$esp/EFI/Linux/convergent-123-a+3.efi" "$esp/EFI/Linux/convergent-123-a+2-1.efi"
         echo host >"$esp/EFI/Linux/convergent-123-a.efi"
         [ "$fault" != differ ] || echo partial >"$esp/EFI/Linux/convergent-123-a.efi"
@@ -81,6 +81,8 @@ for fault in none health highest rename good loader copy cut differ; do
         grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
         [ "$fault" != rename ] || [ -f "$esp/EFI/Linux/convergent-123-a+3.efi" ]
         [ "$fault" != differ ] || [ -f "$esp/EFI/Linux/convergent-123-a+2-1.efi" ]
+        # A cut bless whose health checks then fail keeps its counted entry and the watchdog.
+        [ "$fault" != cuthealth ] || { [ -f "$esp/EFI/Linux/convergent-123-a+2-1.efi" ] && [ ! -e "$work/bless/disarmed" ]; }
         [ ! -e "$esp/EFI/Linux/convergent-123-a.efi.new" ]
         continue
     fi
