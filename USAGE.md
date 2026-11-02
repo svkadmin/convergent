@@ -401,7 +401,8 @@ sudo dns-push local    # current owner files with stored blocklist; also sys dns
 `sys firewall status` / `sys fw` shows registered CARP roles, PF states, Unbound and last DNS push,
 including unreachable nodes/pending recovery. `sys fw maintenance` checks coherent roles,
 PF/pfsync defer/Unbound/local DNS, asks before demoting MASTER, then verifies full peer takeover.
-Failure undoes handover; interruptions retain the journal.
+Failure undoes handover; interruptions retain the journal. If the peer then loses its WAN probes, it
+demotes equally and MASTER can return to the node in maintenance until the WAN recovers.
 
 Run `sys fw undo` afterward, before guest updates. Both nodes must be healthy; it verifies normal
 fw1 MASTER/fw2 BACKUP. Restore management or rebuild an unreachable node, then retry. Remote work
