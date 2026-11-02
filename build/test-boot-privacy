@@ -511,14 +511,22 @@ check_script "$work/mic-locked"
     calls=0
     . "$work/mic-init"
     [ "$calls" = 0 ]
-    # No default source at all: the loop gives up after 120 attempts and says so once.
+    # A source that appears late: 120 fast attempts, one log line, then every 30 s until it mutes.
     touch "$SWAYSOCK"
-    calls=0 sleeps=0 logs=0
-    sleep() { [ "$*" = 1 ] || die 'wrong mute delay'; sleeps=$((sleeps + 1)); [ "$sleeps" -le 130 ] || die 'mute loop never gave up'; }
-    wpctl() { [ "$*" = 'set-mute @DEFAULT_AUDIO_SOURCE@ 1' ] || die "unexpected wpctl: $*"; calls=$((calls + 1)); return 1; }
+    calls=0 fast=0 slow=0 logs=0 muted=0
+    sleep() {
+        case $* in 1) fast=$((fast + 1)) ;; 30) slow=$((slow + 1)) ;; *) die "wrong mute delay: $*" ;; esac
+        [ "$((fast + slow))" -le 200 ] || die 'mute loop never ended'
+    }
+    wpctl() {
+        [ "$*" = 'set-mute @DEFAULT_AUDIO_SOURCE@ 1' ] || die "unexpected wpctl: $*"
+        calls=$((calls + 1))
+        [ "$calls" -gt 125 ] || return 1
+        muted=1
+    }
     logger() { [ "$1 $2" = '-t sway' ] || die "unexpected logger: $*"; logs=$((logs + 1)); }
     . "$work/mic-init"
-    [ "$calls:$sleeps:$logs" = 120:119:1 ] || die "mute loop gave up wrongly: $calls:$sleeps:$logs"
+    [ "$calls:$fast:$slow:$logs:$muted" = 126:119:6:1:1 ] || die "late source not muted: $calls:$fast:$slow:$logs:$muted"
     rm "$SWAYSOCK"
 
     . "$repo/rootfs/usr/lib/convergent/sys/30-audio"
