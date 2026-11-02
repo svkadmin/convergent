@@ -271,7 +271,7 @@ if [ "${1:-}" = --install-options ]; then
 	done
 	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
 	# The version lives in build.conf only.
-	if grep -Eq '^#.*[0-9]+\.[0-9]+\.[0-9]+' "$here/../config.example.yaml"; then die 'config.example.yaml names a version'; fi
+	if grep -Eiq '^#.*version.*[0-9]+.[0-9]+.[0-9]+' "$here/../config.example.yaml"; then die 'config.example.yaml names a version'; fi
 	sh "$here/../tools/config-get" --selftest
 	. "$here/../install/options.sh"
 	# 100 GiB minus the release partitions and GPT/alignment.

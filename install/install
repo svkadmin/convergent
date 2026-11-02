@@ -265,7 +265,8 @@ check_identity() {
 	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
 	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
 }
-# Replace this disk's earlier entries of the same label ($2: their partition GUIDs); others stay.
+# Replace this disk's earlier entries of the same label ($2: their partition GUIDs); others stay. A dd clone
+# shares the GUIDs, but firmware cannot tell such disks apart either.
 boot_entry() {
 	entries=$(efibootmgr -v) || return
 	stale=$(printf '%s\n' "$entries" | awk -F '\t' -v label="$1" -v guids="$(printf '%s' "$2" | tr '\n' ' ')" '
