@@ -169,6 +169,9 @@ echo 'test-boot-privacy: firewall forwarding passed'
 sed -n '/^while :; do$/,/^[[:space:]]*# Reuse this round/p' "$fw/usr/local/libexec/convergent/wan-watch" |
     sed '1d;$d' >"$work/wan-round"
 check_script "$work/wan-round"
+sed -n '/^[[:space:]]*# After a first loss/,/^done$/p' "$fw/usr/local/libexec/convergent/wan-watch" |
+    sed '1d;$d' >"$work/wan-pace"
+check_script "$work/wan-pace"
 (
     sysctl() {
         [ "$*" = '-n net.inet.ip.forwarding' ] || exit 98
@@ -180,7 +183,8 @@ check_script "$work/wan-round"
         case $1 in -k) shift 3 ;; -p) shift 4 ;; *) exit 98 ;; esac
         "$@"
     }
-    round() { . "$work/wan-round"; owned=$want; }
+    sleep() { printf '%s\n' "$*" >>"$work/wan-sleeps"; }
+    round() { . "$work/wan-round"; owned=$want; . "$work/wan-pace"; }
     src=100.80.0.11 wan=100.80.0.10 wan_up=1
     for failure in off empty malformed error dns; do
         owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1
@@ -214,6 +218,14 @@ check_script "$work/wan-round"
     # A local failure right after one lost WAN round must not skip the pacing sleep.
     forward=1; wan_up=0; round; [ "$lost" = 1 ]
     forward=0; round; [ "$lost" = 0 ]
+    # Pacing: a good round sleeps out the rest of its second (0.6 s of probes), a first loss
+    # re-probes at once, a second loss and a local failure wait a second.
+    : >"$work/wan-sleeps"
+    owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1 wan_up=1
+    round; round
+    wan_up=0; round; round
+    forward=0; round
+    printf '0.4\n0.4\n1\n1\n' | cmp - "$work/wan-sleeps" || die 'wan-watch rounds are not paced'
 )
 echo 'test-boot-privacy: firewall local health passed'
 
@@ -499,6 +511,23 @@ check_script "$work/mic-locked"
     calls=0
     . "$work/mic-init"
     [ "$calls" = 0 ]
+    # A source that appears late: 120 fast attempts, one log line, then every 30 s until it mutes.
+    touch "$SWAYSOCK"
+    calls=0 fast=0 slow=0 logs=0 muted=0
+    sleep() {
+        case $* in 1) fast=$((fast + 1)) ;; 30) slow=$((slow + 1)) ;; *) die "wrong mute delay: $*" ;; esac
+        [ "$((fast + slow))" -le 200 ] || die 'mute loop never ended'
+    }
+    wpctl() {
+        [ "$*" = 'set-mute @DEFAULT_AUDIO_SOURCE@ 1' ] || die "unexpected wpctl: $*"
+        calls=$((calls + 1))
+        [ "$calls" -gt 125 ] || return 1
+        muted=1
+    }
+    logger() { [ "$1 $2" = '-t sway' ] || die "unexpected logger: $*"; logs=$((logs + 1)); }
+    . "$work/mic-init"
+    [ "$calls:$fast:$slow:$logs:$muted" = 126:119:6:1:1 ] || die "late source not muted: $calls:$fast:$slow:$logs:$muted"
+    rm "$SWAYSOCK"
 
     . "$repo/rootfs/usr/lib/convergent/sys/30-audio"
     audio_session() { :; }
@@ -526,3 +555,22 @@ check_script "$work/mic-locked"
     done
 )
 echo 'test-boot-privacy: microphone passed'
+
+# The boot waiter polls the host bridge every five seconds and gives up after an hour.
+sed -n '/^if \[ "\${1:-}" != repair \]; then$/,/^fi$/p' "$repo/rootfs/usr/lib/convergent/incus/host-net" |
+    sed '1d;$d' >"$work/host-wait"
+check_script "$work/host-wait"
+(
+    die() { echo "$polls $*" >>"$work/host-died"; exit 1; }
+    ip() { [ "$*" = '-4 address show dev host' ] || exit 98; [ "$polls" -ge "$up_after" ] && echo '    inet 100.80.1.10/28 scope global host'; }
+    sleep() { [ "$*" = 5 ] || die "wrong bridge poll delay: $*"; polls=$((polls + 1)); [ "$polls" -le 800 ] || die 'bridge waiter never gave up'; }
+    rm -f "$work/host-died"
+    polls=0 up_after=3
+    . "$work/host-wait"
+    [ "$polls" = 3 ] || die "bridge waiter polled $polls times"
+    polls=0 up_after=999999
+    if (. "$work/host-wait"); then die 'bridge waiter never gave up'; fi
+    [ "$(cat "$work/host-died")" = '720 no host bridge within an hour; check auto repairs it' ] ||
+        die "bridge waiter gave up wrongly: $(cat "$work/host-died")"
+)
+echo 'test-boot-privacy: host bridge waiter passed'

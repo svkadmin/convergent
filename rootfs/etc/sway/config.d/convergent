@@ -68,7 +68,9 @@ bindsym --locked XF86AudioMicMute exec sys audio mic off
 # Session services: audio (Gentoo's launcher starts WirePlumber once PipeWire is up), notifications.
 exec gentoo-pipewire-launcher
 # Wait for WirePlumber's default source; run once per login, not on config reload.
-exec sh -c 'while [ -S "$SWAYSOCK" ]; do timeout -k 1 2 wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 1 && break; sleep 1; done'
+# No source after about two minutes (none yet, or no audio hardware): logged once, then polled every 30 s
+# for the session, so a late headset still starts muted.
+exec sh -c 'n=0; while [ -S "$SWAYSOCK" ]; do timeout -k 1 2 wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 1 && break; n=$((n + 1)); if [ "$n" -lt 120 ]; then sleep 1; else [ "$n" -gt 120 ] || logger -t sway "no default audio source after $n attempts; still trying every 30 s"; sleep 30; fi; done'
 # Stock look; an owner config in ~/.config/mako applies on its own.
 exec mako
 # DMZ-Black cursors: without a theme Sway falls back to bare built-in shapes (a blob for the link hand).

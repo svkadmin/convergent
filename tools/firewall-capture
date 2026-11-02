@@ -39,7 +39,8 @@ echo "Capturing $master $interface for at most $2 seconds (1536-byte snapshots, 
 work=$(mktemp -d /run/convergent/capture.XXXXXX)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
-(ulimit -f 97656; timeout -k 5 70 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n \
+# At most 60 s of capture after the config's 15 s connect.
+(ulimit -f 97656; timeout -k 5 80 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n \
 	"$master" "/usr/local/libexec/convergent/fw-capture $interface $2" 9>&- 8>&- >"$work/capture.pcap") || die 'capture failed'
 [ -s "$work/capture.pcap" ] && [ "$(stat -c %s "$work/capture.pcap")" -le 50000000 ] || die 'capture size invalid'
 cat "$work/capture.pcap"

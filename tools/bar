@@ -182,8 +182,8 @@ while :; do
 		if (prev[1] != "" && total>prev[1] && idle>=prev[2] && idle-prev[2]<=total-prev[1])
 			busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
 		lo=""; hi=""; package=prev[8]; hottest=prev[9]
-		# Temperature reads can wake idle cores.
-		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=5
+		# Temperature reads can wake idle cores: every 20 s, not every 5 s frame.
+		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=20
 		if (refresh) {package="-"; hottest="-"}
 		for (i=1;i<ARGC;i++) {
 			path=ARGV[i]
@@ -282,11 +282,8 @@ while :; do
 		ac=0; n=split(mains, m, " "); for (i=1; i<=n; i++) if (get(m[i]) == "1") ac=1
 		if (bat == "") block("AC", "")
 		else {
-			if (refresh) {
-				cap=get(bat "/capacity"); bs=get(bat "/status")
-				print cap > (work "/battery-capacity"); close(work "/battery-capacity")
-				print bs > (work "/battery-status"); close(work "/battery-status")
-			} else {cap=get(work "/battery-capacity"); bs=get(work "/battery-status")}
+			# Every frame: unplugging and low charge must not wait for the sensor refresh.
+			cap=get(bat "/capacity"); bs=get(bat "/status")
 			color=""; level=(cap == "" ? "-" : cap) "%"
 			if (bs == "Charging") text="BAT " level " +"
 			else if (bs == "Discharging") {

@@ -12,9 +12,12 @@ Host fw1 fw2 wan
 	PasswordAuthentication no
 	KbdInteractiveAuthentication no
 	BatchMode yes
-	ConnectTimeout 5
-	ServerAliveInterval 5
-	ServerAliveCountMax 2
+	# Callers bound their calls (timeout, mostly 10-30 s); these must not cut first. ConnectTimeout also
+	# bounds the banner and key exchange: half the common 30 s. A silent server ends after ~30 s.
+	# Writers with longer bounds pass their own (tools/guests, dns-push, update.sh).
+	ConnectTimeout 15
+	ServerAliveInterval 10
+	ServerAliveCountMax 3
 	ForwardAgent no
 	ForwardX11 no
 	# One connection per guest for a minute: the per-minute status checks would otherwise fill pf's

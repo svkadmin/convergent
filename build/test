@@ -2093,7 +2093,7 @@ maintenance_clean() {
         rc=0; fw_unlocked || rc=$?
         # 2: no lock file; 1 held, anything else (frozen fw1, SSH failure) proves nothing.
         case $rc in 0|2) return 0 ;; esac
-        [ "$n" -lt 60 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
+        [ "$n" -lt 90 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
         n=$((n + 1)); sleep 2
     done
 }
@@ -2212,7 +2212,7 @@ LOCAL
                 print "echo CV-MAINTENANCE-WAIT"
                 print "n=0"
                 print "until [ -f /tmp/convergent-test-maintenance ]; do"
-                print "    [ \"$n\" -lt 90 ] || exit 1"
+                print "    [ \"$n\" -lt 150 ] || exit 1"
                 print "    sleep 1; n=$((n + 1))"
                 print "done"
                 print "rm /tmp/convergent-test-maintenance"
@@ -2521,7 +2521,7 @@ done
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
-    timeout 15 ssh -vv -F /etc/convergent/ssh_config fw1 true 2>&1 | grep -E 'Connecting|connect to|Connection|Authenticated|Exit status|timed out|refused|reset|closed' | tail -n 4
+    timeout 20 ssh -vv -F /etc/convergent/ssh_config fw1 true 2>&1 | grep -E 'Connecting|connect to|Connection|Authenticated|Exit status|timed out|refused|reset|closed' | tail -n 4
 done ) >/var/log/fw1-probe.log 2>&1 &
 probe=$!
 {
@@ -4107,6 +4107,24 @@ for sample in fresh stale missing malformed recovered; do
 	XDG_RUNTIME_DIR="$work" timeout 2 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
 	sed -n 3p "$work/out" | jq -er '.[].full_text' | grep -q "$expected"
 done
+# Sensors are read every 20 s, not every 5 s frame: a temperature change is not in the third frame yet.
+# The battery is read every frame: unplugging and low charge show in the next one.
+mkdir "$work/hwmon0" "$work/ps" "$work/ps/BAT0"
+echo 50000 >"$work/hwmon0/temp1_input"
+echo Battery >"$work/ps/BAT0/type"; echo 50 >"$work/ps/BAT0/capacity"; echo Charging >"$work/ps/BAT0/status"
+sed -i -e "s|/sys/class/hwmon/hwmon\*/temp\*_input|$work/hwmon*/temp*_input|" -e "s|^ps=/sys/class/power_supply$|ps=$work/ps|" "$work/bar"
+grep -q "$work/hwmon" "$work/bar"
+grep -qx "ps=$work/ps" "$work/bar"
+echo 0 >"$work/guestmem"
+{ sleep 2; echo 90000 >"$work/hwmon0/temp1_input"; echo 10 >"$work/ps/BAT0/capacity"; echo Discharging >"$work/ps/BAT0/status"; } &
+XDG_RUNTIME_DIR="$work" timeout 14 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
+wait
+[ "$(wc -l <"$work/out")" -ge 5 ]
+sed -n 3p "$work/out" | jq -er '.[0].full_text' | grep -q ' -/50C$'
+sed -n 5p "$work/out" | sed 's/^,//' | jq -er '.[0].full_text' | grep -q ' -/50C$'
+sed -n 3p "$work/out" | jq -er '.[-1].full_text' | grep -qx 'BAT 50% +'
+. /usr/lib/convergent/theme
+sed -n 4p "$work/out" | sed 's/^,//' | jq -er --arg red "$theme_crit" '.[-1] | select(.full_text == "BAT 10% -" and .color == $red)' >/dev/null
 sed -n '/^wait "\$browser"/,$p' /usr/local/sbin/browser >"$work/wait"
 for code in 0 7 21 31 37 42; do
 	if (role=def; die() { echo "$*"; exit 1; }; (exit "$code") & browser=$!; . "$work/wait") >"$work/out"; then

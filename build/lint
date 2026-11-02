@@ -51,6 +51,12 @@ hits=$(printf '%s\n' $files | grep -v -e '\.md$' -e '^build/lint$' | xargs grep 
 	fixed && /(^|[^[:alnum:]_-])ic query / {print FILENAME ":" FNR ":" $0}')
 [ -z "$hits" ] || { printf '%s\n' "$hits" | sed 's/^/lint: /'; bad 'ic() adds --project, which incus query refuses'; }
 
+# Host SSH: callers bound their calls (heal, work gate, status 10 s; check, portal, sys firewall 30 s); the
+# config's connect (banner included) and keepalive must not cut them first. Longer writers pass their own.
+hits=$(awk '$1 == "ConnectTimeout" && c == "" {c = $2} $1 == "ServerAliveInterval" && i == "" {i = $2} $1 == "ServerAliveCountMax" && n == "" {n = $2}
+	END {if (c < 15 || i * n < 30) print "ConnectTimeout " c ", keepalive " i * n " s"}' rootfs/etc/convergent/ssh_config)
+[ -z "$hits" ] || bad "rootfs/etc/convergent/ssh_config: $hits; callers need at least 15 s and 30 s"
+
 # Shell: every script, init script and sourced module parses.
 scripts=
 for f in $files; do
