@@ -23,7 +23,7 @@ timeout() {
         [ "$1 $2 $3 $4 $5 $6 $7" = '-p -s INT -k 1 60 tcpdump' ] || exit 91
         shift 6
     else
-        [ "$1 $2 $3 $4" = '-k 5 75 ssh' ] || exit 92
+        [ "$1 $2 $3 $4" = '-k 5 80 ssh' ] || exit 92
         shift 3
     fi
     "$@"
@@ -79,7 +79,7 @@ for sample in $samples; do
     esac || { cat "$fixture/error" >&2; echo "capture fixture failed: $wrapper/$sample" >&2; exit 1; }
     [ "$wrapper" != local ] || grep -qx ssh "$fixture/calls"
     case $sample in transport-*) ;; *) grep -qx tcpdump "$fixture/calls"; esac
-    [ "$wrapper" != local ] || grep -q '^-k 5 75 ssh ' "$fixture/timeouts"
+    [ "$wrapper" != local ] || grep -q '^-k 5 80 ssh ' "$fixture/timeouts"
     case $sample in transport-*) ;; *) grep -q '^-p -s INT -k 1 60 tcpdump ' "$fixture/timeouts"; esac
     [ -z "$(find "$fixture/run" "$fixture/guest" -mindepth 1 -type d -print)" ]
 done

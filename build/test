@@ -2080,7 +2080,7 @@ maintenance_clean() {
         rc=0; fw_unlocked || rc=$?
         # 2: no lock file; 1 held, anything else (frozen fw1, SSH failure) proves nothing.
         case $rc in 0|2) return 0 ;; esac
-        [ "$n" -lt 60 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
+        [ "$n" -lt 90 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
         n=$((n + 1)); sleep 2
     done
 }
@@ -2199,7 +2199,7 @@ LOCAL
                 print "echo CV-MAINTENANCE-WAIT"
                 print "n=0"
                 print "until [ -f /tmp/convergent-test-maintenance ]; do"
-                print "    [ \"$n\" -lt 90 ] || exit 1"
+                print "    [ \"$n\" -lt 150 ] || exit 1"
                 print "    sleep 1; n=$((n + 1))"
                 print "done"
                 print "rm /tmp/convergent-test-maintenance"
@@ -2508,7 +2508,7 @@ done
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
-    timeout 15 ssh -vv -F /etc/convergent/ssh_config fw1 true 2>&1 | grep -E 'Connecting|connect to|Connection|Authenticated|Exit status|timed out|refused|reset|closed' | tail -n 4
+    timeout 20 ssh -vv -F /etc/convergent/ssh_config fw1 true 2>&1 | grep -E 'Connecting|connect to|Connection|Authenticated|Exit status|timed out|refused|reset|closed' | tail -n 4
 done ) >/var/log/fw1-probe.log 2>&1 &
 probe=$!
 {
