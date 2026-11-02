@@ -1511,7 +1511,8 @@ update() {
     case $1 in fw|wan|svc|browser|def|int|remmina) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;; esac
     # Recovery also changes browser objects; take the session lock before touching journals.
     recovering=
-    exec 6>/run/convergent/browser-update.lock
+    # Under apply, fd 6 already holds this lock: reopening it would drop the lock for an instant.
+    [ -n "$applying" ] || exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
         logger -t guests "update $1 deferred: browser is open" 2>/dev/null || :
