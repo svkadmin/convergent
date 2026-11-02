@@ -13,7 +13,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
-applying= recovering= rebuilding= polling= manual_stage=
+applying= recovering= rebuilding= polling= manual_stage= browser_locked=
 step=setup
 . "$lib/fw-topology"
 . "$lib/fw-leases"
@@ -1512,8 +1512,8 @@ update() {
     case $1 in fw|wan|svc|browser|def|int|remmina) ;; *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;; esac
     # Recovery also changes browser objects; take the session lock before touching journals.
     recovering=
-    # Under apply, fd 6 already holds this lock: reopening it would drop the lock for an instant.
-    [ -n "$applying" ] || exec 6>/run/convergent/browser-update.lock
+    # Under apply or a manual update, fd 6 already holds this lock: reopening it would drop it for an instant.
+    [ -n "$applying" ] || [ -n "${browser_locked:-}" ] || exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
         logger -t guests "update $1 deferred: browser is open" 2>/dev/null || :
@@ -1883,6 +1883,7 @@ done
 if [ "$1" != apply ] && [ "$1" != rebuild ] && [ "${2:-}" != browser ]; then
     exec 6>/run/convergent/browser-update.lock
     flock -n 6 || die 'close browsers before updating guests'
+    browser_locked=1
 fi
 exec 8>/run/convergent/dns-push.lock
 flock -w 120 8 || die 'a DNS push is still running'
