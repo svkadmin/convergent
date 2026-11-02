@@ -1040,6 +1040,53 @@ for scenario in hung foreign-name; do
     fi
     cmp "$work/calls" "$work/expected"
 done
+# A hold Incus cannot set on a frozen monitor (no state read either): that QEMU, verified as this
+# instance's, ends first and the hold and stop follow. A slow hold with a readable state or a
+# foreign QEMU gets no kill, and the hold itself runs under its bound.
+eval "$(sed -n '/^autorestart_hold() {/,/^}/p; /^hold_set() {/,/^}/p; /^hold_mark() {/,/^}/p' /usr/local/sbin/guests)"
+step=test
+fail() { echo "guests: $*" >&2; return 1; }
+ic() { case $1 in query) incus --force-local "$@" ;; *) incus --force-local --project default "$@" ;; esac; }
+incus() {
+    case $2 in query) shift 1 ;; *) shift 3 ;; esac
+    echo "ic $*" >>"$work/calls"
+    case $1:${2:-} in
+    list:*) return 1 ;;
+    query:*) [ "$test_status" != unknown ] || return 1; printf '{"status":"%s"}\n' "$test_status" ;;
+    config:set) [ "$test_status" != unknown ] && [ "$hold_failed" = 0 ] ;;
+    *) [ "$test_status" != unknown ] ;;
+    esac
+}
+bounds=$work/hold-bounds
+for scenario in frozen slow foreign-name; do
+    rm -rf "$work/proc/4242" "$work/incus"
+    test_status=unknown hold_failed=0 autorestart=0
+    case $scenario in
+    slow) test_status=RUNNING hold_failed=1; qemu 4242 fw2 "$work/incus/fw2/qemu.pid" ;;
+    foreign-name) qemu 4242 wan "$work/incus/fw2/qemu.pid" ;;
+    *) qemu 4242 fw2 "$work/incus/fw2/qemu.pid" ;;
+    esac
+    : >"$work/calls"; : >"$bounds"
+    if [ "$scenario" = frozen ]; then
+        stop_guest fw2 2>/dev/null
+        printf '%s\n' 'ic config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+            'ic list fw2 --format csv -c ns' 'ic query /1.0/instances/fw2/state?project=default' 'kill -KILL 4242' \
+            'ic config set fw2 boot.autorestart=false user.convergent.autorestart=true' 'ic stop fw2 --timeout 60' >"$work/expected"
+    else
+        if stop_guest fw2 2>/dev/null; then exit 1; fi
+        printf '%s\n' 'ic config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
+            'ic list fw2 --format csv -c ns' 'ic query /1.0/instances/fw2/state?project=default' >"$work/expected"
+    fi
+    cmp "$work/calls" "$work/expected"
+    grep -qx '120 boot.autorestart=false' "$bounds"
+done
+# A firewall that still answers its health probe is never killed, even while Incus answers nothing.
+rm -rf "$work/proc/4242" "$work/incus"; qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
+test_status=unknown hold_failed=0 test_target=BACKUP sample=; : >"$work/calls"
+if stop_guest fw2 2>/dev/null; then exit 1; fi
+if grep -q '^kill' "$work/calls"; then exit 1; fi
+test_target=down
+bounds=
 # Every stop and state read of a VM runs under its bound; an expired bound ends the attempt.
 # Function mocks only: a fake binary under /tmp (noexec) once fell through to the real incus and stopped fw2.
 timeout() {
@@ -1429,6 +1476,25 @@ GUEST_GUARDS
         ic() { :; }
         prepare_cleanup
         [ ! -f "$state/preparing" ]
+    )
+    # A failed push reports dns-push's own status (255: SSH ended the connection), not a flat 1.
+    (
+        sed -n '/^dns_restore() {/,/^}/p' /usr/local/sbin/guests |
+            sed "s|/var/lib/convergent/dns/list.rpz|$work/list.rpz|; s|/run/convergent/dns-push.lock|$work/dns.lock|" >"$work/restore"
+        [ -s "$work/restore" ]
+        sh -n "$work/restore"
+        . "$work/restore"
+        # /tmp and /run are noexec: the stand-in lives under /var/tmp.
+        stub=$(mktemp -d /var/tmp/dns-push.XXXXXX)
+        trap 'rm -rf "$stub"' 0
+        printf '#!/bin/sh\nexit 255\n' >"$stub/dns-push"
+        chmod 0755 "$stub/dns-push"
+        PATH=$stub:$PATH
+        state=$work polling= step=test
+        touch "$state/dns.stale" "$work/list.rpz"
+        logger() { :; }
+        if dns_restore 2>"$work/err"; then exit 1; fi
+        grep -q 'the DNS push failed (status 255)' "$work/err"
     )
     polling= step=test boot_timeout=10
     logger() { printf '%s\n' "$*" >>"$work/logged"; }
@@ -1961,8 +2027,6 @@ forward-zone:
 CONF
 unbound-checkconf "$work/up.conf"
 unbound-checkconf "$work/down.conf"
-unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
-unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
 query() { dig @127.0.0.1 -p "$1" "$2.rebind.example.net." "$3" +time=1 +tries=1 +short; }
 answer() {
 	deadline=$(($(date +%s) + 30))
@@ -1971,6 +2035,14 @@ answer() {
 		sleep 1
 	done
 }
+# The upstream answers before the forwarder starts: started together, a forwarder that asked it first
+# cached the SERVFAIL for 5 s, as long as its wait (fw2, 0.1.7 chain #7).
+unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
+n=0
+until [ "$(query 1054 public A)" = 93.184.216.34 ]; do
+	[ "$n" -lt 119 ]; n=$((n + 1)); sleep 1
+done
+unbound -d -c "$work/down.conf" >"$work/down.log" 2>&1 & down=$!
 n=0
 until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
 	[ "$n" -lt 119 ]; n=$((n + 1)); sleep 1

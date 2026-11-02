@@ -91,7 +91,8 @@ for fault in fw1 fw2 none; do
         if [ "$fault" = none ]; then [ "$current" != "$before" ]; registry=/etc/convergent/segments
         else [ "$current" = "$before" ]; registry=$lib/segments; fi
         case $node in fw1) want=MASTER ;; *) want=BACKUP ;; esac
-        timeout 30 ssh -n -F /etc/convergent/ssh_config "$node" ifconfig >"$release/$node.topology-carp"
+        # Both just booted and relink: the config's 5 s also bounds the SSH banner.
+        timeout 30 ssh -n -F /etc/convergent/ssh_config -o ConnectTimeout=25 "$node" ifconfig >"$release/$node.topology-carp"
         awk -v want="$want" -f "$lib/carp.awk" "$registry" "$release/$node.topology-carp" >/dev/null
     done
 done

@@ -38,6 +38,7 @@ ic() {
     esac
 }
 force_stop() { ic stop "$1" --force; }
+hold_set() { ic config set "$@"; }
 rebuild_root() {
     stopped fw1 && stopped fw2 || return 1
     [ -f "$scratch/fw1.held" ] && [ -f "$scratch/fw2.held" ] || return 1

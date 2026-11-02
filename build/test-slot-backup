@@ -187,7 +187,8 @@ RESTORE
 echo 'test-slot-backup: Grafana backup and restore secrets passed'
 sed -n '/^cleanup() {/,/^}/p; /^rescue_next() {/,/^}/p' "$repo/tools/slot" |
     sed "s|/run/slot-next.XXXXXX|$work/next.XXXXXX|" >"$work/functions"
-sed -n '/^[[:space:]]*# Stage the UKI before/,/^[[:space:]]*log "release \$new is/p' "$repo/tools/slot" >"$work/finish"
+sed -n '/^[[:space:]]*# Clear persistent entry overrides/,/^[[:space:]]*log "release \$new is/p' "$repo/tools/slot" >"$work/finish"
+grep -q 'Stage the UKI' "$work/finish" || die 'missing UKI staging'
 cat >"$work/driver" <<'EOF'
 set -eu
 mode=$1 fault=$2
@@ -271,6 +272,9 @@ for mode in write rescue next; do
                 ;; esac
         else
             [ -f "$vars/Unrelated-$guid.lock" ]
+            # A failed clearing must not leave a three-try entry behind a pinned override.
+            uki=$work/case/esp/EFI/Linux/convergent-123-b+3.efi
+            case $fault in none) [ -f "$uki" ] ;; *) [ ! -e "$uki" ] && [ ! -e "$uki.new" ] || die "UKI installed after $fault failed" ;; esac
             for name in LoaderEntryDefault LoaderEntryPreferred; do
                 if [ "$mode:$fault" = write:none ]; then [ ! -e "$vars/$name-$guid" ]; fi
                 if [ "$mode" = rescue ]; then [ -e "$vars/$name-$guid.lock" ]; fi
@@ -325,7 +329,7 @@ btrfs() {
     [ "$1" = subvolume ] || return 1
     case $2 in
     show) [ -f "$3/snapshot" ] ;;
-    delete) [ "${fault:-}" != delete ] && rm "$3/snapshot" && rmdir "$3" ;;
+    delete) { [ "${fault:-}" != delete ] || [ "$3" != "${bad:-}/home" ]; } && rm "$3/snapshot" && rmdir "$3" ;;
     *) return 1 ;;
     esac
 }
@@ -337,19 +341,25 @@ done
 for base in "$state" "$state/var-1"; do
     [ ! -e "$base/.backup.123456" ] && [ ! -e "$base/.backup.empty1" ]
 done
+# A leftover that stays is warned about and skipped; the next one is still removed and boot goes on.
+warn() { echo "$*" >&2; }
 for fault in delete nonempty symlink home-link; do
-    old=$state/.backup.123456
-    mkdir -p "$old/home" "$work/keep"
+    bad=$state/.backup.123456
+    mkdir -p "$bad/home" "$work/keep" "$state/.backup.zzzzzz/home"
     echo keep >"$work/keep/data"
+    touch "$state/.backup.zzzzzz/home/snapshot"
     case $fault in
-    delete) touch "$old/home/snapshot" ;;
-    nonempty) touch "$old/home/data" ;;
-    symlink) rmdir "$old/home" "$old"; ln -s "$work/keep" "$old"; [ -L "$old" ] ;;
-    home-link) rmdir "$old/home"; ln -s "$work/keep" "$old/home"; [ -L "$old/home" ] ;;
+    delete) touch "$bad/home/snapshot" ;;
+    nonempty) touch "$bad/home/data" ;;
+    symlink) rmdir "$bad/home" "$bad"; ln -s "$work/keep" "$bad"; [ -L "$bad" ] ;;
+    home-link) rmdir "$bad/home"; ln -s "$work/keep" "$bad/home"; [ -L "$bad/home" ] ;;
     esac
-    if (. "$work/boot-cleanup") 2>"$work/error"; then die "accepted cleanup $fault"; fi
+    (. "$work/boot-cleanup") 2>"$work/error" || { cat "$work/error"; die "cleanup $fault stopped boot"; }
+    grep -q "cannot remove abandoned snapshot $bad" "$work/error" || die "cleanup $fault left no warning"
     [ -f "$work/keep/data" ]
-    rm -rf "$old"
+    [ -e "$bad" ] || [ -L "$bad" ] || die "cleanup $fault removed the leftover anyway"
+    [ ! -e "$state/.backup.zzzzzz" ] || die "cleanup $fault stopped before the next leftover"
+    rm -rf "$bad"
 done
 grep -q 'inst_multiple .* rmdir ' "$repo/initramfs/90convergent/module-setup.sh"
 

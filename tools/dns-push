@@ -18,16 +18,18 @@ selftest=cv-$(date +%s)-$$.example.net
 selftest_addr=192.0.2.53
 
 die() { echo "dns-push: $*" >&2; exit 1; }
-# Lock fds closed: a shared SSH connection outlives this run and would keep them held.
-rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
-rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" "$_h" "$@" 9>&- 8>&- 7>&-; }
+# Own connections, lock fds closed. A just-booted, relinking firewall stalls for seconds: the config's
+# 5 s connect and 10 s keepalive (also on a shared master) ended a push silently with status 255.
+rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=24 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=24 "$_h" "$@" 9>&- 8>&- 7>&-; }
 # Checkconf, reload and restore on a firewall still relinking after its boot outlasted 120 s.
-rsh_wait() { _h=$1; shift; timeout 900 ssh -F "$ssh_conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+rsh_wait() { _h=$1; shift; timeout 900 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=24 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 close_src() {
 	_closed=0
 	for _f in $fws; do
 		# Flows the table admitted meanwhile end with it, as the update source's cleanup does.
-		rsh "$_f" "pfctl -t blocklist_src -T flush && pfctl -q -k label -k blocklist" >/dev/null || _closed=1
+		rsh "$_f" "pfctl -t blocklist_src -T flush && pfctl -q -k label -k blocklist" >/dev/null ||
+			{ echo "dns-push: cannot close the blocklist source on $_f (status $?)" >&2; _closed=1; }
 	done
 	[ "$_closed" = 0 ] || return 1
 	src_open=
@@ -261,7 +263,7 @@ mkdir -p "$state" "$run"
 exec 9>"$run/dns-push.lock"
 flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
 trap cleanup 0
-trap 'exit 1' HUP INT TERM
+trap 'echo "dns-push: interrupted" >&2; exit 1' HUP INT TERM
 rollback || die "recover both firewalls before another push"
 rm -rf "$state/edit.before.new"
 if [ "$mode" = list ]; then
@@ -351,16 +353,17 @@ awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" -v refr
 # Stage, hash and validate both candidates before activation.
 for fw in $fws; do
 	for file in blocklist.rpz local-owner.conf; do
-		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file"
+		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file" || die "cannot stage $file on $fw (status $?)"
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
-		[ "$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new")" = "$want" ] || die "stage hash differs on $fw"
+		have=$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new") || die "cannot hash $file on $fw (status $?)"
+		[ "$have" = "$want" ] || die "stage hash differs on $fw"
 	done
 	rsh_wait "$fw" "$durable
 		cd $rdir &&
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
 		unbound-checkconf $rdir/dns-check.conf >/dev/null &&
 		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev &&
-		durable blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev"
+		durable blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev" || die "candidate check failed on $fw (status $?)"
 done
 # Journal both firewalls before activation.
 mkdir "$state/cache.before"

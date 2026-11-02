@@ -47,8 +47,13 @@ svc_storage_check() (
         [ -z "$nested" ] || { fail "nested subvolumes in $path; remove them before starting svc"; return 1; }
     done
 )
-# Fresh connections only: a shared one could still reach a guest this tool replaced.
-rsh() { probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" || { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }; }
+# Fresh connections only: a shared one could still reach a guest this tool replaced. The config's 5 s
+# also bounds the SSH banner, which a loaded, relinking firewall missed: wait half the probe's bound,
+# and let its stalls run into the outer bound rather than the 10 s keepalive.
+rsh() {
+    probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=24 "$@" ||
+        { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
+}
 # Only read-only probes use the retry budget; mutators must finish under their locks.
 probe() (
     limit=${probe_limit:-30}
@@ -74,7 +79,7 @@ locked() (
 )
 # A relinking firewall (nested tests: minutes at full CPU) can take longer than 30 s to answer a write.
 fw_mutate() {
-    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none "$@" ||
+    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=24 "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
@@ -127,7 +132,26 @@ stopped() {
 }
 autorestart_hold() {
     # Mark in the same update; imports and renames keep ownership of the override.
-    ic config set "$1" boot.autorestart=false user.convergent.autorestart=true
+    hold_set "$1" boot.autorestart=false user.convergent.autorestart=true
+}
+# Incus answers no read or change of a frozen monitor: an unbounded hold hung under the guests lock, with
+# the checker's heal inhibited. End that QEMU first, verified as this instance's right before the signal
+# as the healer does, then hold the instance that outlives it and continue the stop.
+hold_set() {
+    hold_mark "$@" && return
+    case $1 in fw1|fw2|wan) ;; *) return 1 ;; esac
+    if heal_state "$1" >/dev/null; then return 1; fi
+    # A firewall that still answers is healthy: Incus is the one stuck, never kill it then (as the healer).
+    case $1 in fw1|fw2) if heal_probe "$1" >/dev/null; then return 1; fi ;; esac
+    pid=$(heal_qemu "$1") || return 1
+    kill -KILL "$pid" || return 1
+    echo "guests: $1 QEMU $pid no longer answers Incus; killed before the hold" >&2
+    logger -p user.err -t guests "$step: $1 QEMU $pid no longer answers Incus; killed before the hold" 2>/dev/null || :
+    hold_mark "$@"
+}
+hold_mark() {
+    timeout -k 1 120 incus --force-local --project default config set "$@" 9>&- 8>&- 7>&- 6>&- ||
+        { code=$?; fail "incus config set $* failed (status $code)" || return "$code"; }
 }
 autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
@@ -268,7 +292,7 @@ cleanup() {
 dns_restore() {
     [ -f "$state/dns.stale" ] && [ -f /var/lib/convergent/dns/list.rpz ] || return 0
     exec 8>&-
-    dns-push local 9>&- 7>&- 6>&- || { fail 'the DNS push failed; run sudo dns-push local'; return 1; }
+    dns-push local 9>&- 7>&- 6>&- || { code=$?; fail "the DNS push failed (status $code); run sudo dns-push local"; return 1; }
     exec 8>/run/convergent/dns-push.lock
     flock -w 120 8 || { fail 'a DNS push is still running'; return 1; }
 }

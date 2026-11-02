@@ -490,3 +490,33 @@ echo 'test-networks: DNS guest durability and failure fixtures passed'
     [ -z "$source_refreshed" ]
 )
 echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
+# A source close names each firewall that refused, with its status, and still tries both.
+(
+    sed -n '/^close_src() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/close"
+    [ -s "$dns/close" ]
+    sh -n "$dns/close"
+    . "$dns/close"
+    fws="fw2 fw1" failing=
+    rsh() { echo "$1" >>"$dns/closed"; [ "$1" != "$failing" ] || return 255; }
+    for failing in fw2 fw1; do
+        : >"$dns/closed"
+        src_open=1
+        if close_src 2>"$dns/error"; then exit 1; fi
+        [ "$src_open" = 1 ]
+        [ "$(cat "$dns/closed")" = "$(printf 'fw2\nfw1')" ]
+        [ "$(wc -l <"$dns/error")" = 1 ]
+        grep -qx "dns-push: cannot close the blocklist source on $failing (status 255)" "$dns/error"
+    done
+    failing=
+    close_src 2>"$dns/error"
+    [ -z "$src_open" ] && [ ! -s "$dns/error" ]
+    # An interrupted push says so before its cleanup trap runs.
+    sed -n '/^trap .* HUP INT TERM$/p' "$repo/tools/dns-push" >"$dns/trap"
+    [ "$(wc -l <"$dns/trap")" = 1 ]
+    sh -n "$dns/trap"
+    code=0
+    sh -c '. "$1"; kill -TERM $$' sh "$dns/trap" 2>"$dns/error" || code=$?
+    [ "$code" = 1 ]
+    grep -qx 'dns-push: interrupted' "$dns/error"
+)
+echo 'test-networks: DNS source close and interruption diagnostics passed'

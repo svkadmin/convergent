@@ -65,7 +65,8 @@ work=$scratch
 sed -n '/^[[:space:]]*\(if \)\{0,1\}\(carp\|diag\|wifi\|portal\|actual\)=.*\$(/p' "$repo/tools/check" |
     sed 's/^[[:space:]]*if / /; s/; then$//' >"$scratch/check-reads"
 [ "$(wc -l <"$scratch/check-reads")" = 5 ]
-sed -n '/stage hash differs on/p' "$repo/tools/dns-push" >>"$scratch/check-reads"
+sed -n '/^[[:space:]]*have=\$(guest_reply /p' "$repo/tools/dns-push" >>"$scratch/check-reads"
+[ "$(wc -l <"$scratch/check-reads")" = 6 ]
 while IFS= read -r line; do
     printf '%s\n' "$line" >"$scratch/read"
     sh -n "$scratch/read"
@@ -79,6 +80,20 @@ while IFS= read -r line; do
         if (. "$scratch/read"); then echo "accepted $fault: $line" >&2; exit 1; fi
     done
 done <"$scratch/check-reads"
+# A failed hash readback names its transfer status; only an answered hash can differ.
+die() { echo "dns-push: $*" >&2; exit 1; }
+sed -n '/^[[:space:]]*have=\$(guest_reply /,/stage hash differs on/p' "$repo/tools/dns-push" >"$scratch/hash"
+[ "$(wc -l <"$scratch/hash")" = 2 ]
+sh -n "$scratch/hash"
+for fault in transfer differs; do
+    case $fault in transfer) : >"$reply"; result=7 ;; differs) printf 'other\n' >"$reply"; result=0 ;; esac
+    if (. "$scratch/hash") 2>"$scratch/error"; then echo "accepted $fault hash" >&2; exit 1; fi
+    case $fault in
+    transfer) grep -qx 'dns-push: cannot hash fixture on fw1 (status 7)' "$scratch/error" ;;
+    differs) grep -qx 'dns-push: stage hash differs on fw1' "$scratch/error" ;;
+    esac
+done
+result=0
 
 sed -n '/^seed_applied() {/,/^}/p' "$repo/tools/guests" >"$scratch/seed"
 [ -s "$scratch/seed" ]; sh -n "$scratch/seed"; . "$scratch/seed"
