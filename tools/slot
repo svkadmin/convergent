@@ -163,6 +163,17 @@ bless() {
 	done
 	# shellcheck disable=SC2046
 	set -- $(ukis "$slot")
+	# A cut bless leaves both names of this release; the uncounted one is a verified copy.
+	if [ $# = 2 ] && [ "${1##*/}" = "convergent-$release-$slot.efi" ]; then
+		case ${2##*/} in
+		convergent-"$release"-"$slot"+*)
+			cmp -s "$1" "$2" || die "the counted and uncounted UKIs of slot $slot differ"
+			rm "$2" && sync -f "$esp" || die "could not remove the counted UKI"
+			log "removed the counted UKI left by an interrupted bless"
+			set -- "$1"
+			;;
+		esac
+	fi
 	[ $# = 1 ] || die "expected one UKI for slot $slot on the ESP, found $#"
 	uki=$1
 	case ${uki##*/} in
@@ -182,7 +193,13 @@ bless() {
 	state_mount rw
 	if expr "$release" '>' "$(num highest)" >/dev/null; then put highest "$release"; fi
 	case ${uki##*/} in
-	*+*) mv "$uki" "$esp/$linux/convergent-$release-$slot.efi" && sync || die "could not rename the UKI" ;;
+	*+*)
+		# Copy, then remove the counted name: a cut VFAT rename of it can leave two names on one chain.
+		dst=$esp/$linux/convergent-$release-$slot.efi
+		cp "$uki" "$dst.new" && cmp -s "$uki" "$dst.new" && sync -f "$esp" && mv "$dst.new" "$dst" &&
+			sync -f "$esp" || { rm -f "$dst.new"; die "could not install the uncounted UKI"; }
+		rm "$uki" && sync -f "$esp" || die "could not remove the counted UKI"
+		;;
 	esac
 	disarm
 	accept
@@ -309,13 +326,17 @@ rescue_next() {
 	[ $# = 1 ] || die "expected one UKI for the selected slot"
 	entry=${1##*/}
 	entry=${entry%%+*}
-	case $entry in *.efi) ;; *) entry=$entry.efi ;; esac
+	entry=${entry%.efi}
 	vars_mount
-	# EFI attributes, then a NUL-terminated UTF-16LE entry ID without its counter.
+	# EFI attributes, then a NUL-terminated UTF-16LE entry glob. Systemd-boot 260 drops the counter from
+	# the ID and matches OneShot with fnmatch; the glob also matches an ID that keeps it.
 	tmp=$(mktemp -d /run/slot-next.XXXXXX)
 	printf '\007\000\000\000' >"$tmp/entry"
-	case $entry in *[!a-z0-9.-]*) die "invalid entry ID" ;; esac
+	case $entry in *[!a-z0-9-]*) die "invalid entry ID" ;; esac
+	entry="$entry*.efi"
+	set -f
 	for char in $(printf '%s' "$entry" | sed 's/./& /g'); do printf '%s\000' "$char"; done >>"$tmp/entry"
+	set +f
 	printf '\000\000' >>"$tmp/entry"
 	oneshot=$vars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
 	if [ -e "$oneshot" ]; then chattr -i "$oneshot" || die "cannot unlock the next boot entry"; fi
