@@ -123,8 +123,8 @@ There is no guest-update rollback guard. The next `slot write` must exceed highe
 Disk-image first boot runs `guests init` (bar SETUP, log `/var/log/guests-setup.log`). Retry the
 printed failure with `sys guests setup` (uses `/var/lib/convergent/release-guests`) or
 `sudo guests init <dir>` using the original directory; completed steps skip. Update failure restores
-the old guest: fix the cause and retry. A firewall that stays silent after its handoff or commit is
-repaired by `sys firewall rebuild <node>`. Finish when SETUP disappears and fw1/fw2/wan/svc run.
+the old guest: fix the cause and retry. If fw1 stays silent after a handoff, run `sys firewall rebuild fw1`,
+then `sys guests update`; after a commit, rebuild the silent node. Finish when SETUP disappears and fw1/fw2/wan/svc run.
 
 ```sh
 sudo guests status                          # one line per guest and its state
