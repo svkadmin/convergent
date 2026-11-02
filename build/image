@@ -12,6 +12,19 @@ repo=${here%/build}
 . "$here/chroot.sh"
 
 die() { echo "image: $*" >&2; exit 1; }
+# Sway keeps us on an unknown layout or variant; check as sys keyboard does.
+xkb_known() {
+	for pair in $(printf '%s' "$1" | tr , ' '); do
+		layout=${pair%%(*} variant=
+		case $pair in *'('*) variant=${pair#*(}; variant=${variant%)} ;; esac
+		awk -v code="$layout" -v variant="$variant" '
+			$1 == "!" {section=$2}
+			section == "layout" && $1 == code {layout=1}
+			section == "variant" && $1 == variant && $2 == code ":" {found=1}
+			END {exit !(layout && (variant == "" || found))}
+		' "$2" || return
+	done
+}
 printf '%s\n' "$VERSION" | awk '
 	NR != 1 || $0 !~ /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[0-9]+)?$/ { exit 1 }
 ' || die "VERSION must be semver (major.minor.patch, optionally -rcN): $VERSION"
@@ -78,6 +91,7 @@ cp -R "$repo/guests/browser/incus" "$root/usr/lib/convergent/incus/browser/"
 	printf "BLOCKLIST_URL='%s'\n" "$blocklist"
 	sed '/^BLOCKLIST_URL=/d' "$repo/rootfs/etc/convergent/dns.conf"
 } >"$root/etc/convergent/dns.conf"
+xkb_known "$layouts" "$root/usr/share/X11/xkb/rules/evdev.lst" || die "xkb_layouts $layouts is not installed"
 xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
 # The power-off first: the lock, always the first timeout, could otherwise become 660 and be taken.

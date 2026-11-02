@@ -120,6 +120,7 @@ result=0
 [ "$((65536 - $(wc -c <"$reply")))" -ge 49152 ]
 guest_reply 65536 transport >"$scratch/output"
 cmp "$reply" "$scratch/output"
+: >"$scratch/no-config"
 CONVERGENT_CONFIG=$scratch/no-config sh "$here/networks" registry "$scratch/registry"
 sed -n '/^heal_probe() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
     sed -e "s|/usr/lib/convergent/incus/carp.awk|$repo/rootfs/usr/lib/convergent/incus/carp.awk|g" \

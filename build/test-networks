@@ -35,6 +35,10 @@ for home_prefixes in '' 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 192.168.1.2/32 '
 	[ "$(get home_lan_prefixes)" = "$home_prefixes" ]
 done
 : >"$CONVERGENT_CONFIG"
+# A set but missing config path fails instead of rendering defaults.
+if CONVERGENT_CONFIG=$work/missing sh "$here/networks" registry "$work/missing-root" 2>"$work/error"; then exit 1; fi
+grep -q 'does not exist' "$work/error"
+[ ! -e "$work/missing-root" ]
 for topology in default changed; do
 	if [ "$topology" = changed ]; then
 		cat >"$CONVERGENT_CONFIG" <<'EOF'

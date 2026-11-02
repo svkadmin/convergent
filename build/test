@@ -270,6 +270,8 @@ if [ "${1:-}" = --install-options ]; then
 		grep -qF 'LUKS passphrase must use printable ASCII (space through `~`)' "$here/../$doc"
 	done
 	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
+	# The version lives in build.conf only.
+	if grep -Eq '^#.*[0-9]+\.[0-9]+\.[0-9]+' "$here/../config.example.yaml"; then die 'config.example.yaml names a version'; fi
 	sh "$here/../tools/config-get" --selftest
 	. "$here/../install/options.sh"
 	# 100 GiB minus the release partitions and GPT/alignment.
@@ -442,6 +444,59 @@ if [ "${1:-}" = --install-options ]; then
 	# The desktop owner's password has no initramfs keymap restriction.
 	printf '%s\n' "$badpass" >"$work/input"
 	(image_install=1 tty_mode=; secret 'Owner password' 3<"$work/input"; [ "$pass" = "$badpass" ])
+	)
+	(
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	# Image xkb_layouts must exist in the installed layout list.
+	sed -n '/^xkb_known() {/,/^}/p' "$here/image" >"$work/xkb-known"
+	[ -s "$work/xkb-known" ]
+	sh -n "$work/xkb-known"
+	(
+	. "$work/xkb-known"
+	printf '! layout\n  us English (US)\n  hu Hungarian\n! variant\n  dvorak us: English (Dvorak)\n' >"$work/evdev.lst"
+	for good in us 'us(dvorak),hu' hu,us; do xkb_known "$good" "$work/evdev.lst" || die "rejected $good"; done
+	for bad in zz us,zz 'us(nosuch)' 'hu(dvorak)'; do
+		if xkb_known "$bad" "$work/evdev.lst"; then die "accepted $bad"; fi
+	done
+	if xkb_known us "$work/no-evdev.lst" 2>/dev/null; then die 'accepted a missing layout list'; fi
+	)
+	# Reinstalls replace only this disk's entries of the same label.
+	sed -n '/^boot_entry() {/,/^}/p' "$here/../install/install" >"$work/boot-entry"
+	[ -s "$work/boot-entry" ]
+	sh -n "$work/boot-entry"
+	(
+	. "$work/boot-entry"
+	disk=/dev/testdisk
+	efibootmgr() {
+		case $1 in
+		-v) [ "$fault" != list ] || return 1
+			printf 'BootCurrent: 0001\nTimeout: 1 seconds\nBootOrder: 0001,0002,0003,0004,0005,000A\n'
+			printf 'Boot0001* Gentoo\tHD(1,GPT,AAAA-0001,0x800,0x100000)/File(\\EFI\\systemd\\systemd-bootx64.efi)\n'
+			printf 'Boot0002* Gentoo\tHD(1,GPT,bbbb-0001,0x800,0x100000)/File(\\EFI\\systemd\\systemd-bootx64.efi)\n'
+			printf 'Boot0003* Other\tHD(1,GPT,aaaa-0001,0x800,0x100000)/File(\\EFI\\other.efi)\n'
+			printf 'Boot0004* Gentoo Old\tHD(1,GPT,aaaa-0001,0x800,0x100000)/File(\\EFI\\old.efi)\n'
+			printf 'Boot0005  Gentoo\tHD(2,GPT,aaaa-0002,0x800,0x100000)/\\EFI\\systemd\\systemd-bootx64.efi\n'
+			printf 'Boot000A* Gentoo\tPciRoot(0x0)/Pci(0x1,0x0)/HD(1,GPT,cccc-0001,0x800,0x100000)\n' ;;
+		-b) printf '%s\n' "$*" >>"$work/efi-calls"; [ "$fault" != remove ] ;;
+		*) printf '%s\n' "$*" >>"$work/efi-calls" ;;
+		esac
+	}
+	guids='
+aaaa-0001
+aaaa-0002'
+	fault=
+	boot_entry Gentoo "$guids"
+	printf '%s\n' '-b 0001 -B' '-b 0005 -B' \
+		'--create --disk /dev/testdisk --part 1 --label Gentoo --loader \EFI\systemd\systemd-bootx64.efi' >"$work/expected"
+	cmp "$work/expected" "$work/efi-calls"
+	# A failed listing or removal creates no second entry.
+	for fault in list remove; do
+		: >"$work/efi-calls"
+		if boot_entry Gentoo "$guids"; then die "boot entry ignored $fault failure"; fi
+		if grep -q -- --create "$work/efi-calls"; then die "created an entry after $fault failure"; fi
+	done
+	)
 	)
 	echo 'test: install options passed'
 	exit 0

@@ -265,6 +265,19 @@ check_identity() {
 	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
 	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
 }
+# Replace this disk's earlier entries of the same label ($2: their partition GUIDs); others stay.
+boot_entry() {
+	entries=$(efibootmgr -v) || return
+	stale=$(printf '%s\n' "$entries" | awk -F '\t' -v label="$1" -v guids="$(printf '%s' "$2" | tr '\n' ' ')" '
+		BEGIN { n = split(tolower(guids), g, " "); for (i = 1; i <= n; i++) want[g[i]] = 1 }
+		/^Boot[0-9A-F][0-9A-F][0-9A-F][0-9A-F][* ] / && substr($1, 11) == label &&
+			match($2, /HD\([0-9]+,GPT,[0-9A-Fa-f-]+,/) {
+			split(substr($2, RSTART + 3, RLENGTH - 4), f, ",")
+			if (tolower(f[3]) in want) print substr($1, 5, 4)
+		}') || return
+	for n in $stale; do efibootmgr -b "$n" -B >/dev/null || return; done
+	efibootmgr --create --disk "$disk" --part 1 --label "$1" --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null
+}
 serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
 disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
 minimum_mib=32768
@@ -387,6 +400,8 @@ secret 'LUKS passphrase'
 # Recheck target identity; use disk-local partition paths.
 check_disk
 check_identity
+# Earlier boot entries for this disk point at these partitions.
+old_guids=$(lsblk -nro PARTUUID "$disk") || die "cannot read partitions of $disk"
 run sgdisk --zap-all "$disk"
 check_identity
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
@@ -491,7 +506,7 @@ run sync
 if [ -z "$image_install" ]; then
 	name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/usr/lib/os-release")
 	# EFI/BOOT/BOOTX64.EFI already boots it; a firmware that refuses the entry is not fatal.
-	efibootmgr --create --disk "$disk" --part 1 --label "${name:-Linux}" --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null ||
+	boot_entry "${name:-Linux}" "$old_guids" ||
 		echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
 fi
 cleanup || die "could not close the installed system"

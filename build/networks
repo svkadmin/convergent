@@ -7,6 +7,8 @@ repo=${here%/build}
 [ "$#" = 2 ] || { echo 'usage: networks host|fw|wan|svc|registry <staging-root>' >&2; exit 1; }
 kind=$1 root=$2
 input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
+# Only the unset default may be absent; a mistyped path never renders defaults.
+[ -z "${CONVERGENT_CONFIG:-}" ] || [ -e "$input" ] || { echo "networks: CONVERGENT_CONFIG $input does not exist" >&2; exit 1; }
 cfg() { sh "$repo/tools/config-get" "$input" "$1"; }
 dev=$(cfg work_dev_name)
 jhn=$(cfg work_jhn_name)
