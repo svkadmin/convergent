@@ -40,8 +40,8 @@ watchdog, boot counter, blessing or option to continue into a release.
    release (if uniquely identifiable). Confirm the printed release and slot with `yes`. This
    allows older or identical signed releases, preserving `/var` subvolumes, `good` and `highest`.
    It uses `slot`'s checksum, size and readback checks and installs the UKI with three tries.
-   Use option 4 to boot it next, especially if older than the other slot. Normal updates enforce
-   anti-rollback.
+   Use option 4 to boot it next, especially if older than the other slot; later boots return to the
+   newer slot (recipe 3). Normal updates enforce anti-rollback.
 4. Choose next slot. Select `a` or `b`; this writes `LoaderEntryOneShot` for its normal profile. It
    can pick an exhausted entry without resetting its counter or marking it good.
 5. Copy logs to USB. Choose a writable USB partition. A new `convergent-logs-<time>.<suffix>`
@@ -113,7 +113,10 @@ Send the output/release ID; install the fixed release when available.
 
 Stop the three-second menu with an arrow key. Pick the other `SLOT A | Gentoo <version> - <kernel>`
 or SLOT B entry. Older entries may show only Gentoo Linux; the top bootable release is default.
-Verify the other slot booted with `sudo slot status`.
+Verify the other slot booted with `sudo slot status`. The newer slot stays the default after a
+downgrade or this rollback: to stay on the older release, write it into both slots (rescue option 3,
+once per slot), or press `d` on its entry in the menu for a persistent default (the next `slot write`
+clears it).
 
 Its `/var` predates the update; guest pool data stays current and may conflict with old metadata.
 There is no guest-update rollback guard. The next `slot write` must exceed highest-good.
@@ -123,7 +126,8 @@ There is no guest-update rollback guard. The next `slot write` must exceed highe
 Disk-image first boot runs `guests init` (bar SETUP, log `/var/log/guests-setup.log`). Retry the
 printed failure with `sys guests setup` (uses `/var/lib/convergent/release-guests`) or
 `sudo guests init <dir>` using the original directory; completed steps skip. Update failure restores
-the old guest: fix the cause and retry. Finish when SETUP disappears and fw1/fw2/wan/svc run.
+the old guest: fix the cause and retry. If fw1 stays silent after a handoff, run `sys firewall rebuild fw1`,
+then `sys guests update`; after a commit, rebuild the silent node. Finish when SETUP disappears and fw1/fw2/wan/svc run.
 
 ```sh
 sudo guests status                          # one line per guest and its state

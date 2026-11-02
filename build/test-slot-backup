@@ -36,12 +36,14 @@ prune() { :; }
 sync() { :; }
 mv() {
     case "$fault:$*" in
-    highest:*'/highest.new '*|good:*'/good.new '*|rename:*'+3.efi '*|loader:*'/loader.conf.new '*) return 1 ;;
+    highest:*'/highest.new '*|good:*'/good.new '*|rename:*'-a.efi.new '*|loader:*'/loader.conf.new '*) return 1 ;;
+    # The counted UKI is copied, never renamed.
+    *'+3.efi '*) exit 98 ;;
     esac
     command mv "$@"
 }
 cp() {
-    if [ "$fault" = copy ]; then
+    if [ "$fault" = copy ] && [ "$1" = "$work/rescue.efi" ]; then
         [ "$(cat "$stm/highest")" = 123 ] && [ "$(cat "$stm/good")" = 123 ] || exit 97
         [ -f "$esp/$linux/convergent-123-a.efi" ] && [ -f "$work/bless/disarmed" ] || exit 97
         echo partial >"$2"
@@ -53,32 +55,43 @@ cp() {
 bless
 BLESS
 sh -n "$work/bless-driver"
-for fault in none health highest rename good loader copy; do
+# cut/differ: a power loss left both names of the booted release (a verified copy, or not).
+for fault in none health highest rename good loader copy cut differ; do
     rm -rf "$work/bless"
     esp=$work/bless/esp stm=$work/bless/state
     mkdir -p "$esp/EFI/Linux" "$esp/loader" "$stm"
     echo 122 >"$stm/highest"
     echo 122 >"$stm/good"
     echo host >"$esp/EFI/Linux/convergent-123-a+3.efi"
+    case $fault in
+    cut|differ)
+        mv "$esp/EFI/Linux/convergent-123-a+3.efi" "$esp/EFI/Linux/convergent-123-a+2-1.efi"
+        echo host >"$esp/EFI/Linux/convergent-123-a.efi"
+        [ "$fault" != differ ] || echo partial >"$esp/EFI/Linux/convergent-123-a.efi"
+        ;;
+    esac
     echo old >"$esp/EFI/Linux/convergent-rescue.efi"
     echo new >"$work/rescue.efi"
     echo 'default convergent-*' >"$esp/loader/loader.conf"
     if sh "$work/bless-driver" "$fault" >"$work/bless-out" 2>&1; then
-        case $fault in none|loader|copy) ;; *) die "blessed despite $fault failure" ;; esac
+        case $fault in none|loader|copy|cut) ;; *) die "blessed despite $fault failure" ;; esac
     else
-        case $fault in none|loader|copy) cat "$work/bless-out"; die "bless failed: $fault" ;; esac
+        case $fault in none|loader|copy|cut) cat "$work/bless-out"; die "bless failed: $fault" ;; esac
         grep -qx 122 "$stm/good"
         grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
+        [ "$fault" != rename ] || [ -f "$esp/EFI/Linux/convergent-123-a+3.efi" ]
+        [ "$fault" != differ ] || [ -f "$esp/EFI/Linux/convergent-123-a+2-1.efi" ]
+        [ ! -e "$esp/EFI/Linux/convergent-123-a.efi.new" ]
         continue
     fi
     grep -qx 123 "$stm/highest"
     grep -qx 123 "$stm/good"
-    [ -f "$esp/EFI/Linux/convergent-123-a.efi" ]
-    [ ! -e "$esp/EFI/Linux/convergent-123-a+3.efi" ]
+    grep -qx host "$esp/EFI/Linux/convergent-123-a.efi"
+    for f in "$esp"/EFI/Linux/convergent-123-a+* "$esp/EFI/Linux/convergent-123-a.efi.new"; do [ ! -e "$f" ]; done
     [ -f "$work/bless/disarmed" ]
     [ ! -e "$esp/EFI/Linux/convergent-rescue.efi.new" ]
     [ ! -e "$esp/loader/loader.conf.new" ]
-    if [ "$fault" != none ]; then
+    if [ "$fault" != none ] && [ "$fault" != cut ]; then
         grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
         grep -q 'could not refresh rescue' "$work/bless-out"
         sh "$work/bless-driver" none >"$work/bless-out" 2>&1
@@ -197,13 +210,21 @@ vars=$case_root/vars
 esp=$case_root/esp tmp=$case_root/tmp stm=$case_root/state
 linux=EFI/Linux new=123 inactive=b mounted= oneshot=
 mkdir -p "$vars" "$esp/$linux" "$tmp" "$stm"
+# A non-empty directory: an unquoted glob in the entry would expand here.
+cd "$case_root"
 die() { echo "$*" >&2; exit 1; }
 log() { echo "$*"; }
 sync() { :; }
 umount() { :; }
 vars_mount() { [ "$fault" != mount ] || die 'mount failed'; }
 esp_mount() { :; }
-ukis() { echo "$esp/$linux/convergent-123-$1+3.efi"; }
+ukis() {
+    case $fault in
+    exhausted) echo "$esp/$linux/convergent-123-$1+0-3.efi" ;;
+    good) echo "$esp/$linux/convergent-123-$1.efi" ;;
+    *) echo "$esp/$linux/convergent-123-$1+3.efi" ;;
+    esac
+}
 chattr() {
     echo "$*" >>"$case_root/flags"
     case "$fault:$1:${2##*/}" in
@@ -251,22 +272,32 @@ for mode in write rescue next; do
     case $mode in
     write) faults='none mount default preferred delete' ;;
     rescue) faults=none ;;
-    next) faults='none absent unlock write protect' ;;
+    next) faults='none absent exhausted good unlock write protect' ;;
     esac
     for fault in $faults; do
         rm -rf "$work/case"
         if sh "$work/driver" "$mode" "$fault" >"$work/out" 2>"$work/error"; then
-            case $fault in none|absent) ;; *) die "accepted $mode/$fault" ;; esac
+            case $fault in none|absent|exhausted|good) ;; *) die "accepted $mode/$fault" ;; esac
         else
-            case $fault in none|absent) cat "$work/error"; die "failed $mode/$fault" ;; esac
+            case $fault in none|absent|exhausted|good) cat "$work/error"; die "failed $mode/$fault" ;; esac
             if grep -q 'release 123 is\|next boot:' "$work/out"; then die 'reported failed operation as successful'; fi
         fi
         vars=$work/case/vars
         if [ "$mode" = next ]; then
             [ -e "$vars/LoaderEntryOneShot-$guid.lock" ] || die 'one-shot left mutable'
-            case $fault in none|absent)
+            case $fault in none|absent|exhausted|good)
+                # Systemd-boot fnmatches OneShot: the ID with or without its counter, not recovery or slot a.
+                glob=$(tail -c +5 "$vars/LoaderEntryOneShot-$guid" | tr -d '\000')
+                for id in convergent-123-b.efi convergent-123-b+0-3.efi; do
+                    # shellcheck disable=SC2254
+                    case $id in $glob) ;; *) die "one-shot $glob misses $id" ;; esac
+                done
+                for id in convergent-123-b.efi@recovery convergent-123-a.efi convergent-1234-b.efi; do
+                    # shellcheck disable=SC2254
+                    case $id in $glob) die "one-shot $glob matches $id" ;; esac
+                done
                 printf '\007\000\000\000' >"$work/expected"
-                for char in c o n v e r g e n t - 1 2 3 - b . e f i; do printf '%s\000' "$char"; done >>"$work/expected"
+                for char in c o n v e r g e n t - 1 2 3 - b '*' . e f i; do printf '%s\000' "$char"; done >>"$work/expected"
                 printf '\000\000' >>"$work/expected"
                 cmp "$work/expected" "$vars/LoaderEntryOneShot-$guid"
                 ;; esac
