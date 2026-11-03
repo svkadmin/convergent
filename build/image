@@ -93,7 +93,10 @@ cp -R "$repo/guests/browser/incus" "$root/usr/lib/convergent/incus/browser/"
 	printf "BLOCKLIST_URL='%s'\n" "$blocklist"
 	sed '/^BLOCKLIST_URL=/d' "$repo/rootfs/etc/convergent/dns.conf"
 } >"$root/etc/convergent/dns.conf"
-xkb_known "$layouts" "$root/usr/share/X11/xkb/rules/evdev.lst" || die "xkb_layouts $layouts is not installed"
+# xkeyboard-config links X11/xkb absolutely: resolve it inside the image root, not on the builder.
+xkb=$(readlink "$root/usr/share/X11/xkb") || xkb=/usr/share/X11/xkb
+case $xkb in /*) ;; *) xkb=/usr/share/X11/$xkb ;; esac
+xkb_known "$layouts" "$root$xkb/rules/evdev.lst" || die "xkb_layouts $layouts is not installed"
 xkb_layout=$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')
 xkb_variant=$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')
 # The power-off first: the lock, always the first timeout, could otherwise become 660 and be taken.
