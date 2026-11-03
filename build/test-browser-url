@@ -15,7 +15,7 @@ sed -n '/^if \[ "${1:-}" = --session \]; then$/,/^fi$/p' "$repo/tools/browser" |
 sed -n '/^\[ "${1:-}" = --privileged \]/,/^uid=\$SUDO_UID$/p' "$repo/tools/browser" |
     sed '$d; s|/usr/local/sbin/portal gateway|portal gateway|' >"$work/privileged"
 sed -n '/^send_url "\$@" .*| incus /,/^browser=\$!$/p' "$repo/tools/browser" >"$work/incus"
-sed -n '/^\[ "\$#" = 0 \]/,/^\[ -S \/mnt\/browser\/wayland-0 \]/p' \
+sed -n '/^url=\$(head -c /,/^\[ -S \/mnt\/browser\/wayland-0 \]/p' \
     "$repo/guests/browser/rootfs/usr/local/bin/browser-launch" |
     sed '$d; s|\[ -f /run/browser-portal \]|[ "$portal_mode" = 1 ]|' >"$work/guest"
 for part in send owner session privileged incus guest; do check_script "$work/$part"; done
@@ -101,7 +101,8 @@ for sample in missing count unexpected empty scheme int args remmina oversized; 
         . "$work/privileged" <"$work/input"
     ) >"$work/error" 2>&1 || rc=$?
     [ "$rc" != 0 ] || die "accepted $sample"
-    [ "$sample" != remmina ] || continue
+    # Empty stdin is the legacy no-URL form, checked below.
+    [ "$sample" != remmina ] && [ "$sample" != missing ] || continue
     rc=0
     (
         role=tmp portal_mode=
@@ -120,12 +121,54 @@ done
     . "$work/privileged" <"$work/input"
     [ "$#" = 0 ]
 )
+# Rollback: a 0.1.5 or older host runs the launcher with --disable-stdin and the URL as an argument.
+for sample in token default grafana incus portal; do
+    rc=0
+    (
+        role=tmp portal_mode=
+        set --
+        case $sample in
+            token) set -- "$token" ;;
+            default) role=def ;;
+            grafana) role=int ;;
+            incus) role=int; set -- https://100.80.1.10:8443/ui/ ;;
+            portal) portal_mode=1; set -- "$token" ;;
+        esac
+        . "$work/guest" </dev/null
+        printf '%s\n' "$#" "$@" >"$work/chromium-input"
+    ) >"$work/error" 2>&1 || rc=$?
+    [ "$rc" = 0 ] || die "guest rejected legacy $sample"
+    case $sample in
+        token) printf '%s\n' 1 "$token" ;;
+        default) printf '0\n' ;;
+        grafana) printf '%s\n' 1 http://100.80.2.10:3000/ ;;
+        incus) printf '%s\n' 1 https://100.80.1.10:8443/ui/ ;;
+        portal) printf '%s\n' 2 --disable-gpu "$token" ;;
+    esac >"$work/expected"
+    cmp "$work/expected" "$work/chromium-input"
+done
+for sample in count scheme int oversized portal_default; do
+    rc=0
+    (
+        role=tmp portal_mode=
+        set --
+        case $sample in
+            count) set -- https://example.org/ https://example.com/ ;;
+            scheme) set -- file:///etc/passwd ;;
+            int) role=int; set -- https://example.org/ ;;
+            oversized) set -- "https://$(head -c 131072 /dev/zero | tr '\000' x)" ;;
+            portal_default) portal_mode=1 ;;
+        esac
+        . "$work/guest" </dev/null
+    ) >"$work/error" 2>&1 || rc=$?
+    [ "$rc" != 0 ] || die "guest accepted legacy $sample"
+done
 # An argv-only installed guest must fail before portal, unlock/import or Grafana.
 sed -n '/^# Refuse argv-only guests /,/^\[ -z "\$portal_mode" \]/p' "$repo/tools/browser" |
     sed 's|/usr/local/sbin/incus-ui|service_call|g; s|/usr/local/sbin/portal begin|service_call begin|' >"$work/services"
 check_script "$work/services"
 guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
-sed '/^\[ "\$#" = 0 \]/,/^esac$/d' "$guest" >"$work/argv-only"
+sed '/^url=\$(head -c /,/^esac$/d' "$guest" >"$work/argv-only"
 check_script "$work/argv-only"
 for version in current old missing; do
     for mode in def tmp portal grafana incus remmina; do
@@ -246,4 +289,4 @@ awk '/^# Refuse argv-only guests / {guard = NR}
     write_url "$@" >"$work/expected"
     cmp "$work/expected" "$work/blocked-input"
 )
-echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions and writer locks passed'
+echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions, rollback hosts and writer locks passed'

@@ -546,6 +546,12 @@ and offers reboot. Root equivalent: `sudo fetch-release`; check only reports/ref
 On online installs, Overview's Security / Updates card degrades two days after the last update check. Installs without online updates show DEGRADED until `sys update check` runs once after each install or USB update.
 [Failures](RECOVERY.md#12-an-online-update-fails).
 
+CheckerFailed after a host update is expected (manifest release, kernel and verity hash differ from
+the accepted baseline) until `sudo check accept /var/lib/convergent/release-guests`, run once GUESTS
+clears: after the slot write, fetch-release keeps the verified manifest there beside the installed
+firewall hashes. Updates written by 0.1.5 or older keep none: accept with the release directory on
+the build host or stick. Only the latest written release is kept: accept each release before writing the next.
+
 USB: copy latest/latest.sig, manifest/manifest.sig, slot.img, both release .efi files, guests/,
 guests.manifest/guests.manifest.sig and any remmina.manifest/remmina.manifest.sig to FAT32/exFAT.
 Once guests exist, latest naming guests requires their signed manifest. Approve USB with

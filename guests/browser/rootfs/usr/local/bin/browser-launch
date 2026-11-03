@@ -12,9 +12,14 @@ die() { echo "browser-launch: $*" >&2; exit 1; }
 [ -f /run/browser-ready ] || die "role setup incomplete"
 role=$(cat /run/browser-role)
 case $role in def|tmp|int) ;; *) die "invalid role" ;; esac
-[ "$#" = 0 ] || die "URLs must arrive on stdin"
 url=$(head -c 131075 && printf '.') || die 'cannot read URL input'
 url=${url%.}
+# Rollback: 0.1.5 and older hosts close stdin and pass at most one URL as an argument.
+if [ -z "$url" ]; then
+    case $# in 0|1) url="$#
+${1-}"; set -- ;; *) die 'expected at most one URL' ;; esac
+fi
+[ "$#" = 0 ] || die "URLs must arrive on stdin"
 [ "${#url}" -le 131074 ] || die 'URL input too long'
 case $url in
     '0
