@@ -3124,6 +3124,11 @@ incus() {
     esac
     command incus "$@"
 }
+# ic() bounds config changes with timeout(1), which would bypass incus() above.
+timeout() {
+    case "$seed_fault:$*" in attach:'-k 1 120 incus '*' config device add svc seed disk '*) shift 3; "$@" ;;
+    *) command timeout "$@" ;; esac
+}
 FAULT
     cat /usr/local/sbin/guests >>"$release/guests-seed-error"
     sh "$release/guests-seed-error" update svc "$release/guests/svc" --trusted-local >"/var/log/guests-update-seed-$fault.log" 2>&1
@@ -4601,9 +4606,10 @@ trap 'rm -rf "$work"' 0
 HOME=$work/home SWAYSOCK=fixture XDG_RUNTIME_DIR=$work/runtime
 mkdir -p "$HOME/.config/sway/config.d" "$XDG_RUNTIME_DIR"
 printf 'input type:touchpad dwt enabled\n' >"$HOME/.config/sway/config.d/touchpad"
-# A power cut left a temp file; only the saved name's leftovers go.
+# A power cut left temp files; every config name's leftovers go, other files stay.
 printf 'stale\n' >"$HOME/.config/sway/config.d/.touchpad.Ab12Cd"
-printf 'other\n' >"$HOME/.config/sway/config.d/.input.Ab12Cd"
+printf 'stale\n' >"$HOME/.config/sway/config.d/.input.Ab12Cd"
+printf 'other\n' >"$HOME/.config/sway/config.d/.keep.Ab12Cd"
 sed -n '/^save_config() ($/,/^)/p' /usr/local/sbin/sys >"$work/save-config"
 [ -s "$work/save-config" ]
 sh -n "$work/save-config"
@@ -4662,8 +4668,9 @@ touchpad_set natural_scroll enabled >"$work/scroll.out"
 grep -qx accepted "$HOME/.config/sway/touchpad.lock"
 command flock -n "$XDG_RUNTIME_DIR/convergent-touchpad.lock" true
 [ ! -e "$HOME/.config/sway/config.d/.touchpad.Ab12Cd" ]
-grep -qx other "$HOME/.config/sway/config.d/.input.Ab12Cd"
-rm "$HOME/.config/sway/config.d/.input.Ab12Cd"
+[ ! -e "$HOME/.config/sway/config.d/.input.Ab12Cd" ]
+grep -qx other "$HOME/.config/sway/config.d/.keep.Ab12Cd"
+rm "$HOME/.config/sway/config.d/.keep.Ab12Cd"
 [ "$(find "$HOME/.config/sway/config.d" -type f | wc -l)" = 1 ]
 )
 sed -n '/printf.*json.*jq -e --arg key/,/not saved/p' /usr/lib/convergent/sys/51-touchpad >"$work/verify"
