@@ -36,6 +36,13 @@ build/packages          # image packages; --pretend previews
 build/image             # UTC release ID: YYYYMMDDHHMM
 ```
 
+`build/buildenv` keeps what upstream prunes in verified caches, so they outlive a rebuilt builder. The
+stage3 pair stays in /var/cache/convergent/stage3: its signature and pin are checked on every use, and
+a cached pair that fails is removed; its download has the Alpine bounds below. Gentoo distfiles stay in
+/var/cache/convergent/distfiles, bound into the builder as its DISTDIR; Portage checks each against its
+Manifest. The Portage snapshot is kept in that DISTDIR and checked against its digest and signature
+again.
+
 Patched packages compile and rebuild on patch changes. Bump VERSION in `build/build.conf` per
 release: major.minor.patch, optional -rcN. Version appears
 in /usr/lib/convergent/version, CONVERGENT_VERSION, boot titles, manifest and status; timestamp ID
@@ -56,8 +63,12 @@ build/stick <release> $g <out.img> [size]          # default 30G
 zstd -T0 <out.img>
 ```
 
-Alpine builds keep the pinned minirootfs and svc's verified edge apks in /var/cache/convergent/alpine
-(CACHE_DIR). Keep it: edge serves only its newest build. Network failures get three tries.
+Alpine builds keep the pinned minirootfs, the Remmina source and patch, the Grafana VictoriaLogs plugin
+and svc's edge apks in /var/cache/convergent/alpine (CACHE_DIR). Each pinned download and edge apk is
+checked against its pin on every use; a copy that no longer matches is removed and fetched again. Keep
+it: edge serves only its newest build. Alpine downloads get a 30-second connect timeout, an hour per
+try and two retries; apk network failures get three tries. The browser image takes any Alpine Chromium
+at or above 156.0.8078.79-r0, since Alpine deletes a build when it ships the next.
 
 Stick asks for owner password then LUKS passphrase, 12–256 bytes each.
 The LUKS passphrase must use printable ASCII (space through `~`). Owner selection:
@@ -72,6 +83,9 @@ certificates; WAN has the fixed endpoint diagnostic. Keep these images together.
 Remmina builds as root on native x86_64 Linux: compile patched 1.4.43 for Secret Service-only
 password storage, retain Alpine plugins, remove build dependencies. Inventory, executable hash and
 patch ship in the image; the advisory gate scans it. Separate remmina.manifest binds delivery.
+Any Alpine rebuild of 1.4.43 supplies the plugins; another upstream version stops the build. The
+advisory gate judges the source-built binary as r0, so an advisory fixed only in a later Alpine
+rebuild is reported as affected until the source pin moves.
 
 ### Firewall images
 
@@ -145,7 +159,8 @@ each shipped Alpine branch's secdb and OpenBSD errata. Affected packages, missin
 patches/inventories, and fetch/parse failures block publication; previous successful scans do not
 authorize publishing. Only the builder fetches feeds; Portage matching runs in its chroot. Needs
 python3, git, curl/Portage and coreutils timeout; signing remains offline-capable. GLSA clone has
-a 120-second deadline and forced termination after another 10 seconds.
+a 120-second deadline per try, forced termination 10 seconds later, and one retry from an empty tree
+after 5 seconds. Each feed fetch is bounded at 60 seconds per try, with two retries.
 
 Host packages/slots are inventoried before trimming in build-host-only packages/packages.sig;
 build/image binds them to the host manifest digest; build/sign and the scanner enforce the binding.

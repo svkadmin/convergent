@@ -596,8 +596,10 @@ sudo guests update fw|wan|svc|browser|def|int|remmina <image-dir>
 Close browsers/Remmina. After host reboot/bless, apply order is svc, wan, fw, browser, Remmina;
 while legacy web/admin objects exist, browser goes first and migrates them. Bar: GUESTS / GUESTS
 failed; retry sys guests update. If the newest host lacks its guests, sys update install
-fetches/applies them immediately. Browser updates advance future tmp/portal images; def/int
-normally replaces one instance, but migration updates both.
+fetches/applies them immediately. With no update pending, sys guests update also starts a wan or svc
+that Incus left stopped after ten crashes in a minute; if three tries fail, it names the manual rebuild.
+Browser updates advance future tmp/portal images; def/int normally replaces one instance, but migration
+updates both.
 
 One operation runs at a time. Interrupted browser updates block launches until retried. Replacements
 retain state/bookmarks/logins; legacy web/admin names become def/int, without command aliases.

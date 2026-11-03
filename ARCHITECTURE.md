@@ -78,7 +78,8 @@ NAT. A passed-through USB Ethernet adapter provides the optional wired uplink vi
 - No Incus agent/guest API; host-only SSH on transit uses OpenSSH's default key exchange.
 - Upstream output allows DHCP; transit output allows replies/syslog. Input allows management,
   metrics and firewall probes. Private forwarding is limited by section 4.2.
-- Overlapping upstream leases are refused and raise UpstreamOverlap.
+- Overlapping upstream leases are refused and raise UpstreamOverlap. Each uplink keeps its own refusal,
+  so two overlapping uplinks do not flap.
 - Wired DHCP clears stale state after removal, addressless replug, identity or carrier changes,
   including cable loss/regain between checks. Assignment shares the guest-operation lock.
 - PTP over KVM disciplines guest chrony without a network time listener.
@@ -99,7 +100,8 @@ firewall failures from host kernel failures.
   without local DNS or IPv4 forwarding; three good rounds recover. Each WAN probe round sends three
   probes 300 ms apart, bounded to one second; any reply passes. Group counter survives restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
-- **Unbound:** Resolver on CARP gateways, so DNS follows failover
+- **Unbound:** Resolver on CARP gateways, so DNS follows failover. It gets 120 s to start before rc
+  kills it.
 - **DHCP:** Work VLANs only; synchronized leases checkpointed across replacement
 - **Management:** Host-only SSH, NTP from host, exporter and TLS syslog to svc; default route via
   wan
@@ -115,10 +117,13 @@ Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 The minute checker restarts a firewall after three minutes of failed checks only if its peer is
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
 restart, permits three attempts/hour, and is inhibited by guest journals, DNS pushes, maintenance
-and shutdown.
-A QEMU unreadable by Incus is killed using its pid file after verifying the instance in its command
-line, then restarted; guest replacement uses the same stop procedure. Attempts appear in
-syslog and the checker report.
+and shutdown. A lease hold left by a run that could not reach a node does not inhibit it: once both
+firewalls answer their health probe, the checker resumes work DHCP and releases the hold; while the
+hold is set, the probe accepts a disabled dhcpd.
+A firewall QEMU unreadable by Incus is killed using its pid file after verifying the instance in its
+command line, then restarted, unless the checker is inhibited. wan and inhibited QEMUs are ended by
+hand ([RECOVERY 4](RECOVERY.md#a-frozen-guest-qemu)). Guest replacement uses the same stop procedure.
+Attempts appear in syslog and the checker report.
 
 On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then firewalls, with
 20 seconds per guest for graceful stop before forcing. Autorestart is held during stopping; previous
@@ -450,6 +455,10 @@ SHA256SUMS plus profiles. Delivery/retry/staleness: [USAGE](USAGE.md#releases-an
 Guest replacements require a good host and serialize operations. Snapshot custom state before
 rebuilding in place; retain the old image until checks pass. Failure/interruption rebuilds/reseeds
 the old image and restores snapshots; keep three snapshots/volume. Remmina excludes share.
+
+Incus reads and config changes in guest operations are bounded at 120 s. A frozen VM monitor holds the
+instance listing, so a timeout names the frozen guest and its recovery. With no update pending, apply
+also starts a wan or svc that Incus left stopped after ten crashes in a minute.
 
 With unchanged topology, replace fw2, check CARP/pfsync/rules/DNS/traffic, fail over, then replace
 fw1. Failure restores the target before touching its peer. Reseed DHCP leases and push stored DNS
