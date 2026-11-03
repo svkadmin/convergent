@@ -58,15 +58,15 @@ fi
 services="unbound wan_watch sshd"
 [ -f "$seed/dhcpd.hold" ] || services="$services dhcpd"
 rcctl enable $services
-# Unbound on a loaded one-vCPU firewall outlasted rc's 30 s start limit, after which rc kills it.
-# Set here: install.site's rcctl disable removes every unbound_* line.
-rcctl set unbound timeout 120
-[ "$(rcctl get unbound timeout)" = 120 ]
 # rcctl sets flags only on enabled daemons; a held dhcpd gets them when fw-leases enables it.
 case " $services " in *" dhcpd "*)
     dhcpd_flags=$(cat /etc/convergent/dhcpd.flags)
     rcctl set dhcpd flags $dhcpd_flags ;;
 esac
+# Unbound on a loaded one-vCPU firewall outlasted rc's 30 s start limit, after which rc kills it.
+# Set here: install.site's rcctl disable removes every unbound_* line.
+rcctl set unbound timeout 120
+[ "$(rcctl get unbound timeout)" = 120 ]
 rcctl set syslogd flags -h -C /etc/ssl/convergent-ca.pem
 sync
 mv "$stage" /etc/convergent/seeded
