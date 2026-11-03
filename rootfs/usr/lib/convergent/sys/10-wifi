@@ -13,7 +13,7 @@ wifi_ssh() { run sudo /usr/bin/ssh -F /etc/convergent/ssh_config wan "$@" 2>&1; 
 wifi_reply() {
 	_result=0
 	_reply=$(guest_reply --display 65536 wifi_ssh "$@") || _result=$?
-	printf '%s\n' "$_reply" | tr -d '\000-\010\013-\037\177'
+	printf '%s\n' "$_reply" | guest_text
 	return "$_result"
 }
 wifi_wan() { wifi_reply wifi "$@"; }

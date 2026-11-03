@@ -6,3 +6,12 @@
 	missingok
 	notifempty
 }
+# Incus appends up to the 1 MiB console ring to console.log on every read and rotates it only at VM start.
+/var/log/incus/*/console.log {
+	size 4M
+	rotate 1
+	compress
+	copytruncate
+	missingok
+	notifempty
+}

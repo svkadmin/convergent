@@ -106,14 +106,14 @@ retry() {
         now=$(cut -d. -f1 /proc/uptime) || return
         if [ "$now" -ge "$deadline" ]; then
             polling=
-            cat "$work/retry.err" >&2
+            guest_text <"$work/retry.err" >&2
             [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(head -c 65536 "$work/retry.err")" 2>/dev/null || :
             fail "$* timed out after ${wait}s" || :
             case $1:${2:-} in pin:fw1|pin:fw2|pin:wan|seed_applied:fw1|seed_applied:fw2|seed_applied:wan|healthy:fw1|healthy:fw2|healthy:wan)
                 now=$(cut -d. -f1 /proc/uptime) || return
                 deadline=$((now + 15))
                 polling=1
-                ic console "$2" --show-log | tail -n 20 >&2
+                ic console "$2" --show-log | tail -n 20 | guest_text >&2
                 polling=
                 case $2 in fw1|fw2) echo "guests: next: sys firewall rebuild $2" >&2 ;;
                 wan) echo 'guests: next: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' >&2 ;; esac

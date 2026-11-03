@@ -20,10 +20,10 @@ selftest_addr=192.0.2.53
 die() { echo "dns-push: $*" >&2; exit 1; }
 # Own connections, lock fds closed. A just-booted, relinking firewall stalls for seconds: a short connect
 # or keepalive (also on a shared master) ended a push silently with status 255; 60 s and 120 s here.
-rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
-rsh_in() { _h=$1; shift; timeout 300 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 "$_h" "$@" 9>&- 8>&- 7>&-; }
+rsh() { _h=$1; shift; guest_stderr timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+rsh_in() { _h=$1; shift; guest_stderr timeout 300 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 "$_h" "$@" 9>&- 8>&- 7>&-; }
 # Checkconf, reload and restore on a firewall still relinking after its boot outlasted 120 s.
-rsh_wait() { _h=$1; shift; timeout 900 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+rsh_wait() { _h=$1; shift; guest_stderr timeout 900 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 close_src() {
 	_closed=0
 	for _f in $fws; do

@@ -29,7 +29,7 @@ else
 	flock -w 60 9 || die "another portal is running"
 fi
 
-rsh() { _h=$1; shift; timeout 30 ssh -F "$conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
+rsh() { _h=$1; shift; guest_stderr timeout 30 ssh -F "$conf" -n "$_h" "$@" 9>&- 8>&- 7>&- 6>&-; }
 note() { printf '%s\n' "$*" >"$reason.new" && mv "$reason.new" "$reason"; }
 browser_active() {
 	mkdir -p "$run/browser"

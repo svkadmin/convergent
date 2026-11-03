@@ -50,6 +50,45 @@ timeout -k 1 5 sh "$scratch/stream" "$repo/rootfs/usr/lib/convergent/guest-reply
 [ "$code" = 125 ]
 [ ! -s "$scratch/output" ]
 [ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]
+# Guest text for the owner keeps newline and tab, never a control byte; stdout and the status stay raw.
+ctl=$(printf '[\001-\010\013-\037\177]')
+shown() { if LC_ALL=C grep -q "$ctl" "$1"; then echo "test-guest-reply: control bytes shown by $2" >&2; exit 1; fi; }
+printf 'a\tb\033]52;c;eA==\007\r\177\nc\n' | guest_text >"$scratch/output"
+printf 'a\tb]52;c;eA==\nc\n' | cmp - "$scratch/output"
+hostile() { printf 'out\033[2J\n'; printf 'err\033]52;c;eA==\007\n' >&2; return 7; }
+raw_out() { printf 'out\033[2J\n' | cmp - "$scratch/output"; }
+code=0
+guest_stderr hostile >"$scratch/output" 2>"$scratch/error" || code=$?
+[ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" guest_stderr
+guest_stderr true
+# Remote stderr of dns-push and portal SSH calls.
+{ sed -n '/^rsh\(_in\|_wait\)\{0,1\}() {/p' "$repo/tools/dns-push"; sed -n '/^rsh() {/p' "$repo/tools/portal"; } >"$scratch/rsh"
+[ "$(wc -l <"$scratch/rsh")" = 4 ]
+(
+    conf=unused ssh_conf=unused
+    timeout() { shift; "$@"; }
+    ssh() { hostile; }
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >"$scratch/read"; sh -n "$scratch/read"; . "$scratch/read"
+        code=0
+        ${line%%(*} fw1 true </dev/null >"$scratch/output" 2>"$scratch/error" || code=$?
+        [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" "${line%%(*}"
+    done <"$scratch/rsh"
+)
+# guests failure diagnostics: remote stderr and the console tail.
+sed -n '/^retry() {/,/^}/p' "$repo/tools/guests" >"$scratch/retry"
+[ -s "$scratch/retry" ]; sh -n "$scratch/retry"
+(
+    . "$scratch/retry"
+    boot_timeout=0 work=$scratch polling=
+    fail() { return 1; }
+    cut() { echo 100; }
+    logger() { :; }
+    healthy() { hostile >/dev/null; }
+    ic() { printf 'console\033[2J\n'; }
+    if retry healthy fw1 2>"$scratch/error"; then exit 1; fi
+    grep -qx 'err]52;c;eA==' "$scratch/error"; grep -Fqx 'console[2J' "$scratch/error"; shown "$scratch/error" retry
+)
 
 # Exercise the production assignments, not copies of their byte limits.
 rsh() { transport; }
@@ -135,6 +174,12 @@ for module in 10-wifi 14-firewall; do
         "$repo/rootfs/usr/lib/convergent/sys/$module" >"$scratch/module"
     sh -n "$scratch/module"; . "$scratch/module"
 done
+(
+    run() { shift 2; [ "$1" = ssh ] || return 97; hostile; }
+    code=0
+    firewall_rsh fw1 true >"$scratch/output" 2>"$scratch/error" || code=$?
+    [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" firewall_rsh
+)
 # firewall_role reads the host registry: the firewall answers only data (ifconfig, legacy probe); a hostile
 # reply never reaches awk's argument list.
 (
@@ -193,6 +238,10 @@ code=0
 wifi_wan scan >"$scratch/output" || code=$?
 [ "$code" = 7 ]
 cmp "$reply" "$scratch/output"
+printf 'net\033]52;c;eA==\007\n' >"$reply"
+result=0
+wifi_reply status >"$scratch/output"
+grep -qx 'net]52;c;eA==' "$scratch/output"; shown "$scratch/output" wifi_reply
 printf 'Status: Enabled\nRUNNING defer: on\nhas address 100.80.2.10\n' >"$reply"
 result=0
 wifi_reply status >"$scratch/output"
@@ -210,10 +259,11 @@ done
     firewall_rsh() {
         case $2 in
         ifconfig) [ "$fault" = bad ] || return 124; head -c 65537 /dev/zero ;;
-        *) echo 'Status: Enabled'; [ "$fault" = silent ] || head -c 131072 /dev/zero | tr '\000' x ;;
+        *) echo 'Status: Enabled'
+            case $fault in silent) ;; escape) printf 'pwn\033]52;c;eA==\007\n' ;; *) head -c 131072 /dev/zero | tr '\000' x ;; esac ;;
         esac
     }
-    for fault in silent bad; do
+    for fault in silent bad escape; do
         code=0
         FIREWALL_SSH_TIMEOUT=30 firewall_status >"$scratch/output" || code=$?
         [ "$code" = 1 ]
@@ -221,6 +271,7 @@ done
         [ "$(grep -c '^retry, check sys guests status and /var/log/incus/fw[12]/console.log before sys firewall rebuild fw[12]$' "$scratch/output")" = 2 ]
         case $fault in
         silent) grep -qx 'fw1: no answer within 30 s' "$scratch/output"; grep -qx 'Status: Enabled' "$scratch/output" ;;
+        escape) grep -qx 'pwn]52;c;eA==' "$scratch/output"; shown "$scratch/output" firewall_status ;;
         bad) grep -qx 'fw1 sent a bad (oversized or malformed) reply' "$scratch/output"
             if grep -q 'Status: Enabled' "$scratch/output"; then exit 1; fi ;;
         esac
