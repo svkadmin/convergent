@@ -120,6 +120,9 @@ clears it).
 
 Its `/var` predates the update; guest pool data stays current and may conflict with old metadata.
 There is no guest-update rollback guard. The next `slot write` must exceed highest-good.
+Going back during a firewall update can leave work DHCP off on both firewalls (the newer `/var` held
+the leases). Resume it: `sudo mkdir -p /var/lib/convergent/guests/leases`, then
+`sudo touch /var/lib/convergent/guests/leases/held` and `sys guests update`.
 
 ## 4. `guests init` or `guests update` stopped
 
