@@ -182,14 +182,20 @@ mkdir "$work/textfile"
         [ "$*" = '-n net.inet.ip.forwarding' ] || exit 98
         case $forward in error) echo 1; return 1 ;; *) printf '%s\n' "$forward" ;; esac
     }
-    host() { [ "$dns" = up ]; }
-    ping() { [ "$wan_up" = 1 ]; }
+    # Exact probes and bounds; ping runs in a command substitution, so a mismatch also leaves a mark.
+    bad_probe() { printf '%s\n' "$*" >>"$work/wan-bad"; exit 97; }
+    host() { [ "$*" = '-W 2 -t A svc.convergent.internal 127.0.0.1' ] || bad_probe host "$@"; [ "$dns" = up ]; }
+    ping() { [ "$*" = "-q -n -I $src -c 3 -i 0.3 -w 1 $wan" ] || bad_probe ping "$@"; [ "$wan_up" = 1 ]; }
     timeout() {
-        case $1 in -k) shift 3 ;; -p) shift 4 ;; *) exit 98 ;; esac
+        case "$*" in
+        '-k 1 3 host '*) shift 3 ;;
+        '-p -s INT 1 ping '*) shift 4 ;;
+        *) bad_probe timeout "$@" ;;
+        esac
         "$@"
     }
     sleep() { printf '%s\n' "$*" >>"$work/wan-sleeps"; }
-    round() { . "$work/wan-round"; owned=$want; . "$work/wan-pace"; }
+    round() { . "$work/wan-round"; [ ! -e "$work/wan-bad" ] || exit 97; owned=$want; . "$work/wan-pace"; }
     src=100.80.0.11 wan=100.80.0.10 wan_up=1
     for failure in off empty malformed error dns; do
         owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1
@@ -236,7 +242,7 @@ mkdir "$work/textfile"
     for c in local:0:- lost:1:0 up:1:1; do
         owned=0 good=0 lost=0 dns_lost=0 dns=up forward=1 wan_up=1 metrics_at=0
         case ${c%%:*} in local) forward=0 ;; lost) wan_up=0 ;; esac
-        . "$work/wan-round"; . "$work/wan-publish"
+        . "$work/wan-round"; [ ! -e "$work/wan-bad" ] || exit 97; . "$work/wan-publish"
         grep -qx "convergent_wan_watch_local_ok $(echo "$c" | cut -d: -f2)" "$prom" || die "local_ok: $c"
         up=${c##*:}
         if [ "$up" = - ]; then

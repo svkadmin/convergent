@@ -22,7 +22,7 @@ for part in send owner session privileged incus guest; do check_script "$work/$p
 . "$work/send"
 id() { echo 1000; }
 swaymsg() { return 1; }
-portal() { [ "$*" = gateway ]; printf '%s\n' http-gateway; }
+portal() { [ "$*" = gateway ] || exit 97; printf '%s\n' http-gateway; }
 sudo() {
     printf '%s\n' "$@" >"$work/sudo-args"
     [ "$1 $2" = '-- /usr/local/sbin/browser' ] || return 1

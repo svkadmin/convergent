@@ -113,7 +113,7 @@ done
 )
 # End portal argument fixtures.
 eval "$(sed -n '/^ic() {/,/^}/p' "$repo/tools/incus-ui")"
-timeout() { [ "$1 $2 $3" = '-k 1 30' ]; shift 3; "$@"; }
+timeout() { [ "$1 $2 $3" = '-k 1 30' ] || exit 97; shift 3; "$@"; }
 incus() {
     printf '%s\n' "$*" >>"$work/calls"
     [ "$1" = --force-local ]; shift
@@ -135,7 +135,7 @@ role=int incus_ui=1
 ic() { echo "$*" >>"$work/grafana-calls"; }
 # Grafana start and stop in svc are bounded: a stuck svc must not keep the session locks.
 timeout() { echo "timeout $1 $2 $3" >>"$work/grafana-calls"; [ "$1 $2 $3" = '-k 1 60' ]; shift 3; "$@"; }
-incus() { [ "$1 $2 $3" = '--force-local --project default' ]; shift 3; ic "$@"; }
+incus() { [ "$1 $2 $3" = '--force-local --project default' ] || exit 97; shift 3; ic "$@"; }
 incus_ui=
 . "$work/grafana"
 printf '%s\n' 'config set svc limits.memory=768MiB' 'timeout -k 1 60' 'exec svc -- rc-service grafana start' >"$work/expected"
@@ -299,7 +299,7 @@ EOF
         mv "$work/next" "$work/instances"
     }
     flock() {
-        [ "$*" = '-n 7' ]
+        [ "$*" = '-n 7' ] || exit 97
         locked=$stale
         echo attempt >>"$work/lock-attempts"
         [ "$(wc -l <"$work/lock-attempts")" != 2 ]

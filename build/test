@@ -1221,7 +1221,7 @@ incus() {
             esac ;;
         config:unset) : ;;
         stop:wan)
-            [ -f "$fixture/held" ]
+            [ -f "$fixture/held" ] || return 1
             [ "$6" = --force ] || return 1
             [ "$stuck" = 0 ] || return 1
             touch "$fixture/stopped"
@@ -1752,8 +1752,8 @@ sh -n "$work/verify-image"
 (
 	die() { echo "$*" >&2; exit 1; }
 	manual_image() { die 'archive has no signed manifest'; }
-	flock() { [ "$*" = '-w 600 9' ]; archive_locked=1; }
-	mv() { [ "$archive_locked" = 1 ]; command mv "$@"; }
+	flock() { [ "$*" = '-w 600 9' ] || exit 97; archive_locked=1; }
+	mv() { [ "$archive_locked" = 1 ] || exit 97; command mv "$@"; }
 	mountpoint() { return 1; }
 	sync() { echo synced >>"$work/archive-events"; }
 	. "$work/verify-image"
