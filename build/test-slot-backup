@@ -405,6 +405,40 @@ name=container payload=/payload project=owner
 . "$work/export"
 echo 'test-slot-backup: EFI selection, failure cleanup, boot snapshots and root-only export passed'
 
+# One laptop per backup disk: any generation marked by another machine refuses the run.
+sed -n '/^# Pruning goes by name: one laptop per disk/,/^done$/p' "$repo/tools/backup" |
+    sed "s|/etc/machine-id|$work/machine-id|" >"$work/backup-owner"
+[ -s "$work/backup-owner" ] || die 'missing backup owner check'
+sh -n "$work/backup-owner"
+grep -qxF 'printf '\''%s\n'\'' "$machine" >"$payload/machine-id"' "$repo/tools/backup" || die 'backup writes no machine-id'
+this=0123456789abcdef0123456789abcdef other=fedcba9876543210fedcba9876543210
+for sample in empty legacy same other dangling invalid; do
+    dir=$work/owner-$sample
+    mkdir -p "$dir/backup-20260101T000000Z" "$dir/backup-20260102T000000Z"
+    echo "$this" >"$work/machine-id"
+    case $sample in
+    empty) rm -r "$dir"/backup-* ;;
+    same) echo "$this" >"$dir/backup-20260102T000000Z/machine-id" ;;
+    # The newest is ours; an older one is not.
+    other) echo "$this" >"$dir/backup-20260102T000000Z/machine-id"
+        echo "$other" >"$dir/backup-20260101T000000Z/machine-id" ;;
+    dangling) ln -s "$work/missing" "$dir/backup-20260102T000000Z/machine-id" ;;
+    invalid) echo not-hex >"$work/machine-id" ;;
+    esac
+    rc=0
+    (
+        base=$dir
+        die() { echo "$*" >&2; exit 1; }
+        . "$work/backup-owner"
+    ) 2>"$work/owner-error" || rc=$?
+    case $sample in
+    empty|legacy|same) [ "$rc" = 0 ] ;;
+    other|dangling) [ "$rc" = 1 ] && grep -q "holds another laptop's backups" "$work/owner-error" ;;
+    invalid) [ "$rc" = 1 ] && grep -qx 'invalid machine id' "$work/owner-error" ;;
+    esac || { cat "$work/owner-error"; die "backup owner check: $sample"; }
+done
+echo 'test-slot-backup: one laptop per backup disk passed'
+
 # Rescue must authenticate even when the ordinary writer's bypass is set.
 sed -n '/^write() {/,/^}/p' "$repo/tools/slot" |
     sed "s|/run/slot-write.XXXXXX|$work/write.XXXXXX|" >"$work/write"

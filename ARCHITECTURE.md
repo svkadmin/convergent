@@ -426,7 +426,7 @@ Alpine guests stop credential-dependent services.
 
 Infrastructure starts together; pinning/checks remain sequential. With browsers closed, guest apply
 renews CA/service certificates that are not yet valid or expire within 30 days, reusing their keys
-and installing trust before consumers restart.
+and installing trust before consumers restart; then only the current svc client keeps metrics trust.
 
 ### 7.2 Update
 

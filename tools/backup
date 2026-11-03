@@ -52,6 +52,13 @@ base=$dest/convergent-backups
 [ ! -L "$base" ] || die 'backup directory is a symlink'
 mkdir -p "$base"
 [ "$(stat -c '%u:%a' "$base")" = 0:700 ] || die 'backup directory must be root-owned mode 700'
+# Pruning goes by name: one laptop per disk. Unmarked generations predate the marker.
+machine=$(cat /etc/machine-id) || die 'cannot read the machine id'
+case $machine in ''|*[!0-9a-f]*) die 'invalid machine id' ;; esac
+for marker in "$base"/backup-*/machine-id; do
+    [ -e "$marker" ] || [ -L "$marker" ] || continue
+    [ "$(cat "$marker")" = "$machine" ] || die "$base holds another laptop's backups; use another disk"
+done
 cleanup() {
     result=$?
     trap - 0
@@ -90,6 +97,7 @@ snapshot=$(mktemp -d "$state_root/.backup.XXXXXX")
 btrfs subvolume snapshot -r /home "$snapshot/home"
 payload=$work/data
 mkdir -p "$payload/projects"
+printf '%s\n' "$machine" >"$payload/machine-id"
 echo 'VM instances and custom block volumes are excluded; back them up separately while offline.' >"$payload/EXCLUDED"
 tar --one-file-system --acls --xattrs --numeric-owner -C "$snapshot" -cpf "$payload/home.tar" home
 grep -v '^#' /usr/lib/convergent/etc-state | sed '/^$/d;s|^|etc/|' >"$work/etc.list"

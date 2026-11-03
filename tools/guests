@@ -498,14 +498,12 @@ certificates_apply() (
             exit "$code"
         fi
     fi
-    if [ -f "$tls/incus-client.previous" ]; then
-        old=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
-        if [ "$old" != "$trust" ] && jq -e --arg fp "$old" '.[] | select(.fingerprint == $fp)' "$work/trust" >/dev/null; then
-            ic config trust remove "$old"
-        fi
-        rm "$tls/incus-client.previous"
-        sync
-    fi
+    # Only the current client keeps metrics trust, also after an interrupted earlier renewal.
+    stale=$(jq -r --arg fp "$trust" '.[] | select(.type == "metrics" and .fingerprint != $fp) | .fingerprint |
+        if test("^[0-9a-f]{64}$") then . else error("invalid fingerprint") end' "$work/trust")
+    for old in $stale; do ic config trust remove "$old"; done
+    rm -f "$tls/incus-client.previous"
+    sync
     rm -f "$tls/pending" "$tls/ca.pending"
     sync
 )

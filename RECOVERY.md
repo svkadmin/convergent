@@ -445,7 +445,7 @@ download. A retry keeps that release's staged guests until their replacement is 
 |---|---|
 | `resolves to no public address` | Wi-Fi first (recipe 5). Else the blocklist holds the server: add the host from `/etc/convergent/update.conf` to `/var/lib/convergent/dns/allow`, run `sudo dns-push local`, retry |
 | `could not open the update source` | A firewall is not answering: recipe 6 |
-| `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USB updates](USAGE.md#host-updates)) |
+| `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USB updates](USAGE.md#host-updates)); after a release-key rotation, [BUILD](BUILD.md#sign-and-publish) |
 | `this release has no online updates` | The image lacks its release key or update URL: update from USB |
 | `not enough free space in /var` | Free what is still missing in `/var`, plus 1 GiB |
 | `latest is signed more than 5 minutes in the future; check the clock` | Follow [clock recovery](#recover-an-incorrect-clock), then run it again |
@@ -551,3 +551,22 @@ Use `sys firewall capture <interface-or-segment> <seconds>` from the owner login
 pcap in `~/captures`; it refuses an incoherent MASTER/BACKUP pair. Interrupted remote captures
 stop within 60 seconds and temporary files are removed on normal exit. After a firewall crash,
 remove abandoned `/var/run/fw-capture.*` directories there; they are never durable archives.
+
+## 18. Damaged CA or management key
+
+`guests` stops with `invalid CA pair` or `invalid CA key`: replace the local CA. With the browsers
+closed:
+
+```sh
+sudo -i
+cd /var/lib/convergent/guests/tls
+rm -f ca.key ca.crt server.crt incus-server.crt incus-client.crt   # the leaf keys stay
+exit
+```
+
+`sys guests update` then issues a new CA and certificates and installs them in Incus, svc, the
+firewalls and wan. The old CA signed the Incus UI credential: if it is set up, run
+`sudo incus-ui rotate` afterwards. Works when `sys guests update` finishes without an error.
+
+A damaged or lost management key (`invalid management private key`, `missing management private
+key`) cannot be replaced: the firewalls and wan accept only the old one. [Start over](#11-start-over).

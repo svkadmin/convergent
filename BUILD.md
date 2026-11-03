@@ -91,11 +91,23 @@ once:
 install -d -m 700 /etc/convergent/keys && cd /etc/convergent/keys
 openssl genpkey -algorithm ed25519 -out beta.key
 openssl pkey -in beta.key -pubout -out beta.pub
-openssl genpkey -algorithm ed25519 -aes-256-cbc -out /media/offline/stable.key   # passphrase
-openssl pkey -in /media/offline/stable.key -pubout -out stable.pub
+t=$(mktemp -d /dev/shm/stable.XXXXXX)                 # stable: plaintext only in tmpfs
+openssl genpkey -algorithm ed25519 -out "$t/stable.key"
+openssl pkcs8 -topk8 -v2 aes-256-cbc -iter 1000000 -in "$t/stable.key" -out /media/offline/stable.key   # passphrase
+openssl pkey -in "$t/stable.key" -pubout -out stable.pub
+rm -r "$t"
 ```
 
-Return to the repository root. [Owner trust/unsigned updates](USAGE.md#host-updates).
+Return to the repository root. [Owner trust/unsigned updates](USAGE.md#host-updates). OpenSSL's
+default for an encrypted key is 2048 PBKDF2 rounds: rewrap an older stable key with the same
+`pkcs8` command and the old file as `-in` (it asks for the old passphrase, then the new one).
+
+Rotating a channel key, or replacing a leaked one: create a new pair as above, then build, sign and
+publish with it. Laptops trust only the key their release embeds and refuse the new signatures.
+Move each laptop over from USB with a release you built yourself: mount the stick as in
+[USB updates](USAGE.md#host-updates), run `sudo env CONVERGENT_UNSIGNED=1 slot write
+/run/usb/<release>`, reboot, then run `sys update usb` again for its guests. Rescue trusts the new
+key once that release is good. Until moved, a laptop accepts whatever a leaked key signs.
 
 Build-host-only provenance records release-key (SHA-256 of canonical public PEM with final newline)
 and update-channel (embedded URL), or none. Signing/publication require channel/key agreement except

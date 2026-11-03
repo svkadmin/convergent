@@ -185,7 +185,9 @@ sed -n '/^    seed_finish wan$/,/^    ca_hash=/p' "$repo/tools/guests" | sed '$d
 sh -n "$scratch/init-finish"
 sh -n "$scratch/init-tail"
 old_trust=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
-export scratch old_trust
+# A second stale metrics entry (an interrupted earlier renewal) and the UI session, which stays.
+stale_trust=$(openssl rand -hex 32) ui_trust=$(openssl rand -hex 32)
+export scratch old_trust stale_trust ui_trust
 cat >"$scratch/deploy" <<'DEPLOY'
 . "$scratch/deploy-functions"
 . "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
@@ -200,7 +202,6 @@ healthy() {
     echo healthy >>"$scratch/events"
 }
 rc_service() { echo host >>"$scratch/events"; [ "$fault" != host ]; }
-jq() { [ "$1 $2 $3" = '-e --arg fp' ] && [ "$4" = "$old_trust" ]; }
 # Installs and restarts get 120 s like readbacks get 60 s: a wedged svc must not hang them.
 timeout() {
     case "$1 $2 $3" in '-k 5 60'|'-k 5 120') ;; *) exit 1 ;; esac
@@ -221,10 +222,19 @@ incus() {
 }
 ic() {
     case "$*" in
-    'admin update-certificate '*) echo server >>"$scratch/events" ;;
-    'config trust list --format json') echo '[]' ;;
-    'config trust add-certificate '*) echo add >>"$scratch/events" ;;
-    "config trust remove $old_trust") echo remove >>"$scratch/events" ;;
+    # Exact calls only: Incus 7.0.1 has admin update-certificate <crt> <key> (standalone servers).
+    "admin update-certificate $tls/incus-server.crt $tls/incus-server.key") echo server >>"$scratch/events" ;;
+    'config trust list --format json') cat "$scratch/trust.json" ;;
+    "config trust add-certificate $tls/incus-client.crt --type metrics --name svc-metrics")
+        echo add >>"$scratch/events"
+        fp=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
+        jq --arg fp "$fp" '. + [{type: "metrics", fingerprint: $fp}]' "$scratch/trust.json" >"$scratch/trust.next"
+        mv "$scratch/trust.next" "$scratch/trust.json" ;;
+    'config trust remove '*)
+        [ "$#" = 4 ] || exit 97
+        echo remove >>"$scratch/events"
+        jq --arg fp "$4" 'map(select(.fingerprint != $fp))' "$scratch/trust.json" >"$scratch/trust.next"
+        mv "$scratch/trust.next" "$scratch/trust.json" ;;
     'exec svc -- true') : ;;
     'exec svc -- cat '*)
         shift 4
@@ -303,6 +313,8 @@ for fault in host fw1 fw2 wan none; do
     done
     cp "$scratch/previous" "$tls/incus-client.previous"
     touch "$tls/ca.pending" "$tls/pending"
+    printf '[{"type":"metrics","fingerprint":"%s"},{"type":"metrics","fingerprint":"%s"},{"type":"client","fingerprint":"%s"}]\n' \
+        "$old_trust" "$stale_trust" "$ui_trust" >"$scratch/trust.json"
     : >"$scratch/events"
     if sh -eu "$scratch/deploy" >"$scratch/log" 2>&1; then
         [ "$fault" = none ] || die "missed $fault reload failure"
@@ -319,11 +331,22 @@ for fault in host fw1 fw2 wan none; do
     cmp "$tls/incus-client.crt" "$scratch/svc/etc/victoria-metrics/tls/incus-client.crt"
     [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/incus-client.previous" ]
     if certificates_due; then die 'deployed credentials due'; fi
+    current=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
+    jq -e --arg fp "$current" --arg ui "$ui_trust" '[.[] | select(.type == "metrics") | .fingerprint] == [$fp] and
+        any(.[]; .fingerprint == $ui and .type == "client")' "$scratch/trust.json" >/dev/null || die "metrics trust after $fault"
     if [ "$fault" = none ]; then
-        printf 'server\nadd\nlogs\nmetrics\nhealthy\nhost\nfw1\nfw2\nwan\nremove\n' >"$scratch/expected"
+        printf 'server\nadd\nlogs\nmetrics\nhealthy\nhost\nfw1\nfw2\nwan\nremove\nremove\n' >"$scratch/expected"
         cmp "$scratch/expected" "$scratch/events"
     fi
 done
+# A malformed metrics fingerprint stops the cleanup before any removal.
+printf '[{"type":"metrics","fingerprint":"-e"},{"type":"metrics","fingerprint":"%s"}]\n' "$stale_trust" >"$scratch/trust.json"
+touch "$tls/pending"
+: >"$scratch/events"
+if fault=none sh -eu "$scratch/deploy" >"$scratch/log" 2>&1; then die 'accepted a malformed trust fingerprint'; fi
+if grep -qx remove "$scratch/events"; then die 'removed trust beside a malformed fingerprint'; fi
+[ -f "$tls/pending" ]
+printf '[{"type":"metrics","fingerprint":"%s"}]\n' "$current" >"$scratch/trust.json"
 # Failed readbacks redeploy even when an incomplete reply matches the certificate.
 grep -qF 'guest_reply 65536 timeout -k 5 60 incus' "$scratch/deploy-functions"
 for readback in current missing timeout oversized incomplete; do
@@ -404,6 +427,9 @@ for fault in missing-pub wrong-pub empty-ca truncated-ca; do
     openssl verify -CAfile "$tls/ca.crt" "$tls/server.crt" >/dev/null
     case $fault in *pub) cmp "$tls/ca.crt" "$scratch/good/tls/ca.crt" ;; esac
 done
+# RECOVERY 18 replaces a damaged CA: new CA and leaves, same leaf keys.
+sed -n '/^rm -f ca\.key ca\.crt server\.crt incus-server\.crt incus-client\.crt/p' "$repo/RECOVERY.md" >"$scratch/ca-recipe"
+[ "$(wc -l <"$scratch/ca-recipe")" = 1 ] || die 'missing CA recipe'
 for fault in ssh-key ca-key ca-pair leaf-pair missing-ca-key; do
     rm -rf "$state"
     cp -R "$scratch/good" "$state"
@@ -416,6 +442,16 @@ for fault in ssh-key ca-key ca-pair leaf-pair missing-ca-key; do
     esac
     if sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "accepted $fault"; fi
     cmp "$tls/ca.crt" "$scratch/good/tls/ca.crt"
+    case $fault in ssh-key|leaf-pair) continue ;; esac
+    grep -q 'invalid CA pair' "$scratch/log" || die "unexpected error for $fault"
+    (cd "$tls" && sh -eu "$scratch/ca-recipe")
+    sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "CA recipe after $fault"; }
+    [ -f "$tls/ca.pending" ] && [ -f "$tls/pending" ] && [ ! -e "$tls/incus-client.previous" ]
+    if cmp -s "$tls/ca.crt" "$scratch/good/tls/ca.crt"; then die "CA kept after $fault"; fi
+    for cert in server incus-server incus-client; do
+        cmp "$tls/$cert.key" "$scratch/good/tls/$cert.key"
+        openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
+    done
 done
 # Interrupt at each early publication boundary, then retry the same state.
 for cut in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
