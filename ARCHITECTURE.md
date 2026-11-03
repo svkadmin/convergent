@@ -134,7 +134,7 @@ Unprivileged Alpine container on its own segment.
 | VictoriaLogs | TLS syslog; bounded cache, retention and queries |
 | vmalert | Alert evaluation and bar API |
 | vmauth | Query proxy |
-| Grafana | Authenticated dashboards on svc's address; anonymous access off; runs while int is open |
+| Grafana | Authenticated dashboards on svc's address; anonymous access off; runs while a plain int browser is open, not for the Incus session |
 
 During replacement the host buffers logs and the bar reports unknown alert counts. DNS is
 independent of svc. Retention/collection: section 8; memory: section 11.
@@ -231,8 +231,8 @@ host/svc/web/admin/guests/work except Remmina.
 | From | To | Ports | Reason |
 |---|---|---|---|
 | host | Internet | UDP 123, TCP 4460 | NTP/NTS |
-| host | Update source | TCP 443 | Temporary download addresses; failed close expires within four hours |
-| host | Blocklist source | TCP 443 | Weekly download |
+| host | Update source | TCP 443 | Temporary download addresses; failed close expires, with its states, within 4 h 15 min (15-minute check) |
+| host | Blocklist source | TCP 443 | Weekly download; temporary addresses, same expiry |
 | host | svc | TCP 6514, 8880, 9428 | Logs, alerts, log queries |
 | host | fw1/fw2/wan | TCP 22 | Management and configuration |
 | fw1/fw2 | host | UDP 123 | Time |
@@ -497,7 +497,7 @@ backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOV
   signal/bitrate/roams without SSID/BSSID labels; sampled transit RTT/loss
 - **check:** After boot/update and daily; failed scans retry after five minutes; minute status
   probes
-- **Rules:** Path/DNS 30 seconds; monitoring/capacity/logs/security-time one minute;
+- **Rules:** Path/DNS 30 seconds; monitoring/compartments/capacity/logs/security-time one minute;
   boot/certificates/NVMe/scrub five minutes
 
 Metrics retain 14 days without dedup. Recent scrapes cannot make old textfiles healthy. Closed def
@@ -537,21 +537,22 @@ Implemented rules: `guests/svc/rootfs/etc/vmalert/alerts.yaml`.
 
 | Area | Alerts |
 |---|---|
-| Path | FirewallDown, CarpSplit (both masters or none), CarpFlapping, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, UpstreamOverlap |
-| DNS | ResolverDown, ResolverStale, BlocklistStale |
-| Compartments | GuestStopped, ServiceDown |
-| Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh |
+| Path | FirewallDown, WanWatchDown, WanWatchProbeFailed, WanWatchLocalFailed, CarpSplit (both masters or none), CarpFlapping, CarpMixedRoles, PfsyncNotReady, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, UpstreamOverlap |
+| DNS | ResolverDown, ResolverStale, BlocklistStale, InternetProbeFailed |
+| Compartments | GuestStopped, ServiceDown, GuestOOM |
+| Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, StateReadOnly, BtrfsDeviceErrors, VolumeQuotaHigh, ScrubNeedsAttention |
 | Security and time | SecureBootNotVerified, LockdownOff, KernelTainted, LuksHeaderChanged, AuditEvent, AuditRecordsLost, CertExpiry, ClockOffsetHigh, NtsUnauthenticated, CrashRecorded |
 | Monitoring itself | CollectorStale, CollectorBroken, CheckerFailed, CheckerStale, RuleEvaluationUnhealthy, ObservationStale, MonitoringWriteErrors, MonitoringReadOnly, MonitoringSignalsMissing, per-sender log heartbeat |
 
 Planned: GuestRestarted, WanReservedLeak, PassthroughDeviceMissing, HostNetdevUnexpected,
 GuestRouteInjected, IncusPoolHigh, ReleaseOld, GuestImageOld and GuestReleaseEOL.
 
-The checker compares verity, firewall hashes, Incus/tmp profiles, writable etc, autostart/SUID
-inventories, VFIO/device ownership and CARP against an accepted release; upstream connectivity is
-excluded. Results feed CheckerFailed/Stale. [Baseline commands](USAGE.md#health-and-alerts).
-Dashboard generators own shipped JSON in `guests/svc/dashboards`; its README describes checks and
-collection boundaries. [Operator views](USAGE.md#health-and-alerts).
+The checker compares verity, firewall hashes, Incus/tmp/Remmina profiles, writable etc,
+autostart/SUID inventories, VFIO/device ownership and CARP against an accepted release; upstream
+connectivity is excluded. Results feed CheckerFailed/Stale.
+[Baseline commands](USAGE.md#health-and-alerts). Dashboard generators own shipped JSON in
+`guests/svc/dashboards`; its README describes checks and collection boundaries. [Operator
+views](USAGE.md#health-and-alerts).
 
 ## 9. Daily use
 
@@ -662,7 +663,7 @@ at idle; unmeasured.
 |---|---|
 | slot / fetch-release | Slot integrity, blessing, delivery (section 7) |
 | guests / browser / remote / incus-ui | Guest lifecycle and sessions (section 3) |
-| check / facts / observe / fw-facts | Checker, hardware/boot and monitoring evidence (section 8) |
+| check / facts / observe / firewall-capture | Checker, hardware/boot, monitoring and capture evidence (section 8); firewalls run fw-facts |
 | sys / apps / notes / bar | Controls, launchers and status ([USAGE](USAGE.md)) |
 | dns-push / portal / devices | DNS activation, portal rules and device approval |
 | account / power / backup | Accounts, hardware choices and backup export |

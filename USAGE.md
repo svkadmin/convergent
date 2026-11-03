@@ -118,7 +118,8 @@ Firewall inspection: `sudo ssh -F /etc/convergent/ssh_config fw1`, then `pfctl -
 ## Keys
 
 Stock Sway bindings plus Convergent additions below. Super is the Windows key. Sway, foot, mako and
-swaylock use stock styling with a black background/bar; override each in `~/.config/`.
+swaylock use stock styling with a black background/bar (foot: 11-point font); override each in
+`~/.config/`.
 
 | Key | Does |
 |---|---|
@@ -159,7 +160,7 @@ aliases. `*` marks actions that ask for `yes` in the terminal (default No).
 
 `sys` (Super+m) uses fzf: menu left; Gentoo dashboard, selected status and commands right, in terminal
 colours with blue highlighting. The dashboard refreshes on entry; narrow panes hide the logo.
-Enter opens/runs; Esc goes back; typing filters.
+Enter opens/runs; Esc goes back (quits from the area list); typing filters.
 Alt+Enter runs what was typed (`area action args`, or `action args` inside an area).
 
 Wi-Fi picker: type to filter, Enter selects the highlighted SSID, Esc cancels, Ctrl+u clears the
@@ -170,7 +171,7 @@ does not join an unscanned name.
 |---|---|
 | `wifi` | `status`, `scan`, `connect [SSID]`, `hidden [SSID]`, `disconnect`, `forget [SSID]` *, `test` |
 | `portal` | `status`, `on`, `off` |
-| `wired` | `status`, `attach [VENDOR:PRODUCT SERIAL]` *, `remove` * |
+| `wired` | `status`, `attach [0bda:8153 SERIAL]` *, `remove` * |
 | `dns` | `list`, `add [NAME IPv4]` *, `remove [NAME]` *, `allow [DOMAIN]` *, `unallow [DOMAIN]` *, `push` |
 | `firewall` (`fw`) | `status`, `rebuild` *, `maintenance` *, `undo` *, `capture INTERFACE-OR-SEGMENT SECONDS` |
 | `bluetooth` (`bt`) | `status`, `on`, `off`, `scan`, `pair [MAC]`, `connect [MAC]`, `disconnect [MAC]`, `forget [MAC]` * (device picker without MAC) |
@@ -239,7 +240,9 @@ appearance is kept.
 
 Success: a `[def] …` window and `BR:1` in the bar. Super+b or Super+Shift+t failures show the reason
 at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
-`$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
+`$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch. `sys browser` launches log to
+`$XDG_RUNTIME_DIR/sys-browser-<role>.*`; one that fails within 3 s prints the reason and removes
+its log.
 
 | Role | For | State |
 |---|---|---|
@@ -248,10 +251,11 @@ at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
 | tmp --portal | captive portals; opens `http://<uplink-gateway>/` unless given a URL | container deleted on close; owns portal mode |
 | int | Grafana; Incus after a session unlock | profile kept in a 512 MiB volume; UI key lives only in session memory |
 
-A second def or int start raises the open window. Portal mode refuses one; normal tmp runs many at
-once. Downloads stay in the container; no action moves a file out. Policies: DNS-over-HTTPS off, no
-sync, no password manager, no telemetry. Int and both tmp modes allow no extensions. The int browser
-starts Grafana in svc and stops it on close. Log in as `owner`; password: `sudo cat
+A second def or int start without a URL raises the open window; with a URL it is refused. Portal
+mode refuses one; normal tmp runs many at once. Downloads stay in the container; no action moves a
+file out. Policies: DNS-over-HTTPS off, no sync, no password manager, no telemetry. Int and both tmp
+modes allow no extensions. A plain int browser starts Grafana in svc and stops it on close; the
+Incus session does not. Log in as `owner`; password: `sudo cat
 /var/lib/convergent/guests/tls/admin-password`. A handler that sends links from other programs to
 `tmp` is not built.
 
@@ -356,9 +360,11 @@ sudo devices allow tb <id>     # Thunderbolt tunnel until unplugged
 Both approvals require yes; USB rules persist in `/etc/usbguard/rules.conf`.
 
 Bluetooth starts off. Run `sys bluetooth on`; `sys bluetooth pair` scans ten seconds then lists
-MAC/name. `connect`, `disconnect`, `forget` use the current list; `sys bluetooth scan` refreshes it.
-Explicit MACs are validated. Picker: terminal fzf, otherwise bemenu; Escape cancels. Forget asks yes
-before selection. `sys bluetooth` shows power/known devices.
+MAC/name. It needs a terminal: after the pick it opens bluetoothctl; type `pair <MAC>`, answer any
+PIN prompt, then `quit`. A paired device is also trusted. `connect`, `disconnect`, `forget` use the
+current list; `sys bluetooth scan` refreshes it. Explicit MACs are validated. Picker: terminal fzf,
+otherwise bemenu; Escape cancels. Forget asks yes before selection. `sys bluetooth` shows
+power/known devices.
 
 Serial console: approve through `sys usb allow NUMBER` (from `sys usb status`), then
 `tio -b 115200 /dev/ttyUSB0` with the required baud; CDC ACM uses `/dev/ttyACM0`. Exit Ctrl+t, q.
@@ -401,8 +407,9 @@ sudo dns-push local    # current owner files with stored blocklist; also sys dns
 `sys firewall status` / `sys fw` shows registered CARP roles, PF states, Unbound and last DNS push,
 including unreachable nodes/pending recovery. `sys fw maintenance` checks coherent roles,
 PF/pfsync defer/Unbound/local DNS, asks before demoting MASTER, then verifies full peer takeover.
-Failure undoes handover; interruptions retain the journal. If the peer then loses its WAN probes, it
-demotes equally and MASTER can return to the node in maintenance until the WAN recovers.
+Failure or interruption after the demotion undoes it; one while the demotion is uncertain keeps the
+journal: run `sys fw undo`. If the peer then loses its WAN probes, it demotes equally and MASTER can
+return to the node in maintenance until the WAN recovers.
 
 Run `sys fw undo` afterward, before guest updates. Both nodes must be healthy; it verifies normal
 fw1 MASTER/fw2 BACKUP. Restore management or rebuild an unreachable node, then retry. Remote work
@@ -463,8 +470,9 @@ sudo check accept <release-dir>       # trusted baseline, Secure Boot on and out
 sudo check accept-fw <guest-dir>/fw   # updated firewall hashes, same Secure Boot requirement
 ```
 
-Baseline input needs manifest and guests/fw/fw{1,2}.{pf,rules}.sha256. Reaccept baselines lacking
-tmp's profile. Check fails without a baseline or with Secure Boot off. Acceptance does not verify
+Baseline input needs manifest and guests/fw/fw{1,2}.{pf,rules}.sha256. Acceptance needs def, int and
+Remmina to exist: open and close each once first. Reaccept baselines lacking tmp's or Remmina's
+profile. Check fails without a baseline or with Secure Boot off. Acceptance does not verify
 manifest signatures: verify the release yourself first.
 [Checks/timings](ARCHITECTURE.md#8-observability).
 
@@ -503,20 +511,20 @@ Refresh: five seconds; inputs: ten seconds; alerts: thirty seconds. `|` represen
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
-WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 | rel 0.1.0 good | NL | 0 1 0 | PORTAL
+WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 RDP:off | rel 0.1.0 good | NL | 0 1 0 | PORTAL
 US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 ```
 
 | Block | Shows | Look or fix with |
 |---|---|---|
-| `CPU` | busy percent, lowest-highest core clock, package/hottest temperature (every 5 s); `-` if missing | `sys power status` shows sensors/profile |
-| `RAM`, `SWP` | used/total GiB; RAM is memory in use (`MemTotal - MemAvailable`, so reclaimable cache does not count) minus what guests hold (`check status` sums their cgroups without file cache and VM processes every minute) | Grafana, Guests |
+| `CPU` | busy percent, lowest-highest core clock (every 5 s), package/hottest temperature (every 20 s); `-` if missing | `sys power status` shows sensors/profile |
+| `RAM`, `SWP` | used/total GiB; RAM is memory in use (`MemTotal - MemAvailable`, so reclaimable cache does not count) minus what guests hold (`check status` sums their cgroups without file cache and VM processes every minute; `?` while that sum is missing or over three minutes old) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 10 s) | `sys wifi test` |
 | Topology | uplink, wan, both firewalls, svc and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
 | `rel` | booted semantic version (release ID on older images); grey `good` if the release passed its checks this boot, else red `UNBLESSED` | `sys update` |
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 10 s | `sys audio mic off` / `on` |
-| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) if svc cannot be read, including during SETUP until svc is up; every 30 s | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
+| Alerts | firing alerts as three counters: critical (red), warning (orange), info (white); `? ? ?` (grey) if svc cannot be read, including during SETUP until svc is up; every 30 s; red `state disk lost or read-only: reboot` instead when `/var` is lost or read-only | click for the firing list in foot, or `sys alerts`; history in Grafana: `sys browser int` |
 | `RDP:on/off/?` | Remmina running/stopped/unknown; stale status is unknown | `sys remote status`, `sys remote close` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
@@ -566,9 +574,10 @@ sudo umount /run/usb && sudo reboot
 When upgrading from a client without guest USB delivery, rerun sys update usb after boot with the
 same stick. A host-only USB leaves legacy web/admin objects untouched; def/int and tmp --portal need
 guest delivery. `slot write` verifies manifest against the embedded key. Unsigned writes need `sudo
-env CONVERGENT_UNSIGNED=1 slot write ...`; the menu offers this only without a trusted key. Images
-without an embedded release key need USB/unsigned mode for their next update. Host writes require
-the booted slot good and a release newer than booted/highest-good. `sudo slot status` shows both.
+env CONVERGENT_UNSIGNED=1 slot write <dir>`; the menu offers this only for a release without
+manifest.sig on an image without a trusted key. On such an image, write a signed release with that
+command by hand. Host writes require the booted slot good and a release newer than
+booted/highest-good. `sudo slot status` shows both.
 [Checks/counting](ARCHITECTURE.md#72-update);
 [fallback](RECOVERY.md#2-a-new-release-does-not-boot-or-does-not-become-good); [manual
 rollback](RECOVERY.md#3-go-back-to-the-previous-release-by-hand).
@@ -582,10 +591,11 @@ sys guests update                     # apply pending downloads
 sudo guests update fw|wan|svc|browser|def|int|remmina <image-dir>
 ```
 
-Close browsers/Remmina. After host reboot/bless, apply order is legacy browser migration, svc,
-wan, fw, browser, Remmina. Bar: GUESTS / GUESTS failed; retry sys guests update. If the newest host
-lacks its guests, sys update install fetches/applies them immediately. Browser updates advance
-future tmp/portal images; def/int normally replaces one instance, but migration updates both.
+Close browsers/Remmina. After host reboot/bless, apply order is svc, wan, fw, browser, Remmina;
+while legacy web/admin objects exist, browser goes first and migrates them. Bar: GUESTS / GUESTS
+failed; retry sys guests update. If the newest host lacks its guests, sys update install
+fetches/applies them immediately. Browser updates advance future tmp/portal images; def/int
+normally replaces one instance, but migration updates both.
 
 One operation runs at a time. Interrupted browser updates block launches until retried. Replacements
 retain state/bookmarks/logins; legacy web/admin names become def/int, without command aliases.

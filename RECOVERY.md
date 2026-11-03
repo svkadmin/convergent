@@ -443,7 +443,7 @@ download. A retry keeps that release's staged guests until their replacement is 
 
 | Message | Do |
 |---|---|
-| `resolves to no public address` | Wi-Fi first (recipe 5). Else the blocklist holds the server: add the host from `/etc/convergent/update.conf` to `/var/lib/convergent/dns/allow`, run `sudo dns-push local`, retry |
+| `resolves to no public address` | Wi-Fi first (recipe 5). Else the blocklist holds the server: `sys dns allow <host>` with the host from `/etc/convergent/update.conf`, then retry |
 | `could not open the update source` | A firewall is not answering: recipe 6 |
 | `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USB updates](USAGE.md#host-updates)) |
 | `this release has no online updates` | The image lacks its release key or update URL: update from USB |
@@ -494,8 +494,9 @@ alone does not prove the last shutdown was clean. If the release keeps crashing,
 
 ## 14. Incus state torn by a power loss
 
-Power loss can split Incus operations. `guests` refuses commands; the bar shows failure and
-`/var/log/guests-update.log` prints exact repairs. Two cases:
+Power loss can split Incus operations. `guests` refuses commands and prints the exact repairs:
+after boot the bar shows GUESTS failed and they are in `/var/log/guests-update.log`; `sys guests
+update` prints them on screen. Two cases:
 
 - A guest without a storage record: the loss hit a rebuild between dropping and recreating the
   record (a few milliseconds). Run the printed `incus admin sql global "INSERT ..."`, then the

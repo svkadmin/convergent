@@ -194,12 +194,17 @@ IDs, effective capabilities, or lacks seccomp filtering.
 ```sh
 build/test <release>                                  # boots and marks itself good
 build/test --recovery <release>                       # recovery profile, unlock, continue and bless
+build/test --rescue <release>                         # standalone rescue UKI, empty slots
 build/test --corrupt <release>                        # one flipped block: must refuse to boot
 build/test --desktop <release>                        # sway, bar and sys: the session's programs and config
 build/test --fallback <good> <newer>                  # broken newer slot: the good one returns
 build/test --interrupt <good> <newer>                 # update cut off half-way: still boots
+build/test --update <good> <newer>                    # signed slot write and reboot
 build/test --guests <release> $g                      # plus guests init: firewalls, wan, svc
+build/test --guests-maint <release> $g                # plus maintenance, DNS and handoff recovery
 build/test --guests-update <release> $g <broken-dir>  # plus guest updates and a rollback
+build/test --online <release> $g                      # once published: its guests from the channel
+build/test --install-options                          # installer config, sizing, disks; no root
 ```
 
 `<broken-dir>` must be new: the test builds a broken svc image there and verifies update rollback.
@@ -238,13 +243,13 @@ power failures, also offline.
 
 Run `build/lint` before a push. On tracked files it checks shell syntax, shellcheck (when
 installed), leaked secrets or session and scratch paths, and CRLF line endings. It also checks that
-each simple backticked repository path in the docs exists.
+each simple backticked repository path in README, USAGE, RECOVERY and ARCHITECTURE exists.
 
 Once a week, as root, run `build/advisories <release-dir> $g` (pass both: the default guest
-directory is not `$g`). It reads upstream fixes and names what to rebuild (`host`, `kernel`, `fw`,
-`svc`, `browser`, `wan`, or `guests` for the pins). The kernel version comes from the release.
-Gentoo packages come from its signed build-host inventory. Exit 1: something to rebuild (UNKNOWN
-lines may appear too). Exit 2: only UNKNOWN; a source was not read.
+directory is not `$g`). It reads upstream fixes and names what to rebuild (`host`, `kernel`, `fw1`,
+`fw2`, `svc`, `browser`, `wan`, `remmina`, or `guests` for the pins). The kernel version comes from
+the release. Gentoo packages come from its signed build-host inventory. Exit 1: something to
+rebuild (UNKNOWN lines may appear too). Exit 2: only UNKNOWN; a source was not read.
 
 Offline feature checks (also run by `build/lint`; require `python3`, `jq` and OpenSSL):
 
@@ -255,6 +260,9 @@ Offline feature checks (also run by `build/lint`; require `python3`, `jq` and Op
 | `sh build/test --remmina-unit` | Keyring handling and artifact paths |
 | `sh build/test --observability` | Status ingestion, capture, parsers, dashboards, wan diagnostics and pflogd state |
 | `sh build/test-incus-ui --offline` | UI credential and session fixtures |
+
+`build/lint` also runs the install-options, VM runner, bootstrap, boot privacy, account, leases and
+firewall-heal fixtures.
 
 `--guests`, `--guests-maint` and `--guests-update` exercise live PF/session/lifecycle checks;
 see their test scripts for assertions and hardware-only limits.
