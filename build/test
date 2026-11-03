@@ -2000,7 +2000,14 @@ sh -n "$work/verify-image"
 	. "$work/cert-functions"
 	certificate_current() { return 0; }
 	certificates_clock() { return 0; }
-	certificates_prepare() { trust=new; echo prepare >>"$work/cert-events"; }
+	# As the real prepare, it leaves Incus's trust list for apply's stale-trust pass.
+	stale_fp=$(printf '%064d' 1)
+	certificates_prepare() {
+		trust=new
+		printf '[{"type":"metrics","fingerprint":"new"},{"type":"metrics","fingerprint":"%s"},{"type":"client","fingerprint":"%064d"}]\n' \
+			"$stale_fp" 2 >"$work/trust"
+		echo prepare >>"$work/cert-events"
+	}
 	running() { return 1; }
 	retry() { "$@"; }
 	healthy() { :; }
@@ -2030,6 +2037,9 @@ sh -n "$work/verify-image"
 	[ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ]
 	[ "$(grep -c '^install$' "$work/cert-events")" = 6 ]
 	[ "$(grep -c '^restart$' "$work/cert-events")" = 3 ]
+	# Only the stale metrics client loses trust: not the current one, not other types.
+	[ "$(grep -c '^config trust remove ' "$work/cert-events")" = 1 ]
+	grep -qx "config trust remove $stale_fp" "$work/cert-events"
 	rm "$work/cert-events"
 	certificates_apply
 	[ ! -e "$work/cert-events" ]
@@ -2061,6 +2071,8 @@ sh -n "$work/verify-image"
 	: >"$lib/work-gate"
 	cp /etc/convergent/topology.sha256 "$work/"
 	die() { echo "guests: $*" >&2; exit 1; }
+	# guests' own globals, which update() reads under -u.
+	rebuilding= pending=
 	eval "$(sed -n '/^update() {/,/^}/p' /usr/local/sbin/guests | sed "s|/run/convergent/browser-update.lock|$work/browser.lock|")"
 	for fn in logger good_slot flock prepare_cleanup fw_release dns_restore verify_image stale_installed ic commit_update parallel_autostart record_installed; do
 		eval "$fn() { :; }"
@@ -2333,12 +2345,23 @@ until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
 done
 answer 1053 public AAAA 2001:4860:4860::8888
 answer 1054 loop A 127.42.0.7
-query 1054 mapped AAAA | grep -q '^::ffff:'
+# A nested firewall stalls for seconds: one-shot probes missed their 1-2 s reply (0.1.6 fw2). Waits retry
+# only a missing reply; the first reply is judged, so a retry never passes a leaked answer.
+deadline=$(($(date +%s) + 30))
+until query 1054 mapped AAAA | grep -q '^::ffff:'; do
+	[ "$(date +%s)" -lt "$deadline" ] || exit 1
+	sleep 1
+done
 for record in 'loop A' 'mapped AAAA'; do
 	set -- $record
-	dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer"
-	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer"
-	grep -q 'ANSWER: 0,' "$work/answer"
+	deadline=$(($(date +%s) + 30))
+	until dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer.log" &&
+		grep -q 'status: ' "$work/answer.log"; do
+		[ "$(date +%s)" -lt "$deadline" ] || exit 1
+		sleep 1
+	done
+	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer.log"
+	grep -q 'ANSWER: 0,' "$work/answer.log"
 done
 answer 1053 public A 93.184.216.34
 REBIND
