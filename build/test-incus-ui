@@ -161,7 +161,8 @@ sh "$work/stop-fail" cleanup 8>&-
 ic exec svc -- rc-service grafana status
 exec 8>&-
 /usr/local/sbin/incus-ui cleanup
-[ "$(ic config get svc limits.memory)" = 350MiB ]
+# check auto's cleanup may have taken the lock first and still be finishing: wait for its result.
+n=0; until [ "$(ic config get svc limits.memory)" = 350MiB ]; do [ "$n" -lt 30 ]; n=$((n + 1)); sleep 2; done
 if ic exec svc -- rc-service grafana status; then exit 1; fi
 [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
 [ ! -e "$run" ]

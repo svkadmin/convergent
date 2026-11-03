@@ -60,7 +60,7 @@ lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
 for fault in fw1 fw2 none; do
     # A fault's rollback reboots the pair: a relinking fw1 missed adverts and fw2 was MASTER for 8 s.
-    fw_settled fw1:master fw2:backup
+    fw_settled -t 3600 fw1:master fw2:backup
     cv_time "topology-$fault"
     if [ "$fault" = none ]; then
         cp "$release/guests-fw-timed" "$release/guests-topology-run"
