@@ -34,6 +34,8 @@ awk '/^# Capture the command status/ {exit} {print}' "$release/guests-fw-timed" 
     done
     for node in fw1 fw2; do seed_start "$node"; done
     leases_resume
+    # Both just booted and relink: one role read each caught missed adverts.
+    fw_settled -t 3600 fw1:master fw2:backup
     for node in fw1 fw2; do
         rsh "$node" 'test ! -e /etc/convergent/segments && test ! -e /usr/local/libexec/convergent/carp.awk'
         case $node in fw1) want=MASTER ;; *) want=BACKUP ;; esac
@@ -47,7 +49,8 @@ awk '/^# Capture the command status/ {exit} {print}' "$release/guests-fw-timed" 
 fw_settled fw1:master fw2:backup
 # Exercise the installed maintenance undo and interrupted handoff against old guest helpers.
 printf 'yes\n' | sys firewall maintenance
-printf 'yes\n' | sys firewall undo
+# Undo fails after releasing when fw1 takes MASTER back late; the loop below waits for the roles.
+printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
 (
     . "$release/guest-functions"
     work=$(mktemp -d "$state/work.XXXXXX")
@@ -82,6 +85,8 @@ for fault in fw1 fw2 none; do
         /^\+ rebuild_root fw[12] / && held {roots++}
         /^\+ seed_start fw[12]$/ && held {if(roots != 2) bad=1; boots++}
         END {exit bad || boots < 2}' "$release/topology-$fault.log"
+    # Both were just replaced or rolled back; the next pass's settle came too late for these reads.
+    fw_settled -t 3600 fw1:master fw2:backup
     for node in fw1 fw2; do
         current=$(incus --force-local --project default config get "$node" volatile.base_image)
         before=$(cat "$release/$node.topology-before")
@@ -93,5 +98,6 @@ for fault in fw1 fw2 none; do
         awk -v want="$want" -f "$lib/carp.awk" "$registry" "$release/$node.topology-carp" >/dev/null
     done
 done
-sh "$lib/work-gate"
+# The gate opens once both firewalls answer; one still relinking can take many minutes.
+timeout -k 5 1500 sh -c 'until sh "$1/work-gate"; do sleep 10; done' sh "$lib"
 echo 'CV-TOPOLOGY legacy migration and both rebuild faults passed'

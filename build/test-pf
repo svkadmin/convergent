@@ -54,14 +54,15 @@ trap 'exit 1' HUP INT TERM
 # probes, then ends the session, and the node's HUP ends its nc.
 canary_begin() {
 	canary_log=$(mktemp) || return 1
-	command ssh -n -o ControlMaster=no -o ControlPath=none -F /etc/convergent/ssh_config "$1" "
+	command ssh -n -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 -F /etc/convergent/ssh_config "$1" "
         nc -kl $2 $3 </dev/null >/dev/null 2>&1 & p=\$!
         trap 'kill \$p 2>/dev/null' 0 HUP TERM
         for i in 1 2 3 4 5; do nc -z -w 2 $2 $3 >/dev/null 2>&1 && { echo CV-LISTENER-READY; break; }; sleep 1; done
         while kill -0 \$p 2>/dev/null; do sleep 1; done
         echo CV-LISTENER-DIED" >"$canary_log" 2>&1 &
 	canary_pid=$!
-	for i in $(seq 30); do
+	# A login to a loaded firewall plus up to 15 s of readiness on the node.
+	for i in $(seq 90); do
 		grep -qx CV-LISTENER-READY "$canary_log" && return 0
 		kill -0 "$canary_pid" 2>/dev/null || break
 		sleep 1
@@ -308,7 +309,7 @@ DHCP
 	address=${lease%% *}
 	for f in fw1 fw2; do
 		tries=0
-		until timeout 10 ssh -F /etc/convergent/ssh_config "$f" "grep -F 'lease $address {' /var/db/dhcpd.leases" >/dev/null; do
+		until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$f" "grep -F 'lease $address {' /var/db/dhcpd.leases" >/dev/null; do
 			tries=$((tries + 1))
 			[ "$tries" -lt 15 ] || { result=1; break; }
 			sleep 1
@@ -329,6 +330,8 @@ rc=0
 timeout -k 5 1140 sh /var/lib/convergent/test-release/fixtures/pf-l2 "$work_rows" || rc=$?
 cv_time l2-duration
 [ "$rc" = 0 ] || exit "$rc"
+# The storm's PF logging made the pair flap; the role reads below need it settled again.
+fw_settled -t 900 fw1:master fw2:backup || { echo 'CV-PF FAIL firewalls not settled after the L2 storm'; exit 1; }
 home_want=$(awk '
 function ip(s,a) {split(s,a,"."); return ((a[1]*256+a[2])*256+a[3])*256+a[4]}
 {for(i=1;i<=NF;i++){split($i,c,"/"); size=2^(32-c[2]); if(int(ip("10.0.2.100")/size)==int(ip(c[1])/size)) found=1}}
@@ -364,11 +367,12 @@ ic exec "$flow_source" -- sh -c '
 ' sh "$flow_address"
 for i in $(seq 30); do ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies && break; sleep 1; done
 ic exec "$flow_source" -- grep -qx before /run/pf-flow-replies
+synced=
 for i in $(seq 30); do
-    timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:5999" && break
+    timeout 60 ssh -n -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw2 'pfctl -ss' | grep -F "$flow_address:5999" && { synced=1; break; }
     sleep 1
 done
-timeout 10 ssh -n -F /etc/convergent/ssh_config fw2 'pfctl -ss' | grep -F "$flow_address:5999"
+[ -n "$synced" ]
 for master in fw1 fw2; do
 	cv_time "work-$master"
 	if [ "$master" = fw2 ]; then
@@ -388,6 +392,7 @@ for master in fw1 fw2; do
 		ic exec "$flow_source" -- touch /run/pf-flow-continue
 		for i in $(seq 30); do ic exec "$flow_source" -- grep -qx after /run/pf-flow-replies && break; sleep 1; done
 		ic exec "$flow_source" -- grep -qx after /run/pf-flow-replies
+		fw_settled -t 600 fw2:master || { echo 'CV-PF FAIL fw2 not settled as MASTER without fw1'; exit 1; }
 	fi
 	for f in fw1 fw2; do
 		[ "$master:$f" != fw2:fw1 ] || continue
@@ -479,7 +484,8 @@ while read -r iface vhid parent label prefix gateway family <&3; do
 		grep -q "hardware ethernet $mac;" /run/convergent/pf-dhcp
 	done
 done 3<"$work_rows"
-printf 'yes\n' | sys firewall undo
+# Undo fails after releasing when fw1 takes MASTER back late; the settle below waits for the roles.
+printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
 w1_maintenance=
 rm -f "$work_rows" /run/convergent/pf-work-fw1 /run/convergent/pf-work-fw2
 # End work-network matrix.
@@ -516,6 +522,8 @@ for master in fw1 fw2; do
         # The failover closes work access until the gate validates the new pair; the first three
         # Remmina probes once landed in that window.
         timeout -k 5 300 sh -c 'until sh /usr/lib/convergent/incus/work-gate; do sleep 10; done'
+        # wan-watch's demotion ties sysmaint's 128 and can hand MASTER back for a while.
+        fw_settled -t 600 fw1:backup fw2:master || { echo 'CV-PF FAIL firewalls not settled in maintenance'; exit 1; }
     fi
     for f in fw1 fw2; do
         if [ "$f" = "$master" ]; then want=MASTER; else want=BACKUP; fi
@@ -575,8 +583,10 @@ for master in fw1 fw2; do
     probe deny "$rem" 100.80.3.10 3389
     ic exec "$rem" -- sh -c 'test "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6)" = 1' || result=1
 done
-printf 'yes\n' | sys firewall undo
+printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
 w1_maintenance=
+# The Incus UI test after this probes through fw1.
+fw_settled -t 1800 fw1:master fw2:backup || { echo 'CV-PF FAIL firewalls not settled after the Remmina matrix'; exit 1; }
 rm -f /run/convergent/pf-remote-fw1 /run/convergent/pf-remote-fw2
 echo "CV-REMOTE network result=$result"
 # End Remmina.

@@ -83,6 +83,15 @@ api() {
     nsenter -t "$pid" -n curl -qsS --noproxy '*' --connect-timeout 3 --max-time 10 \
         --cacert "$tls/ca.crt" -o "$work/reply" -w '%{http_code}' "$@" https://100.80.1.10:8443/1.0/instances
 }
+# No answer (000) is a CARP blip, not a verdict: three tries.
+api_code() {
+    for try in 1 2 3; do
+        code=$(api "$@" 2>/dev/null) || :
+        [ "$code" = 000 ] || break
+        sleep 5
+    done
+    echo "$code"
+}
 start_int
 ic exec int -- sh -eu -c '
     test "$(stat -c %d:%i /home/browser/.pki/nssdb)" = "$(stat -c %d:%i /home/browser/.local/share/pki/nssdb)"
@@ -97,9 +106,9 @@ ic config trust list --format json | jq -e 'any(.[]; .name == "browser-int-ui" a
 # A CARP blip right after PF's maintenance rounds once split int's handshake across both firewalls.
 deadline=$(($(date +%s) + 240))
 until [ "$(api 2>/dev/null)" != 000 ]; do [ "$(date +%s)" -lt "$deadline" ]; sleep 5; done
-[ "$(api)" = 403 ]
-[ "$(api --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
-[ "$(api --cert "$work/client.crt" --key "$work/key")" = 200 ]
+[ "$(api_code)" = 403 ]
+[ "$(api_code --cert "$tls/incus-client.crt" --key "$tls/incus-client.key")" = 403 ]
+[ "$(api_code --cert "$work/client.crt" --key "$work/key")" = 200 ]
 # Audit: fixtures catch secret leakage; native events catch wire-format and log-level drift.
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: lifecycle log: {"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}'
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: logging log: {"message":"Handling API request","level":"debug","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}'
