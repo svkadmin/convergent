@@ -37,8 +37,9 @@ cleanup() {
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
+# check auto's incus-ui cleanup holds this lock for seconds each minute.
 exec 8>/run/convergent/browser/int.lock
-flock -n 8
+flock -w 60 8
 if ic query '/1.0/instances?recursion=1&project=default' | jq -e 'any(.[]; .name == "int")' >/dev/null; then
     [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
     ic config show int >"$work/int.yaml"
@@ -144,18 +145,21 @@ ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
 start_int
 if ic exec int --user 1000 --group 1000 -- certutil -K -d sql:/home/browser/.pki/nssdb -f /dev/null 2>&1 | grep -q browser-int-ui; then exit 1; fi
 ic stop int --force
-# A second session must unlock again; then emulate launcher death by releasing its lock.
+# A second session must unlock again; then emulate launcher death.
 if /usr/local/sbin/incus-ui --import 8>&-; then exit 1; fi
 sh "$work/helper" --unlock
 start_int
 /usr/local/sbin/incus-ui --import 8>&-
-exec 8>&-
-# A failed stop must preserve the session limit without failing cleanup.
-sed 's/ic exec svc -- rc-service grafana stop || return/false || return/' \
-    /usr/local/sbin/incus-ui >"$work/stop-fail"
-sh "$work/stop-fail" cleanup
+# A failed stop must preserve the session limit without failing cleanup. The copy finds its own lock
+# free; the real one stays held, or the minute check auto's cleanup could stop Grafana first.
+sed -e 's/ic exec svc -- rc-service grafana stop || return/false || return/' \
+    -e "s|/run/convergent/browser/int.lock|$work/int.lock|" /usr/local/sbin/incus-ui >"$work/stop-fail"
+grep -qF 'Running) false || return ;;' "$work/stop-fail"
+grep -qF "exec 8>$work/int.lock" "$work/stop-fail"
+sh "$work/stop-fail" cleanup 8>&-
 [ "$(ic config get svc limits.memory)" = 768MiB ]
 ic exec svc -- rc-service grafana status
+exec 8>&-
 /usr/local/sbin/incus-ui cleanup
 [ "$(ic config get svc limits.memory)" = 350MiB ]
 if ic exec svc -- rc-service grafana status; then exit 1; fi

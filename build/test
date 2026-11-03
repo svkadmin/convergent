@@ -2240,10 +2240,7 @@ cv_time firewall-self-heal
     done
     # The restarted fw2 relinks its kernel for ~25 minutes; meanwhile its rcctl calls outlasted 30 s.
     cv_time firewall-self-heal-relink
-    deadline=$(($(date +%s) + 3600))
-    until fwssh fw2 '! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
-        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
-    done
+    fw_settled -t 3600 fw1:master fw2:backup
     grep -q 'fw2 restart completed' /run/convergent/firewall-heal/event
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     rm /run/convergent/guests-stopping
@@ -2388,12 +2385,12 @@ cv_time maintenance-reboot
     fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
     ic restart fw1 --timeout 120 || { fw1_state "restart failed ($?)"; exit 1; }
     # Wait for OpenBSD's boot relinking: libraries before sshd, kernel after. A one-vCPU firewall
-    # three hypervisors deep took 15 min to the login prompt and relinked its kernel for 15 more.
-    deadline=$(($(date +%s) + 3600))
-    until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rcctl check unbound && ! pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null'; do
-        [ "$(date +%s)" -lt "$deadline" ] || { fw1_state 'boot or unbound not ready 60 minutes after the restart'; exit 1; }
-        sleep 5
-    done
+    # three hypervisors deep took 15 min to the login prompt and relinked its kernel for 15 more. The roles
+    # are asserted below.
+    fw_settled -t 3600 fw1 fw2 || { fw1_state 'boot not settled 60 minutes after the restart'; exit 1; }
+    # Undo below needs unbound, which rc started.
+    timeout -k 5 300 sh -c 'until timeout 30 ssh -F /etc/convergent/ssh_config fw1 "rcctl check unbound"; do sleep 5; done' ||
+        { fw1_state 'unbound not running after the boot'; exit 1; }
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
     for f in fw1 fw2; do
         case $f in fw1) want=BACKUP ;; fw2) want=MASTER ;; esac
@@ -2548,6 +2545,9 @@ EOF
 	fi
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time handoff-recovery
+# guests-update comes here first after guests init booted the pair, which may still relink: a relinking
+# firewall froze for seconds under the update's load and answers SSH late.
+fw_settled fw1 fw2 || { fw_diag; bad $LINENO; }
 # Recreate a killed handoff and its leftover probe routes before the normal update.
 touch "$state/fw.handoff" && sync || bad $LINENO
 timeout 30 ssh -F /etc/convergent/ssh_config fw1 'set -e
@@ -2595,11 +2595,6 @@ sha256sum "$tls/"*.crt >"$release/tls-renewed"
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-renewed" || bad $LINENO
 cv_time firewall-update
-# A firewall still relinking its kernel froze for seconds under the update's load; let both finish first.
-for f in fw1 fw2; do
-    cv_time "firewall-update-relink-$f"
-    timeout -k 5 1500 sh -c 'until ssh -n -F /etc/convergent/ssh_config "$1" "! pgrep -f [r]eorder_kernel >/dev/null"; do sleep 10; done' sh "$f" || bad $LINENO
-done
 # Mark bounded waits inside the pair update, not the diagnostic probe loop.
 { cat "$release/timing"; awk '{print} $0 == "retry() {" {print "    cv_time \"firewall-update-$(printf %s \"$1\" | tr _ -)\" >&3"; n++}
     END {exit n != 1}' /usr/local/sbin/guests; } >"$release/guests-fw-timed" || bad $LINENO
@@ -3356,6 +3351,37 @@ inject_guests() {
 	printf 'test_start=%s\n' "$test_start" >"$var/lib/convergent/test-release/timing"
 	cat >>"$var/lib/convergent/test-release/timing" <<'EOF'
 cv_time() { echo "CV-TIME $1 $(($(date +%s) - test_start))"; }
+# After a firewall boots: sshd answers, neither /etc/rc nor the kernel relink runs, and the CARP roles
+# hold for two checks in a row. fw_settled [-t seconds] node[:master|:backup]... (default 2400 s);
+# a node without a role must be uniform, fw1 and fw2 together one MASTER and one BACKUP.
+fw_settled() {
+    settle_start=$(date +%s) settle_limit=2400
+    if [ "${1:-}" = -t ]; then settle_limit=$2; shift 2; fi
+    settle_last=
+    while :; do
+        settle_seen= settle_ok=1 settle_masters=0
+        for settle_spec do
+            # A fresh connection proves sshd; the shared master can outlive a reboot.
+            if settle_reply=$(timeout 60 ssh -n -F /etc/convergent/ssh_config -o ConnectTimeout=30 \
+                -o ControlMaster=no -o ControlPath=none "${settle_spec%%:*}" \
+                'if pgrep -f "/etc/[r]c|[r]eorder_kernel" >/dev/null; then echo busy; else ifconfig carp; fi' 2>/dev/null); then
+                settle_role=$(printf '%s\n' "$settle_reply" | awk '$1 == "busy" {b=1} $1 == "carp:" {n++; s[$2]++}
+                    END {print (b ? "busy" : !n ? "none" : s["MASTER"] == n ? "master" : s["BACKUP"] == n ? "backup" : "split")}')
+            else settle_role=down; fi
+            settle_seen="$settle_seen ${settle_spec%%:*}=$settle_role"
+            case $settle_role in master) settle_masters=$((settle_masters + 1)) ;; backup) ;; *) settle_ok=0 ;; esac
+            case $settle_spec in *:*) [ "$settle_role" = "${settle_spec#*:}" ] || settle_ok=0 ;; esac
+        done
+        [ "$#" = 1 ] || [ "$settle_masters" = 1 ] || settle_ok=0
+        if [ "$settle_ok" = 1 ]; then
+            [ "$settle_seen" != "$settle_last" ] || { echo "CV-SETTLE$settle_seen after $(($(date +%s) - settle_start)) s"; return 0; }
+            settle_last=$settle_seen
+        else settle_last=; fi
+        [ "$(($(date +%s) - settle_start))" -lt "$settle_limit" ] ||
+            { echo "CV-SETTLE not settled after $settle_limit s:$settle_seen"; return 1; }
+        sleep 10
+    done
+}
 EOF
 	cp -a "$guests/." "$var/lib/convergent/test-release/guests/"
 	# Remmina lifecycle fixture.
