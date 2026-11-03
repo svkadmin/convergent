@@ -12,20 +12,24 @@ deny() {
 	if sh -eu "$@" >"$work/error" 2>&1; then die "accepted $*"; fi
 }
 
-# A valid signature cannot authorize bytes outside the stage3 pin.
+# A valid signature cannot authorize bytes outside the stage3 pin; the cache keeps only a verified pair.
 sed -n '/^if \[ ! -x "\$BUILDER\/bin\/sh" \]; then$/,/^fi$/p' "$here/buildenv" >"$work/stage"
 cat >"$work/stage-run" <<'SH'
 die() { echo "$*" >&2; exit 1; }
 payload=$work/$1
 STAGE3_SHA256=$2
 signature=$3
+stage3_cache=$work/stage3-cache
 work=$work/stage-case
 mkdir "$work"
 BUILDER=$work/builder
 STAGE3_VARIANT=hardened-openrc STAGE3_BUILD=fixture mirror=https://fixture key=fixture
 curl() {
-	[ "$1 $2" = '-fsSL -o' ] || return 1
-	cp "$payload" "$3"
+	args="$*"
+	[ "${args%% -o *}" = '-fsSL --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --proto-redir =https' ] || return 1
+	while [ "$1" != -o ]; do shift; done
+	printf '%s\n' "${3##*/}" >>"$work/downloads"
+	cp "$payload" "$2"
 }
 gpg() {
 	case $* in
@@ -45,18 +49,45 @@ printf pinned >"$work/good"
 printf older-signed >"$work/old"
 digest=$(sha256sum "$work/good" | awk '{print $1}')
 for part in stage stage-run; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
-sh -eu "$work/stage-run" good "$digest" good
-[ -f "$work/stage-case/verified" ] && [ -f "$work/stage-case/extracted" ]
+stage_case() { rm -rf "$work/stage-case"; }
+stage_refused() {
+	[ -f "$work/stage-case/verified" ]
+	[ ! -e "$work/stage-case/extracted" ]
+	[ -z "$(find "$work/stage3-cache" -type f -print)" ]
+}
 for mode in old missing bad-signature; do
-	rm -rf "$work/stage-case"
+	stage_case
 	case $mode in
 	old) deny "$work/stage-run" old "$digest" good ;;
 	missing) deny "$work/stage-run" good '' good ;;
 	bad-signature) deny "$work/stage-run" good "$digest" bad ;;
 	esac
-	[ -f "$work/stage-case/verified" ] && [ ! -e "$work/stage-case/extracted" ]
+	stage_refused
 done
-echo 'test-bootstrap: stage3 pin and signature passed'
+stage_case
+sh -eu "$work/stage-run" good "$digest" good
+[ -f "$work/stage-case/verified" ]
+[ -f "$work/stage-case/extracted" ]
+printf 'stage3-amd64-hardened-openrc-fixture.tar.xz\nstage3-amd64-hardened-openrc-fixture.tar.xz.asc\n' |
+	cmp - "$work/stage-case/downloads"
+cmp "$work/good" "$work/stage3-cache/stage3-amd64-hardened-openrc-fixture.tar.xz"
+# A cache hit fetches nothing and is verified again; a cached pair off its pin is removed.
+stage_case
+sh -eu "$work/stage-run" old "$digest" good
+[ -f "$work/stage-case/verified" ]
+[ -f "$work/stage-case/extracted" ]
+[ ! -e "$work/stage-case/downloads" ]
+stage_case
+deny "$work/stage-run" good "$digest" bad
+stage_refused
+[ ! -e "$work/stage-case/downloads" ]
+stage_case
+sh -eu "$work/stage-run" good "$digest" good
+stage_case
+printf corrupt >"$work/stage3-cache/stage3-amd64-hardened-openrc-fixture.tar.xz"
+deny "$work/stage-run" good "$digest" good
+stage_refused
+echo 'test-bootstrap: stage3 pin, signature, bounded fetch and verified cache passed'
 
 # Authenticate each package before tar sees metadata or a dependency is fetched.
 sed -n '/^pkgbase=/,/^# 3\./p' "$repo/guests/fw/build" >"$work/fetchpkg"
@@ -150,15 +181,18 @@ done
 echo 'test-bootstrap: signed package manifest, rejection, dependency closure and cycle passed'
 
 # Bad downloads and legacy cache entries must not prevent the next retry.
-sed -n '/^alpine_curl() /p; /^alpine_bootstrap() {$/,/^}$/p; /^alpine_repositories() {$/,/^}$/p' \
-	"$repo/guests/alpine.sh" >"$work/alpine"
-grep -q '^alpine_curl() ' "$work/alpine" || die 'alpine_curl not extracted'
+sed -n '/^alpine_curl() /p; /^alpine_match() {$/,/^}$/p; /^alpine_verified() {$/,/^}$/p; /^alpine_pinned() {$/,/^}$/p
+	/^alpine_bootstrap() {$/,/^}$/p; /^alpine_repositories() {$/,/^}$/p' "$repo/guests/alpine.sh" >"$work/alpine"
+for part in 'alpine_curl() ' 'alpine_match() {' 'alpine_verified() {' 'alpine_pinned() {' 'alpine_bootstrap() {'; do
+	grep -q "^$part" "$work/alpine" || die "$part not extracted"
+done
 cat >"$work/alpine-run" <<'SH'
 die() { echo "$*" >&2; exit 1; }
 MINIROOTFS=mini.tar.gz MINIROOTFS_SHA256=$2 ALPINE_MIRROR=https://fixture ALPINE_BRANCH=fixture
 mode=$1
 curl() {
-	[ "$1 $2 $3 $4 $5" = '--retry 2 --retry-delay 5 --retry-connrefused' ] || return 1
+	args="$*"
+	[ "${args%% -fsSL *}" = '--connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 --retry-connrefused --proto =https --proto-redir =https --tlsv1.2' ] || return 1
 	while [ "$1" != -o ]; do shift; done
 	printf '%s\n' "$2" >>"$work/downloads"
 	[ ! -f "$work/cache/$MINIROOTFS" ] || return 1
@@ -180,7 +214,8 @@ digest=$(sha256sum "$work/mini.good" | awk '{print $1}')
 : >"$work/downloads"
 for mode in bad failed; do
 	deny "$work/alpine-run" "$mode" "$digest"
-	[ ! -e "$work/cache/mini.tar.gz" ] && [ ! -e "$work/mini/marker" ]
+	[ ! -e "$work/cache/mini.tar.gz" ]
+	[ ! -e "$work/mini/marker" ]
 	[ -z "$(find "$work/cache" -type f -print)" ]
 done
 # mktemp must give separate download names in the cache directory.
@@ -194,15 +229,42 @@ sh -eu "$work/alpine-run" cached "$digest"
 rm -rf "$work/mini"
 printf corrupt >"$work/cache/mini.tar.gz"
 deny "$work/alpine-run" cached "$digest"
-[ ! -e "$work/cache/mini.tar.gz" ] && [ ! -e "$work/mini/marker" ]
+[ ! -e "$work/cache/mini.tar.gz" ]
+[ ! -e "$work/mini/marker" ]
 sh -eu "$work/alpine-run" good "$digest"
 cmp "$work/mini.good" "$work/cache/mini.tar.gz"
 echo 'test-bootstrap: Alpine rejection, eviction, retry and cache hit passed'
 
+# Other pinned downloads share the cache: sha512 pins too; any other pin is refused.
+cat >"$work/pinned-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+curl() {
+	while [ "$1" != -o ]; do shift; done
+	printf '%s\n' "$3" >>"$work/downloads"
+	[ "$3" = https://fixture/src.tar.gz ] || return 1
+	cp "$work/mini.good" "$2"
+}
+. "$work/alpine"
+alpine_pinned https://fixture/src.tar.gz "$1" "$work/pinned/src.tar.gz"
+SH
+sh -n "$work/pinned-run"
+sha512=$(sha512sum "$work/mini.good" | awk '{print $1}')
+: >"$work/downloads"
+sh -eu "$work/pinned-run" "$sha512"
+cmp "$work/mini.good" "$work/pinned/src.tar.gz"
+sh -eu "$work/pinned-run" "$sha512"
+[ "$(wc -l <"$work/downloads")" = 1 ]
+deny "$work/pinned-run" "$(printf '%s' "$sha512" | cut -c1-40)"
+grep -q 'no sha256 or sha512 pin' "$work/error"
+[ "$(grep -c '^alpine_pinned ' "$repo/guests/remmina/build")" = 2 ]
+[ "$(grep -c '^alpine_pinned ' "$repo/guests/svc/build")" = 1 ]
+if grep -n 'alpine_curl\|sha[0-9]*sum -c' "$repo/guests/remmina/build" "$repo/guests/svc/build"; then die 'uncached pinned download'; fi
+echo 'test-bootstrap: pinned downloads, sha512 pins and guest call sites passed'
+
 # Pinned edge apks: the cache outlives edge; wrong bytes are never kept; only network failures retry.
-sed -n '/^alpine_net=/p; /^alpine_retry() {$/,/^}$/p; /^alpine_edge() {$/,/^}$/p' \
-	"$repo/guests/alpine.sh" >"$work/edge"
-for part in 'alpine_net=' 'alpine_retry() {' 'alpine_edge() {'; do
+sed -n '/^alpine_net=/p; /^alpine_retry() {$/,/^}$/p; /^alpine_match() {$/,/^}$/p; /^alpine_verified() {$/,/^}$/p
+	/^alpine_edge() {$/,/^}$/p' "$repo/guests/alpine.sh" >"$work/edge"
+for part in 'alpine_net=' 'alpine_retry() {' 'alpine_match() {' 'alpine_verified() {' 'alpine_edge() {'; do
 	grep -q "^$part" "$work/edge" || die "$part not extracted"
 done
 cat >"$work/edge-run" <<'SH'
@@ -284,3 +346,54 @@ for mode in untrusted missing mixed; do
 	uncached
 done
 echo 'test-bootstrap: pinned edge apk cache, eviction, refusal and network-only retries passed'
+
+# Portage inputs outlive the builder: seeded once from it, bound as its DISTDIR, unmounted by the last user.
+sed "s|/run/convergent-builder|$work/chroot|g" "$here/chroot.sh" >"$work/chroot.sh"
+grep -q '^chroot_distfiles=' "$work/chroot.sh" || die 'chroot_distfiles not found'
+cat >"$work/chroot-run" <<'SH'
+die() { echo "$*" >&2; exit 1; }
+. "$work/chroot.sh"
+BUILDER=$work/builder chroot_distfiles=$work/distfiles
+mountpoint() { grep -qxF "$2" "$work/mounts"; }
+mount() {
+	[ "$1" != --make-rslave ] || return 0
+	printf 'mount %s\n' "$*" >>"$work/calls"
+	for m; do :; done
+	printf '%s\n' "$m" >>"$work/mounts"
+}
+umount() {
+	printf 'umount %s\n' "$*" >>"$work/calls"
+	grep -vxF "$2" "$work/mounts" >"$work/mounts.new" || :
+	mv "$work/mounts.new" "$work/mounts"
+}
+chroot() { :; }
+pgrep() { :; }
+sleep() { :; }
+chroot_mount
+grep -qxF "$BUILDER/var/cache/distfiles" "$work/mounts"
+chroot_umount
+SH
+sh -n "$work/chroot-run"
+mkdir -p "$work/builder/var/cache/distfiles"
+echo kept >"$work/builder/var/cache/distfiles/old.tar.xz"
+: >"$work/mounts"
+sh -eu "$work/chroot-run"
+[ "$(cat "$work/distfiles/old.tar.xz")" = kept ]
+grep -qxF "mount --bind $work/distfiles $work/builder/var/cache/distfiles" "$work/calls"
+grep -qxF "umount -R $work/builder/var/cache/distfiles" "$work/calls"
+[ ! -s "$work/mounts" ]
+echo new >"$work/builder/var/cache/distfiles/new.tar.xz"
+sh -eu "$work/chroot-run"
+[ ! -e "$work/distfiles/new.tar.xz" ]
+rm -rf "$work/builder/var" "$work/distfiles"
+sh -eu "$work/chroot-run"
+[ -d "$work/distfiles" ]
+[ -d "$work/builder/var/cache/distfiles" ]
+# The verified snapshot stays there too.
+grep -q '^		emerge-webrsync -q --keep --revert=' "$here/buildenv"
+# A failed mount is cleaned up too: callers arm chroot_umount before chroot_mount.
+for f in buildenv packages image stick test; do
+	awk '/chroot_umount/ && !u {u = NR} /^chroot_mount$/ && !m {m = NR} END {exit !(u && m && u < m)}' "$here/$f" ||
+		die "$f mounts the builder before it arms chroot_umount"
+done
+echo 'test-bootstrap: persistent distfiles, seeding, unmount and cleanup order passed'

@@ -50,14 +50,12 @@ done <"$here/packages"
 plugin_version=0.32.0
 plugin_sha256=e100b767f19cd614ac8ac3860458a3fb33f5aa7a876e924d0340010e40d1c0d4
 plugin_archive=victoriametrics-logs-datasource-v$plugin_version.tar.gz
-alpine_curl --fail --location --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    --output "$work/$plugin_archive" \
-    "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v$plugin_version/$plugin_archive"
-printf '%s  %s\n' "$plugin_sha256" "$work/$plugin_archive" | sha256sum -c -
-tar -tzf "$work/$plugin_archive" >"$work/plugin-files"
+alpine_pinned "https://github.com/VictoriaMetrics/victorialogs-datasource/releases/download/v$plugin_version/$plugin_archive" \
+    "$plugin_sha256" "$cache/$plugin_archive"
+tar -tzf "$cache/$plugin_archive" >"$work/plugin-files"
 if grep -E '(^/|(^|/)\.\.(/|$))' "$work/plugin-files"; then die "unsafe plugin archive"; fi
 mkdir "$work/plugin"
-tar -xzf "$work/$plugin_archive" --no-same-owner -C "$work/plugin"
+tar -xzf "$cache/$plugin_archive" --no-same-owner -C "$work/plugin"
 plugin_json=$(find "$work/plugin" -type f -name plugin.json)
 [ "$(printf '%s\n' "$plugin_json" | wc -l)" = 1 ] && [ -f "$plugin_json" ] || die "unexpected plugin layout"
 plugin=$root/usr/share/grafana/plugins/victoriametrics-logs-datasource

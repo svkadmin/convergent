@@ -256,6 +256,13 @@ def alpine_inventory(guests, guest):
             versions = [version.rsplit('.', 1)[0]]
             packages = installed_apk(archive_text(archive, 'lib/apk/db/installed'))
     require(len(versions) == 1, f'{guest}: missing/ambiguous Alpine branch')
+    if guest == 'remmina':
+        # The executable is built from source with r0's aports patch (guests/remmina/build), whichever
+        # rebuild supplied the package: judge it as r0, so a fix in a later rebuild is not hidden.
+        binary = [version for name, version, _ in packages if name == 'remmina']
+        require(len(binary) == 1 and re.fullmatch(r'.+-r[0-9]+', binary[0]), 'missing/ambiguous remmina version')
+        packages = [(name, re.sub(r'-r[0-9]+$', '-r0', version) if name == 'remmina' else version, origin)
+                    for name, version, origin in packages]
     return 'v' + versions[0], packages
 
 
@@ -517,15 +524,20 @@ def gate_selftest():
         errata = 'OpenBSD 7.9 Errata <a href="/002_later.patch.sig">'
         (work / 'errata-7.9.html').write_text(errata)
         (guests / 'wan/wan.manifest').write_text('alpine=3.24\npackage=libssl3-3.5.1-r2 origin=openssl\n')
-        for guest in ('svc', 'browser', 'remmina'):
+        def rootfs(guest, installed):
             with tarfile.open(guests / guest / 'rootfs.tar.gz', 'w:gz') as archive:
                 for name, text in [('etc/alpine-release', '3.24.2\n'),
                                    ('etc/convergent/apk-imports', ''),
-                                   ('lib/apk/db/installed', 'P:libssl3\nV:3.5.1-r2\no:openssl\n')]:
+                                   ('lib/apk/db/installed', installed)]:
                     data = text.encode()
                     member = tarfile.TarInfo('./' + name)
                     member.size = len(data)
                     archive.addfile(member, io.BytesIO(data))
+
+        libssl = 'P:libssl3\nV:3.5.1-r2\no:openssl\n'
+        remmina = libssl + '\nP:remmina\nV:1.4.43-r1\no:remmina\n'
+        for guest in ('svc', 'browser', 'remmina'):
+            rootfs(guest, remmina if guest == 'remmina' else libssl)
 
         def secdb(fixed):
             database = {'distroversion': 'v3.24', 'packages': [
@@ -542,6 +554,15 @@ def gate_selftest():
 
         secdb('3.5.1-r2')
         check(0)
+        # The source-built remmina counts as r0: a fix in Alpine's r1 rebuild is not in it.
+        database = json.loads((work / 'community-v3.24.json').read_text())
+        database['packages'].append({'pkg': {'name': 'remmina', 'secfixes': {'1.4.43-r1': ['CVE-2099-0003']}}})
+        (work / 'community-v3.24.json').write_text(json.dumps(database))
+        require('remmina: remmina installed 1.4.43-r0; fixed 1.4.43-r1' in check(1), 'source-built remmina judged by its package')
+        secdb('3.5.1-r2')
+        rootfs('remmina', libssl)
+        require('missing/ambiguous remmina version' in check(2), 'remmina without a version was judged')
+        rootfs('remmina', remmina)
         svc = guests / 'svc/rootfs.tar.gz'
         original = svc.read_bytes()
         for imports in (None, 'victoria-logs 1.52.1-r0 edge/testing\n'):
@@ -954,7 +975,7 @@ trap cleanup 0
 trap 'exit 2' HUP INT TERM
 
 fetch() {
-	if curl -q -fsSL --proto =https --proto-redir =https --max-time 60 "$2" -o "$work/$1.part"; then
+	if curl -q -fsSL --proto =https --proto-redir =https --max-time 60 --retry 2 --retry-connrefused "$2" -o "$work/$1.part"; then
 		mv "$work/$1.part" "$cache/$1"
 		cp "$cache/$1" "$work/$1"
 	else
@@ -971,9 +992,11 @@ if [ "$mode" != gate ] && grep -q '^package www-apps/incus-ui-' "$release/packag
 	fetch zabbly-Packages.gz https://pkgs.zabbly.com/incus/lts-7.0/dists/bookworm/main/binary-amd64/Packages.gz
 fi
 
-# Publish a complete GLSA set; a failed sync must not replace the last fetch.
+# Publish a complete GLSA set; a failed sync must not replace the last fetch. One retry, from an empty tree.
 glsa=$(mktemp -d "$cache/.glsa.XXXXXX")
-if timeout -k 10 120 git clone --quiet --depth 1 https://anongit.gentoo.org/git/data/glsa.git "$glsa"; then
+glsa_url=https://anongit.gentoo.org/git/data/glsa.git
+if timeout -k 10 120 git clone --quiet --depth 1 "$glsa_url" "$glsa" ||
+	{ rm -rf "$glsa" && mkdir -m 700 "$glsa" && sleep 5 && timeout -k 10 120 git clone --quiet --depth 1 "$glsa_url" "$glsa"; }; then
 	previous=$(readlink "$cache/glsa" 2>/dev/null || true)
 	ln -s "${glsa##*/}" "$work/glsa-link"
 	mv -Tf "$work/glsa-link" "$cache/glsa"

@@ -87,6 +87,22 @@ printf 'secret_service_store(value)\n' >"$work/src/remmina_file.c"
 (cd "$work"; sh -eu ./compile-guard) >"$work/compiled"
 grep -qx compiled "$work/compiled"
 echo 'CV-REMOTE unit compile guard ok'
+# Any Alpine rebuild of the source pin passes; another version or no record stops the build.
+sed -n '/^remmina_version=/,/is not the source pin/p' "$here/../guests/remmina/build" >"$work/pin-check"
+[ "$(wc -l <"$work/pin-check")" = 3 ]
+sh -n "$work/pin-check"
+pin=$(sed -n 's/^remmina_version=//p' "$work/pin-check")
+grep -qwF "remmina~$pin" "$here/../guests/remmina/packages"
+mkdir -p "$work/pin/lib/apk/db"
+for case in "$pin-r0 ok" "$pin-r3 ok" "1.4.44-r0 stop" "$pin.1-r0 stop" "none stop"; do
+    version=${case% *}
+    printf 'P:remmina-lang\nV:%s\n\n' "$pin-r0" >"$work/pin/lib/apk/db/installed"
+    [ "$version" = none ] || printf 'P:remmina\nV:%s\n' "$version" >>"$work/pin/lib/apk/db/installed"
+    rc=0
+    (root=$work/pin; die() { exit 1; }; . "$work/pin-check") 2>/dev/null || rc=$?
+    case $case in *' ok') [ "$rc" = 0 ] ;; *) [ "$rc" = 1 ] ;; esac
+done
+echo 'CV-REMOTE unit Alpine remmina matches the source pin'
 # Lock descriptors must be closed before the timer's FIFO redirection is evaluated.
 (
     run=$work children=

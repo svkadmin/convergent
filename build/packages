@@ -43,8 +43,9 @@ sets="@system @convergent @convergent-apps"
 patched=$(cd "$repo/portage/patches" && ls -d */*)
 nobin=$(printf -- '--usepkg-exclude=%s ' $patched)
 emerge="env LC_ALL=C.UTF-8 PORTAGE_CONFIGROOT=/image-config emerge --root=/staging --update --deep --newuse $nobin"
-chroot_mount
+# Armed first: a failed mount must not leave the others behind.
 trap chroot_umount EXIT
+chroot_mount
 
 if [ "${1:-}" = --pretend ]; then
 	chroot "$BUILDER" $emerge --pretend --verbose $sets
