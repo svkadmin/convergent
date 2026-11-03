@@ -428,7 +428,7 @@ for node in fw1 fw2; do
             printf 'cv_firewall_ruleset_expected_info{firewall="%s",loaded="SHA256 (stdin) = %s"} 1\n' "$node" "$expected" >>"$work/metrics"
         fi
     done
-    rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed; recovery: sys firewall rebuild $node"
+    guest_reply 65536 rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed; recovery: sys firewall rebuild $node"
     rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
 role1=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw1") || bad 'fw1 CARP membership or state invalid'

@@ -215,7 +215,7 @@ edit() {
 			case $2 in ''|*[!0-9.]*) die 'invalid IPv4 address' ;; esac
 			printf '%s\n' "$2" | awk -F . 'NF != 4 {exit 1} {for (i=1;i<=4;i++) if ($i !~ /^[0-9]+$/ || $i ~ /^0[0-9]/ || length($i)>3 || $i>255) exit 1}' || die 'invalid IPv4 address'
 			for fw in $fws; do
-				rsh "$fw" "cat $rdir/local-names.conf" >"$work/builtins" || die "cannot check built-in names on $fw"
+				guest_reply 65536 rsh "$fw" "cat $rdir/local-names.conf" >"$work/builtins" || die "cannot check built-in names on $fw"
 				awk -v name="$name" '$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); if (tolower(s)==name) exit 1}' "$work/builtins" || die 'name conflicts with a built-in record'
 			done
 			cp "$work/records.before" "$work/edit"

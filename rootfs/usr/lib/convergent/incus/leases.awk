@@ -2,6 +2,8 @@
 /^lease [0-9.]+ \{$/ {address=$2; record=$0 "\n"; starts=""; expires=""; next}
 address != "" {
     record=record $0 "\n"
+    # A lease record is a few hundred bytes; never accumulate an unterminated one.
+    if (length(record) > 4096) {bad=1; exit}
     if ($1 == "starts") starts=$3 " " $4
     if ($1 == "ends") expires=$3 " " $4
     if ($0 ~ /^}/) {

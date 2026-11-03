@@ -8,7 +8,8 @@ leases_hold() {
     lease_sources=0
     for lease_node in fw1 fw2; do
         running "$lease_node" || continue
-        if probe_limit=120 rsh "$lease_node" 'set -e
+        # A few KB per pair: an oversized reply is a failed checkpoint and never replaces the saved copy.
+        if probe_limit=120 guest_reply 1048576 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     rcctl disable dhcpd
     if rcctl check dhcpd >/dev/null 2>&1; then rcctl stop dhcpd; fi
@@ -52,7 +53,7 @@ if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; the
     rcctl enable dhcpd
     rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
     rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd
-fi' || return
+fi' >/dev/null || return
     done
     # A peer-only recovery keeps the hold until both allocators have resumed.
     [ -z "$lease_waiting" ] && [ "$#" = 0 ] || return 0
