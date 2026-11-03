@@ -9,6 +9,8 @@ incus	Unlock Incus management	'
 browser_state() { echo 'def / tmp / int'; }
 browser_start() (
 	[ -n "${XDG_RUNTIME_DIR:-}" ] || die 'XDG_RUNTIME_DIR is not set'
+	# One log per browser or remote: drop its older launches' logs.
+	rm -f "$XDG_RUNTIME_DIR/sys-browser-$1".??????
 	log=$(mktemp "$XDG_RUNTIME_DIR/sys-browser-$1.XXXXXX") || exit 1
 	trace setsid -f -w /usr/local/sbin/browser "$@"
 	setsid -f -w /usr/local/sbin/browser "$@" </dev/null >"$log" 2>&1 &

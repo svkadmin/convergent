@@ -486,6 +486,14 @@ echo 'test-networks: DNS guest durability and failure fixtures passed'
         [ "$(rpz_serial "$state/list.rpz")" = 4294967295 ]
         [ "$(cat "$state/list.refreshed")" = 1000 ]
     done
+    # RECOVERY's way out of a provider's serial reset takes the lower serial once.
+    grep -Fq 'echo reset | sudo tee /var/lib/convergent/dns/list.source >/dev/null; sudo dns-push' "$repo/RECOVERY.md"
+    echo reset >"$state/list.source"
+    rpz 4294967294 >"$dns/list.raw"
+    validate
+    . "$dns/stamp-source"
+    [ "$source_refreshed" = 2000000 ]
+    rm "$state/list.source"
     rpz 4294967296 >"$dns/list.raw"
     if (validate) >"$dns/error" 2>&1; then die 'accepted oversized serial'; fi
     rpz 4294967295 >"$dns/list.raw"

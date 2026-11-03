@@ -182,6 +182,10 @@ No address/default route: check `sys wifi status` and upstream. Captive portal: 
 resolver does not rule out usable later servers. Failed 9.9.9.9:853 means firewall/WAN/routing
 failure or upstream DoT blocking. Otherwise send the output.
 
+`dns-push: blocklist serial regressed` on every run after the provider reset its serial: run
+`echo reset | sudo tee /var/lib/convergent/dns/list.source >/dev/null; sudo dns-push` to take the
+lower serial once (local pushes keep the stored list meanwhile).
+
 ### Recover an incorrect clock
 
 A clock years off can prevent both firewall DoT certificate validation and the host's NTS

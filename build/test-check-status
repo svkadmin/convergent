@@ -43,13 +43,15 @@ if guest_reply 128 wan_probe diag >/dev/null; then exit 1; fi
 echo 'check status: route preference and eligibility passed'
 flock() {
     case $* in
-        '-w 30 8') [ "$scenario" != busy ] ;;
-        '-n 8') case $scenario in busy|expiry) return 1 ;; *) return 0 ;; esac ;;
+        '-s -n 7') [ "$scenario" != guests ] ;;
+        # A guests run holds the portal lock for minutes: never wait for it.
+        '-w 30 8') [ "$scenario" != guests ] || exit 97; [ "$scenario" != busy ] ;;
+        '-n 8') case $scenario in busy|expiry|guests) return 1 ;; *) return 0 ;; esac ;;
         *) echo "unexpected flock: $*" >&2; exit 1 ;;
     esac
 }
 # Lock contention preserves both the sample and its age; other status still advances.
-for scenario in busy on off inconsistent failed empty; do
+for scenario in busy guests on off inconsistent failed empty; do
     . "$work/portal-lock" || :
     echo on >"$status/portal"
     touch -t 200001010000 "$status/portal"
@@ -57,7 +59,7 @@ for scenario in busy on off inconsistent failed empty; do
     for node in fw1 fw2 wan; do echo on >"$status/.portal-$node"; done
     expected=unknown
     case $scenario in
-        busy) expected=on; for node in fw1 fw2 wan; do echo unknown >"$status/.portal-$node"; done ;;
+        busy|guests) expected=on; for node in fw1 fw2 wan; do echo unknown >"$status/.portal-$node"; done ;;
         on) expected=on ;;
         off) expected=off; for node in fw1 fw2 wan; do echo off >"$status/.portal-$node"; done ;;
         inconsistent) echo off >"$status/.portal-wan" ;;
@@ -73,13 +75,13 @@ for scenario in busy on off inconsistent failed empty; do
     for name in topology wifi guestmem; do echo old >"$status/$name"; done
     ( . "$work/publish" )
     [ "$(cat "$status/portal")" = "$expected" ]
-    if [ "$scenario" = busy ]; then [ "$(stat -c %Y "$status/portal")" = "$previous" ]
-    else [ "$(stat -c %Y "$status/portal")" -gt "$previous" ]; fi
+    case $scenario in busy|guests) [ "$(stat -c %Y "$status/portal")" = "$previous" ] ;;
+    *) [ "$(stat -c %Y "$status/portal")" -gt "$previous" ] ;; esac
     grep -qx 'uplink=eth wan=up fw1=master fw2=backup svc=up browsers=1 remote=off' "$status/topology"
     grep -qx fresh-wifi "$status/wifi"
     grep -qx 1234 "$status/guestmem"
 done
-echo 'check status: busy portal ages out; verified results and other status publish'
+echo 'check status: busy portal ages out, a guests run is not waited for; verified results and other status publish'
 # Expiry wins four successive minute ticks, then releases within the lock wait.
 scenario=expiry
 echo on >"$status/portal"

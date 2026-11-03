@@ -629,8 +629,9 @@ and [USAGE, The bar](USAGE.md#the-bar). No wattage/runtime saving is established
 
 Minute probes retain bounded requests and one worker/guest. WAN's three sequential requests share 25
 seconds plus kill grace, using monotonic uptime and 60-second SSH multiplexing. Portal reads hold
-the action lock after waiting up to 30 seconds; longer contention leaves the previous portal sample
-to age out, while failed/inconsistent queries yield unknown; failed Incus inventory ages out.
+the action lock after waiting up to 30 seconds (no wait while a guests run holds the guests lock);
+longer contention leaves the previous portal sample to age out, while failed/inconsistent queries
+yield unknown; failed Incus inventory ages out.
 Safety probes retain failover timing.
 
 ### 11.2 Proposals, not enabled

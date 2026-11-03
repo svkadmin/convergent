@@ -64,18 +64,21 @@ guest_stderr true
 flood() { head -c 131072 /dev/zero | tr '\000' x >&2; }
 guest_stderr flood 2>"$scratch/error" || :
 [ "$(wc -c <"$scratch/error")" = 65536 ]
-# Remote stderr of dns-push and portal SSH calls.
-{ sed -n '/^rsh\(_in\|_wait\)\{0,1\}() {/p' "$repo/tools/dns-push"; sed -n '/^rsh() {/p' "$repo/tools/portal"; } >"$scratch/rsh"
-[ "$(wc -l <"$scratch/rsh")" = 4 ]
+# Remote stderr of dns-push and portal SSH calls, and of check's into its audited report.
+{ sed -n '/^rsh\(_in\|_wait\)\{0,1\}() {/p' "$repo/tools/dns-push"; sed -n '/^rsh() {/p' "$repo/tools/portal" "$repo/tools/check"; } >"$scratch/rsh"
+[ "$(wc -l <"$scratch/rsh")" = 5 ]
 (
     conf=unused ssh_conf=unused
     timeout() { shift; "$@"; }
-    ssh() { hostile; }
     while IFS= read -r line; do
         printf '%s\n' "$line" >"$scratch/read"; sh -n "$scratch/read"; . "$scratch/read"
+        ssh() { hostile; }
         code=0
         ${line%%(*} fw1 true </dev/null >"$scratch/output" 2>"$scratch/error" || code=$?
         [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" "${line%%(*}"
+        ssh() { flood; }
+        ${line%%(*} fw1 true </dev/null >/dev/null 2>"$scratch/error" || :
+        [ "$(wc -c <"$scratch/error")" = 65536 ]
     done <"$scratch/rsh"
 )
 # guests SSH probes and mutators: remote stderr bounded and filtered, mutator stdout dropped.

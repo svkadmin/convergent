@@ -241,8 +241,8 @@ appearance is kept.
 Success: a `[def] …` window and `BR:1` in the bar. Super+b or Super+Shift+t failures show the reason
 at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
 `$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch. `sys browser` launches log to
-`$XDG_RUNTIME_DIR/sys-browser-<role>.*`; one that fails within 3 s prints the reason and removes
-its log.
+`$XDG_RUNTIME_DIR/sys-browser-<role>.*`, replacing that role's older logs; one that fails within
+3 s prints the reason and removes its log.
 
 | Role | For | State |
 |---|---|---|

@@ -4009,10 +4009,10 @@ die() { echo "$*" >&2; exit 1; }
 trace() { :; }
 noargs() { [ "$#" = 0 ]; }
 setsid() {
-	[ "$1:$2:$3:$4" = -f:-w:/usr/local/sbin/browser:def ] || return 97
+	case $1:$2:$3:$4 in -f:-w:/usr/local/sbin/browser:def|-f:-w:/usr/local/sbin/browser:int) ;; *) return 97 ;; esac
 	echo 'browser: fixture failure' >&2
-	[ "$fault" = late ] || return 1
-	sleep 4; return 1
+	case $fault in ok) return 0 ;; late) sleep 4 ;; esac
+	return 1
 }
 XDG_RUNTIME_DIR=$work
 fault=early
@@ -4026,6 +4026,14 @@ log=$(sed -n 's/^Browser is starting; if it does not open, see //p' "$work/outpu
 [ -n "$log" ]
 sleep 3
 grep -qx 'browser: fixture failure' "$log"
+# A launch drops that browser's older logs, never another's.
+fault=ok
+browser_int >/dev/null
+browser_def >"$work/output"
+[ ! -e "$log" ]
+[ "$(find "$work" -name 'sys-browser-def.*' | wc -l)" = 1 ]
+[ "$(find "$work" -name 'sys-browser-int.*' | wc -l)" = 1 ]
+grep -qxF "Browser is starting; if it does not open, see $(find "$work" -name 'sys-browser-def.*')" "$work/output"
 CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
