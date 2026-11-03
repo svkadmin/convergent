@@ -531,7 +531,8 @@ mkdir "$work/wired"
     die() { echo "devices: $*" >&2; exit 1; }
     usage() { exit 2; }
     ask() { :; }
-    flock() { [ "$*" = '-n 9' ] || exit 97; }
+    # A bounded wait: the scan's shared hold must not leave a role for a blocked NIC.
+    flock() { [ "$*" = '-w 60 9' ] || exit 97; }
     logger() { :; }
     rc_service() { [ "$*" = 'usbguard restart' ] || exit 97; }
     role='{"type":"usb","vendorid":"0bda","productid":"8153","serial":"S1","required":"false"}'

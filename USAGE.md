@@ -374,8 +374,9 @@ Wired uplink: approve the dock's Realtek USB device, use `sys wired status` for 
 `sys wired attach 0bda:8153 SERIAL` (or prompts). Confirm vendor/product/serial; empty/ambiguous
 serials fail. The persistent wired-uplink device gives only that identity to wan as eth1. Incus does
 not re-attach a replug by serial: `check` re-adds the role once wan has not held the allowed NIC for
-two minute runs, so a replug returns within about two minutes. `sys wired remove` removes
-assignment/automatic attachment, retaining USBGuard approval; unplugging alone retains assignment;
+two minute runs, so a replug returns within about two minutes (three times an hour; then it alerts).
+`sys wired remove` removes assignment/automatic attachment, retaining USBGuard approval; unplugging
+alone retains assignment;
 `sys usb revoke`/`enrol` remove the role once no rule allows the NIC. The host has no USB network
 drivers and does no DHCP/addressing. WAN prefers wired and retries replug DHCP within its minute check.
 

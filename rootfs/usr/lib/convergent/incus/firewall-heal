@@ -112,7 +112,7 @@ firewall_heal() (
     heal=/run/convergent/firewall-heal
     mkdir -p "$heal" || exit 1
     if ! heal_allowed; then
-        rm -f "$heal/fw1" "$heal/fw2"
+        rm -f "$heal/fw1" "$heal/fw2" "$heal/pair"
         echo 'SELF-HEAL inhibited: guest journal, maintenance or shutdown'
         [ ! -f "$heal/event" ] || cat "$heal/event"
         exit 0
@@ -128,9 +128,16 @@ firewall_heal() (
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
     # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
+    # As for one node, 180 s in a row first: a stop by hand is not undone within a minute.
     if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then
+        first=$now previous=$now
+        [ ! -f "$heal/pair" ] || read -r first previous <"$heal/pair"
+        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 90 ]; then first=$now; fi
+        printf '%s %s\n' "$first" "$now" >"$heal/pair" || exit 1
         exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
-        if flock -n 8 && flock -n 6 && heal_allowed && heal_pair_stopped; then
+        if [ "$((now - first))" -lt 180 ]; then
+            echo "SELF-HEAL fw1, fw2: stopped for $((now - first))s; both start after 180s"
+        elif flock -n 8 && flock -n 6 && heal_allowed && heal_pair_stopped; then
             for node in fw1 fw2; do
                 read -r uptime rest </proc/uptime
                 printf '%s\n' "${uptime%.*}" >>"$heal/attempts" || exit 1
@@ -148,6 +155,8 @@ firewall_heal() (
             echo 'SELF-HEAL fw1, fw2: stopped; start deferred (guests lock, DNS push, journal or a changed state)'
         fi
         exec 6>&- 8>&-
+    else
+        rm -f "$heal/pair"
     fi
     for node in fw1 fw2; do
         case $node in fw1) health=$fw1 peer=fw2 peer_health=$fw2 ;; fw2) health=$fw2 peer=fw1 peer_health=$fw1 ;; esac

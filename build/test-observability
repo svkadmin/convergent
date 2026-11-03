@@ -179,6 +179,18 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'failed S1'; is "$w/role" null
     run 2020; is "$w/calls" "$(printf 'remove\nadd')"
     reported
+    # Three re-attaches an hour (1060, 1960, 2140): a flapping NIC's fourth is refused and reported.
+    add=ok; echo "$role" >"$w/role"; driver usbfs; run 2080; gone "$outcome"
+    : >"$w/calls"; driver ''; run 2100; run 2140
+    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
+    driver usbfs; run 2200; gone "$outcome"
+    : >"$w/calls"; driver ''; run 2260; run 2320; run 2380
+    is "$w/calls" ''; is "$outcome" 'failed S1'
+    reported
+    # An hour after the first, one more.
+    driver usbfs; run 4700; driver ''; run 4720; run 4780
+    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
+    is "$w/run/wired-attempts" "$(printf '1960\n2140\n4780')"
 )
 echo 'observability: wired uplink re-attach and report passed'
 sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"

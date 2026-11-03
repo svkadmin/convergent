@@ -196,10 +196,11 @@ for stamp in future missing; do
     cmp "$tls/ca.crt" "$scratch/future-ca.crt"
     for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
     [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/pending" ]
-    # Nothing to keep: setup stops instead of issuing.
+    # Nothing to keep: setup stops instead of issuing, and says how to go on (no firewalls run yet).
     if state=$scratch/clockless tls=$scratch/clockless/tls keys=$scratch/clockless/keys \
         sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "issued under a $stamp stamp"; fi
     [ ! -e "$scratch/clockless/tls/ca.crt" ]
+    grep -qF "set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot" "$scratch/log" || die "no clock step for a $stamp stamp"
 done
 date -u -d '-1 hour' +%Y%m%d%H%M >"$scratch/built"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }

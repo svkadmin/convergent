@@ -45,6 +45,8 @@ idle=$(cfg idle_lock_minutes)
 release=${1:-$(date -u +%Y%m%d%H%M)}
 case $release in '' | *[!0-9]* | 0?*) die "invalid release: $release" ;; esac
 [ "${#release}" -le 12 ] || die "invalid release: $release"
+# Laptops renew no certificates while their clock is behind the stamp.
+[ "$release" -le "$(date -u +%Y%m%d%H%M)" ] || die "release $release is later than this builder's UTC clock"
 # Staging and image-root are shared with other builds.
 exec 9>/run/convergent-packages.lock
 flock 9

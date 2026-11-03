@@ -402,7 +402,7 @@ credentials() {
         secret_create "$tls/$secret" 32
     done
     if ! certificates_clock; then
-        [ -f "$tls/ca.crt" ] || die 'certificates: cannot issue under this clock; fix it, then retry'
+        [ -f "$tls/ca.crt" ] || die "certificates: cannot issue under this clock; set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot"
         return 0
     fi
     if openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then

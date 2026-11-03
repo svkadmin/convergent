@@ -220,7 +220,9 @@ device). Compare it with `date -u` on the host. Replace `YYYY-MM-DD HH:MM:SS` be
 verified UTC immediately before running this on the normally booted laptop. This needs no
 working DNS or Internet; both firewalls must be running and reachable over their pinned SSH
 connections. It also works when the host was already corrected: use its independently verified
-current UTC. Wait for any guest update to finish first.
+current UTC. Wait for any guest update to finish first. A laptop that has not finished setup
+(`cannot issue under this clock`) runs no firewalls yet: set only the host clock with
+`sudo date -u -s 'YYYY-MM-DD HH:MM:SS'`, then reboot; setup runs again at boot.
 
 ```sh
 sudo sh <<'CLOCK'

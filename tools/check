@@ -35,7 +35,7 @@ wired_lost() (
     echo "$serial"
 )
 # Minute self-heal: wired_lost in two runs in a row removes and re-adds that role under the guests
-# lock, once per loss. wired-heal keeps the outcome for the scan.
+# lock, once per loss, three times an hour at most. wired-heal keeps the outcome for the scan.
 wired_heal() (
     strike=/run/convergent/wired-strike outcome=/run/convergent/wired-heal
     ic() { timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; }
@@ -61,6 +61,18 @@ wired_heal() (
     exec 8>/run/convergent/guests.lock
     flock -n 8 && [ "$(wired_lost)" = "$serial" ] || exit 0
     rm -f "$strike"
+    # As firewall-heal, three an hour: each add leaves a usb-host qdev behind. Past that the scan alerts.
+    attempts=/run/convergent/wired-attempts
+    [ -f "$attempts" ] || : >"$attempts"
+    awk -v now="$now" '$1 > now-3600 {print}' "$attempts" >"$attempts.new" &&
+        mv "$attempts.new" "$attempts" || exit 1
+    if [ "$(wc -l <"$attempts")" -ge 3 ]; then
+        echo "failed $serial" >"$outcome"
+        logger -p user.err -t check 'wired uplink: three re-attaches in the last hour; no more' 2>/dev/null || :
+        echo 'SELF-HEAL wired uplink: three re-attaches in the last hour; no more'
+        exit 0
+    fi
+    echo "$now" >>"$attempts" || exit 1
     if ic config device remove wan wired-uplink &&
         ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false; then
         echo "healed $serial" >"$outcome"
