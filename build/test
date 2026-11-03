@@ -396,6 +396,7 @@ if [ "${1:-}" = --install-options ]; then
 	root=$work/usbguard
 	mkdir -p "$root/etc/usbguard/IPCAccessControl.d"
 	printf 'IPCAllowedUsers=root\nIPCAllowedGroups=\n' >"$root/etc/usbguard/usbguard-daemon.conf"
+	: >"$root/etc/usbguard/IPCAccessControl.d/.keep_sys-apps_usbguard-0"
 	. "$work/usbguard-check"
 	printf 'Devices=modify,list\n' >"$root/etc/usbguard/IPCAccessControl.d/:wheel"
 	if (. "$work/usbguard-check") 2>"$work/usbguard-error"; then die 'accepted an IPCAccessControl.d grant'; fi

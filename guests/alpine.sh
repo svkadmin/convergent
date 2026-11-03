@@ -3,10 +3,9 @@
 alpine_mounts=
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin   # for commands run in the chroots
 # Network failures only: curl retries DNS, refused connections, timeouts and HTTP 408/429/500/502/503/504; callers verify pins.
-# Network failures only: curl retries DNS, refused connections, timeouts and HTTP 408/429/5xx; callers verify pins.
 alpine_curl() { curl --retry 2 --retry-delay 5 --retry-connrefused "$@"; }
 # Three tries while apk names a network cause (apk 3 messages); any signature or integrity error stops at once.
-alpine_net='^(WARNING|ERROR): .*: (DNS: |Connection (refused|reset by peer|aborted)|Operation timed out|(Network|Host) is (down|unreachable)|Network unreachable|HTTP 5[0-9][0-9]|unexpected end of file)'
+alpine_net='^(WARNING|ERROR): .*: (DNS: |DNS lookup error|network error|could not connect to server|temporary error|network connection aborted|Connection (refused|reset by peer|aborted)|Operation timed out|(Network|Host) is (down|unreachable)|Network unreachable|HTTP 5[0-9][0-9]|unexpected end of file)'
 alpine_retry() {
 	alpine_try=1
 	while :; do
