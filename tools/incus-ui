@@ -105,6 +105,8 @@ prompt() {
     tty_state=
     printf '\n' >/dev/tty
     [ -n "$password" ] || die 'empty passphrase refused'
+    # Setup and rotate ask for 12 bytes, like LUKS and the account (LC_ALL=C: bytes).
+    [ "${#password}" -ge "${2:-1}" ] || die "passphrase must be at least ${2:-1} bytes"
     printf '%s\n' "$password" >"$scratch/password"
     unset password
 }
@@ -139,7 +141,7 @@ case $action in
         [ -s "$tls/ca.key" ] && [ -s "$tls/ca.crt" ] || die 'run guests init first'
         [ "$action" != setup ] || [ ! -e "$state" ] || die 'already configured; use rotate'
         scratch=$(mktemp -d /run/convergent/incus-ui-setup.XXXXXX)
-        prompt 'New Incus UI passphrase: '
+        prompt 'New Incus UI passphrase: ' 12
         mv "$scratch/password" "$scratch/first"
         prompt 'Repeat passphrase: '
         cmp -s "$scratch/first" "$scratch/password" || die 'passphrases differ'

@@ -382,4 +382,40 @@ wait "$writer"
 : >"$work/messages"
 if ( . "$work/audit" ) 2>"$work/error"; then exit 1; fi
 grep -q 'timed out' "$work/error"
-echo 'incus-ui: query, independent launch and bounded audit fixtures passed'
+# New UI passphrases need 12 bytes, like LUKS and the account; unlock takes what setup accepted.
+sed -n '/^prompt() {/,/^}/p' "$repo/tools/incus-ui" |
+    sed "s|</dev/tty|<$work/tty-in|g; s|>/dev/tty|>$work/tty-out|g" >"$work/prompt"
+[ -s "$work/prompt" ]
+sh -n "$work/prompt"
+if grep -q /dev/tty "$work/prompt"; then exit 1; fi
+grep -qxF "        prompt 'New Incus UI passphrase: ' 12" "$repo/tools/incus-ui"
+grep -qxF "        prompt 'Incus UI passphrase: '" "$repo/tools/incus-ui"
+mkdir "$work/prompt-scratch"
+for sample in short exact bytes unlock empty; do
+    min=12
+    case $sample in
+    short) pass='eleven byte' ;;
+    exact) pass='twelve bytes' ;;
+    bytes) pass=$(printf '\303\251\303\251\303\251345678') ;; # 9 characters, 12 bytes
+    unlock) pass=x min= ;;
+    empty) pass= min= ;;
+    esac
+    printf '%s\n' "$pass" >"$work/tty-in"
+    rm -f "$work/prompt-scratch/password"
+    rc=0
+    (
+        export LC_ALL=C
+        die() { echo "$*" >&2; exit 1; }
+        stty() { :; }
+        scratch=$work/prompt-scratch
+        . "$work/prompt"
+        prompt 'Passphrase: ' ${min:+"$min"}
+    ) 2>"$work/prompt-error" || rc=$?
+    case $sample in
+    short) [ "$rc" = 1 ] && grep -qx 'passphrase must be at least 12 bytes' "$work/prompt-error" ;;
+    empty) [ "$rc" = 1 ] && grep -qx 'empty passphrase refused' "$work/prompt-error" ;;
+    *) [ "$rc" = 0 ] && [ "$(cat "$work/prompt-scratch/password")" = "$pass" ] ;;
+    esac || { cat "$work/prompt-error"; exit 1; }
+    case $sample in short|empty) [ ! -e "$work/prompt-scratch/password" ] ;; esac
+done
+echo 'incus-ui: query, independent launch, bounded audit and passphrase floor fixtures passed'

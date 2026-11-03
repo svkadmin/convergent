@@ -263,9 +263,9 @@ Network addresses and portal isolation: [ARCHITECTURE 3.5](ARCHITECTURE.md#35-br
 
 ### Incus management
 
-With int closed, run `sudo incus-ui setup` once and choose a strong passphrase. Open **Incus
-management** from the desktop or `sys browser incus` (`incus-ui open` in a host terminal).
-Each session prompts again, then opens `https://100.80.1.10:8443/ui/` in Browser_internal.
+With int closed, run `sudo incus-ui setup` once and choose a passphrase of at least 12 bytes.
+Open **Incus management** from the desktop or `sys browser incus` (`incus-ui open` in a host
+terminal). Each session prompts again, then opens `https://100.80.1.10:8443/ui/` in Browser_internal.
 This certificate manages everything, including the host's infrastructure. Close the entire int
 browser session to lock it; closing only the Incus tab is insufficient. A plain `browser int`
 opens Grafana without the administration key. Keep the launcher terminal open for the session.
@@ -438,6 +438,8 @@ owner's containers and profiles, and custom filesystem/ISO volumes of both proje
 `remmina-state` and `share`, plus Grafana's matching `admin-password` and `secret-key` in
 `grafana-secrets/`. Close browsers and Remmina and stop every instance using `share`.
 Keep them stopped throughout backup. It verifies readback and retains three generations.
+One disk serves one laptop: each generation records `machine-id`, and backup refuses a disk that
+holds another laptop's. After Start over, restore `etc/machine-id` from `etc.tar` to keep the disk.
 VM instances, custom block volumes, system guest instances and the rest of `/var/lib/convergent` are excluded
 (see `EXCLUDED` in the backup). Unmount and close
 the disk before unplugging. Restore steps: [RECOVERY 11](RECOVERY.md#11-start-over).
