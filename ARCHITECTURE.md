@@ -502,6 +502,7 @@ backup scope: [USAGE](USAGE.md#backups); complete repair/restore recipes: [RECOV
 
 Metrics retain 14 days without dedup. Recent scrapes cannot make old textfiles healthy. Closed def
 means no HTTPS evidence, not failure; WAN probes measure transit, not Internet reachability.
+VictoriaMetrics and VictoriaLogs flush every 30 s: at most 30 s of monitoring data is lost on a crash.
 
 VictoriaLogs receives host/firewall/WAN TLS syslog plus host audit, with minute sender heartbeats.
 Svc local warnings use loopback UDP without replay. Retention is seven days with a 2 GiB pruning

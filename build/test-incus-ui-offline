@@ -372,7 +372,9 @@ fp=test-fingerprint
 (
     sleep 1
     printf '%s\n' 'incus-audit w2-audit-fixture w2-owner' 'incus-audit w2-audit-request w2-owner' \
-        'incus-audit profile-created w2-audit-native' 'incus-audit "event":"request" test-fingerprint' >"$work/messages"
+        'incus-audit profile-created w2-audit-native' 'incus-audit profile-deleted w2-audit-native' \
+        'incus-audit "protocol":"unix","method":"DELETE","path":"/1.0/profiles/w2-audit-native"' \
+        'incus-audit "event":"request" test-fingerprint' >"$work/messages"
 ) &
 writer=$!
 . "$work/audit"

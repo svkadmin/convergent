@@ -104,19 +104,24 @@ until [ "$(api 2>/dev/null)" != 000 ]; do [ "$(date +%s)" -lt "$deadline" ]; sle
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: lifecycle log: {"action":"w2-audit-fixture","source":"/1.0/profiles/w2-audit?secret=W2_AUDIT_SECRET","requestor":{"username":"w2-owner","protocol":"tls"},"context":{"command":["W2_AUDIT_SECRET"]}}'
 logger --rfc3164 -n 127.0.0.1 -P 1514 -d -- 'type: logging log: {"message":"Handling API request","level":"debug","context":{"username":"w2-owner","protocol":"tls","method":"GET","url":"/1.0/w2-audit-request?secret=W2_AUDIT_SECRET","body":"W2_AUDIT_SECRET"}}'
 ic profile create w2-audit-native
+# A local read is not shipped; the local delete after it is.
+ic profile show w2-audit-native >/dev/null
 ic profile delete w2-audit-native
 fp=$(openssl x509 -in "$work/client.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr A-F a-f)
 audit_ready() {
     grep 'incus-audit.*w2-audit-fixture' /var/log/messages | grep -q w2-owner &&
     grep 'incus-audit.*w2-audit-request' /var/log/messages | grep -q w2-owner &&
     grep 'incus-audit.*profile-created' /var/log/messages | grep -q w2-audit-native &&
+    grep 'incus-audit.*profile-deleted' /var/log/messages | grep -q w2-audit-native &&
+    grep 'incus-audit.*"method":"DELETE"' /var/log/messages | grep '"protocol":"unix"' |
+        grep -qF '"path":"/1.0/profiles/w2-audit-native"' &&
     grep 'incus-audit.*"event":"request"' /var/log/messages | grep -q "$fp"
 }
 deadline=$(($(date +%s) + 60))
 until audit_ready; do
     [ "$(date +%s)" -lt "$deadline" ] || {
         echo 'Incus audit events timed out' >&2
-        for want in w2-audit-fixture w2-audit-request profile-created '"event":"request"'; do
+        for want in w2-audit-fixture w2-audit-request profile-created profile-deleted '"method":"DELETE"' '"event":"request"'; do
             echo "audit $want: $(grep -c "incus-audit.*$want" /var/log/messages)" >&2
         done
         grep 'incus' /var/log/messages | tail -n 12 | cut -c1-300 >&2
@@ -125,6 +130,8 @@ until audit_ready; do
     sleep 1
 done
 if grep 'incus-audit' /var/log/messages | grep -q W2_AUDIT_SECRET; then exit 1; fi
+if grep 'incus-audit.*"method":"GET"' /var/log/messages | grep '"protocol":"unix"' |
+    grep -qF '"path":"/1.0/profiles/w2-audit-native"'; then exit 1; fi
 # Native UI and API use the same validated server identity, with no Internet exception.
 nsenter -t "$pid" -n curl -qfsS --noproxy '*' --max-time 10 --cacert "$tls/ca.crt" \
     https://100.80.1.10:8443/ui/ >"$work/index"

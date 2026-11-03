@@ -8,8 +8,10 @@ command=/usr/bin/victoria-metrics
 command_user=vmmetrics:vmmetrics
 directory=/var/lib/victoria-metrics
 # statfs only sees host free space, not the 2GiB quota: 14 days fit it; the qgroup alert warns before it fills.
+# Data is flushed every 30 s, not 5 s: fewer disk writes; a crash loses at most 30 s.
 command_args="-httpListenAddr=127.0.0.1:8428
     -storageDataPath=/var/lib/victoria-metrics -retentionPeriod=14d
+    -inmemoryDataFlushInterval=30s
     -memory.allowedBytes=32MiB -search.maxMemoryPerQuery=8MiB
     -search.maxConcurrentRequests=2 -search.maxQueryDuration=10s
     -storage.maxHourlySeries=25000 -storage.maxDailySeries=50000

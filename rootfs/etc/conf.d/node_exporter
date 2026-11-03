@@ -1,1 +1,4 @@
 command_args="--collector.disable-defaults --collector.cpu --collector.meminfo --collector.filesystem --collector.filesystem.mount-points-include=^/var$ --collector.netdev --collector.netdev.device-include=^host$ --collector.hwmon --collector.powersupplyclass --collector.time --collector.timex --collector.stat --collector.pressure --collector.diskstats --collector.textfile --collector.textfile.directory=/var/lib/node_exporter/ --collector.sysctl --collector.sysctl.include=kernel.tainted --web.disable-exporter-metrics"
+# Dell's SMM driver repeats the labelled dell_ddv sensors without names; skipped as in sys power.
+! grep -qx dell_ddv /sys/class/hwmon/hwmon*/name 2>/dev/null ||
+	command_args="$command_args --collector.hwmon.chip-exclude=dell_smm"

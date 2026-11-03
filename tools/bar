@@ -184,21 +184,29 @@ while :; do
 		lo=""; hi=""; package=prev[8]; hottest=prev[9]
 		# Temperature reads can wake idle cores: every 20 s, not every 5 s frame.
 		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=20
-		if (refresh) {package="-"; hottest="-"}
+		if (refresh) {
+			package="-"; hottest="-"
+			# The dell_smm chip repeats the labelled dell_ddv sensors without names; skipped as in sys power.
+			for (i=1;i<ARGC;i++) if (ARGV[i] ~ /\/name$/) {
+				dir=ARGV[i]; sub(/\/[^/]+$/, "", dir)
+				chip[dir]=get(ARGV[i]); if (chip[dir] == "dell_ddv") ddv=1
+			}
+		}
 		for (i=1;i<ARGC;i++) {
 			path=ARGV[i]
-			if (!refresh && path !~ /scaling_cur_freq$/) continue
+			if ((!refresh && path !~ /scaling_cur_freq$/) || path ~ /\/name$/) continue
 			value=get(path)
 			if (value !~ /^[0-9]+$/) continue
 			if (path ~ /scaling_cur_freq$/) {
 				if (lo == "" || value+0<lo) lo=value+0
 				if (hi == "" || value+0>hi) hi=value+0
 			} else {
-				if (hottest == "-" || value+0>hottest) hottest=value+0
-				label=path; sub(/_input$/, "_label", label)
 				dir=path; sub(/\/[^/]+$/, "", dir)
 				# Read a chip name once per frame, even when it exposes many cores.
 				if (!(dir in chip)) chip[dir]=get(dir "/name")
+				if (ddv && chip[dir] == "dell_smm") continue
+				if (hottest == "-" || value+0>hottest) hottest=value+0
+				label=path; sub(/_input$/, "_label", label)
 				if (chip[dir] == "coretemp" && get(label) == "Package id 0") package=value+0
 			}
 		}
@@ -294,7 +302,8 @@ while :; do
 		}
 		printf "]\n"
 		exit
-	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq /sys/class/hwmon/hwmon*/temp*_input || exit 1
+	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq /sys/class/hwmon/hwmon*/temp*_input \
+		/sys/class/hwmon/hwmon*/name || exit 1
 	comma=,
 	sleep 5
 done
