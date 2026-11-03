@@ -13,7 +13,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
-applying= recovering= rebuilding= polling= manual_stage= browser_locked=
+applying= recovering= rebuilding= polling= manual_stage= browser_locked= frozen=
 step=setup
 . "$lib/fw-topology"
 . "$lib/fw-leases"
@@ -21,7 +21,8 @@ step=setup
 
 fail() { [ -n "$polling" ] || logger -p user.err -t guests "$step: $*" 2>/dev/null || :; echo "guests: $step: $*" >&2; return 1; }
 die() { fail "$*" || :; exit 1; }
-# Keep lock descriptors out of clients and any helpers they leave running.
+# Keep lock descriptors out of clients and any helpers they leave running. A frozen VM monitor holds
+# Incus reads and config changes (the instance listing waits on every VM): those are always bounded.
 ic() {
     case $1:${2:-} in start:svc) svc_storage_check || return ;; esac
     if [ -n "$polling" ]; then
@@ -36,9 +37,27 @@ ic() {
         esac
     fi
     case $1 in
-    query) incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
+    query) timeout -k 1 120 incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
+    config) timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
     *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
-    esac || { code=$?; fail "incus $* failed (status $code)" || return "$code"; }
+    esac || {
+        code=$?
+        case $code:$1 in 124:query|124:config) frozen=1; fail "incus $1 timed out; $(frozen_hint)" || return 124 ;; esac
+        fail "incus $* failed (status $code)" || return "$code"
+    }
+}
+# The VM whose own state read times out too; a stopped or answering one is not frozen.
+frozen_hint() {
+    for node in fw1 fw2 wan; do
+        probe incus --force-local query "/1.0/instances/$node/state?project=default" >/dev/null 2>&1 && continue
+        [ "$?" = 124 ] || continue
+        case $node in
+        wan) echo "wan's QEMU no longer answers Incus; kill the pid in /run/incus/wan/qemu.pid, then rerun" ;;
+        *) echo "$node's QEMU no longer answers Incus; the checker kills a frozen firewall, then rerun" ;;
+        esac
+        return
+    done
+    echo 'if a guest QEMU is frozen, kill the pid in /run/incus/<name>/qemu.pid (the checker does this for a firewall), then rerun'
 }
 # A wedged svc must not hang a mutator under the locks: a timeout counts as failed.
 svc_exec() {
@@ -161,6 +180,8 @@ hold_mark() {
 }
 autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
+    # Once a read timed out on a frozen monitor, the listing would too (cleanup ignores INT); the next run clears.
+    [ -z "$frozen" ] || return 1
     ic query '/1.0/instances?recursion=1&project=default' >"$work/autorestart-instances" || return
     jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | .name' \
         "$work/autorestart-instances" >"$work/autorestart" || return
@@ -846,6 +867,17 @@ start_guest() {
     until ic start "$1"; do
         [ $((attempt += 1)) -lt 3 ] || return 1
         sleep 10 || return
+    done
+}
+# Incus leaves a guest stopped after ten crashes in a minute; nothing else starts wan or svc again.
+start_stopped() {
+    for node in wan svc; do
+        stopped "$node" || continue
+        echo "guests: starting stopped $node"
+        [ "$node" != svc ] || svc_storage_check || return
+        # Bounded as the checker's start, so a stall cannot keep the locks; Incus may have restarted it meanwhile.
+        timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- || running "$node" ||
+            die "cannot start $node; rebuild it: guests update $node /var/lib/convergent/release-guests/guests/$node --trusted-local"
     done
 }
 seed_start() {
@@ -1763,7 +1795,7 @@ apply() {
         [ -e "$staged/$name" ] || mv -T "$entry" "$staged/$name"
         sync -f "$staged" || die 'could not sync recovered guests'
     done
-    [ -d "$staged/$booted" ] || maintenance_due || return 0
+    [ -d "$staged/$booted" ] || maintenance_due || { start_stopped; return 0; }
     # Nothing changes under an open browser (an int one uses svc's Grafana).
     exec 6>/run/convergent/browser-update.lock
     if ! flock -n 6; then

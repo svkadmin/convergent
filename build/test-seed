@@ -59,6 +59,46 @@ done
 sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
     awk '/^    for kind in/ {updates=NR} /^    certificates_apply$/ {deploy=NR}
         END {exit !(updates && deploy > updates)}'
+# Incus leaves wan or svc stopped after ten crashes a minute: an apply with nothing due starts it.
+sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" | grep -qF 'maintenance_due || { start_stopped; return 0; }'
+sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stopped"
+[ "$(grep -c '^start_stopped() {$' "$scratch/start-stopped")" = 1 ]
+(
+    . "$scratch/start-stopped"
+    # Bounded starts only, svc after its storage check.
+    timeout() { echo "$*" >>"$scratch/starts"; [ "$start" = ok ]; }
+    incus() { exit 97; }
+    svc_storage_check() { echo check >>"$scratch/starts"; [ "$scenario" != nested ]; }
+    stopped() { case " $down " in *" $1 "*) ;; *) return 1 ;; esac; }
+    running() { case " $up " in *" $1 "*) ;; *) return 1 ;; esac; }
+    die() { echo "$*" >"$scratch/died"; exit 1; }
+    for scenario in none both raced failed nested; do
+        : >"$scratch/starts"; rm -f "$scratch/died"
+        down='wan svc' up= start=ok
+        case $scenario in
+        none) down= ;;
+        raced) down=wan up=wan start=failed ;;
+        failed) start=failed ;;
+        nested) down=svc ;;
+        esac
+        if (start_stopped >/dev/null 2>&1); then
+            [ "$scenario" != failed ]; [ "$scenario" != nested ]
+        else
+            [ "$scenario" = failed ] || [ "$scenario" = nested ]
+        fi
+        case $scenario in
+        none) [ ! -s "$scratch/starts" ] ;;
+        both) printf '%s\n' '-k 5 60 incus --force-local --project default start wan' check \
+            '-k 5 60 incus --force-local --project default start svc' | cmp - "$scratch/starts" ;;
+        raced) [ ! -e "$scratch/died" ] ;;
+        failed)
+            [ "$(cat "$scratch/starts")" = '-k 5 60 incus --force-local --project default start wan' ]
+            grep -qx 'cannot start wan; rebuild it: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' "$scratch/died" ;;
+        nested) [ "$(cat "$scratch/starts")" = check ] ;;
+        esac
+    done
+)
+echo 'test-seed: apply starts a stopped wan or svc passed'
 work=$scratch/work state=$scratch/state
 keys=$state/keys tls=$state/tls
 export work state keys tls

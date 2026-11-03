@@ -56,7 +56,9 @@ for ifc in $UP_IFS; do
 		if overlaps_internal "${cidr%/*}" "${cidr#*/}"; then
 			bad=1
 			[ -z "$route_overlap" ] || ! grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
-			echo "$ifc $cidr $(date +%s)" > "$d/refused"
+			# One line per interface: another uplink's refusal stays latched.
+			{ grep -v "^$ifc " "$d/refused" 2>/dev/null; echo "$ifc $cidr $(date +%s)"; } > "$d/refused.new"
+			mv "$d/refused.new" "$d/refused"
 			logger -t convergent-alert -p local0.crit \
 				"UpstreamOverlap interface=$ifc lease=$cidr internal=$INTERNAL_NET action=refused"
 			if [ "$ifc" = "$WIFI_IF" ]; then
