@@ -8,8 +8,10 @@ command=/usr/bin/victoria-logs
 command_user=vmlogs:vmlogs
 directory=/var/lib/victoria-logs
 # Size pruning keeps the newest two days; statfs cannot see the 6GiB quota.
+# Data is flushed every 30 s, not 5 s: fewer disk writes; a crash loses at most 30 s.
 command_args="-httpListenAddr=127.0.0.1:9428
     -storageDataPath=/var/lib/victoria-logs -retentionPeriod=7d
+    -inmemoryDataFlushInterval=30s
     -retention.maxDiskSpaceUsageBytes=2GiB
     -storage.minFreeDiskSpaceBytes=1GiB
     -memory.allowedBytes=24MiB -search.maxConcurrentRequests=1

@@ -8,6 +8,9 @@ ac_epp=balance_performance
 cap=0
 [ ! -f /usr/lib/convergent/cpu-cap-khz ] || read -r cap </usr/lib/convergent/cpu-cap-khz
 bat_epp=power
+# KVM halt polling: idle vCPUs spin up to 200 us (the default) on AC, never on battery.
+ac_halt_poll=200000
+bat_halt_poll=0
 
 cpu=/sys/devices/system/cpu/cpufreq
 ps=/sys/class/power_supply
@@ -159,7 +162,7 @@ charge|thermal)
 	exit 0 ;;
 *) echo 'usage: power [ac|battery|charge off|55-100|thermal quiet|balanced|performance]' >&2; exit 2 ;;
 esac
-if [ "$src" = ac ]; then epp=$ac_epp; else epp=$bat_epp; fi
+if [ "$src" = ac ]; then epp=$ac_epp halt_poll=$ac_halt_poll; else epp=$bat_epp halt_poll=$bat_halt_poll; fi
 
 policies=0
 for p in "$cpu"/policy[0-9]*; do
@@ -184,6 +187,7 @@ file=$(mktemp /run/.convergent-power.XXXXXX) || exit 1
 printf '%s\n' "$profile" >"$file" && chmod 0644 "$file" &&
 	mv -f "$file" /run/convergent-power.profile || die 'cannot publish profile'
 
+set_file /sys/module/kvm/parameters/halt_poll_ns "$halt_poll"
 limit=off
 [ ! -r /var/lib/convergent/power/charge ] || read -r limit </var/lib/convergent/power/charge
 charge "$limit"

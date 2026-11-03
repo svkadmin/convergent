@@ -44,24 +44,23 @@ new_buf() { buf=$(mktemp "$out/.facts.XXXXXX") || die "could not write in $out";
 # --- boot ---
 
 fact_release() {
+	# Wait for this boot's bless (3 minutes at most), then read the slots once.
 	i=0
 	up=$(cut -d. -f1 /proc/uptime)
-	while :; do
-		st=$(slot status 2>/dev/null) || st=
-		rel= slt= good= high=
-		while read -r kind value label slot rest; do
-			case $kind in
-			booted) rel=$value; slt=$slot ;;
-			good) good=$value ;;
-			highest) high=$value ;;
-			esac
-		done <<EOF
+	while [ "$up" -lt 600 ] && [ ! -e /run/openrc/started/convergent-bless ] && [ "$i" -lt 36 ]; do
+		i=$((i + 1)); sleep 5
+	done
+	st=$(slot status 2>/dev/null) || st=
+	rel= slt= good= high=
+	while read -r kind value label slot rest; do
+		case $kind in
+		booted) rel=$value; slt=$slot ;;
+		good) good=$value ;;
+		highest) high=$value ;;
+		esac
+	done <<EOF
 $st
 EOF
-		# Wait for this boot's bless.
-		[ "$up" -lt 600 ] && [ "$good" != "$rel" ] && [ "$i" -lt 18 ] || break
-		i=$((i + 1)); sleep 10
-	done
 	if [ -z "$rel" ]; then bad "slot status gave nothing"; return; fi
 	m "cv_booted_info{release=\"$rel\",slot=\"$slt\"} 1"
 	m "cv_release_number{which=\"booted\"} $rel"

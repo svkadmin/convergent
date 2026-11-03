@@ -409,6 +409,15 @@ awk '$1 == "rpz-log:" {n++; if ($2 != "no") bad=1}
     END {exit (n != 1 || bad)}' "$dns/unbound.conf" || die 'RPZ query logging enabled'
 echo 'test-boot-privacy: RPZ logging passed'
 
+# Firewall cron jobs mail only failures, never overlap and log no job start (-q).
+grep -qF 'cat /etc/convergent/crontab >>/etc/crontab' "$fw/install.site" || die 'firewall crontab not installed'
+awk '/^[[:space:]]*(#|$)/ {next} {n++; if ($6 != "root" || $7 != "-nsq") bad=1}
+    END {exit (!n || bad)}' "$fw/etc/convergent/crontab" || die 'firewall cron jobs lost -n, -s or -q'
+# wan's busybox crond logs no job start (level 8) either; the build checks Alpine's script reads CRON_OPTS.
+(. "$repo/guests/wan/rootfs/etc/conf.d/crond"; [ "$CRON_OPTS" = '-c /etc/crontabs -l 9' ]) || die 'wan crond logs job starts'
+grep -qF "grep -q 'CRON_OPTS' \"\$target/etc/init.d/crond\" || die" "$repo/guests/wan/build" || die 'wan build ignores CRON_OPTS'
+echo 'test-boot-privacy: firewall and wan cron logging passed'
+
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.
 (
     state=$work/recovery
@@ -592,3 +601,45 @@ check_script "$work/host-wait"
         die "bridge waiter gave up wrongly: $(cat "$work/host-died")"
 )
 echo 'test-boot-privacy: host bridge waiter passed'
+
+# KVM halt polling follows the power source through set_file; a missing knob is skipped, a refused write fails.
+power=$repo/tools/power
+sed -n '/^ac_epp=/p; /^bat_epp=/p; /^ac_halt_poll=/p; /^bat_halt_poll=/p
+    /^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p; /^set_file() {/,/^}/p' "$power" >"$work/power-lib"
+sed -n '/^if \[ "\$src" = ac \]; then epp=/p; /^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns /p' "$power" |
+    sed "s|/sys/module/kvm/parameters/|$work/kvm/|" >"$work/power-halt"
+check_script "$work/power-lib"
+check_script "$work/power-halt"
+[ "$(grep -c "$work/kvm/halt_poll_ns" "$work/power-halt")" = 1 ] && [ "$(wc -l <"$work/power-halt")" = 2 ] ||
+    die 'halt polling extraction'
+# After the CPU profile is published: a refused knob must not turn the profile unknown.
+awk '/^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns / {knob = NR}
+    /^\tmv -f "\$file" \/run\/convergent-power.profile / {profile = NR}
+    END {exit !(profile && knob > profile)}' "$power" || die 'halt polling set before the profile is published'
+(
+    cpu=$work/cpu
+    logger() { :; }
+    . "$work/power-lib"
+    [ "$ac_halt_poll:$bat_halt_poll" = 200000:0 ] || die "halt polling values $ac_halt_poll/$bat_halt_poll"
+    mkdir "$work/kvm"
+    echo 200000 >"$work/kvm/halt_poll_ns"
+    for src in battery battery ac ac; do
+        rc=0 changed=0
+        read -r before <"$work/kvm/halt_poll_ns"
+        . "$work/power-halt" || :
+        read -r value <"$work/kvm/halt_poll_ns"
+        case $src in ac) want=200000 ;; *) want=0 ;; esac
+        [ "$rc:$value" = "0:$want" ] || die "halt polling on $src: status $rc, value $value"
+        if [ "$before" = "$want" ]; then expect=0; else expect=1; fi
+        [ "$changed" = "$expect" ] || die "halt polling on $src: changed $changed after $before"
+    done
+    rm "$work/kvm/halt_poll_ns"
+    rc=0 changed=0 src=battery
+    . "$work/power-halt" || :
+    [ "$rc:$changed" = 0:0 ] && [ ! -e "$work/kvm/halt_poll_ns" ] || die 'missing halt polling knob not skipped'
+    # A directory refuses the write, as a read-only parameter would.
+    mkdir "$work/kvm/halt_poll_ns"
+    . "$work/power-halt" 2>/dev/null || :
+    [ "$rc" = 1 ] || die 'refused halt polling write passed'
+)
+echo 'test-boot-privacy: KVM halt polling passed'

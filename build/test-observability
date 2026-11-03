@@ -114,6 +114,46 @@ sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"
 )
 [ "$(cat "$work/facts-flock")" = '-w 60 9' ]
 grep -qx ran "$work/facts-ran"
+# Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
+sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |
+    sed "s|/run/openrc/started/convergent-bless|$work/blessed|" >"$work/facts-release"
+[ -s "$work/facts-release" ]; sh -n "$work/facts-release"
+grep -qF "$work/blessed" "$work/facts-release"
+(
+    . "$work/facts-release"
+    m() { echo "$*" >>"$work/release.prom"; }
+    bad() { echo "$*" >>"$work/release.bad"; }
+    cut() { [ "$*" = '-d. -f1 /proc/uptime' ] || exit 97; echo "$uptime"; }
+    slot() {
+        [ "$*" = status ] || exit 97
+        echo status >>"$work/slot-calls"
+        printf 'version 0.1.6\nbooted  7  slot a\nslot a  7  good\ngood    %s\nhighest 7\n' "$good"
+    }
+    sleep() {
+        [ "$*" = 5 ] || exit 97
+        naps=$((naps + 1))
+        [ "$naps" != "$bless_after" ] || { : >"$work/blessed"; good=7; }
+    }
+    for sample in blessed late never uptime; do
+        rm -f "$work/blessed" "$work/slot-calls" "$work/release.prom" "$work/release.bad"
+        naps=0 uptime=30 bless_after=0 good=6
+        case $sample in
+        blessed) : >"$work/blessed"; good=7 ;;
+        late) bless_after=4 ;;
+        never) bless_after=-1 ;;
+        uptime) uptime=600 ;;
+        esac
+        fact_release
+        [ "$(cat "$work/slot-calls")" = status ] || exit 1
+        [ ! -e "$work/release.bad" ] || exit 1
+        grep -qx 'cv_booted_info{release="7",slot="a"} 1' "$work/release.prom" || exit 1
+        case $sample in
+        blessed|uptime) [ "$naps" = 0 ] || exit 1 ;;
+        late) [ "$naps" = 4 ] && grep -qx 'cv_release_number{which="good"} 7' "$work/release.prom" || exit 1 ;;
+        never) [ "$naps" = 36 ] && grep -qx 'cv_release_number{which="good"} 6' "$work/release.prom" || exit 1 ;;
+        esac
+    done
+)
 echo 'observability: scan publication failures, retry intervals and backward clocks passed'
 # Check every svc reader before parsing; a failed transfer may still return valid JSON.
 grep -qx '>=net-misc/curl-8.4.0' "$repo/portage/sets/convergent"
@@ -257,41 +297,52 @@ fi
 # Maintenance publishes healing even when a full scan owns the report lock.
 (
     state=$work/merge
-    mkdir "$state"
+    mkdir "$state" "$state/run"
     sed -n '/^if .*auto.*then ($/,/^); fi$/p' "$repo/tools/check" |
         sed -n '/^    exec 8>&-$/,$p' | sed '$d' |
-        sed "s|/run/convergent/check.lock|$state/check.lock|" >"$work/merge-script"
+        sed "s|/run/convergent/|$state/run/|g" >"$work/merge-script"
     [ -s "$work/merge-script" ]
     sh -n "$work/merge-script"
+    if grep -q /run/convergent "$work/merge-script"; then exit 1; fi
     die() { echo "$*" >&2; exit 1; }
     flock() {
         [ "$*" = '-n 9' ] || exit 1
         [ -f "$state/firewall-heal" ] || exit 1
         if ( : >&8 ) 2>/dev/null; then exit 1; fi
-        [ "$sample" = free ] || return 1
+        [ "$sample" != busy ] || return 1
         : >"$state/locked"
     }
     sed() {
         [ -f "$state/locked" ] || exit 1
         command sed "$@"
     }
-    for sample in busy free; do
-        printf 'FAIL new scan\nSELF-HEAL old\n' >"$state/last"
-        touch -t 202001010000 "$state/last"
-        cp -p "$state/last" "$state/before"
-        echo 'SELF-HEAL current' >"$state/.firewall-heal"
+    # The audited directory is written only by cp and mv; an unchanged minute writes nothing there.
+    cp() { echo "cp $*" >>"$state/run/writes"; command cp "$@"; }
+    mv() { echo "mv $*" >>"$state/run/writes"; command mv "$@"; }
+    for sample in busy free unchanged; do
+        rm -f "$state/locked" "$state/run/writes"
+        if [ "$sample" != unchanged ]; then
+            printf 'FAIL new scan\nSELF-HEAL old\n' >"$state/last"
+            touch -t 202001010000 "$state/last"
+        fi
+        command cp -p "$state/last" "$state/before"
+        echo 'SELF-HEAL current' >"$state/run/.firewall-heal"
         (exec 8>"$state/guests.lock"; . "$work/merge-script")
         grep -qx 'SELF-HEAL current' "$state/firewall-heal"
         [ "$(stat -c %Y "$state/last")" = "$(stat -c %Y "$state/before")" ]
         case $sample in
-        busy) cmp "$state/before" "$state/last"; [ ! -e "$state/.last" ] ;;
+        busy) cmp "$state/before" "$state/last"; [ ! -e "$state/.last" ]; [ "$(wc -l <"$state/run/writes")" = 2 ] ;;
         free)
             printf 'FAIL new scan\nSELF-HEAL current\n' >"$state/expected"
-            cmp "$state/expected" "$state/last" ;;
+            cmp "$state/expected" "$state/last"
+            # The report was rebuilt; the unchanged self-heal file was not.
+            [ "$(wc -l <"$state/run/writes")" = 2 ]
+            if grep -q firewall-heal "$state/run/writes"; then exit 1; fi ;;
+        unchanged) cmp "$state/before" "$state/last"; [ ! -e "$state/run/writes" ] ;;
         esac
     done
 )
-echo 'observability: maintenance report lock and timestamp assertions passed'
+echo 'observability: maintenance report lock, timestamp and unchanged-write assertions passed'
 # Quotas stay in userspace; the alert reads actual qgroup usage, not statfs.
 [ ! -e "$repo/portage/patches/sys-kernel/gentoo-kernel/0001-btrfs-qgroup-statfs.patch" ]
 for service in logs metrics; do
@@ -302,6 +353,8 @@ for service in logs metrics; do
     printf '%s\n' $command_args >"$work/flags"
     case $service in logs) days=7d ;; *) days=14d ;; esac
     grep -qxF -- "-retentionPeriod=$days" "$work/flags"
+    [ "$(grep -c -- '^-inmemoryDataFlushInterval=' "$work/flags")" = 1 ]
+    grep -qxF -- '-inmemoryDataFlushInterval=30s' "$work/flags"
     if [ "$service" = logs ]; then
         grep -qxF -- '-retention.maxDiskSpaceUsageBytes=2GiB' "$work/flags"
         grep -qxF -- '-storage.minFreeDiskSpaceBytes=1GiB' "$work/flags"
@@ -310,6 +363,7 @@ for service in logs metrics; do
         grep -qF "Metrics: $days, no dedup." "$repo/guests/svc/dashboards/monitoring.py"
     fi
 done
+grep -qxF 'VictoriaMetrics and VictoriaLogs flush every 30 s: at most 30 s of monitoring data is lost on a crash.' "$repo/ARCHITECTURE.md"
 sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage storage/ {
     /^[[:space:]]*publish storage storage/d; p;
 }' "$repo/tools/facts" >"$work/volumes"
@@ -355,28 +409,36 @@ grep -qx '        expr: cv_volume_used_bytes / cv_volume_limit_bytes > 0.85' "$w
 grep -qx '        for: 10m' "$work/quota-rule"
 echo 'observability: svc qgroup collection and high-usage alert assertions passed'
 # Failed self-heal appends must preserve the complete report and its scan time.
-sed -n '/^    if \[ -f "\$state\/last" \]; then$/,/^    fi$/p' "$repo/tools/check" >"$work/report-update"
+sed -n '/^    if \[ -f "\$state\/last" \]; then$/,/^    fi$/p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/report-run/|g" >"$work/report-update"
 [ -s "$work/report-update" ]
 sh -n "$work/report-update"
-mkdir "$work/report-state"
-for failed in sed cat touch mv none; do
+if grep -q /run/convergent "$work/report-update"; then exit 1; fi
+mkdir "$work/report-state" "$work/report-run"
+for failed in sed cat cp touch mv none unchanged; do
     (
         state=$work/report-state
         printf 'complete scan\nSELF-HEAL old\n' >"$state/last"
         touch -t 200101010000 "$state/last"
-        cp -p "$state/last" "$work/previous"
+        command cp -p "$state/last" "$work/previous"
         echo 'SELF-HEAL new' >"$state/firewall-heal"
+        [ "$failed" != unchanged ] || echo 'SELF-HEAL old' >"$state/firewall-heal"
         die() { exit 1; }
         sed() { if [ "$failed" = sed ]; then echo partial; return 1; fi; command sed "$@"; }
         cat() { if [ "$failed" = cat ]; then echo partial; return 1; fi; command cat "$@"; }
+        cp() { [ "$failed" != unchanged ] || exit 97; [ "$failed" != cp ] && command cp "$@"; }
         touch() { [ "$failed" != touch ] && command touch "$@"; }
-        mv() { [ "$failed" != mv ] && command mv "$@"; }
+        mv() { [ "$failed" != unchanged ] || exit 97; [ "$failed" != mv ] && command mv "$@"; }
         if (set +e; . "$work/report-update"); then
-            [ "$failed" = none ]
-            printf 'complete scan\nSELF-HEAL new\n' >"$work/expected"
-            cmp "$work/expected" "$state/last"
+            case $failed in
+            none)
+                printf 'complete scan\nSELF-HEAL new\n' >"$work/expected"
+                cmp "$work/expected" "$state/last" ;;
+            unchanged) cmp "$work/previous" "$state/last" ;;
+            *) exit 1 ;;
+            esac
         else
-            [ "$failed" != none ]
+            case $failed in none|unchanged) exit 1 ;; esac
             cmp "$work/previous" "$state/last"
         fi
         [ ! -e "$state/.last" ]

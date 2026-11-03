@@ -98,6 +98,7 @@ kver=$(ls "$target/lib/modules")
 [ "$(echo "$kver" | wc -l)" -eq 1 ] || die "expected one kernel in /lib/modules"
 
 grep -q 'ARGS' "$target/etc/init.d/node-exporter" || die "node-exporter's init script does not read ARGS; adapt rootfs/etc/conf.d/node-exporter"
+grep -q 'CRON_OPTS' "$target/etc/init.d/crond" || die "crond's init script does not read CRON_OPTS; adapt rootfs/etc/conf.d/crond"
 grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's default.script does not read RESOLV_CONF; adapt rootfs/etc/udhcpc"
 
 # Overlay and fill placeholders; set checkout-independent modes below.
