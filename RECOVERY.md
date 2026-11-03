@@ -245,6 +245,7 @@ Check `date -u` on the host and with `sudo ssh -F /etc/convergent/ssh_config fw1
 `sys wifi test`, then `sudo chronyc online` and `chronyc sources -v`. Success: DNS works and at
 least two sources are selected/combined (`*`/`+`); `chronyc authdata` shows NTS cookies for them.
 Retry the failed update only after these checks pass.
+Once the clocks agree, run `sys guests update` so the certificates are checked again.
 
 ## 7. A USB device does not work
 

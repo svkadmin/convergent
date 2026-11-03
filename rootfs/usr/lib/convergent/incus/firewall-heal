@@ -100,6 +100,14 @@ heal_resume() (
     [ ! -f "$state/leases/held" ] || exit 1
     heal_note "work DHCP resumed; lease hold released"
 )
+# Both nodes STOPPED and neither in its restart grace.
+heal_pair_stopped() {
+    for pair_node in fw1 fw2; do
+        pair_restarted=0
+        [ ! -f "$heal/$pair_node.restarted" ] || read -r pair_restarted <"$heal/$pair_node.restarted"
+        [ "$((now - pair_restarted))" -ge 600 ] && [ "$(heal_state "$pair_node")" = STOPPED ] || return 1
+    done
+}
 firewall_heal() (
     heal=/run/convergent/firewall-heal
     mkdir -p "$heal" || exit 1
@@ -119,6 +127,28 @@ firewall_heal() (
     attempts=$(wc -l <"$heal/attempts")
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
+    # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
+    if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then
+        exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
+        if flock -n 8 && flock -n 6 && heal_allowed && heal_pair_stopped; then
+            for node in fw1 fw2; do
+                read -r uptime rest </proc/uptime
+                printf '%s\n' "${uptime%.*}" >>"$heal/attempts" || exit 1
+                attempts=$((attempts + 1))
+                printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
+                heal_note "$node start requested; fw1 and fw2 both stopped ($attempts/3)"
+                (
+                    trap '' HUP INT TERM
+                    timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- ||
+                        { heal_note "$node start failed or timed out"; exit 1; }
+                    heal_note "$node start completed; awaiting health probes"
+                ) >/dev/null 2>&1 || :
+            done
+        else
+            echo 'SELF-HEAL fw1, fw2: stopped; start deferred (guests lock, DNS push, journal or a changed state)'
+        fi
+        exec 6>&- 8>&-
+    fi
     for node in fw1 fw2; do
         case $node in fw1) health=$fw1 peer=fw2 peer_health=$fw2 ;; fw2) health=$fw2 peer=fw1 peer_health=$fw1 ;; esac
         if [ "$health:$peer_health" != unhealthy:master ]; then

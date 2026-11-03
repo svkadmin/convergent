@@ -107,11 +107,16 @@ work=$scratch/work state=$scratch/state
 keys=$state/keys tls=$state/tls
 export work state keys tls
 mkdir -p "$work" "$state"
-sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' >"$scratch/credentials"
+# The booted build's stamp, an hour behind the clock.
+date -u -d '-1 hour' +%Y%m%d%H%M >"$scratch/built"
+built_stamp="s|cat /usr/lib/convergent/release |cat $scratch/built |"
+sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' | sed "$built_stamp" >"$scratch/credentials"
 [ -s "$scratch/credentials" ]
 grep -q '^credentials() {' "$scratch/credentials"
+grep -qF "cat $scratch/built " "$scratch/credentials"
 cat >>"$scratch/credentials" <<'CREDENTIALS'
 die() { echo "$*" >&2; exit 1; }
+logger() { :; }
 count=0
 sync() { count=$((count + 1)); [ "$count" != "${cut:-0}" ] || exit 75; }
 credentials
@@ -120,7 +125,7 @@ sh -n "$scratch/credentials"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'initial credentials'; }
 cp -R "$state" "$scratch/good"
 # Resume a saved server after the clock moves behind its certificate.
-sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' >"$scratch/init-recover"
+sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' | sed "$built_stamp" >"$scratch/init-recover"
 sed -n '/^init_server() {/,/^}/p; /^init_done()/p' "$repo/tools/guests" |
     sed "s|/var/lib/incus/|$scratch/incus/|g; s/rc-service /rc_service /g" >>"$scratch/init-recover"
 sed -n '/^init() {/,/^    autorestart_clear$/p' "$repo/tools/guests" |
@@ -136,10 +141,12 @@ retry() { [ "$*" = 'ic query /1.0' ]; }
 init "$scratch/release"
 INIT
 sh -n "$scratch/init-recover"
-sed -n '/^certificate_current() (/,/^)/p; /^certificates_due() {/,/^}/p' "$repo/tools/guests" >"$scratch/due"
-[ -s "$scratch/due" ]
+sed -n '/^certificate_current() (/,/^)/p; /^certificates_clock() {/,/^}/p; /^certificates_due() {/,/^}/p' "$repo/tools/guests" |
+    sed "$built_stamp" >"$scratch/due"
+[ "$(grep -c '^certificate_current() ($\|^certificates_clock() {$\|^certificates_due() {$' "$scratch/due")" = 3 ]
 sh -n "$scratch/due"
 . "$scratch/due"
+logger() { :; }
 rm -f "$tls/pending" "$tls/ca.pending"
 if certificates_due; then die 'current credentials due'; fi
 # Retry before the CA's notBefore, as after a backward clock correction.
@@ -174,6 +181,27 @@ for cert in ca server incus-server incus-client; do
     openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/$cert.crt" >/dev/null
 done
 certificates_due || die 'future CA not due'
+# A clock behind the booted build, or no readable stamp, keeps every certificate and defers deployment.
+mkdir "$scratch/clockless"
+for stamp in future missing; do
+    case $stamp in
+    future) date -u -d '+1 hour' +%Y%m%d%H%M >"$scratch/built" ;;
+    missing) rm "$scratch/built" ;;
+    esac
+    clock_noted=
+    if certificates_due >"$scratch/log"; then die "due under a $stamp build stamp"; fi
+    grep -qx 'guests: certificates: .*; skipping (fix the clock, then sys guests update)' "$scratch/log" || die "no skip for a $stamp stamp"
+    sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "credentials under a $stamp stamp"; }
+    grep -q '; skipping' "$scratch/log" || die "credentials did not skip for a $stamp stamp"
+    cmp "$tls/ca.crt" "$scratch/future-ca.crt"
+    for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
+    [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/pending" ]
+    # Nothing to keep: setup stops instead of issuing.
+    if state=$scratch/clockless tls=$scratch/clockless/tls keys=$scratch/clockless/keys \
+        sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "issued under a $stamp stamp"; fi
+    [ ! -e "$scratch/clockless/tls/ca.crt" ]
+done
+date -u -d '-1 hour' +%Y%m%d%H%M >"$scratch/built"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }
 [ -f "$tls/ca.pending" ]
 if cmp -s "$tls/ca.crt" "$scratch/future-ca.crt"; then die 'future CA reused'; fi
@@ -217,7 +245,7 @@ for cert in server incus-server incus-client; do
 done
 # Exercise deployment and interrupted reloads with the real remote payloads.
 sed -n '/^secret_valid() {/,/^verify_image() {/p' "$repo/tools/guests" | sed '$d' |
-    sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g; s/rc-service /rc_service /g" >"$scratch/deploy-functions"
+    sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g; s/rc-service /rc_service /g; $built_stamp" >"$scratch/deploy-functions"
 [ -s "$scratch/deploy-functions" ]
 sed -n '/^svc_exec() {/,/^}/p' "$repo/tools/guests" >>"$scratch/deploy-functions"
 grep -qx 'svc_exec() {' "$scratch/deploy-functions"
