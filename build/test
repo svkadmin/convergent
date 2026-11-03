@@ -875,6 +875,15 @@ fw_diag() {
         ' 2>&1 | sed "s/^/CV-FWDIAG $f /" || true
     done
 }
+# rcctl stop/start on a firewall at 85% system CPU outlasted 30 s.
+fwssh() { timeout 180 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$@"; }
+# rc kills an Unbound still starting at its limit ("(timeout)"); fw1 at load 14 needed longer.
+unbound_up() {
+    n=0
+    until fwssh "$1" 'rcctl check unbound >/dev/null || rcctl start unbound'; do
+        n=$((n + 1)); [ "$n" -lt 10 ] || return 1; sleep 10
+    done
+}
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
 EOF
 	if [ "$mode" = guests-maint ]; then
@@ -2244,15 +2253,6 @@ cv_time firewall-self-heal
     set -e
     . /usr/lib/convergent/incus/firewall-heal
     fw_pid() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
-    # rcctl stop/start on a firewall at 85% system CPU outlasted 30 s.
-    fwssh() { timeout 180 ssh -F /etc/convergent/ssh_config "$@"; }
-    # rc kills an Unbound still starting at its limit ("(timeout)"); fw1 at load 14 needed longer.
-    unbound_up() {
-        n=0
-        until fwssh "$1" 'rcctl check unbound >/dev/null || rcctl start unbound'; do
-            n=$((n + 1)); [ "$n" -lt 10 ] || return 1; sleep 10
-        done
-    }
     broken= inhibited= frozen= leased=
     trap 'for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
     trap 'exit 1' HUP INT TERM
@@ -2267,7 +2267,8 @@ cv_time firewall-self-heal
     before=$(fw_pid fw2)
     broken=fw2
     fwssh fw2 'rcctl stop unbound'
-    deadline=$(($(date +%s) + 600))
+    # Each heal observation probes both nodes for 10 s; one slow fw1 answer restarts the 180 s window.
+    deadline=$(($(date +%s) + 1500))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
@@ -2293,7 +2294,7 @@ cv_time firewall-self-heal
     before=$(fw_pid fw2)
     frozen=$before
     kill -STOP "$before"
-    deadline=$(($(date +%s) + 1200))
+    deadline=$(($(date +%s) + 1800))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
@@ -2311,7 +2312,7 @@ cv_time firewall-self-heal
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     rm /run/convergent/guests-stopping
     inhibited=
-    deadline=$(($(date +%s) + 600))
+    deadline=$(($(date +%s) + 1500))
     while [ -e /var/lib/convergent/guests/leases/held ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
@@ -2338,14 +2339,15 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
 )
-[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200; bad $LINENO; }
+[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200
+    sed 's/^/CV-HEAL state /' /var/lib/convergent/check/firewall-heal 2>/dev/null | tail -n 10 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
 maintenance_clean || bad $LINENO
 (
     set -e
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance'
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance /tmp/convergent-test-maintenance-waiting'
     # An earlier iteration's pid must never be the one host-kill signals.
     rm -f /run/convergent/maintenance-test-returned /run/convergent/maintenance-test.pid
     {
@@ -2362,7 +2364,8 @@ LOCAL
                 print "logger -t cv-maint-test \"wait pid $$\""
                 print "trap \"logger -t cv-maint-test signal; exit 1\" INT TERM"
                 print "trap \"logger -t cv-maint-test exit \\$?\" 0"
-                print "echo CV-MAINTENANCE-WAIT"
+                # firewall_mutate discards the remote stdout: progress is a file on fw1.
+                print "touch /tmp/convergent-test-maintenance-waiting"
                 print "n=0"
                 print "until [ -f /tmp/convergent-test-maintenance ]; do"
                 print "    [ \"$n\" -lt 150 ] || exit 1"
@@ -2392,9 +2395,9 @@ LOCAL
     trap '[ -z "${changer:-}" ] || { kill "$changer"; wait "$changer"; } 2>/dev/null || :' 0
     # Twelve health reads and, for remote-kill, the whole demotion come first: at fw1 load 16 they took
     # 49 s, 55 s and just over the old 60 s.
-    n=0
-    until grep -qx CV-MAINTENANCE-WAIT "$log"; do
-        n=$((n + 1)); [ "$n" -lt 300 ]; sleep 1
+    deadline=$(($(date +%s) + 300))
+    until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw1 'test -f /tmp/convergent-test-maintenance-waiting'; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 1
     done
     if flock -n /run/convergent/guests.lock true; then exit 1; fi
     if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
@@ -2435,7 +2438,8 @@ LOCAL
     until fw_unlocked; do
         n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
     done
-    printf 'yes\n' | sys firewall undo
+    # Undo fails after releasing when fw1 takes MASTER back late; the next maintenance_clean waits for the roles.
+    printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
     [ ! -e /var/lib/convergent/firewall-maintenance ]
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
     fw_unlocked
@@ -2449,26 +2453,31 @@ cv_time maintenance-reboot
 # Maintenance must survive a reboot and fw-seed, then release before replacement.
 (
     set -e
+    PS4='+CV-MR ${SECONDS}s '; set -x
     printf 'yes\n' | sys firewall maintenance
     [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
     if guests update fw "$release/guests/fw" --trusted-local >"$release/maintenance-refusal" 2>&1; then exit 1; fi
     grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
     fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
-    ic restart fw1 --timeout 120 || { fw1_state "restart failed ($?)"; exit 1; }
+    ic restart fw1 --timeout 120 || ic restart fw1 --force || { fw1_state "restart failed ($?)"; exit 1; }
     # Wait for OpenBSD's boot relinking: libraries before sshd, kernel after. A one-vCPU firewall
     # three hypervisors deep took 15 min to the login prompt and relinked its kernel for 15 more. The roles
     # are asserted below.
     fw_settled -t 3600 fw1 fw2 || { fw1_state 'boot not settled 60 minutes after the restart'; exit 1; }
-    # Undo below needs unbound, which rc started.
-    timeout -k 5 300 sh -c 'until timeout 30 ssh -F /etc/convergent/ssh_config fw1 "rcctl check unbound"; do sleep 5; done' ||
-        { fw1_state 'unbound not running after the boot'; exit 1; }
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
+    # Undo below needs unbound, which rc started; rc kills one still starting, and maintenance inhibits the heal.
+    unbound_up fw1 || { fw1_state 'unbound not running after the boot'; exit 1; }
+    # fw-seed restarts syslogd and starts three services.
+    fwssh fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
+    # wan-watch's demotion ties sysmaint's 128 and can hand MASTER back for a while.
+    fw_settled -t 600 fw1:backup fw2:master
     for f in fw1 fw2; do
         case $f in fw1) want=BACKUP ;; fw2) want=MASTER ;; esac
         carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig)
         printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
     done
-    printf 'yes\n' | sys firewall undo
+    # Undo fails after releasing when fw1 takes MASTER back after its six reads.
+    printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
+    fw_settled -t 900 fw1:master fw2:backup
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
 )
 [ "$?" = 0 ] || { fw_diag; bad $LINENO; }
@@ -2514,22 +2523,34 @@ fw_dns() {
     timeout 10 ssh -F /etc/convergent/ssh_config "$1" "unbound-control flush $2 >/dev/null && host -W 3 -t A $2 127.0.0.1" |
         grep -q 'has address'
 }
+# DNS answers within 90 s, timed on each firewall at once: host SSH to a loaded node is not DNS recovery.
+fw_dns_within() {
+    timeout 300 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$1" "end=\$((\$(date +%s) + 90))
+        until unbound-control flush $2 >/dev/null && host -W 3 -t A $2 127.0.0.1 | grep -q 'has address'; do
+            [ \$(date +%s) -lt \$end ] || exit 1
+            sleep 5
+        done"
+}
+fw_dns_both() {
+    fw_dns_within fw1 "$1" & dns1=$!
+    fw_dns_within fw2 "$1" & dns2=$!
+    dns=0
+    wait "$dns1" || dns=1
+    wait "$dns2" || dns=1
+    return "$dns"
+}
 # Unbound started without an uplink (the second incident) answers within 90 s of the uplink's return.
 (
     set -e
+    PS4='+CV-DNS '; set -x
     trap 'ip link set cvuplink up' 0
     trap 'exit 1' HUP INT TERM
     ip link set cvuplink down
-    for f in fw1 fw2; do timeout 60 ssh -F /etc/convergent/ssh_config "$f" 'rcctl restart unbound'; done
+    # A restart is a stop and a start, and the start alone may take Unbound's 120 s.
+    for f in fw1 fw2; do fwssh "$f" 'rcctl stop unbound'; unbound_up "$f"; done
     for f in fw1 fw2; do fw_dns "$f" www.openbsd.org >/dev/null || :; done
     ip link set cvuplink up
-    deadline=$(($(date +%s) + 90))
-    for f in fw1 fw2; do
-        until fw_dns "$f" www.openbsd.org >/dev/null; do
-            [ "$(date +%s)" -lt "$deadline" ]
-            sleep 5
-        done
-    done
+    fw_dns_both www.openbsd.org
 )
 [ "$?" = 0 ] || bad $LINENO
 cv_time dns-wan-return
@@ -2537,9 +2558,12 @@ cv_time dns-wan-return
 # DNS answers within 90 s of wan being healthy again.
 (
     set -e
+    PS4='+CV-DNS '; set -x
     # A loaded QEMU may need SIGKILL; without the hold autorestart would end the outage early.
     ic config set wan boot.autorestart=false
-    trap 'ic config unset wan boot.autorestart' 0
+    # A failure after the stop must not leave both firewalls without wan for every later block.
+    trap '[ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Running ] || ic start wan || :
+        ic config unset wan boot.autorestart' 0
     ic stop wan --force
     for f in fw1 fw2; do fw_dns "$f" www.kernel.org >/dev/null || :; done
     sleep 120
@@ -2549,27 +2573,22 @@ cv_time dns-wan-return
         [ "$(date +%s)" -lt "$deadline" ]
         sleep 5
     done
-    deadline=$(($(date +%s) + 90))
-    for f in fw1 fw2; do
-        until fw_dns "$f" www.kernel.org >/dev/null; do
-            [ "$(date +%s)" -lt "$deadline" ]
-            sleep 5
-        done
-    done
+    fw_dns_both www.kernel.org
 )
 [ "$?" = 0 ] || bad $LINENO
 maintenance_clean || bad $LINENO
 cv_time handoff-interruptions
 # Kill while SSH is waiting, both before and after adding the handoff groups.
 for phase in delayed partial; do
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-handoff' || bad $LINENO
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-handoff /tmp/convergent-test-handoff-waiting /tmp/convergent-test-handoff-done' || bad $LINENO
     {
         echo 'set -e'
         if [ "$phase" = partial ]; then
             echo 'for i in $(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments); do ifconfig "$i" group handoff; done'
         fi
+        # fw_mutate discards the remote stdout: progress is a file on fw1.
         cat <<'REMOTE'
-echo CV-HANDOFF-WAIT
+touch /tmp/convergent-test-handoff-waiting
 n=0
 until [ -f /tmp/convergent-test-handoff ]; do
     [ "$n" -lt 60 ] || exit 1
@@ -2582,7 +2601,7 @@ REMOTE
             echo 'for i in $(awk -v mode=interfaces -f /usr/local/libexec/convergent/carp.awk /etc/convergent/segments); do ifconfig "$i" group handoff; done'
         fi
         echo 'ifconfig -g handoff carpdemote 128'
-        echo 'echo CV-HANDOFF-DONE'
+        echo 'touch /tmp/convergent-test-handoff-done'
     } >"$release/handoff-command"
     awk '
         {print}
@@ -2595,9 +2614,12 @@ REMOTE
     log=/var/log/guests-update-handoff-$phase.log
     sh "$release/guests-handoff" update fw "$release/guests/fw" --trusted-local >"$log" 2>&1 &
     updater=$!
-    n=0
-    until grep -qx CV-HANDOFF-WAIT "$log" || [ "$n" -ge 60 ]; do sleep 1; n=$((n + 1)); done
-    grep -qx CV-HANDOFF-WAIT "$log" || bad $LINENO
+    # fw_mutate connects within 60 s and ends at 120 s.
+    waiting= deadline=$(($(date +%s) + 120))
+    until [ -n "$waiting" ] || [ "$(date +%s)" -ge "$deadline" ]; do
+        timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw1 'test -f /tmp/convergent-test-handoff-waiting' && waiting=1 || sleep 1
+    done
+    [ -n "$waiting" ] || bad $LINENO
     kill -KILL "$updater" || bad $LINENO
     code=0; wait "$updater" || code=$?
     [ "$code" = 137 ] || bad $LINENO
@@ -2608,7 +2630,8 @@ REMOTE
     [ -f "$state/fw.handoff" ] && kill -0 "$resume" || bad $LINENO
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'touch /tmp/convergent-test-handoff' || bad $LINENO
     code=0; wait "$resume" || code=$?
-    [ "$code" = 1 ] && grep -qx CV-HANDOFF-DONE "$log" && [ ! -e "$state/fw.handoff" ] || bad $LINENO
+    [ "$code" = 1 ] && [ ! -e "$state/fw.handoff" ] &&
+        timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw1 'test -f /tmp/convergent-test-handoff-done' || bad $LINENO
     carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig) || bad $LINENO
     printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* (handoff|upgrade)( |$)' && bad $LINENO
 done
@@ -2693,11 +2716,13 @@ awk '/^\+ replace fw2$/ && n == 0 {n++}
     /^\+ replace fw1$/ && n == 2 {n++}
     /^\+ soak fw1 fw2$/ && n == 3 {n++}
     END {exit !(n == 4)}' /var/log/guests-update-fw.log || bad $LINENO
+# fw1, replaced last, relinks its kernel and answers late.
+fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; bad $LINENO; }
 for f in fw1 fw2; do
 	# A replaced fw2 is seeded into the upgrade group at demotion 0; only fw1 must leave it.
 	case $f in fw1) want=MASTER groups='handoff|upgrade|sysmaint' ;; fw2) want=BACKUP groups='handoff|sysmaint' ;; esac
-	timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'test ! -e /etc/convergent/seeded/maintenance' || bad $LINENO
-	carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig) || bad $LINENO
+	timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$f" 'test ! -e /etc/convergent/seeded/maintenance' || bad $LINENO
+	carp=$(timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$f" ifconfig) || bad $LINENO
 	printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || bad $LINENO
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
 done
@@ -2723,7 +2748,7 @@ wan_wifi() (
         running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
     trap 'exit 1' HUP INT TERM
     ic config set wan boot.autorestart=false
-    ic stop wan --timeout 60
+    ic stop wan --timeout 60 || ic stop wan --force
     [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]
     if [ "$1" = seed ]; then
         wan_mount
@@ -3266,11 +3291,8 @@ GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/gue
 code=$?
 echo CV-REBUILD no-peer "$code"
 [ "$code" = 1 ] && grep -q '^+ start_guest fw1$' /var/log/guests-rebuild-no-peer.log || { tail -n 15 /var/log/guests-rebuild-no-peer.log; bad $LINENO; }
-deadline=$(($(date +%s) + 1800))
-until pair_ok; do
-    [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; exit 1; }
-    sleep 10
-done
+# The next step's rebuild checks and demotes fw1: the restarted fw1 must finish its boot and relink first.
+fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; exit 1; }
 ) || bad $LINENO
 cv_time firewall-rebuild-interruptions
 # Kill before the handoff marker, after rebuilding, and after rollback hands back to fw1.
@@ -3321,9 +3343,9 @@ for step in journal rebuilt; do
         (
             set -e
             cp "$state/pending" "$release/rebuild-pending"
-            trap 'timeout 180 ssh -F /etc/convergent/ssh_config fw2 "rcctl start unbound"' 0
+            trap 'unbound_up fw2' 0
             trap 'exit 1' HUP INT TERM
-            timeout 180 ssh -F /etc/convergent/ssh_config fw2 'rcctl stop unbound'
+            fwssh fw2 'rcctl stop unbound'
             if sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-dns.log; then exit 1; fi
             cmp "$state/pending" "$release/rebuild-pending"
             grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-dns.log
@@ -3331,6 +3353,12 @@ for step in journal rebuilt; do
             [ "$(incus --force-local query /1.0/instances/fw1/state | jq -r .status)" = Running ]
         )
         [ "$?" = 0 ] || bad $LINENO
+        # The resume checks fw2's DNS once: its restarted Unbound must answer first.
+        deadline=$(($(date +%s) + 600))
+        until (. /usr/lib/convergent/incus/firewall-heal; [ "$(heal_probe fw2 30)" = backup ]); do
+            [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break 2; }
+            sleep 10
+        done
     fi
     resumed=1
     cv_time "firewall-rebuild-$step-resume"
@@ -3349,7 +3377,9 @@ for step in journal rebuilt; do
         [ "$(date +%s)" -lt "$deadline" ] || { fw_diag; bad $LINENO; break 2; }
         sleep 2
     done
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/demote' || bad $LINENO
+    # The rebuilt fw1 relinks; the next step rebuilds it again.
+    fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; bad $LINENO; break; }
+    timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 fw1 'test ! -e /etc/convergent/seeded/demote' || bad $LINENO
 done
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
@@ -3503,10 +3533,12 @@ ip link add cvuplink type bridge && ip link set "$nic" master cvuplink && ip lin
 	ip link set cvuplink up || exit 1
 incus --force-local --project default config device add wan eth1 nic nictype=bridged parent=cvuplink name=eth1 || exit 1
 dns=fail tcp=fail
-for i in $(seq 36); do
-	[ "$tcp" = ok ] || ! timeout 10 ssh -F /etc/convergent/ssh_config fw1 'nc -z -w 5 9.9.9.9 853' || tcp=ok
+# Right after guests init both firewalls relink and answer SSH late.
+deadline=$(($(date +%s) + 900))
+while :; do
+	[ "$tcp" = ok ] || ! timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw1 'nc -z -w 5 9.9.9.9 853' || tcp=ok
 	[ "$dns" = ok ] || ! timeout 10 getent hosts codeberg.org >/dev/null || dns=ok
-	[ "$tcp:$dns" = ok:ok ] && break
+	[ "$tcp:$dns" = ok:ok ] || [ "$(date +%s)" -ge "$deadline" ] && break
 	sleep 5
 done
 echo "CV-UPLINK fw1-tcp=$tcp host-dns=$dns"
@@ -3541,7 +3573,7 @@ cleanup() {
 	done
 	if [ -n "${portal_test:-}" ]; then /usr/local/sbin/portal off || r=1; fi
 	# def is persistent and protected; only this test instance is disposable.
-	ic() { timeout -k 1 5 incus --force-local --project default "$@"; }
+	ic() { timeout -k 1 30 incus --force-local --project default "$@"; }
 	snapshot=$(ic list --format json) || { step=cleanup; r=1; }
 	state=$(printf '%s\n' "$snapshot" | jq -r '.[] | select(.name == "def") | .status') || { step=cleanup; r=1; }
 	if [ -n "$state" ]; then

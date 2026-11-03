@@ -4,10 +4,12 @@ set -eu
 release=/var/lib/convergent/test-release
 state=$release/shutdown
 # Incus 7.0.1 refuses --project with query: the project goes in the URL there.
-ic() { case $1 in query) timeout -k 1 10 incus --force-local "$@" 6>&- 7>&- 8>&- ;; *) timeout -k 1 10 incus --force-local --project default "$@" 6>&- 7>&- 8>&- ;; esac; }
+# Prepare runs after a 4-6 h run on a loaded host: 30 s there (the cron bounds it at 240 s); the drain keeps 10 s.
+ic() { case $1 in query) timeout -k 1 "${ic_limit:-10}" incus --force-local "$@" 6>&- 7>&- 8>&- ;; *) timeout -k 1 "${ic_limit:-10}" incus --force-local --project default "$@" 6>&- 7>&- 8>&- ;; esac; }
 cv_time() { echo "CV-TIME shutdown-$1 $(($(date +%s) - test_start))"; }
 case $1 in
 prepare)
+    ic_limit=30
     test_start=$(date +%s)
     cv_time prepare-start
     mkdir "$state"
