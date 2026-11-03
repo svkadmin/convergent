@@ -439,6 +439,37 @@ for sample in empty legacy same other dangling invalid; do
 done
 echo 'test-slot-backup: one laptop per backup disk passed'
 
+# The minute check holds the guests lock shared for seconds: backup waits for it (it lost the 0.1.6 smoke test).
+sed -n '/^exec 8>\/run\/convergent\/guests.lock$/,/^flock .* 8 || die /p' "$repo/tools/backup" |
+    sed "s|/run/convergent/guests.lock|$work/guests.lock|" >"$work/backup-lock"
+[ "$(grep -c . "$work/backup-lock")" -ge 2 ] || die 'missing backup guests lock'
+sh -n "$work/backup-lock"
+for sample in shared held; do
+    rm -f "$work/held"
+    # held: an exclusive holder past a 1 s bound must still refuse.
+    case $sample in shared) mode=-s hold=3 source=$work/backup-lock ;;
+    held) mode=-x hold=4 source=$work/backup-lock-short
+        sed 's/flock -w 120 8/flock -w 1 8/' "$work/backup-lock" >"$source"
+        grep -q 'flock -w 1 8' "$source" || die 'backup guests lock bound not found' ;;
+    esac
+    ( exec 7>"$work/guests.lock"; flock "$mode" 7; : >"$work/held"; sleep "$hold" ) &
+    holder=$!
+    n=0
+    until [ -e "$work/held" ]; do [ "$n" -lt 50 ] || die 'lock holder did not start'; n=$((n + 1)); sleep 0.1; done
+    begin=$(date +%s) rc=0
+    (
+        die() { echo "$*" >&2; exit 1; }
+        . "$source"
+    ) 2>"$work/lock-error" || rc=$?
+    waited=$(($(date +%s) - begin))
+    wait "$holder"
+    case $sample in
+    shared) [ "$rc" = 0 ] && [ "$waited" -ge 2 ] ;;
+    held) [ "$rc" = 1 ] && grep -qx 'a guest operation is running' "$work/lock-error" ;;
+    esac || { cat "$work/lock-error"; die "backup guests lock: $sample (rc $rc after ${waited}s)"; }
+done
+echo 'test-slot-backup: backup waits out the minute check'\''s guests lock passed'
+
 # Rescue must authenticate even when the ordinary writer's bypass is set.
 sed -n '/^write() {/,/^}/p' "$repo/tools/slot" |
     sed "s|/run/slot-write.XXXXXX|$work/write.XXXXXX|" >"$work/write"
