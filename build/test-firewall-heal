@@ -45,3 +45,8 @@ sed -n "/^sh -eu <<'HEAL'/,/^HEAL$/p" "$here/test" | sed '1d;$d' |
         -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/fixture"
 sh -n "$scratch/fixture"
 sh -eu "$scratch/fixture"
+# The owner's way out of a frozen QEMU the heal leaves alone.
+sed -n '/^### A frozen guest QEMU$/,/^### /p' "$repo/RECOVERY.md" >"$scratch/frozen-recipe"
+grep -qF "incus --force-local query '/1.0/instances/<guest>/state?project=default'" "$scratch/frozen-recipe"
+grep -qF 'pid=$(sudo cat /run/incus/<guest>/qemu.pid)' "$scratch/frozen-recipe"
+grep -qF 'sudo kill -KILL "$pid"' "$scratch/frozen-recipe"

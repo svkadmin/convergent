@@ -1264,6 +1264,12 @@ for frozen_vm in '' fw2 wan unknown; do
     esac
     if grep -q 'config unset' "$work/ic-bounds"; then exit 1; fi
 done
+# A guest journal inhibits the heal too: then a frozen firewall's way out is its pid file as well.
+frozen_vm=fw2
+touch "$work/state/guests/pending"
+if autorestart_clear 2>"$work/err"; then exit 1; fi
+grep -q "timed out; fw2's QEMU no longer answers Incus; kill the pid in /run/incus/fw2/qemu.pid, then rerun" "$work/err"
+rm "$work/state/guests/pending"
 if ic query '/1.0/instances?recursion=1&project=default' >/dev/null 2>&1; then exit 1; fi
 [ "$frozen" = 1 ]
 : >"$work/ic-bounds"

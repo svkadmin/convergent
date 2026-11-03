@@ -88,8 +88,9 @@ if leases_hold; then exit 1; fi
 cmp "$work/fw2.before" "$state/leases/fw2"
 rm -f "$state/leases/held"
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
-eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
+eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
 command -v healthy >/dev/null && command -v cleanup >/dev/null
+command -v reachable >/dev/null
 keys=$work/keys
 mkdir "$keys"
 fail() { echo "$*" >&2; return 1; }
@@ -152,7 +153,9 @@ for scenario in held frozen silent unheld topology carp resume-failed peer-down 
     killed= boots=0
     if rollback; then
         case $scenario in held|frozen|silent|booting|booting-update) ;; *) exit 1 ;; esac
-        case $scenario in booting*) grep -qx 'retry healthy fw2' "$work/retries" ;; esac
+        case $scenario in booting*) grep -qx 'retry reachable fw2' "$work/retries" ;; esac
+        # The peer wait is read-only: it keeps the rollback's step.
+        [ "$step" = rollback ]
         grep -qx 'stop fw1 --force' "$work/mutations"
         [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
         if [ "$scenario" != frozen ] && grep -q '^kill ' "$work/mutations"; then exit 1; fi
@@ -162,7 +165,7 @@ for scenario in held frozen silent unheld topology carp resume-failed peer-down 
         case $scenario in held|silent|booting*) exit 1 ;; esac
         [ -e "$state/pending" ] && [ ! -s "$work/mutations" ]
     fi
-    if [ "$scenario" = peer-down ] && grep -q '^retry healthy' "$work/retries"; then exit 1; fi
+    if [ "$scenario" = peer-down ] && grep -q '^retry reachable' "$work/retries"; then exit 1; fi
 done
 # Cleanup waits the same way for a booting peer before it resumes the allocators.
 rm -f "$state/pending" "$work/live/fw1" "$work/dhcp.fw2"
@@ -176,8 +179,39 @@ scenario=booting boots=0
     manual_stage= recovering= starting= applying= step=test
     cleanup 0
 )
-grep -qx 'retry healthy fw2' "$work/retries"
+grep -qx 'retry reachable fw2' "$work/retries"
 [ -e "$work/dhcp.fw2" ] && [ -e "$state/leases/held" ]
+# After a timed-out Incus read cleanup skips the clear, keeps its step and names the way out.
+eval "$(sed -n '/^autorestart_clear() (/,/^)/p' "$here/../tools/guests")"
+command -v autorestart_clear >/dev/null
+rm -f "$work/dhcp.fw2"
+: >"$work/retries"
+boots=0
+if (
+    unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; logger() { :; }
+    fail() { echo "$step: $*" >&2; return 1; }
+    rm() { [ "$*" != "-rf $work" ] || return 0; command rm "$@"; }
+    manual_stage= recovering= starting= applying= step=test frozen=1
+    cleanup 0
+) 2>"$work/cleanup.err"; then exit 1; fi
+grep -qx 'retry reachable fw2' "$work/retries"
+grep -qx 'cleanup: cannot clear autorestart overrides; rerun sys guests update' "$work/cleanup.err"
+# Its timeout gives no rebuild advice and no console dump; healthy's does (control).
+(
+    eval "$(sed -n '/^retry() {/,/^}/p' "$here/../tools/guests")"
+    boot_timeout=0 polling= step=rollback
+    cut() { echo 100; }
+    logger() { :; }
+    rsh() { return 255; }
+    ic() { echo console; }
+    if retry reachable fw2 2>"$work/retry.out"; then exit 1; fi
+    grep -q 'reachable fw2 timed out' "$work/retry.out"
+    if grep -qE 'next:|console' "$work/retry.out"; then exit 1; fi
+    [ "$step" = rollback ]
+    if retry healthy fw2 2>"$work/retry.out"; then exit 1; fi
+    grep -qx 'guests: next: sys firewall rebuild fw2' "$work/retry.out"
+    grep -qx console "$work/retry.out"
+)
 echo 'test-leases: held peer replay, fresh checkpoint, booting peer and failed safety gates passed'
 # fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.
 sed -n '/^services="unbound wan_watch sshd"$/,/^esac$/p' "$here/../guests/fw/site/usr/local/libexec/convergent/fw-seed" |

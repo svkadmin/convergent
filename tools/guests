@@ -51,10 +51,11 @@ frozen_hint() {
     for node in fw1 fw2 wan; do
         probe incus --force-local query "/1.0/instances/$node/state?project=default" >/dev/null 2>&1 && continue
         [ "$?" = 124 ] || continue
+        # A guest journal, maintenance or shutdown inhibits the checker's heal too.
         case $node in
-        wan) echo "wan's QEMU no longer answers Incus; kill the pid in /run/incus/wan/qemu.pid, then rerun" ;;
-        *) echo "$node's QEMU no longer answers Incus; the checker kills a frozen firewall, then rerun" ;;
+        fw1|fw2) if heal_allowed; then echo "$node's QEMU no longer answers Incus; the checker kills a frozen firewall, then rerun"; return; fi ;;
         esac
+        echo "$node's QEMU no longer answers Incus; kill the pid in /run/incus/$node/qemu.pid, then rerun"
         return
     done
     echo 'if a guest QEMU is frozen, kill the pid in /run/incus/<name>/qemu.pid (the checker does this for a firewall), then rerun'
@@ -226,7 +227,7 @@ rollback() {
             # Back to the image the guest ran on; a second pass redoes the same rebuild.
             # A peer Incus restarted (autorestart) answers no SSH while it boots: wait read-only, then mutate once.
             case $guest in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) peer= ;; esac
-            if [ -n "$peer" ] && running "$peer"; then retry healthy "$peer" || :; fi
+            if [ -n "$peer" ] && running "$peer"; then retry reachable "$peer" || :; fi
             case $guest:$snap in
             fw1:*-rebuild|fw2:*-rebuild)
                 # A healthy BACKUP peer takes over when the target stops.
@@ -305,11 +306,11 @@ cleanup() {
     fi
     if [ -n "$starting" ] && ! running "$starting"; then start_guest "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$work" ] && [ -f "$state/leases/held" ]; then
-        for peer in fw1 fw2; do if running "$peer"; then retry healthy "$peer" || :; fi; done
+        for peer in fw1 fw2; do if running "$peer"; then retry reachable "$peer" || :; fi; done
     fi
     [ -z "$work" ] || leases_resume || result=1
     [ -z "$work" ] || dns_restore || result=1
-    [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides'; result=1; }
+    [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides; rerun sys guests update'; result=1; }
     [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
     [ "$result" = 0 ] || logger -p user.err -t guests "$failed_step: failed (status $result, original $failed_status); cleanup finished" 2>/dev/null || :
@@ -677,6 +678,8 @@ pin() {
     cat "$work/pin" >>"$work/known_hosts" || return
     mv "$work/known_hosts" "$keys/known_hosts" || return
 }
+# A read-only wait for a booting peer: no step of its own and no rebuild advice when it times out.
+reachable() { rsh "$1" true >/dev/null; }
 healthy() {
     step="healthy $1"
     case $1 in
@@ -881,8 +884,13 @@ start_stopped() {
         echo "guests: starting stopped $node"
         [ "$node" != svc ] || svc_storage_check || return
         # Bounded as the checker's start, so a stall cannot keep the locks; Incus may have restarted it meanwhile.
-        timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- || running "$node" ||
-            die "cannot start $node; rebuild it: guests update $node /var/lib/convergent/release-guests/guests/$node --trusted-local"
+        # Three tries as start_guest: the last QEMU may still hold the VFIO group.
+        attempt=0
+        until timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- || running "$node"; do
+            [ $((attempt += 1)) -lt 3 ] ||
+                die "cannot start $node; rebuild it: guests update $node /var/lib/convergent/release-guests/guests/$node --trusted-local"
+            sleep 10 || return
+        done
     done
 }
 seed_start() {

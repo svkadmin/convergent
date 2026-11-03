@@ -137,6 +137,21 @@ sudo tail -n 50 /var/log/incus/<guest>/console.log
 
 If a step fails twice identically, photograph the last output screen and leave the laptop unchanged.
 
+### A frozen guest QEMU
+
+A VM whose QEMU froze answers no Incus read or change: `guests` stops with "<guest>'s QEMU no longer
+answers Incus". The checker restarts a frozen firewall unless a guest journal, maintenance or shutdown
+inhibits it. For wan, or a firewall while that heal is inhibited, end the QEMU yourself:
+
+```sh
+sudo timeout 30 incus --force-local query '/1.0/instances/<guest>/state?project=default'; echo $?  # 124: frozen
+pid=$(sudo cat /run/incus/<guest>/qemu.pid)
+ps -o args= -p "$pid"                       # must show qemu-system and -name <guest>
+sudo kill -KILL "$pid"
+```
+
+Then rerun the guests command that failed.
+
 ### Interrupted work-topology migration
 
 Finish handoff/maintenance before upgrading the host. `/var/lib/convergent/guests/fw.topology`

@@ -65,20 +65,23 @@ sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stoppe
 [ "$(grep -c '^start_stopped() {$' "$scratch/start-stopped")" = 1 ]
 (
     . "$scratch/start-stopped"
-    # Bounded starts only, svc after its storage check.
-    timeout() { echo "$*" >>"$scratch/starts"; [ "$start" = ok ]; }
+    # Bounded starts only, svc after its storage check; three tries 10 s apart, as start_guest.
+    timeout() { echo "$*" >>"$scratch/starts"; case $start in ok) ;; once) start=ok; return 1 ;; *) return 1 ;; esac; }
+    sleep() { echo "sleep $*" >>"$scratch/starts"; }
     incus() { exit 97; }
     svc_storage_check() { echo check >>"$scratch/starts"; [ "$scenario" != nested ]; }
     stopped() { case " $down " in *" $1 "*) ;; *) return 1 ;; esac; }
     running() { case " $up " in *" $1 "*) ;; *) return 1 ;; esac; }
     die() { echo "$*" >"$scratch/died"; exit 1; }
-    for scenario in none both raced failed nested; do
+    wan='-k 5 60 incus --force-local --project default start wan'
+    for scenario in none both raced retried failed nested; do
         : >"$scratch/starts"; rm -f "$scratch/died"
         down='wan svc' up= start=ok
         case $scenario in
         none) down= ;;
         raced) down=wan up=wan start=failed ;;
         failed) start=failed ;;
+        retried) down=wan start=once ;;
         nested) down=svc ;;
         esac
         if (start_stopped >/dev/null 2>&1); then
@@ -90,9 +93,10 @@ sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stoppe
         none) [ ! -s "$scratch/starts" ] ;;
         both) printf '%s\n' '-k 5 60 incus --force-local --project default start wan' check \
             '-k 5 60 incus --force-local --project default start svc' | cmp - "$scratch/starts" ;;
-        raced) [ ! -e "$scratch/died" ] ;;
+        raced) [ ! -e "$scratch/died" ]; [ "$(cat "$scratch/starts")" = "$wan" ] ;;
+        retried) [ ! -e "$scratch/died" ]; printf '%s\n' "$wan" 'sleep 10' "$wan" | cmp - "$scratch/starts" ;;
         failed)
-            [ "$(cat "$scratch/starts")" = '-k 5 60 incus --force-local --project default start wan' ]
+            printf '%s\n' "$wan" 'sleep 10' "$wan" 'sleep 10' "$wan" | cmp - "$scratch/starts"
             grep -qx 'cannot start wan; rebuild it: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' "$scratch/died" ;;
         nested) [ "$(cat "$scratch/starts")" = check ] ;;
         esac
