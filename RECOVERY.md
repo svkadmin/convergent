@@ -144,7 +144,8 @@ If a step fails twice identically, photograph the last output screen and leave t
 
 A VM whose QEMU froze answers no Incus read or change: `guests` stops with "<guest>'s QEMU no longer
 answers Incus". The checker restarts a frozen firewall unless a guest journal, maintenance or shutdown
-inhibits it. For wan, or a firewall while that heal is inhibited, end the QEMU yourself:
+inhibits it. If Incus left both firewalls stopped, the checker starts them after 180 s, under the same
+inhibitions. For wan, or a firewall while that heal is inhibited, end the QEMU yourself:
 
 ```sh
 sudo timeout 30 incus --force-local query '/1.0/instances/<guest>/state?project=default'; echo $?  # 124: frozen

@@ -260,7 +260,8 @@ USB writes, password reset, next-slot selection and log export need separate tes
 
 ## Checks
 
-`build/image` checks AppArmor profile syntax. `build/lint` checks dashboard JSON drift. `build/test
+`build/image` checks AppArmor profile syntax, refuses a release ID later than the builder's UTC clock,
+and fails if a USB network driver remains in the image. `build/lint` checks dashboard JSON drift. `build/test
 --guests-update` checks every metric panel query against real svc scrapes, allowing explicitly
 optional hardware and quiet alerts, every LogsQL target, and that forged hostnames cannot move log
 records to another host. `build/test-debug` checks diagnostic output authentication offline.

@@ -423,7 +423,8 @@ its PID does not prove ownership. Reboot nodes using the old symlink lock before
 images/seed. Finish updates/handoffs first. The peer must be healthy and own all segments before
 replacement, or run coherent CARP on every segment if the target still runs; a target Incus cannot
 stop is ended by its verified QEMU pid. Maintenance may name the target; undo afterward. Rebuild waits for guest/DNS locks,
-checks/seeds replacement, restores normal roles and pushes stored DNS. Browsers may stay open.
+checks/seeds replacement, restores normal roles and pushes stored DNS. It first starts a wan or svc that
+Incus left stopped. Browsers may stay open.
 Repeat the same command after interruption to resume.
 
 ## Backups

@@ -82,6 +82,9 @@ NAT. A passed-through USB Ethernet adapter provides the optional wired uplink vi
   so two overlapping uplinks do not flap.
 - Wired DHCP clears stale state after removal, addressless replug, identity or carrier changes,
   including cable loss/regain between checks. Assignment shares the guest-operation lock.
+- Incus does not re-attach a replugged NIC by serial. The minute checker therefore re-adds wan's wired
+  role after two runs without the allowed NIC, three times an hour at most, then reports a failure.
+  Revoke and enrol remove the role once no USBGuard allow rule names the NIC.
 - PTP over KVM disciplines guest chrony without a network time listener.
 - HPET off, free-page reporting on. Limits: section 11.
 
@@ -101,7 +104,7 @@ firewall failures from host kernel failures.
   probes 300 ms apart, bounded to one second; any reply passes. Group counter survives restarts
 - **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover. It gets 120 s to start before rc
-  kills it.
+  kills it. fw-seed sets that limit at seeding, not in the image.
 - **DHCP:** Work VLANs only; synchronized leases checkpointed across replacement
 - **Management:** Host-only SSH, NTP from host, exporter and TLS syslog to svc; default route via
   wan
@@ -117,7 +120,10 @@ Procedures: [USAGE, Firewall maintenance](USAGE.md#firewall-maintenance).
 The minute checker restarts a firewall after three minutes of failed checks only if its peer is
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
 restart, permits three attempts/hour, and is inhibited by guest journals, DNS pushes, maintenance
-and shutdown. A lease hold left by a run that could not reach a node does not inhibit it: once both
+and shutdown. One missed minute run does not restart the three-minute count. If Incus left both
+firewalls stopped, the checker starts both after 180 s in that state, under the same inhibitions; each
+start counts as an attempt and needs ten minutes since that node's last start.
+A lease hold left by a run that could not reach a node does not inhibit it: once both
 firewalls answer their health probe, the checker resumes work DHCP and releases the hold; while the
 hold is set, the probe accepts a disabled dhcpd.
 A firewall QEMU unreadable by Incus is killed using its pid file after verifying the instance in its
@@ -408,7 +414,8 @@ Build steps (commands in [BUILD](BUILD.md#build-a-release)):
 ### Build-time hardware support
 
 `net-dialup/tio` 3.7 and its distfiles are pinned in the overlay. Image checks retain FTDI, CP210x,
-PL2303, CH341 and CDC ACM drivers; Gentoo udev grants device access through dialout. Module and
+PL2303, CH341 and CDC ACM drivers; Gentoo udev grants device access through dialout. No USB network
+driver ships: USB NICs belong to wan, and the image check refuses one that remains. Module and
 firmware retention is configured in `build/build.conf`; VLAN and bridge nftables support is built
 into the kernel.
 
@@ -432,6 +439,8 @@ Alpine guests stop credential-dependent services.
 Infrastructure starts together; pinning/checks remain sequential. With browsers closed, guest apply
 renews CA/service certificates that are not yet valid or expire within 30 days, reusing their keys
 and installing trust before consumers restart; then only the current svc client keeps metrics trust.
+While the host clock is behind the booted release's build stamp, renewal is skipped and logged; setup
+then keeps only a complete, valid set, or stops and says to set the clock and reboot.
 
 ### 7.2 Update
 
@@ -458,7 +467,8 @@ the old image and restores snapshots; keep three snapshots/volume. Remmina exclu
 
 Incus reads and config changes in guest operations are bounded at 120 s. A frozen VM monitor holds the
 instance listing, so a timeout names the frozen guest and its recovery. With no update pending, apply
-also starts a wan or svc that Incus left stopped after ten crashes in a minute.
+also starts a wan or svc that Incus left stopped after ten crashes in a minute. A firewall rebuild
+starts them first; its soak needs wan.
 
 With unchanged topology, replace fw2, check CARP/pfsync/rules/DNS/traffic, fail over, then replace
 fw1. Failure restores the target before touching its peer. Reseed DHCP leases and push stored DNS
