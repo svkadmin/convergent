@@ -88,7 +88,8 @@ if leases_hold; then exit 1; fi
 cmp "$work/fw2.before" "$state/leases/fw2"
 rm -f "$state/leases/held"
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
-eval "$(sed -n '/^rollback() {/,/^}/p' "$here/../tools/guests")"
+eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
+command -v healthy >/dev/null && command -v cleanup >/dev/null
 keys=$work/keys
 mkdir "$keys"
 fail() { echo "$*" >&2; return 1; }
@@ -105,7 +106,11 @@ mkdir -p "$work/incus/fw1" "$work/proc/4242"
 echo 4242 >"$work/incus/fw1/qemu.pid"
 printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name fw1 -uuid x -pidfile "$work/incus/fw1/qemu.pid" >"$work/proc/4242/cmdline"
 kill() { echo "kill $*" >>"$work/mutations"; killed=1; }
-retry() { "$@"; }
+retry() {
+    echo "retry $*" >>"$work/retries"
+    tries=0
+    until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done
+}
 stopped() { [ -n "${killed:-}" ] || ! running "$1"; }
 ic() { echo "$*" >>"$work/mutations"; [ "$scenario:$1" != frozen:stop ]; }
 timeout() { [ "$*" = '-k 5 60 incus --force-local --project default stop fw1 --force' ] || return 1; ic stop fw1 --force; }
@@ -118,7 +123,10 @@ rebuild_root() {
 }
 rsh() {
     [ "$scenario:$1" != silent:fw1 ] || return 255
+    # booting: Incus restarted the peer (autorestart); its sshd refuses the first connections.
+    case $scenario:$1 in booting*:fw2) [ "$((boots += 1))" -gt 2 ] || return 255 ;; esac
     case $2 in
+    true) ;;
     *'rcctl disable dhcpd'*) rm -f "$work/dhcp.$1"; cat "$work/live/$1" ;;
     *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;;
     *'rcctl enable dhcpd'*)
@@ -129,30 +137,48 @@ rsh() {
     esac
 }
 # silent: the running target answers no SSH (a killed rebuild's new root); its replacement must still proceed.
-for scenario in held frozen silent unheld topology carp resume-failed peer-down; do
+# booting-update: the update's own resume already cleared quiesced, so the rollback checkpoints both nodes again.
+for scenario in held frozen silent unheld topology carp resume-failed peer-down booting booting-update; do
     mkdir -p "$state/leases"
     touch "$state/leases/held" "$state/leases/quiesced" "$state/known_hosts.before"
     rm -f "$work/dhcp.fw1" "$work/dhcp.fw2"
     cp "$work/new" "$work/live/fw2"
     [ "$scenario" != peer-down ] || rm "$work/live/fw2"
     [ "$scenario" != unheld ] || rm "$state/leases/held"
-    echo 'fw1 test-rebuild old-image' >"$state/pending"
-    : >"$work/mutations"
-    killed=
+    snap=test-rebuild
+    [ "$scenario" != booting-update ] || { snap=test-update; rm "$state/leases/quiesced"; }
+    echo "fw1 $snap old-image" >"$state/pending"
+    : >"$work/mutations"; : >"$work/retries"
+    killed= boots=0
     if rollback; then
-        [ "$scenario" = held ] || [ "$scenario" = frozen ] || [ "$scenario" = silent ]
+        case $scenario in held|frozen|silent|booting|booting-update) ;; *) exit 1 ;; esac
+        case $scenario in booting*) grep -qx 'retry healthy fw2' "$work/retries" ;; esac
         grep -qx 'stop fw1 --force' "$work/mutations"
         [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
         if [ "$scenario" != frozen ] && grep -q '^kill ' "$work/mutations"; then exit 1; fi
         grep -qx rebuild "$work/mutations"
         [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
     else
-        [ "$scenario" != held ]
-        [ "$scenario" != silent ]
+        case $scenario in held|silent|booting*) exit 1 ;; esac
         [ -e "$state/pending" ] && [ ! -s "$work/mutations" ]
     fi
+    if [ "$scenario" = peer-down ] && grep -q '^retry healthy' "$work/retries"; then exit 1; fi
 done
-echo 'test-leases: held peer replay, fresh checkpoint and failed safety gates passed'
+# Cleanup waits the same way for a booting peer before it resumes the allocators.
+rm -f "$state/pending" "$work/live/fw1" "$work/dhcp.fw2"
+cp "$work/new" "$work/live/fw2"
+touch "$state/leases/held"
+: >"$work/retries"
+scenario=booting boots=0
+(
+    unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }
+    rm() { [ "$*" != "-rf $work" ] || return 0; command rm "$@"; }
+    manual_stage= recovering= starting= applying= step=test
+    cleanup 0
+)
+grep -qx 'retry healthy fw2' "$work/retries"
+[ -e "$work/dhcp.fw2" ] && [ -e "$state/leases/held" ]
+echo 'test-leases: held peer replay, fresh checkpoint, booting peer and failed safety gates passed'
 # fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.
 sed -n '/^services="unbound wan_watch sshd"$/,/^esac$/p' "$here/../guests/fw/site/usr/local/libexec/convergent/fw-seed" |
 	sed "s|/etc/convergent/dhcpd.flags|$work/dhcpd.flags|" >"$work/seed-services"

@@ -3,12 +3,15 @@
 . /usr/lib/convergent/guest-reply.sh
 # $2: bound in seconds (default 10); the peer check right before a kill gets more.
 heal_probe() {
+    # fw-leases disables a held allocator on purpose; without a hold dhcpd must run.
+    heal_dhcpd=
+    [ ! -e /var/lib/convergent/guests/leases/held ] || heal_dhcpd='! rcctl get dhcpd status >/dev/null ||'
     reply=$(guest_reply 65536 timeout -k 1 "${2:-10}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
         set -e
         ifconfig carp
         pfctl -si
         ifconfig pfsync0
-        rcctl check dhcpd >/dev/null
+        '"$heal_dhcpd"' rcctl check dhcpd >/dev/null
         rcctl check unbound >/dev/null
         unbound-control status >/dev/null' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) || return 1
     printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
@@ -16,7 +19,8 @@ heal_probe() {
 heal_allowed() {
     [ ! -e /run/convergent/guests-stopping ] || return 1
     [ ! -e /var/lib/convergent/firewall-maintenance ] || return 1
-    for journal in pending preparing committed fw.handoff fw.topology leases/held; do
+    # A lease hold outlives its run when a node was unreachable at the resume: the heal is what clears it.
+    for journal in pending preparing committed fw.handoff fw.topology; do
         [ ! -e "/var/lib/convergent/guests/$journal" ] || return 1
     done
 }
@@ -78,6 +82,24 @@ heal_unhold() (
     fi
     rm -f "$heal/$1.hold"
 )
+# A lease hold left by a run that could not reach a node: both allocators resume once both nodes answer.
+heal_resume() (
+    exec 8>/run/convergent/guests.lock
+    flock -n 8 || exit 0
+    [ -f /var/lib/convergent/guests/leases/held ] && heal_allowed || exit 0
+    trap '' HUP INT TERM
+    state=/var/lib/convergent/guests
+    running() { [ "$(heal_state "$1")" = RUNNING ]; }
+    # As guests' rsh: a relinking firewall answers late.
+    rsh() {
+        timeout -k 1 "${probe_limit:-30}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none \
+            -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=12 "$@" 9>&- 8>&- 7>&- 6>&- 2>/dev/null
+    }
+    . /usr/lib/convergent/incus/fw-leases
+    leases_resume || { heal_note "work DHCP resume failed; lease hold retained"; exit 1; }
+    [ ! -f "$state/leases/held" ] || exit 1
+    heal_note "work DHCP resumed; lease hold released"
+)
 firewall_heal() (
     heal=/run/convergent/firewall-heal
     mkdir -p "$heal" || exit 1
@@ -133,7 +155,7 @@ firewall_heal() (
             continue
         fi
         # Recheck immediately before mutation; never restart against a stale peer observation.
-        if heal_probe "$node" >/dev/null || [ "$(heal_probe "$peer")" != master ] || ! heal_allowed; then
+        if heal_probe "$node" >/dev/null || [ "$(heal_probe "$peer" 30)" != master ] || ! heal_allowed; then
             rm -f "$heal/$node"
             exec 6>&- 8>&-
             continue
@@ -184,5 +206,6 @@ firewall_heal() (
         ) >/dev/null 2>&1
         exec 6>&- 8>&-
     done
+    [ "$fw1" = unhealthy ] || [ "$fw2" = unhealthy ] || heal_resume >/dev/null 2>&1 || :
     [ ! -f "$heal/event" ] || cat "$heal/event"
 )

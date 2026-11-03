@@ -899,8 +899,11 @@ kill() {
 }
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
+    case ${12:-} in *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$work/calls"; return ;; esac
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
     [ "$role" != down ] || return 1
+    # dhcpd_off: nodes fw-leases disabled dhcpd on; the probe's own dhcpd line decides.
+    case " ${dhcpd_off:-} " in *" $7 "*) (rcctl() { return 1; }; eval "$(printf '%s\n' "$8" | grep dhcpd)") || return 1 ;; esac
     while read -r iface vhid parent segment prefix gateway family; do
         case $iface in \#*|'') continue ;; esac
         echo "$iface: flags=41<UP,RUNNING>"
@@ -1052,12 +1055,14 @@ done
 rm -rf "$work/run/firewall-heal"
 test_status=RUNNING list_slow=1 test_peer=MASTER
 qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
-: >"$work/calls"
+: >"$work/calls"; : >"$bounds"
 for t in 1000 1060 1120 1180; do tick "$t"; done
 printf '%s\n' '--force-local --project default config set fw2 boot.autorestart=false user.convergent.autorestart=true' \
     '--force-local --project default restart fw2 --force' \
     '--force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' >"$work/expected"
 cmp "$work/calls" "$work/expected"
+# The peer recheck right before a restart gets the pre-kill bound too.
+grep -qx '30 fw1' "$bounds"
 list_slow=0
 # Prefix neighbours must not change the exact instance state.
 test_status=STOPPED
@@ -1106,6 +1111,27 @@ grep -q 'config unset fw2' "$work/calls"
 [ ! -f "$work/held" ] && [ ! -f "$work/run/firewall-heal/fw2.hold" ]
 grep -q 'autorestart hold released' "$work/run/firewall-heal/event"
 test_target=down
+# A lease hold its run could not resume (peer frozen or stopped) inhibits no heal; the held allocators count
+# as healthy only under the hold, and resume once both nodes answer.
+rm -rf "$work/run/firewall-heal"
+mkdir -p "$work/state/guests/leases"
+touch "$work/state/guests/leases/held"
+dhcpd_off='fw1 fw2'
+: >"$work/calls"
+for t in 1000 1060 1120 1180; do tick "$t"; done
+grep -q 'default restart fw2 --force' "$work/calls"
+if grep -q '^resume ' "$work/calls"; then exit 1; fi
+rm "$work/state/guests/leases/held"
+if heal_probe fw1; then exit 1; fi
+touch "$work/state/guests/leases/held"
+test_target=BACKUP
+: >"$work/calls"
+tick 1240
+printf '%s\n' 'resume fw1' 'resume fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+[ ! -e "$work/state/guests/leases/held" ]
+grep -q 'work DHCP resumed' "$work/run/firewall-heal/event"
+dhcpd_off= test_target=down
 # guests' stop_guest ends a VM the same way once Incus can neither stop nor force it.
 eval "$(sed -n '/^stop_guest() {/,/^}/p; /^force_stop() {/,/^}/p' /usr/local/sbin/guests)"
 autorestart_hold() { :; }
@@ -2227,8 +2253,8 @@ cv_time firewall-self-heal
             n=$((n + 1)); [ "$n" -lt 10 ] || return 1; sleep 10
         done
     }
-    broken= inhibited= frozen=
-    trap 'for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
+    broken= inhibited= frozen= leased=
+    trap 'for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
     trap 'exit 1' HUP INT TERM
     # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
@@ -2260,6 +2286,10 @@ cv_time firewall-self-heal
     # A QEMU that stops answering Incus: the checker kills it by its pid file and starts it again
     # (after the 600 s grace of the restart above, then 180 s of failed probes).
     cv_time firewall-self-heal-frozen
+    # A lease hold a run could not resume (its peer frozen) must not inhibit this heal; the heal resumes it.
+    mkdir -p /var/lib/convergent/guests/leases
+    touch /var/lib/convergent/guests/leases/held
+    leased=1
     before=$(fw_pid fw2)
     frozen=$before
     kill -STOP "$before"
@@ -2281,6 +2311,11 @@ cv_time firewall-self-heal
     [ -z "$(ic config get fw2 user.convergent.autorestart)" ]
     rm /run/convergent/guests-stopping
     inhibited=
+    deadline=$(($(date +%s) + 600))
+    while [ -e /var/lib/convergent/guests/leases/held ]; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 10
+    done
+    leased=
     # With both firewalls failing there is no healthy MASTER to fall back on: no attempt, no restart.
     cp /run/convergent/firewall-heal/attempts "$release/heal-attempts"
     pid1=$(fw_pid fw1) pid2=$(fw_pid fw2)

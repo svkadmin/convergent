@@ -203,9 +203,11 @@ rollback() {
             autorestart_hold "$guest" || return
         else
             # Back to the image the guest ran on; a second pass redoes the same rebuild.
+            # A peer Incus restarted (autorestart) answers no SSH while it boots: wait read-only, then mutate once.
+            case $guest in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) peer= ;; esac
+            if [ -n "$peer" ] && running "$peer"; then retry healthy "$peer" || :; fi
             case $guest:$snap in
             fw1:*-rebuild|fw2:*-rebuild)
-                case $guest in fw1) peer=fw2 ;; fw2) peer=fw1 ;; esac
                 # A healthy BACKUP peer takes over when the target stops.
                 running "$peer" && leases_resume "$peer" &&
                     (image_dir=/var/lib/convergent/release-guests/guests/fw; fw_check "$peer") &&
@@ -281,6 +283,9 @@ cleanup() {
         fi
     fi
     if [ -n "$starting" ] && ! running "$starting"; then start_guest "$starting" || { fail "cannot restart $starting"; result=1; }; fi
+    if [ -n "$work" ] && [ -f "$state/leases/held" ]; then
+        for peer in fw1 fw2; do if running "$peer"; then retry healthy "$peer" || :; fi; done
+    fi
     [ -z "$work" ] || leases_resume || result=1
     [ -z "$work" ] || dns_restore || result=1
     [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides'; result=1; }
