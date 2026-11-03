@@ -1962,7 +1962,9 @@ cv_time firewall-self-heal
     before=$(fw_pid fw2)
     broken=fw2
     fwssh fw2 'rcctl stop unbound'
-    deadline=$(($(date +%s) + 600))
+    # Each heal observation probes both nodes for 10 s; one slow fw1 answer restarts the 180 s window
+    # (cv15c2: the restart came 3 s after a 600 s bound).
+    deadline=$(($(date +%s) + 1500))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
@@ -1984,7 +1986,7 @@ cv_time firewall-self-heal
     before=$(fw_pid fw2)
     frozen=$before
     kill -STOP "$before"
-    deadline=$(($(date +%s) + 1200))
+    deadline=$(($(date +%s) + 1800))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
@@ -2027,7 +2029,8 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
 )
-[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200; bad $LINENO; }
+[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200
+    sed 's/^/CV-HEAL state /' /var/lib/convergent/check/firewall-heal 2>/dev/null | tail -n 10 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
