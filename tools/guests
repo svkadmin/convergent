@@ -365,6 +365,21 @@ certificate_current() (
     now=$(date +%s) || exit 1
     [ "$start" -le "$now" ]
 )
+# Certificates issued under a clock behind the booted build expire once it is corrected: no maintenance then.
+certificates_clock() {
+    built=$(cat /usr/lib/convergent/release 2>/dev/null) || built=
+    case $built in
+    ''|*[!0-9]*) reason='release build stamp unreadable' ;;
+    *) clock=$(date -u +%Y%m%d%H%M) && [ "$clock" -ge "$built" ] && return 0
+       reason='clock behind the release build' ;;
+    esac
+    if [ -z "${clock_noted:-}" ]; then
+        echo "guests: certificates: $reason; skipping (fix the clock, then sys guests update)"
+        logger -t guests "certificates skipped: $reason" 2>/dev/null || :
+        clock_noted=1
+    fi
+    return 1
+}
 credentials() {
     step=credentials
     mkdir -p "$tls" "$keys"
@@ -383,6 +398,13 @@ credentials() {
     sync
     mv "$keys/id_ed25519.pub.new" "$keys/id_ed25519.pub"
     sync
+    for secret in admin-password secret-key; do
+        secret_create "$tls/$secret" 32
+    done
+    if ! certificates_clock; then
+        [ -f "$tls/ca.crt" ] || die 'certificates: cannot issue under this clock; fix it, then retry'
+        return 0
+    fi
     if openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then
         certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
         openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
@@ -442,11 +464,9 @@ credentials() {
         mv "$tls/$cert.crt.new" "$tls/$cert.crt"
         sync
     done
-    for secret in admin-password secret-key; do
-        secret_create "$tls/$secret" 32
-    done
 }
 certificates_due() {
+    certificates_clock || return 1
     [ ! -f "$tls/pending" ] && [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/deploy" ] && [ ! -f "$tls/incus-client.previous" ] || return 0
     for cert in ca server incus-server incus-client; do
         certificate_current "$tls/$cert.crt" || return 0
