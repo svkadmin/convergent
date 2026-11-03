@@ -196,6 +196,19 @@ if (
 ) 2>"$work/cleanup.err"; then exit 1; fi
 grep -qx 'retry reachable fw2' "$work/retries"
 grep -qx 'cleanup: cannot clear autorestart overrides; rerun sys guests update' "$work/cleanup.err"
+# A pair rollback that cannot finish ends apply as failed, not running, and names the owner's command.
+mkdir "$state/fw.topology"
+if (
+    unmount_root() { :; }; logger() { :; }
+    fail() { echo "$step: $*" >&2; return 1; }
+    topology_recover() { return 1; }
+    update_status() { echo "$1" >"$work/status"; }
+    manual_stage= recovering= starting= applying=1 step=test
+    cleanup 1
+) 2>"$work/cleanup.err"; then exit 1; fi
+grep -qx failed "$work/status"
+grep -qx 'cleanup: pair rollback pending; both firewalls held; rerun sys guests update' "$work/cleanup.err"
+rmdir "$state/fw.topology"
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
     eval "$(sed -n '/^retry() {/,/^}/p' "$here/../tools/guests")"

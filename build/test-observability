@@ -141,9 +141,9 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     run 1060
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; gone "$strike"
     reported
-    # Once per loss.
-    run 1120; is "$outcome" 'lost S1'
-    run 1180; run 1240; is "$w/calls" "$(printf 'remove\nadd')"
+    # A dock that drops the NIC again after a re-attach is a fresh loss.
+    run 1120; gone "$outcome"; is "$strike" 'S1 1120'; is "$w/calls" "$(printf 'remove\nadd')"
+    run 1180; is "$w/calls" "$(printf 'remove\nadd\nremove\nadd')"; is "$outcome" 'healed S1'
     # Held again ends the loss; a host driver is not wan's.
     driver usbfs; run 1300; gone "$outcome"; gone "$strike"
     driver r8152; run 1360; is "$strike" 'S1 1360'
@@ -170,30 +170,41 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
         echo Running >"$w/status"; echo "$role" >"$w/role"; echo 1 >"$w/sys/1-2/authorized"
         printf '%s\n' "$allowed" >"$w/allowed"
     done
-    # Two runs more than 90 s apart are not in a row.
-    run 1600; run 1800; is "$strike" 'S1 1800'; is "$w/calls" ''
+    # Two runs more than 150 s apart are not in a row.
+    run 1700; run 1900; is "$strike" 'S1 1900'; is "$w/calls" ''
     # Re-checked under the lock.
-    held=1; run 1860; is "$w/calls" ''
+    held=1; run 1960; is "$w/calls" ''
     held=0; driver ''
     # A failed re-add keeps reporting while wan has no role.
-    run 1900; add=failed; run 1960
+    run 2100; add=failed; run 2160
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'failed S1'; is "$w/role" null
-    run 2020; is "$w/calls" "$(printf 'remove\nadd')"
+    run 2220; is "$w/calls" "$(printf 'remove\nadd')"
     reported
-    # Three re-attaches an hour (1060, 1960, 2140): a flapping NIC's fourth is refused and reported.
-    add=ok; echo "$role" >"$w/role"; driver usbfs; run 2080; gone "$outcome"
-    : >"$w/calls"; driver ''; run 2100; run 2140
-    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
-    driver usbfs; run 2200; gone "$outcome"
-    : >"$w/calls"; driver ''; run 2260; run 2320; run 2380
+    # Three re-attaches an hour (1060, 1180, 2160): a flapping NIC's fourth is refused and reported.
+    add=ok; echo "$role" >"$w/role"; driver usbfs; run 2280; gone "$outcome"
+    : >"$w/calls"; driver ''; run 2300; run 2360; run 2420
     is "$w/calls" ''; is "$outcome" 'failed S1'
     reported
-    # An hour after the first, one more.
+    # An hour after the first two, one more.
     driver usbfs; run 4700; driver ''; run 4720; run 4780
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
-    is "$w/run/wired-attempts" "$(printf '1960\n2140\n4780')"
+    is "$w/run/wired-attempts" "$(printf '2160\n4780')"
+    # One skipped minute run (a frozen firewall overran it) keeps the strike.
+    driver usbfs; run 4840; gone "$outcome"; : >"$w/calls"; driver ''
+    run 4900; run 5020
+    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
 )
 echo 'observability: wired uplink re-attach and report passed'
+# A scan killed outright leaves its scratch directory: a later run prunes it a day on, never a live one.
+sed -n "/-name '\.run\.??????' -mmin +1440 /p" "$repo/tools/check" >"$work/prune"
+[ -s "$work/prune" ]; sh -n "$work/prune"
+(
+    state=$work/prune-state
+    mkdir -p "$state/.run.OLDOLD" "$state/.run.NEWNEW"
+    touch -d '2 days ago' "$state/.run.OLDOLD"
+    . "$work/prune"
+    [ ! -e "$state/.run.OLDOLD" ] && [ -d "$state/.run.NEWNEW" ]
+)
 sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
 [ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
 (

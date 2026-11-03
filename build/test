@@ -1722,6 +1722,15 @@ GUEST_GUARDS
         ic() { :; }
         prepare_cleanup
         [ ! -f "$state/preparing" ]
+        # Once the guest runs again nothing is left to undo: an unhealthy one fails the run, not the heal.
+        printf 'wan test yes\n' >"$state/preparing"
+        tick=100
+        running() { return 1; }
+        start_guest() { :; }
+        healthy() { return 1; }
+        if prepare_cleanup 2>"$work/err"; then exit 1; fi
+        [ ! -f "$state/preparing" ]
+        grep -q 'healthy wan timed out after 3s' "$work/err"
     )
     # A failed push reports dns-push's own status (255: SSH ended the connection), not a flat 1.
     (

@@ -115,6 +115,17 @@ sed -n '/^retry() {/,/^}/p' "$repo/tools/guests" >"$scratch/retry"
     if retry healthy fw1 2>"$scratch/error"; then exit 1; fi
     grep -qx 'err]52;c;eA==' "$scratch/error"; grep -Fqx 'console[2J' "$scratch/error"; shown "$scratch/error" retry
 )
+# The svc TLS failure shows what the peer's certificate chose (s_client prints its subject).
+sed -n '/^healthy() {/,/^}/p' "$repo/tools/guests" >"$scratch/healthy"
+[ -s "$scratch/healthy" ]; sh -n "$scratch/healthy"
+(
+    . "$scratch/healthy"
+    work=$scratch tls=/unused step=test
+    fail() { echo "guests: $step: $*" >&2; return 1; }
+    probe() { [ "$1" != openssl ] || { printf 'depth=0 CN = \033]52;c;eA==\007\n'; return 1; }; }
+    if healthy svc 2>"$scratch/error"; then exit 1; fi
+    grep -q 'syslog TLS check failed: depth=0 CN = ]52;c;eA==' "$scratch/error"; shown "$scratch/error" 'healthy svc'
+)
 
 # Exercise the production assignments, not copies of their byte limits.
 rsh() { transport; }
@@ -149,6 +160,11 @@ while IFS= read -r line; do
         if (. "$scratch/read"); then echo "accepted $fault: $line" >&2; exit 1; fi
     done
 done <"$scratch/check-reads"
+# An unanswered CARP query (a loaded or relinking firewall) is no reason to rebuild it.
+sed -n '/rsh "\$node" ifconfig >"\$work\/\$node"/p' "$repo/tools/check" >"$scratch/carp-query"
+[ -s "$scratch/carp-query" ]
+(bad() { echo "$*" >"$scratch/bad"; }; result=7; . "$scratch/carp-query")
+grep -qx 'fw1 CARP query failed' "$scratch/bad"
 # A failed hash readback names its transfer status; only an answered hash can differ.
 die() { echo "dns-push: $*" >&2; exit 1; }
 sed -n '/^[[:space:]]*have=\$(guest_reply /,/stage hash differs on/p' "$repo/tools/dns-push" >"$scratch/hash"

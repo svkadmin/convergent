@@ -286,7 +286,7 @@ cleanup() {
     step=cleanup
     [ -z "$manual_stage" ] || rm -rf "$manual_stage" || { fail "cannot remove $manual_stage"; result=1; }
     if [ -n "$work" ] && [ -d "$state/fw.topology" ]; then
-        topology_recover || { fail 'pair rollback pending; both firewalls held; rerun guests apply'; exit 1; }
+        topology_recover || { fail 'pair rollback pending; both firewalls held; rerun sys guests update'; [ -z "$applying" ] || update_status failed; exit 1; }
     fi
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
@@ -714,7 +714,7 @@ healthy() {
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null || { fail 'VictoriaLogs query check failed'; return 1; }
         probe_limit=5 probe openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
             -verify_ip 100.80.2.10 -verify_return_error </dev/null >"$work/tls-check" 2>&1 ||
-            { fail "syslog TLS check failed: $(head -c 65536 "$work/tls-check" | tr '\n' ' ')"; return 1; }
+            { fail "syslog TLS check failed: $(head -c 65536 "$work/tls-check" | guest_text | tr '\n' ' ')"; return 1; }
         ;;
     esac
 }
@@ -1206,6 +1206,7 @@ prune() {
 prepare_cleanup() {
     [ -f "$state/preparing" ] || return 0
     read -r prep_guest prep_snap prep_start <"$state/preparing" || return
+    prep_health=
     if ! awk -v g="$prep_guest" -v s="$prep_snap" '$1 == g && $2 == s {found=1} END {exit !found}' "$state/pending" 2>/dev/null; then
         prep_now=$(cut -d. -f1 /proc/uptime) || return
         prep_deadline=$((prep_now + boot_timeout))
@@ -1230,10 +1231,12 @@ prepare_cleanup() {
         rm -rf "$state/iwd.$prep_guest" || return
         if [ "$prep_start" = yes ]; then
             running "$prep_guest" || start_guest "$prep_guest" || return
-            retry healthy "$prep_guest" || return
+            prep_health=$prep_guest
         fi
     fi
-    rm "$state/preparing" && sync
+    rm "$state/preparing" && sync || return
+    # Nothing is left to undo: an unhealthy guest fails the run without a journal that inhibits the heal.
+    [ -z "$prep_health" ] || retry healthy "$prep_health"
 }
 replace() {
     step="replace $1"
@@ -1634,6 +1637,8 @@ update() {
             done
             ic profile set fw limits.memory=1GiB
         fi
+        # Incus starts the firewalls beside the boot-time apply: wait read-only for their sshd first.
+        for node in fw1 fw2; do if running "$node"; then retry reachable "$node" || :; fi; done
         for node in fw1 fw2; do
             for suffix in qcow2 pf.sha256 rules.sha256; do
                 [ -s "$image_dir/$node.$suffix" ] || die "missing $node.$suffix"
@@ -1679,6 +1684,8 @@ ifconfig -g handoff carpdemote 128'
         soak fw1 fw2
         commit_update
         fi
+        # Recorded once committed: a later failure must not redo the update, nor leave rebuild on the old images.
+        record_installed "$1" "$2"
         work_profiles
         ;;
     # Remmina: the shared volume deliberately never participates in app rollback.
@@ -1696,6 +1703,7 @@ ifconfig -g handoff carpdemote 128'
             profile remmina "$image_dir/incus.yaml"
             import_image remmina
         fi
+        record_installed "$1" "$2"
         rm -rf "$state/profiles.before"
         ;;
     # End Remmina.
@@ -1710,6 +1718,7 @@ ifconfig -g handoff carpdemote 128'
         [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
         replace "$1"
         commit_update
+        record_installed "$1" "$2"
         rm -rf "$state/profiles.before"
         # Apply deploys after WAN has its current SSH commands.
         [ "$1" != svc ] || [ -n "$applying" ] || certificates_apply
@@ -1723,6 +1732,7 @@ ifconfig -g handoff carpdemote 128'
         for role in base def tmp int; do profile "browser-$role" "$image_dir/incus/$role.yaml"; done
         replace "$1"
         commit_update
+        record_installed "$1" "$2"
         rm -rf "$state/profiles.before"
         ;;
     browser)
@@ -1757,13 +1767,13 @@ ifconfig -g handoff carpdemote 128'
         mv "$work/browser.ready" "$state/browser.ready"
         sync
         browser_commit
+        record_installed "$1" "$2"
         recovering=
         [ -n "$applying" ] || exec 6>&-
         ;;
     *) die 'update accepts fw (the pair), wan, svc, browser, def, int or remmina' ;;
     esac
     parallel_autostart
-    record_installed "$1" "$2"
     sh "$lib/work-gate" || echo 'guests: work access closed until all topology hashes agree' >&2
     logger -t guests "update $1 done: $2" 2>/dev/null || :
 }

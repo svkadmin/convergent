@@ -360,5 +360,57 @@ echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhea
         if grep -q '^replace ' "$log"; then exit 1; fi
     done
     rm -rf "$scratch"/*.unhealthy "$state/pending" "$state/committed" "$state/profiles.before"
+    # Recorded right after the commit: a later failure must not redo the whole update.
+    : >"$log"
+    record_installed() { echo "record $1" >>"$log"; }
+    parallel_autostart() { exit 1; }
+    if (update svc "$scratch/image") >/dev/null 2>&1; then exit 1; fi
+    grep -qx 'record svc' "$log"
 )
 echo 'test-topology: update redoes its own unhealthy committed wan or svc in place'
+# A boot-time apply reaches update fw while Incus still boots the firewalls: the first reads wait
+# read-only for sshd. The images are recorded once the pair is committed, before any later step.
+(
+    awk '/^update\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/update"
+    sed -n '/^reachable() {/p' "$repo/tools/guests" >>"$scratch/update"
+    grep -q '^reachable() {' "$scratch/update"
+    sh -n "$scratch/update"
+    . "$scratch/update"
+    applying= browser_locked=1 rebuilding= pending=
+    mkdir -p "$scratch/fw-image"
+    for node in fw1 fw2; do
+        for suffix in qcow2 pf.sha256 rules.sha256; do echo x >"$scratch/fw-image/$node.$suffix"; done
+    done
+    echo topology >"$scratch/fw-image/topology.sha256"
+    echo secret >"$state/carp-pass"
+    touch "$state/initialized"
+    rm -f "$state/pending" "$state/committed"
+    die() { echo "$*" >&2; exit 1; }
+    for fn in logger flock cmp ic good_slot verify_image stale_installed prepare_cleanup fw_release dns_restore \
+        pair replace fw_check backup_soak fw_mutate soak parallel_autostart; do eval "$fn() { :; }"; done
+    running() { :; }
+    retry() { echo "retry $*" >>"$log"; tries=0; until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done; }
+    guest_reply() { shift; "$@"; }
+    # fw1's sshd refuses the first connections while it boots.
+    rsh() {
+        case $1 in fw1) [ "$((boots += 1))" -gt 2 ] || return 255 ;; esac
+        case $2 in
+        true) ;;
+        *hostname.carp0*) echo "read $1" >>"$log"; sha256sum "$state/carp-pass" | awk '{print $1}' ;;
+        *topology.sha256*) cat "$scratch/fw-image/topology.sha256" ;;
+        *) return 1 ;;
+        esac
+    }
+    commit_update() { echo commit >>"$log"; }
+    record_installed() { echo "record $1" >>"$log"; }
+    work_profiles() { echo profiles >>"$log"; [ -z "$fault" ] || exit 1; }
+    for fault in '' profiles; do
+        : >"$log"; boots=0
+        if [ -z "$fault" ]; then (update fw "$scratch/fw-image") >/dev/null
+        elif (update fw "$scratch/fw-image") >/dev/null 2>&1; then exit 1; fi
+        awk '$0 == "retry reachable fw1" {r=NR} $0 == "read fw1" && !p {p=NR} END {exit !(r && p && r < p)}' "$log"
+        awk '$0 == "commit" {c=NR} $0 == "record fw" {r=NR} $0 == "profiles" {w=NR} END {exit !(c && c < r && r < w)}' "$log"
+    done
+    rm -f "$state/fw.handoff" "$state/carp-pass"
+)
+echo 'test-topology: update fw waits for booting firewalls and records its images once committed'

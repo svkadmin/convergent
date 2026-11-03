@@ -36,7 +36,7 @@ wired_lost() (
     echo "$serial"
 )
 # Minute self-heal: wired_lost in two runs in a row removes and re-adds that role under the guests
-# lock, once per loss, three times an hour at most. wired-heal keeps the outcome for the scan.
+# lock, three times an hour at most. wired-heal keeps the outcome for the scan.
 wired_heal() (
     strike=/run/convergent/wired-strike outcome=/run/convergent/wired-heal
     ic() { timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; }
@@ -45,7 +45,8 @@ wired_heal() (
     case $? in 0) ;; 1) rm -f "$strike" "$outcome"; exit 0 ;; *) exit 0 ;; esac
     case $(cat "$outcome" 2>/dev/null) in
     '') ;;
-    healed\ *) echo "lost $serial" >"$outcome"; echo 'SELF-HEAL wired uplink: wan lost the NIC again after a re-attach'; exit 0 ;;
+    # A dock that drops the NIC again after a re-attach is a fresh loss; the hourly cap bounds it.
+    healed\ *) rm -f "$outcome" ;;
     *) echo 'SELF-HEAL wired uplink: wan does not hold the NIC; no second re-attach'; exit 0 ;;
     esac
     read -r uptime rest </proc/uptime
@@ -53,7 +54,8 @@ wired_heal() (
     [ ! -f "$strike" ] || read -r was at <"$strike"
     case $at in ''|*[!0-9]*) at=0 ;; esac
     # A guest reconfiguring the NIC releases it for a moment: act on the second run in a row only.
-    if [ "$was" != "$serial" ] || [ "$((now - at))" -gt 90 ]; then
+    # As firewall-heal: two missed minutes break the row; one is a run that held the heal lock.
+    if [ "$was" != "$serial" ] || [ "$((now - at))" -gt 150 ]; then
         echo "$serial $now" >"$strike"
         echo 'SELF-HEAL wired uplink: wan does not hold the NIC; re-attaching next minute if that persists'
         exit 0
@@ -223,11 +225,6 @@ if [ "${1:-}:$#" = status:1 ]; then
     exit $?
 fi
 case ${1:-}:$# in :0|auto:1|accept:2|accept-fw:2) ;; *) die 'usage: check [auto|status] | accept <trusted-release-dir> | accept-fw <trusted-fw-image-dir>' ;; esac
-# Remmina: a killed supervisor must not leave an unlocked orphan running.
-if [ "${1:-}" = auto ]; then
-    timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
-fi
-# End Remmina.
 net_ok=1
 [ "${1:-}" != auto ] || sh /usr/lib/convergent/incus/host-net repair || net_ok=0
 mkdir -p "$state" "$out" /run/convergent || die 'cannot create directories'
@@ -272,10 +269,17 @@ fi
 if [ "${1:-}" = auto ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
 fi
+# Remmina: a killed supervisor must not leave an unlocked orphan running.
+if [ "${1:-}" = auto ]; then
+    timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
+fi
+# End Remmina.
 exec 9>/run/convergent/check.lock
 # The owner's check and accept wait out a minute run's lock; auto never queues behind one.
 case ${1:-} in auto) lock_wait=-n ;; *) lock_wait='-w 120' ;; esac
 flock $lock_wait 9 || die 'another checker is running'
+# A scan killed outright (power loss, OOM) leaves its scratch directory.
+find "$state" -maxdepth 1 -name '.run.??????' -mmin +1440 -exec rm -rf {} +
 if [ ! -e "$state/accepted" ] && [ -d "$state/previous" ]; then
     mv "$state/previous" "$state/accepted" || die 'cannot restore previous acceptance'
 fi
@@ -519,7 +523,7 @@ for node in fw1 fw2; do
             printf 'cv_firewall_ruleset_expected_info{firewall="%s",loaded="SHA256 (stdin) = %s"} 1\n' "$node" "$expected" >>"$work/metrics"
         fi
     done
-    guest_reply 65536 rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed; recovery: sys firewall rebuild $node"
+    guest_reply 65536 rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed"
     rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
 role1=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw1") || bad 'fw1 CARP membership or state invalid'
