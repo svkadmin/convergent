@@ -273,13 +273,15 @@ if [ "${1:-}" = auto ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
 fi
 exec 9>/run/convergent/check.lock
-flock -n 9 || die 'another checker is running'
+# The owner's check and accept wait out a minute run's lock; auto never queues behind one.
+case ${1:-} in auto) lock_wait=-n ;; *) lock_wait='-w 120' ;; esac
+flock $lock_wait 9 || die 'another checker is running'
 if [ ! -e "$state/accepted" ] && [ -d "$state/previous" ]; then
     mv "$state/previous" "$state/accepted" || die 'cannot restore previous acceptance'
 fi
 exec 8>/run/convergent/guests.lock
 case ${1:-} in accept|accept-fw) lock=-x ;; *) lock=-s ;; esac
-flock "$lock" -n 8 || { [ "${1:-}" = auto ] && exit 0; die 'a guest operation is running'; }
+flock "$lock" $lock_wait 8 || { [ "${1:-}" = auto ] && exit 0; die 'a guest operation is running'; }
 if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     last=$(stat -c %Y "$state/last")
     interval=300
