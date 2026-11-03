@@ -1489,6 +1489,10 @@ update() {
             done
             ic profile set fw limits.memory=1GiB
         fi
+        # Incus starts the firewalls beside the boot-time apply: wait read-only for their sshd first.
+        update_step=$step
+        for node in fw1 fw2; do if running "$node"; then retry healthy "$node" || :; fi; done
+        step=$update_step
         for node in fw1 fw2; do
             for suffix in qcow2 pf.sha256 rules.sha256; do
                 [ -s "$image_dir/$node.$suffix" ] || die "missing $node.$suffix"
