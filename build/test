@@ -2194,6 +2194,13 @@ maintenance_clean() {
         printf 'yes\n' | sys firewall undo >/dev/null 2>&1 || sleep 15
         n=$((n + 1))
     done
+    # Maintenance demotes whichever firewall is MASTER and these steps expect fw1: a failed step left fw1
+    # demoted by wan-watch (its Unbound still starting) and fw2 MASTER.
+    n=0
+    until (. /usr/lib/convergent/incus/firewall-heal; [ "$(heal_probe fw1 30)" = master ] && [ "$(heal_probe fw2 30)" = backup ]); do
+        [ "$n" -lt 60 ] || { echo 'CV-MAINT no healthy fw1 MASTER / fw2 BACKUP'; return 1; }
+        n=$((n + 1)); sleep 10
+    done
     # A previous holder may still run on fw1 for its 90 s pause.
     n=0
     while :; do
@@ -2212,9 +2219,16 @@ cv_time firewall-self-heal
     . /usr/lib/convergent/incus/firewall-heal
     fw_pid() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
     # rcctl stop/start on a firewall at 85% system CPU outlasted 30 s.
-    fwssh() { timeout 120 ssh -F /etc/convergent/ssh_config "$@"; }
+    fwssh() { timeout 180 ssh -F /etc/convergent/ssh_config "$@"; }
+    # rc kills an Unbound still starting at its limit ("(timeout)"); fw1 at load 14 needed longer.
+    unbound_up() {
+        n=0
+        until fwssh "$1" 'rcctl check unbound >/dev/null || rcctl start unbound'; do
+            n=$((n + 1)); [ "$n" -lt 10 ] || return 1; sleep 10
+        done
+    }
     broken= inhibited= frozen=
-    trap 'for f in $broken; do fwssh "$f" "rcctl start unbound" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
+    trap 'for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
     # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
@@ -2281,15 +2295,15 @@ cv_time firewall-self-heal
         cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
         sleep 10
     done
-    fwssh fw1 'rcctl start unbound'
-    fwssh fw2 'rcctl start unbound'
+    unbound_up fw1
+    unbound_up fw2
     broken=
     deadline=$(($(date +%s) + 300))
     until [ "$(heal_probe fw1)" = master ] && [ "$(heal_probe fw2)" = backup ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
 )
-[ "$?" = 0 ] || { grep '^+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200; bad $LINENO; }
+[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
 for failure in timeout host-kill remote-kill; do
@@ -3272,9 +3286,9 @@ for step in journal rebuilt; do
         (
             set -e
             cp "$state/pending" "$release/rebuild-pending"
-            trap 'timeout 60 ssh -F /etc/convergent/ssh_config fw2 "rcctl start unbound"' 0
+            trap 'timeout 180 ssh -F /etc/convergent/ssh_config fw2 "rcctl start unbound"' 0
             trap 'exit 1' HUP INT TERM
-            timeout 60 ssh -F /etc/convergent/ssh_config fw2 'rcctl stop unbound'
+            timeout 180 ssh -F /etc/convergent/ssh_config fw2 'rcctl stop unbound'
             if sh -x /usr/local/sbin/guests apply 2>/var/log/guests-rebuild-replay-no-dns.log; then exit 1; fi
             cmp "$state/pending" "$release/rebuild-pending"
             grep -q 'sys firewall rebuild fw1' /var/log/guests-rebuild-replay-no-dns.log
