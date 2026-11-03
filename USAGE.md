@@ -372,10 +372,12 @@ The owner receives dialout membership at install/updated boot.
 
 Wired uplink: approve the dock's Realtek USB device, use `sys wired status` for its serial, then
 `sys wired attach 0bda:8153 SERIAL` (or prompts). Confirm vendor/product/serial; empty/ambiguous
-serials fail. The persistent wired-uplink device reattaches only that identity to wan as eth1. `sys
-wired remove` removes assignment/automatic attachment, retaining USBGuard approval; unplugging alone
-retains assignment. Host does no DHCP/addressing. WAN prefers wired and retries replug DHCP within
-its minute check.
+serials fail. The persistent wired-uplink device gives only that identity to wan as eth1. Incus does
+not re-attach a replug by serial: `check` re-adds the role once wan has not held the allowed NIC for
+two minute runs, so a replug returns within about two minutes. `sys wired remove` removes
+assignment/automatic attachment, retaining USBGuard approval; unplugging alone retains assignment;
+`sys usb revoke`/`enrol` remove the role once no rule allows the NIC. The host has no USB network
+drivers and does no DHCP/addressing. WAN prefers wired and retries replug DHCP within its minute check.
 
 Camera defaults off. `sys camera on` saves/enables and loads drivers; `sys camera off` saves denial
 before non-forced unload. If busy, close the application and retry. `sys camera status` shows choice

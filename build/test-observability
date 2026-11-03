@@ -13,7 +13,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 # A fresh report cannot borrow an older success interval; clock rollback is due.
-sed -n '/^if \[ "${1:-}" = auto \] && \[ -f "\$state\/last" \]; then$/,/^fi$/p' "$repo/tools/check" >"$work/throttle"
+sed -n '/^if \[ "${1:-}" = auto \] && \[ -f "\$state\/last" \]; then$/,/^fi$/p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/run/|g" >"$work/throttle"
+mkdir "$work/run"
 sed -n '/^ok=1$/,/^# The management endpoint/ { /^# The management endpoint/d; p; }' "$repo/tools/check" >"$work/scan-start"
 sed -n '/^printf .*cv_checker_success/,/^logger -t check/ { /^logger -t check/d; p; }' "$repo/tools/check" >"$work/scan-end"
 for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
@@ -55,6 +57,10 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
                 grep -qx '# scan new-scan' "$out/checker.prom"
             else cmp "$fixture/previous-metrics" "$out/checker.prom"; fi
             clock=100299; due no
+            # A wired re-attach outcome newer than the report gets its scan now.
+            command touch -d "@$(($(command stat -c %Y "$state/last") + 60))" "$fixture/run/wired-heal"
+            due yes
+            rm "$fixture/run/wired-heal"
             clock=100300
             if [ "$fault:$success" = none:1 ]; then due no; else due yes; fi
             clock=186400; due yes
@@ -66,6 +72,115 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
     echo 'cv_checker_success 1' >"$out/checker.prom"
     clock=100300; due yes
 )
+# Wired uplink: an allowed NIC wan's QEMU does not hold gets its role re-added once, on the second
+# run in a row; never a NIC USBGuard blocks. The scan reports what that leaves, not a pending strike.
+sed -n '/^wired_lost() ($/,/^)$/p; /^wired_heal() ($/,/^)$/p' "$repo/tools/check" >"$work/wired-functions"
+sed -n '/^# What wired_heal has not fixed/,/^fi$/p' "$repo/tools/check" >"$work/wired-scan"
+for part in wired-functions wired-scan; do
+    sed -i -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/run/convergent/|$work/wired/run/|g" \
+        -e "s|/proc/uptime|$work/wired/uptime|g" "$work/$part"
+    [ -s "$work/$part" ]
+    sh -n "$work/$part"
+    if grep -q -e /run/convergent -e /sys/bus -e /proc/uptime "$work/$part"; then exit 1; fi
+done
+grep -q '^wired_heal() ($' "$work/wired-functions"
+(
+    w=$work/wired
+    mkdir -p "$w/sys/1-2/1-2:1.0" "$w/run" "$w/drivers/usbfs" "$w/drivers/r8152"
+    printf '0bda\n' >"$w/sys/1-2/idVendor"
+    printf '8153\n' >"$w/sys/1-2/idProduct"
+    printf 'S1\n' >"$w/sys/1-2/serial"
+    role='{"type":"usb","vendorid":"0bda","productid":"8153","serial":"S1","required":"false"}'
+    allowed='5: allow id 0bda:8153 serial "S1" name "LAN" hash "h" with-interface { ff:ff:00 }'
+    . "$work/wired-functions"
+    timeout() {
+        case "$1 $2 $3 $4" in
+        '-k 1 30 incus') [ "$6" = query ] || exit 97 ;;
+        '-k 1 30 usbguard') ;;
+        '-k 1 120 incus') [ "$8" = config ] || exit 97 ;;
+        *) exit 97 ;;
+        esac
+        shift 3
+        "$@"
+    }
+    incus() {
+        case $* in
+        '--force-local query /1.0/instances/wan?project=default')
+            printf '{"type":"virtual-machine","status":"%s","devices":{"wired-uplink":%s}}\n' "$(cat "$w/status")" "$(cat "$w/role")" ;;
+        '--force-local --project default config device remove wan wired-uplink')
+            echo remove >>"$w/calls"; echo null >"$w/role" ;;
+        '--force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false')
+            echo add >>"$w/calls"; [ "$add" = ok ] || return 1; echo "$role" >"$w/role" ;;
+        *) echo "unexpected incus: $*" >&2; exit 97 ;;
+        esac
+    }
+    usbguard() { [ "$*" = 'list-devices -a' ] || exit 97; cat "$w/allowed"; }
+    heal_allowed() { [ "$inhibit" = 0 ]; }
+    # held: wan takes the NIC while the heal waits for the lock.
+    flock() { [ "$*" = '-n 8' ] || exit 97; [ "$busy" = 0 ] || return 1; [ "$held" = 0 ] || driver usbfs; }
+    logger() { :; }
+    bad() { echo "$*" >>"$w/bad"; }
+    driver() { rm -f "$w/sys/1-2/1-2:1.0/driver"; [ -z "$1" ] || ln -s "$w/drivers/$1" "$w/sys/1-2/1-2:1.0/driver"; }
+    # check runs without errexit.
+    run() { echo "$1.50 99.00" >"$w/uptime"; (set +e; wired_heal) >"$w/out" || exit 1; }
+    reported() { rm -f "$w/bad"; (set +e; . "$work/wired-scan"); [ -s "$w/bad" ]; }
+    is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] || exit 1; }
+    gone() { [ ! -e "$1" ] || exit 1; }
+    inhibit=0 busy=0 held=0 add=ok strike=$w/run/wired-strike outcome=$w/run/wired-heal
+    echo Running >"$w/status"; echo "$role" >"$w/role"; echo 1 >"$w/sys/1-2/authorized"
+    printf '%s\n' "$allowed" >"$w/allowed"; : >"$w/calls"
+    # Held: every interface on usbfs.
+    driver usbfs; run 1000
+    gone "$strike"; is "$w/out" ''
+    if reported; then exit 1; fi
+    # Lost: a first strike, reported only once the heal has tried.
+    driver ''; run 1000
+    is "$strike" 'S1 1000'; is "$w/calls" ''
+    if reported; then exit 1; fi
+    run 1060
+    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; gone "$strike"
+    reported
+    # Once per loss.
+    run 1120; is "$outcome" 'lost S1'
+    run 1180; run 1240; is "$w/calls" "$(printf 'remove\nadd')"
+    # Held again ends the loss; a host driver is not wan's.
+    driver usbfs; run 1300; gone "$outcome"; gone "$strike"
+    driver r8152; run 1360; is "$strike" 'S1 1360'
+    driver usbfs; run 1420; gone "$strike"
+    : >"$w/calls"; driver ''
+    # Never for a NIC the kernel or USBGuard does not allow, nor an odd role, nor a stopped wan.
+    for fault in unauthorized disallowed required stopped inhibit busy; do
+        case $fault in
+        unauthorized) echo 0 >"$w/sys/1-2/authorized" ;;
+        disallowed) : >"$w/allowed" ;;
+        required) echo "$role" | sed 's/"false"/"true"/' >"$w/role" ;;
+        stopped) echo Stopped >"$w/status" ;;
+        inhibit) inhibit=1 ;;
+        busy) busy=1 ;;
+        esac
+        run 1500; run 1560; is "$w/calls" ''
+        case $fault in
+        # Inhibited, the loss stays reported; locked out, the strike waits for the lock.
+        inhibit) gone "$strike"; reported ;;
+        busy) is "$strike" 'S1 1500'; if reported; then exit 1; fi ;;
+        *) gone "$strike"; if reported; then exit 1; fi ;;
+        esac
+        inhibit=0 busy=0
+        echo Running >"$w/status"; echo "$role" >"$w/role"; echo 1 >"$w/sys/1-2/authorized"
+        printf '%s\n' "$allowed" >"$w/allowed"
+    done
+    # Two runs more than 90 s apart are not in a row.
+    run 1600; run 1800; is "$strike" 'S1 1800'; is "$w/calls" ''
+    # Re-checked under the lock.
+    held=1; run 1860; is "$w/calls" ''
+    held=0; driver ''
+    # A failed re-add keeps reporting while wan has no role.
+    run 1900; add=failed; run 1960
+    is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'failed S1'; is "$w/role" null
+    run 2020; is "$w/calls" "$(printf 'remove\nadd')"
+    reported
+)
+echo 'observability: wired uplink re-attach and report passed'
 sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
 [ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
 (

@@ -77,7 +77,7 @@ allow_tb() {
 	die "no Thunderbolt device with unique id $id"
 }
 
-ic() { incus --force-local --project default "$@" 9>&-; }
+ic() { timeout -k 1 120 incus --force-local --project default "$@" 9>&-; }
 wired() {
 	umask 077
 	mkdir -p /run/convergent
@@ -95,8 +95,25 @@ wired() {
 		;;
 	remove)
 		[ $# = 1 ] || usage
+		# check's re-attach state (tools/check wired_heal) ends with the role.
+		rm -f /run/convergent/wired-strike /run/convergent/wired-heal
 		[ "$role" != null ] || return 0
 		ic config device remove wan wired-uplink
+		;;
+	prune)
+		# After revoke or enrol: a role no allow rule names any more leaves wan (Incus ignores USBGuard).
+		[ $# = 1 ] || usage
+		[ "$role" != null ] || return 0
+		rules=$(usbguard list-rules) || die 'cannot read policy'
+		id=$(printf '%s\n' "$role" | jq -r '"\(.vendorid // ""):\(.productid // "")"')
+		serial=$(printf '%s\n' "$role" | jq -r '.serial // ""')
+		if printf '%s\n' "$rules" | id="$id" serial="$serial" awk '
+		$2 == "allow" && $3 == "id" && $4 == ENVIRON["id"] &&
+		index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
+		END {exit !n}'; then return 0; fi
+		ic config device remove wan wired-uplink
+		rm -f /run/convergent/wired-strike /run/convergent/wired-heal
+		echo 'devices: no USB rule allows the wired uplink NIC any more; removed its role from wan'
 		;;
 	attach)
 		[ $# = 3 ] || usage
@@ -127,7 +144,7 @@ wired() {
 		[ "$found" = 1 ] || die 'NIC missing or serial is ambiguous'
 		ask "Assign 0bda:8153 serial $serial to wan, including future replugs?"
 		ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false
-		echo 'Wired role set. Incus attaches matching authorized replugs; sys wired remove clears it.'
+		echo 'Wired role set. After a replug, check re-attaches it within two minutes if USBGuard allows it; sys wired remove clears it.'
 		;;
 	*) usage ;;
 	esac
@@ -174,6 +191,8 @@ enrol() (
 	# The daemon applies the saved policy to present devices on startup.
 	rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
 	logger -t devices 'USB policy replaced after individual review'
+	# A subshell: wired takes fd 9, which holds the USB lock here.
+	(wired prune) || die "policy saved; wan's wired role not checked: sys wired status, then sys wired remove if needed"
 )
 
 revoke() {
@@ -188,6 +207,7 @@ revoke() {
 	usbguard remove-rule "$1" || die 'cannot remove rule'
 	rc-service usbguard restart || die 'rule removed; USBGuard restart failed'
 	logger -t devices "USB rule $1 revoked"
+	(wired prune) || die "rule revoked; wan's wired role not checked: sys wired status, then sys wired remove if needed"
 }
 
 camera_unload() {

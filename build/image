@@ -222,6 +222,9 @@ awk 'FILENAME == ARGV[1] {drop[$1]=1; next}
 while read -r f; do rm -f "$modules/$f"; done <"$out/modules.removed"
 rm "$out/modules.candidates"
 (cd "$modules" && find kernel -type f -name '*.ko*' | sort) >"$out/modules.after"
+# USB NICs are wan's: no host driver stays loadable or built in.
+[ -s "$modules/modules.builtin" ] || die "no modules.builtin for kernel $kver"
+! grep -q '^kernel/drivers/net/usb/' "$out/modules.after" "$modules/modules.builtin" || die 'the image keeps a USB network driver'
 gccdir=$(ls -d "$root"/usr/lib/gcc/x86_64-pc-linux-gnu/* | head -n 1)
 # Keep the copied root's inventory before trimming Portage's database.
 packages=$(

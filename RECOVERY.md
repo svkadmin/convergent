@@ -261,6 +261,10 @@ sudo devices allow <number>  # asks you to type yes; permanent
 If moving the boot disk causes a stall, power off, restore its old port, boot and regenerate policy
 with trusted devices attached ([first boot, step 4](USAGE.md#first-boot)).
 
+Wired uplink gone after a replug, or `sys security report` says the allowed NIC is not passed
+through: `check` re-adds the role once, about two minutes after the replug. Otherwise run
+`sys wired remove`, then `sys wired attach`; if Incus refuses the NIC, reboot.
+
 ## 8. Where the logs are
 
 | What | Where |
