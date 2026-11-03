@@ -487,7 +487,14 @@ certificates_apply() (
                 sync
                 rcctl restart syslogd' <"$tls/ca.crt"
         done
-        fw_mutate wan syslog-ca <"$tls/ca.crt"
+        code=0
+        fw_mutate wan syslog-ca <"$tls/ca.crt" || code=$?
+        # A pre-0.1.5 wan refuses the command (126); in init it keeps the CA its seed carried.
+        if [ "$code" = 126 ] && [ -n "$initializing" ]; then
+            echo 'guests: this wan predates syslog-ca; it keeps the CA from its seed' >&2
+        elif [ "$code" != 0 ]; then
+            exit "$code"
+        fi
     fi
     if [ -f "$tls/incus-client.previous" ]; then
         old=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')

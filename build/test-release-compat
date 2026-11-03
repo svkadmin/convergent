@@ -12,8 +12,10 @@ die() { echo "test-release-compat: $*" >&2; exit 1; }
 stagework=$work/stage-retry
 mkdir "$stagework"
 sed -n '/^# Staged before the slot write:/,$p' "$repo/tools/fetch-release" |
-    sed "s|/run/convergent/guests.lock|$stagework/lock|g" >"$stagework/publish"
+    sed -e "s|/run/convergent/guests.lock|$stagework/lock|g" \
+        -e 's|/var/lib/convergent/release-guests|$root/installed|g' >"$stagework/publish"
 grep -q '^slot write ' "$stagework/publish"
+if grep -q /var/lib/convergent "$stagework/publish"; then die 'publish fixture writes host state'; fi
 {
     echo 'recover() {'
     sed -n '/^    staged=\/var\/lib\/convergent\/guest-updates$/,/^    # Nothing changes/p' "$repo/tools/guests" |
@@ -72,21 +74,30 @@ slot() {
 . "$action"
 STAGE
 for script in publish recover run; do sh -n "$stagework/$script"; done
-for fault in none cut move slot sidecar flush cross-device stat; do
+for fault in none nokeep cut move slot sidecar flush cross-device stat; do
     root=$stagework/$fault
     mkdir -p "$root/download/guests/remmina" "$root/stages/43/remmina" "$root/stages/42" "$root/stages/44"
     echo old >"$root/stages/43/remmina/payload"
     echo new >"$root/download/guests/remmina/payload"
     touch "$root/stages/42/keep" "$root/stages/44/keep"
     for file in remmina.manifest remmina.manifest.sig; do echo "$file" >"$root/download/$file"; done
+    # check accept reads the kept manifest beside the installed guests.
+    echo 43 >"$root/download/manifest"
+    if [ "$fault" != nokeep ]; then mkdir "$root/installed"; echo 42 >"$root/installed/manifest"; fi
     if sh "$stagework/run" "$root" "$fault" "$stagework/publish" >"$stagework/log" 2>&1; then
-        [ "$fault" = none ] || die "accepted $fault stage publication"
+        case $fault in none|nokeep) ;; *) die "accepted $fault stage publication" ;; esac
         [ -f "$root/accepted" ]
         [ ! -e "$root/stages/42" ] && [ ! -e "$root/stages/44" ]
         [ ! -e "$root/stages/43.old" ]
+        if [ "$fault" = nokeep ]; then
+            [ ! -e "$root/installed" ] && grep -q "cannot keep the manifest" "$stagework/log" || die "unkept manifest"
+        else
+            [ "$(cat "$root/installed/manifest")" = 43 ] || die "manifest not kept for check accept"
+        fi
     else
-        [ "$fault" != none ] || { cat "$stagework/log"; exit 1; }
+        case $fault in none|nokeep) cat "$stagework/log"; exit 1 ;; esac
         [ ! -e "$root/accepted" ]
+        [ "$(cat "$root/installed/manifest")" = 42 ] || die "kept the manifest of a failed $fault write"
         [ -f "$root/stages/42/keep" ] && [ -f "$root/stages/44/keep" ]
     fi
     # Immediate reboot, including fallback with and without a stage of its own.
@@ -95,7 +106,7 @@ for fault in none cut move slot sidecar flush cross-device stat; do
         mkdir "$reboot"
         cp -R "$root/stages" "$reboot/"
         sh "$stagework/run" "$reboot" none "$stagework/recover" "$boot"
-        case $fault in none|slot|flush) want=new ;; *) want=old ;; esac
+        case $fault in none|nokeep|slot|flush) want=new ;; *) want=old ;; esac
         [ "$(cat "$reboot/stages/43/remmina/payload")" = "$want" ] || die "lost $fault stage on boot $boot"
         [ ! -d "$reboot/stages/43/guests" ] || die 'nested replacement stage'
     done
@@ -103,6 +114,7 @@ for fault in none cut move slot sidecar flush cross-device stat; do
     case $fault in cut|move)
         sh "$stagework/run" "$root" none "$stagework/publish" >"$stagework/log" 2>&1 || { cat "$stagework/log"; exit 1; }
         [ -f "$root/accepted" ] && [ ! -e "$root/stages/43.old" ]
+        [ "$(cat "$root/installed/manifest")" = 43 ]
         ;;
     esac
 done

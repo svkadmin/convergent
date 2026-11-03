@@ -402,6 +402,10 @@ if [ -n "$sync" ]; then
 	exec /usr/local/sbin/guests apply
 fi
 slot write "$dir"
+# Input for check accept after the reboot: this verified manifest beside the installed fw hashes.
+keep=/var/lib/convergent/release-guests
+{ [ -d "$keep" ] && [ ! -L "$keep" ] && cp "$dir/manifest" "$keep/.manifest" && mv -T "$keep/.manifest" "$keep/manifest"; } ||
+	echo "fetch-release: warning: cannot keep the manifest in $keep for check accept" >&2
 for _d in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do
 	[ -e "$_d" ] || [ -L "$_d" ] || continue
 	[ ! -L "$_d" ] || die "$_d is a symlink"

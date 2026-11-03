@@ -259,7 +259,7 @@ fw_mutate() {
     export node
     if [ "$node" = wan ]; then
         [ "$2" = syslog-ca ] || return 97
-        sed "s|/etc/syslog-ng/svc-ca.pem|$scratch/wan/ca|g" "$repo/guests/wan/rootfs/usr/local/sbin/wan-ssh" |
+        sed "s|/etc/syslog-ng/svc-ca.pem|$scratch/wan/ca|g" "${wan_ssh:-$repo/guests/wan/rootfs/usr/local/sbin/wan-ssh}" |
             sed 's/exec rc-service /rc_service /' >"$scratch/remote"
         # The production branch execs; stop the fixture after its reload.
         sed 's/rc_service syslog-ng reload/rc_service syslog-ng reload; exit $?/' "$scratch/remote" >"$scratch/remote.new"
@@ -280,6 +280,7 @@ if [ "${mode:-deploy}" = init ]; then
     seed_remove() { echo "removed $1" >>"$scratch/events"; }
     . "$scratch/init-tail"
 else
+    initializing=
     certificates_apply
 fi
 DEPLOY
@@ -349,6 +350,31 @@ cmp "$tls/server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"
 grep -qx 'removed svc' "$scratch/events"
 [ -f "$state/init/seed-svc" ]
 [ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ]
+# A pre-0.1.5 wan refuses syslog-ca (126): only init, whose seed carried the CA, goes on without the push.
+sed '/^"syslog-ca")$/,/^	;;$/d' "$repo/guests/wan/rootfs/usr/local/sbin/wan-ssh" >"$scratch/wan-ssh-0.1.4"
+if grep -q syslog-ca "$scratch/wan-ssh-0.1.4"; then die 'legacy wan-ssh still knows syslog-ca'; fi
+sh -n "$scratch/wan-ssh-0.1.4"
+echo seeded >"$scratch/wan/ca"
+for run in init deploy init-fault; do
+    touch "$tls/ca.pending"
+    : >"$scratch/events"
+    rc=0
+    case $run in
+    init) mode=init wan_ssh=$scratch/wan-ssh-0.1.4 fault=none sh -eu "$scratch/deploy" ;;
+    deploy) mode=deploy wan_ssh=$scratch/wan-ssh-0.1.4 fault=none sh -eu "$scratch/deploy" ;;
+    init-fault) mode=init fault=wan sh -eu "$scratch/deploy" ;;
+    esac >"$scratch/log" 2>&1 || rc=$?
+    grep -qx fw2 "$scratch/events" || { cat "$scratch/log"; die "$run skipped the firewalls"; }
+    if [ "$run" = init ]; then
+        [ "$rc" = 0 ] || { cat "$scratch/log"; die 'init stopped at a pre-0.1.5 wan'; }
+        [ ! -f "$tls/ca.pending" ] && [ "$(cat "$scratch/wan/ca")" = seeded ]
+        grep -q 'predates syslog-ca' "$scratch/log"
+    else
+        [ "$rc" != 0 ] && [ -f "$tls/ca.pending" ] || die "$run ignored a failed wan CA push"
+        if [ "$run" = deploy ]; then [ "$rc" = 126 ]; else [ "$rc" != 126 ]; fi
+    fi
+done
+rm -f "$tls/ca.pending"
 cp "$scratch/wan/ca" "$scratch/wan-before"
 : >"$scratch/events"
 if printf 'invalid\n' | node=wan fault=none SSH_ORIGINAL_COMMAND=syslog-ca sh -eu "$scratch/remote-run" >"$scratch/log" 2>&1; then
