@@ -1340,7 +1340,8 @@ rebuild() {
     fw_check "$peer" || die "$peer must be healthy before rebuilding $1"
     actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
-    [ "$1" != fw2 ] || fw_release
+    # CARP preempts within seconds of the release: wait for it before judging the pair.
+    [ "$1" != fw2 ] || { fw_release && retry carp fw1 MASTER; }
     rebuilding=$1
     # A completed handback can be committed after an interruption.
     if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
@@ -1363,7 +1364,7 @@ rebuild() {
         # Firewalls have no data volumes: an interrupted preparation left nothing behind.
         rm -f "$state/preparing"
         sync
-        [ ! -f "$state/pending" ] || pending=1
+        [ ! -f "$state/pending" ] && [ ! -f "$state/committed" ] || pending=1
         replace "$1"
         touch "$state/fw.rebuilt"
         sync
