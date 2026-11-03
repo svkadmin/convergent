@@ -550,7 +550,7 @@ CheckerFailed after a host update is expected (manifest release, kernel and veri
 the accepted baseline) until `sudo check accept /var/lib/convergent/release-guests`, run once GUESTS
 clears: after the slot write, fetch-release keeps the verified manifest there beside the installed
 firewall hashes. Updates written by 0.1.5 or older keep none: accept with the release directory on
-the build host or stick.
+the build host or stick. Only the latest written release is kept: accept each release before writing the next.
 
 USB: copy latest/latest.sig, manifest/manifest.sig, slot.img, both release .efi files, guests/,
 guests.manifest/guests.manifest.sig and any remmina.manifest/remmina.manifest.sig to FAT32/exFAT.
