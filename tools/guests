@@ -118,6 +118,7 @@ retry() {
                 case $2 in fw1|fw2) echo "guests: next: sys firewall rebuild $2" >&2 ;;
                 wan) echo 'guests: next: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' >&2 ;; esac
                 ;;
+            healthy:svc) echo 'guests: next: guests update svc /var/lib/convergent/release-guests/guests/svc --trusted-local' >&2 ;;
             esac
             return 1
         fi
@@ -1318,15 +1319,19 @@ rebuild() {
     resuming=
     for journal in preparing pending committed; do
         [ -e "$state/$journal" ] || continue
+        resuming=1
+        # Until a commit ends, pending is its copy. A committed update of this node is redone as a rebuild is.
+        [ "$journal" != pending ] || ! cmp -s "$state/pending" "$state/committed" || continue
         awk -v node="$1" -v journal="$journal" '
-            $1 != node || $2 !~ /^guests-[0-9]+T[0-9]+-[0-9]+-rebuild$/ ||
-            (journal == "preparing" && NF != 3) || NF < 2 || NF > 3 {bad=1}
+            $1 != node || $2 !~ /^guests-[0-9]+T[0-9]+-[0-9]+(-rebuild)?$/ ||
+            (journal == "preparing" && NF != 3) || NF < 2 || NF > 3 ||
+            ($2 !~ /-rebuild$/ && (journal != "committed" || NF != 3)) {bad=1}
             END {exit !(NR == 1 && !bad)}' "$state/$journal" ||
             die 'another guest update or rebuild is pending; finish it first'
-        resuming=1
     done
-    # A handoff without a journal (fw1 demoted, its replacement not yet journaled) only a rebuild of fw1 can release.
-    [ ! -e "$state/fw.handoff" ] || [ "$1" = fw1 ] ||
+    # A handoff without a journal (fw1 demoted, its replacement not yet journaled) only a rebuild of fw1 can release;
+    # one a committed fw2 update left is released before fw2 is redone.
+    [ ! -e "$state/fw.handoff" ] || [ "$1" = fw1 ] || [ -n "$resuming" ] ||
         die 'a firewall handoff is pending; finish the guest update first'
     image_dir=/var/lib/convergent/release-guests/guests/fw
     [ -d "$image_dir" ] || die 'installed firewall images are missing'
@@ -1335,6 +1340,8 @@ rebuild() {
     fw_check "$peer" || die "$peer must be healthy before rebuilding $1"
     actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
+    # CARP preempts within seconds of the release: wait for it before judging the pair.
+    [ "$1" != fw2 ] || { fw_release && retry carp fw1 MASTER; }
     rebuilding=$1
     # A completed handback can be committed after an interruption.
     if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
@@ -1357,7 +1364,7 @@ rebuild() {
         # Firewalls have no data volumes: an interrupted preparation left nothing behind.
         rm -f "$state/preparing"
         sync
-        [ ! -f "$state/pending" ] || pending=1
+        [ ! -f "$state/pending" ] && [ ! -f "$state/committed" ] || pending=1
         replace "$1"
         touch "$state/fw.rebuilt"
         sync
@@ -1521,11 +1528,16 @@ update() {
         return
     fi
     recovering=1
-    [ ! -f "$state/committed" ] || commit_update
+    # A commit has no way back: a wan or svc that stays unhealthy after it is redone in place by its own update.
+    if [ -f "$state/committed" ] && ! commit_update; then
+        case $1 in wan|svc) awk -v g="$1" '$1 != g || NF != 3 {bad=1} END {exit !(NR == 1 && !bad)}' "$state/committed" ;; *) false ;; esac ||
+            die 'cannot finish committed update'
+        rebuilding=$1 pending=1
+    fi
     [ ! -f "$state/browser.ready" ] || browser_commit
-    [ ! -d "$state/profiles.before" ] || profiles_restore
+    [ -n "$rebuilding" ] || [ ! -d "$state/profiles.before" ] || profiles_restore
     prepare_cleanup
-    [ ! -f "$state/pending" ] || { pending=1; rollback; }
+    [ -n "$rebuilding" ] || [ ! -f "$state/pending" ] || { pending=1; rollback; }
     fw_release
     dns_restore
     [ ! -d "$state/browser.rename" ] || [ "$1" = browser ] || die 'resume the browser update first'

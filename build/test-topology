@@ -237,7 +237,8 @@ echo 'test-topology: recovery removes only stale probe routes'
     verify_image() { :; }
     guest_reply() { sha256sum "$state/carp-pass" | awk '{print $1}'; }
     carp() { [ ! -e "$scratch/$1.unhealthy" ]; }
-    pair() { carp "$1" && carp "$2"; }
+    # A handed-off (demoted) fw1 leaves fw2 MASTER.
+    pair() { carp "$1" && carp "$2" && if [ -e "$state/fw.handoff" ]; then [ "$1" = fw2 ]; else [ "$1" = fw1 ]; fi; }
     fw_check() { carp "$1"; }
     stopped() { return 1; }
     stop_guest() { return 1; }
@@ -266,16 +267,96 @@ echo 'test-topology: recovery removes only stale probe routes'
     (rebuild fw1) >/dev/null
     finished
     grep -qx 'replace fw1 pending=1' "$log"
-    # A healthy committed node is committed without a redo; a foreign journal is still refused.
+    # A healthy committed node is committed without a redo.
     clean
     printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
     (rebuild fw1) >/dev/null
     finished
     if grep -q '^replace ' "$log"; then exit 1; fi
-    clean
-    printf '%s\n' 'fw1 guests-20250101T000000-1 image' >"$state/committed"
-    if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
-    grep -q 'another guest update or rebuild is pending' "$scratch/err"
+    # An unhealthy committed update is redone too; fw2's leaves fw1 handed off, released before the redo.
+    for node in fw1 fw2; do
+        clean
+        printf '%s\n' "$node guests-20250101T000000-1 image" >"$state/committed"
+        cp "$state/committed" "$state/pending"
+        touch "$scratch/$node.unhealthy"
+        [ "$node" = fw1 ] || touch "$state/fw.handoff"
+        (rebuild "$node") >/dev/null
+        finished
+        grep -qx "replace $node pending=1" "$log"
+    done
+    awk '$1 == "fw_release" && !f {f=NR} $1 == "replace" {r=NR} END {exit !(f && f < r)}' "$log"
+    # An uncommitted update rolls back instead, and another node's commit is not this rebuild's.
+    for journal in pending:fw1 committed:fw2; do
+        clean
+        printf '%s\n' "${journal#*:} guests-20250101T000000-1 image" >"$state/${journal%:*}"
+        if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
+        grep -q 'another guest update or rebuild is pending' "$scratch/err"
+    done
     clean
 )
 echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhealthy committed node'
+# A committed wan or svc that stays unhealthy is redone in place by its own update, never rolled back.
+(
+    awk '/^update\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/update"
+    [ -s "$scratch/update" ]
+    sh -n "$scratch/update"
+    . "$scratch/update"
+    applying= browser_locked=1 rebuilding= pending=
+    mkdir -p "$scratch/image"
+    touch "$state/initialized"
+    die() { echo "$*" >&2; exit 1; }
+    logger() { :; }
+    flock() { :; }
+    cmp() { :; }
+    ic() { :; }
+    good_slot() { :; }
+    verify_image() { :; }
+    stale_installed() { :; }
+    certificates_prepare() { :; }
+    certificates_apply() { :; }
+    prepare_cleanup() { :; }
+    fw_release() { :; }
+    dns_restore() { :; }
+    parallel_autostart() { :; }
+    record_installed() { :; }
+    browser_commit() { echo browser_commit >>"$log"; }
+    profiles_restore() { echo profiles_restore >>"$log"; }
+    rollback() { echo rollback >>"$log"; }
+    replace() { echo "replace $1 pending=${pending:-} rebuilding=${rebuilding:-}" >>"$log"; rm -f "$scratch/$1.unhealthy"; }
+    commit_update() {
+        echo commit >>"$log"
+        for marker in "$scratch"/*.unhealthy; do [ ! -e "$marker" ] || return 1; done
+        rm -f "$state/pending" "$state/committed" && rm -rf "$state/profiles.before"
+    }
+    journal() {
+        rm -f "$scratch"/*.unhealthy "$state/pending" "$state/committed"
+        : >"$log"
+        printf '%s\n' "$1 guests-20250101T000000-1 image" >"$state/committed"
+        cp "$state/committed" "$state/pending"
+        mkdir -p "$state/profiles.before"
+    }
+    for guest in wan svc; do
+        journal "$guest"
+        touch "$scratch/$guest.unhealthy"
+        (update "$guest" "$scratch/image") >/dev/null
+        [ ! -e "$state/committed" ] && [ ! -e "$state/pending" ] && [ ! -e "$state/profiles.before" ]
+        grep -qx "replace $guest pending=1 rebuilding=$guest" "$log"
+        [ "$(grep -cx commit "$log")" = 2 ]
+        if grep -q -e rollback -e profiles_restore "$log"; then exit 1; fi
+    done
+    # A healthy commit is finished first; the update then has its own way back.
+    journal svc
+    (update svc "$scratch/image") >/dev/null
+    grep -qx 'replace svc pending= rebuilding=' "$log"
+    # Another guest's commit is never redone by this update.
+    for guest in wan fw; do
+        journal svc
+        touch "$scratch/svc.unhealthy"
+        if (update "$guest" "$scratch/image") 2>"$scratch/err"; then exit 1; fi
+        grep -q 'cannot finish committed update' "$scratch/err"
+        [ -e "$state/committed" ]
+        if grep -q '^replace ' "$log"; then exit 1; fi
+    done
+    rm -rf "$scratch"/*.unhealthy "$state/pending" "$state/committed" "$state/profiles.before"
+)
+echo 'test-topology: update redoes its own unhealthy committed wan or svc in place'
