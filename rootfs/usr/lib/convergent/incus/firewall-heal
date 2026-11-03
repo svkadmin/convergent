@@ -132,7 +132,7 @@ firewall_heal() (
     if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then
         first=$now previous=$now
         [ ! -f "$heal/pair" ] || read -r first previous <"$heal/pair"
-        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 90 ]; then first=$now; fi
+        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now; fi
         printf '%s %s\n' "$first" "$now" >"$heal/pair" || exit 1
         exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
         if [ "$((now - first))" -lt 180 ]; then
@@ -176,8 +176,8 @@ firewall_heal() (
         fi
         first=$now previous=$now
         [ ! -f "$heal/$node" ] || read -r first previous <"$heal/$node"
-        # A missed minute or clock discontinuity breaks the consecutive observation window.
-        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 90 ]; then first=$now; fi
+        # Two missed minutes or a clock discontinuity break the window; one is a run that held the heal lock.
+        if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now; fi
         printf '%s %s\n' "$first" "$now" >"$heal/$node" || exit 1
         echo "SELF-HEAL $node: unhealthy for $((now - first))s; peer $peer: master; attempts $attempts/3 in the last hour"
         [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] || continue

@@ -83,10 +83,14 @@ wired() {
 	mkdir -p /run/convergent
 	exec 9>/run/convergent/guests.lock
 	# A full scan holds it shared for a minute or more: revoke and enrol wait it out to prune.
-	flock -w 60 9 || die 'another guest operation is running'
-	instance=$(timeout -k 1 30 incus --force-local query '/1.0/instances/wan?project=default' 9>&-) || die 'cannot read wan'
-	printf '%s\n' "$instance" | jq -e '.type == "virtual-machine"' >/dev/null || die 'wan is not a VM'
-	role=$(printf '%s\n' "$instance" | jq -c '.devices["wired-uplink"] // null')
+	# attach locks after the owner's answer: an open prompt must not hold off the heal and the scans.
+	[ "${1:-}" = attach ] || flock -w 60 9 || die 'another guest operation is running'
+	wired_read() {
+		instance=$(timeout -k 1 30 incus --force-local query '/1.0/instances/wan?project=default' 9>&-) || die 'cannot read wan'
+		printf '%s\n' "$instance" | jq -e '.type == "virtual-machine"' >/dev/null || die 'wan is not a VM'
+		role=$(printf '%s\n' "$instance" | jq -c '.devices["wired-uplink"] // null')
+	}
+	wired_read
 	case ${1:-} in
 	status)
 		[ $# = 1 ] || usage
@@ -144,6 +148,9 @@ wired() {
 		done
 		[ "$found" = 1 ] || die 'NIC missing or serial is ambiguous'
 		ask "Assign 0bda:8153 serial $serial to wan, including future replugs?"
+		flock -w 60 9 || die 'another guest operation is running'
+		wired_read
+		[ "$role" = null ] || die 'wan changed during the confirmation; retry'
 		ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false
 		echo 'Wired role set. After a replug, check re-attaches it within two minutes if USBGuard allows it; sys wired remove clears it.'
 		;;

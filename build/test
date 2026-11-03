@@ -999,7 +999,8 @@ for filter in '/Status:/d' '/defer:/d' '/^carp5:/d' 's/^carp5:/carp4:/' 's/MASTE
     if heal_probe fw1; then exit 1; fi
 done
 sample=
-for t in 1000 1060 1120; do tick "$t"; [ "$(attempts)" = 0 ]; done
+# Two missed minutes restart the window (820, 1000); one, a run that held the heal lock, does not (1000, 1120).
+for t in 820 1000 1120; do tick "$t"; [ "$(attempts)" = 0 ]; done
 tick 1180
 [ "$(attempts)" = 1 ]
 sed -n '1,3p' "$work/calls" >"$work/actual"
@@ -1198,8 +1199,8 @@ for scenario in busy dns journal running; do
 done
 rm -f "$work/run/firewall-heal/pair"
 : >"$work/calls"; bounds=$work/pair-bounds; : >"$bounds"
-# A stop by hand stays for 180 s; a missed minute restarts that window.
-for t in 1000 1060 1120 1240 1300 1360; do tick "$t"; [ ! -s "$work/calls" ]; done
+# A stop by hand stays for 180 s; two missed minutes restart that window (1060, 1240), one does not (1240, 1360).
+for t in 1000 1060 1240 1360; do tick "$t"; [ ! -s "$work/calls" ]; done
 tick 1420
 printf '%s\n' '--force-local --project default start fw1' '--force-local --project default start fw2' >"$work/expected"
 cmp "$work/calls" "$work/expected"
@@ -2647,17 +2648,21 @@ fw_dns() {
     timeout 10 ssh -F /etc/convergent/ssh_config "$1" "unbound-control flush $2 >/dev/null && host -W 3 -t A $2 127.0.0.1" |
         grep -q 'has address'
 }
-# DNS answers within 90 s, timed on each firewall at once: host SSH to a loaded node is not DNS recovery.
+# DNS answers within 90 s, polled on each firewall at once: host SSH to a loaded node is not DNS recovery.
+# The 90 s start on the host before the one SSH per node; the firewall's loop ends with what is left.
 fw_dns_within() {
-    timeout 300 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$1" "end=\$((\$(date +%s) + 90))
+    left=$(($3 - $(date +%s)))
+    [ "$left" -gt 0 ] || return 1
+    timeout "$left" ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$1" "end=\$((\$(date +%s) + $left))
         until unbound-control flush $2 >/dev/null && host -W 3 -t A $2 127.0.0.1 | grep -q 'has address'; do
             [ \$(date +%s) -lt \$end ] || exit 1
             sleep 5
         done"
 }
 fw_dns_both() {
-    fw_dns_within fw1 "$1" & dns1=$!
-    fw_dns_within fw2 "$1" & dns2=$!
+    dns_end=$(($(date +%s) + 90))
+    fw_dns_within fw1 "$1" "$dns_end" & dns1=$!
+    fw_dns_within fw2 "$1" "$dns_end" & dns2=$!
     dns=0
     wait "$dns1" || dns=1
     wait "$dns2" || dns=1

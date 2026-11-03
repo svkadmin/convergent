@@ -93,9 +93,10 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     role='{"type":"usb","vendorid":"0bda","productid":"8153","serial":"S1","required":"false"}'
     allowed='5: allow id 0bda:8153 serial "S1" name "LAN" hash "h" with-interface { ff:ff:00 }'
     . "$work/wired-functions"
+    # wan's read is bounded at 10 s: at 30 s a frozen wan pushed the heal past the next minute run.
     timeout() {
         case "$1 $2 $3 $4" in
-        '-k 1 30 incus') [ "$6" = query ] || exit 97 ;;
+        '-k 1 10 incus') [ "$6" = query ] || exit 97 ;;
         '-k 1 30 usbguard') ;;
         '-k 1 120 incus') [ "$8" = config ] || exit 97 ;;
         *) exit 97 ;;

@@ -521,7 +521,8 @@ echo 'test-boot-privacy: camera passed'
 
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
 sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
-    sed -e "s|/run/convergent|$work/wired|g" -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
+    sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" \
+        -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
 check_script "$work/wired-functions"
 grep -q 'wired prune' "$work/wired-functions"
 mkdir "$work/wired"
@@ -550,6 +551,7 @@ mkdir "$work/wired"
         '--force-local query /1.0/instances/wan?project=default')
             printf '{"type":"virtual-machine","devices":{"wired-uplink":%s}}\n' "$(cat "$w/role")" ;;
         '--force-local --project default config device remove wan wired-uplink') echo null >"$w/role" ;;
+        '--force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false') ;;
         *) echo "unexpected incus: $*" >&2; exit 97 ;;
         esac
     }
@@ -563,6 +565,7 @@ mkdir "$work/wired"
             mv "$w/rules.new" "$w/rules" ;;
         remove-rule) grep -v "^$2: " "$w/rules" >"$w/rules.new"; mv "$w/rules.new" "$w/rules" ;;
         generate-policy) cat "$w/generated" ;;
+        list-devices) [ "$2" = -a ] || exit 97; printf '5: %s\n' "$nic" ;;
         *) exit 97 ;;
         esac
     }
@@ -590,6 +593,27 @@ mkdir "$work/wired"
         case $answers in
         'yes no') [ "$(cat "$w/calls")" = "$removed" ] || exit 1 ;;
         *) [ ! -s "$w/calls" ] || exit 1 ;;
+        esac
+    done
+    # attach takes the guests lock only after the owner's answer, and re-reads wan under it.
+    mkdir -p "$w/sys/1-2"
+    printf '0bda\n' >"$w/sys/1-2/idVendor"; printf '8153\n' >"$w/sys/1-2/idProduct"
+    printf 'S1\n' >"$w/sys/1-2/serial"; echo 1 >"$w/sys/1-2/authorized"
+    added='-k 1 120 incus --force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false'
+    for change in none role; do
+        echo null >"$w/role"; : >"$w/calls"; : >"$w/order"
+        code=0
+        (
+            # wired sets its own role: keep the fixture's.
+            set_role=$role
+            ask() { echo ask >>"$w/order"; [ "$change" = none ] || echo "$set_role" >"$w/role"; }
+            flock() { [ "$*" = '-w 60 9' ] || exit 97; echo lock >>"$w/order"; }
+            wired attach 0bda:8153 S1
+        ) >/dev/null 2>&1 || code=$?
+        [ "$(cat "$w/order")" = "$(printf 'ask\nlock')" ] || exit 1
+        case $change in
+        none) [ "$code" = 0 ] && [ "$(cat "$w/calls")" = "$added" ] || exit 1 ;;
+        *) [ "$code" = 1 ] && [ ! -s "$w/calls" ] || exit 1 ;;
         esac
     done
 )

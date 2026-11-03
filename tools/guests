@@ -402,7 +402,10 @@ credentials() {
         secret_create "$tls/$secret" 32
     done
     if ! certificates_clock; then
-        [ -f "$tls/ca.crt" ] || die "certificates: cannot issue under this clock; set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot"
+        # Only a whole set with a valid CA pair is kept; a half-issued one failed later with a raw error.
+        [ -f "$tls/ca.crt" ] && [ -f "$tls/server.crt" ] && [ -f "$tls/incus-server.crt" ] && [ -f "$tls/incus-client.crt" ] &&
+            certificate_pair "$tls/ca.key" "$tls/ca.crt" ||
+            die "certificates: cannot issue under this clock; set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot"
         return 0
     fi
     if openssl x509 -in "$tls/ca.crt" -noout >/dev/null 2>&1; then
@@ -1404,6 +1407,8 @@ rebuild() {
     # one a committed fw2 update left is released before fw2 is redone.
     [ ! -e "$state/fw.handoff" ] || [ "$1" = fw1 ] || [ -n "$resuming" ] ||
         die 'a firewall handoff is pending; finish the guest update first'
+    # The soak needs wan and svc; any journal left is this node's.
+    start_stopped
     image_dir=/var/lib/convergent/release-guests/guests/fw
     [ -d "$image_dir" ] || die 'installed firewall images are missing'
     verify_image fw
@@ -1859,6 +1864,8 @@ apply() {
             fi
         fi
     fi
+    # A fw update's soak needs wan and svc: started once no rollback is due.
+    [ -f "$state/pending" ] || [ -f "$state/preparing" ] || start_stopped
     dns_restore
     [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"

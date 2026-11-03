@@ -61,6 +61,16 @@ sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
         END {exit !(updates && deploy > updates)}'
 # Incus leaves wan or svc stopped after ten crashes a minute: an apply with nothing due starts it.
 sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" | grep -qF 'maintenance_due || { start_stopped; return 0; }'
+# So do an fw update and a rebuild, whose soak needs both: after apply's rollback, and in rebuild after
+# its journal checks, before its first probe.
+sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
+    awk '/^        fw_release$/ {release=NR}
+        $0 == "    [ -f \"$state/pending\" ] || [ -f \"$state/preparing\" ] || start_stopped" {start=NR}
+        /^    for kind in/ {updates=NR}
+        END {exit !(release && start > release && updates > start)}'
+sed -n '/^rebuild() {/,/^}/p' "$repo/tools/guests" |
+    awk '/a firewall handoff is pending/ {checked=NR} /^    start_stopped$/ {start=NR} !/^ *#/ && /fw_check|soak/ && !probe {probe=NR}
+        END {exit !(checked && start > checked && probe > start)}'
 sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stopped"
 [ "$(grep -c '^start_stopped() {$' "$scratch/start-stopped")" = 1 ]
 (
@@ -201,6 +211,14 @@ for stamp in future missing; do
         sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "issued under a $stamp stamp"; fi
     [ ! -e "$scratch/clockless/tls/ca.crt" ]
     grep -qF "set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot" "$scratch/log" || die "no clock step for a $stamp stamp"
+    # A set cut after its CA, or a CA its key does not match: the same step, not a raw error later.
+    for fault in server incus-client ca-key; do
+        rm -rf "$scratch/half"; cp -R "$scratch/good" "$scratch/half"
+        case $fault in ca-key) cp "$scratch/good/tls/server.key" "$scratch/half/tls/ca.key" ;; *) rm "$scratch/half/tls/$fault.crt" ;; esac
+        if state=$scratch/half tls=$scratch/half/tls keys=$scratch/half/keys \
+            sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "kept a $fault fault under a $stamp stamp"; fi
+        grep -qF "set the host clock (date -u -s 'YYYY-MM-DD HH:MM:SS'), then reboot" "$scratch/log" || die "no clock step for a $fault fault"
+    done
 done
 date -u -d '-1 hour' +%Y%m%d%H%M >"$scratch/built"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'backward clock retry'; }

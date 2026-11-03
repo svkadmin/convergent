@@ -247,6 +247,7 @@ echo 'test-topology: recovery removes only stale probe routes'
     fw_release() { echo fw_release >>"$log"; rm -f "$state/fw.handoff"; }
     commit_update() { echo commit >>"$log"; [ ! -e "$state/fw.handoff" ] || return 1; rm -f "$state/pending" "$state/committed" "$state/fw.rebuilt"; }
     dns_restore() { :; }
+    start_stopped() { :; }
     soak() { :; }
     backup_soak() { :; }
     clean() { rm -f "$state/pending" "$state/committed" "$state/fw.rebuilt" "$state/fw.handoff" "$state/dns.stale" "$scratch"/fw?.unhealthy; : >"$log"; }

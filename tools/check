@@ -19,7 +19,8 @@ rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&-
 # Prints the serial when its one present NIC is authorized, allowed by USBGuard and has an interface off
 # usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan.
 wired_lost() (
-    serial=$(timeout -k 1 30 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
+    # 10 s: a late answer only defers the re-attach; 30 s with a firewall fault overran the minute run.
+    serial=$(timeout -k 1 10 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
         jq -er 'select(.status == "Running") | .devices["wired-uplink"] |
             select(del(.serial) == {type: "usb", vendorid: "0bda", productid: "8153", required: "false"}) | .serial') || exit 2
     case $serial in ''|*[!A-Za-z0-9_.:-]*) exit 2 ;; esac
