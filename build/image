@@ -164,9 +164,10 @@ done
 # Keep the actual config for driver selection and release review.
 cp "$config" "$out/kernel.config"
 config="$out/kernel.config"
-chroot_mount
 profiles=
+# Armed first: a failed mount must not leave the others behind.
 trap '[ -z "$profiles" ] || rm -rf "$BUILDER$profiles"; chroot_umount' EXIT
+chroot_mount
 bld() { chroot "$BUILDER" "$@"; }   # run a command inside the builder
 rel=/releases/$release
 # Early microcode: one uncompressed newc archive, as intel-uc.img uses.

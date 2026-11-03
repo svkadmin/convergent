@@ -11,6 +11,8 @@ die() { echo "buildenv: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 mirror=https://distfiles.gentoo.org/releases/amd64/autobuilds
+# Autobuilds are pruned: the stage3 and its signature stay here, verified again on every use.
+stage3_cache=/var/cache/convergent/stage3
 key=/usr/share/openpgp-keys/gentoo-release.asc
 [ -r "$key" ] || die "$key missing (sec-keys/openpgp-keys-gentoo-release)"
 
@@ -22,14 +24,28 @@ trap 'exit 1' HUP INT TERM
 # Bootstrap the signed stage3 once.
 if [ ! -x "$BUILDER/bin/sh" ]; then
 	tarball="stage3-amd64-$STAGE3_VARIANT-$STAGE3_BUILD.tar.xz"
-	curl -fsSL -o "$work/$tarball" "$mirror/$STAGE3_BUILD/$tarball"
-	curl -fsSL -o "$work/$tarball.asc" "$mirror/$STAGE3_BUILD/$tarball.asc"
+	mkdir -p "$stage3_cache"
+	for f in "$tarball" "$tarball.asc"; do
+		if [ -f "$stage3_cache/$f" ]; then
+			cp "$stage3_cache/$f" "$work/$f"
+		else
+			curl -fsSL --connect-timeout 30 --max-time 3600 --retry 2 --retry-delay 5 --retry-max-time 3600 \
+				--retry-connrefused --proto =https --proto-redir =https -o "$work/$f" "$mirror/$STAGE3_BUILD/$f"
+		fi
+	done
 	GNUPGHOME="$work/gnupg"; export GNUPGHOME
 	mkdir -m 700 "$GNUPGHOME"
 	gpg -q --import "$key"
-	gpg -q --verify "$work/$tarball.asc" "$work/$tarball" || die "stage3 signature does not verify"
+	# A cached pair that fails either check is removed.
+	gpg -q --verify "$work/$tarball.asc" "$work/$tarball" ||
+		{ rm -f "$stage3_cache/$tarball" "$stage3_cache/$tarball.asc"; die "stage3 signature does not verify"; }
 	printf '%s  %s\n' "$STAGE3_SHA256" "$work/$tarball" | sha256sum -c - >/dev/null ||
-		die "stage3 does not match its pin"
+		{ rm -f "$stage3_cache/$tarball" "$stage3_cache/$tarball.asc"; die "stage3 does not match its pin"; }
+	for f in "$tarball" "$tarball.asc"; do
+		[ -f "$stage3_cache/$f" ] && continue
+		cp "$work/$f" "$stage3_cache/$f.part"
+		mv "$stage3_cache/$f.part" "$stage3_cache/$f"
+	done
 	mkdir -p "${BUILDER%/*}"
 	stage=$(mktemp -d "$BUILDER.stage3.XXXXXX")
 	tar -xpf "$work/$tarball" --xattrs-include='*.*' --numeric-owner -C "$stage"
@@ -66,14 +82,15 @@ cp "$here/builder.set" "$etc/sets/convergent-builder"
 install -D -m 0644 "$here/kernel.config" "$BUILDER/etc/kernel/config.d/50-convergent.config"
 cp -L /etc/resolv.conf "$BUILDER/etc/resolv.conf"
 
-# Verify pinned snapshot; select profile and binary-package keys.
+# Verify pinned snapshot; select profile and binary-package keys. The snapshot stays in the
+# persistent DISTDIR (chroot.sh); webrsync checks a kept one against its digest and signature again.
 chroot_mount
 stamp=/var/db/repos/gentoo/.convergent-snapshot
 chroot "$BUILDER" /bin/sh -eu -c "
 	if [ \"\$(cat $stamp 2>/dev/null)\" = '$SNAPSHOT_DATE' ]; then
 		echo 'buildenv: snapshot $SNAPSHOT_DATE already in place'
 	else
-		emerge-webrsync -q --revert=$SNAPSHOT_DATE
+		emerge-webrsync -q --keep --revert=$SNAPSHOT_DATE
 		echo '$SNAPSHOT_DATE' >$stamp
 	fi
 	eselect profile set $PROFILE

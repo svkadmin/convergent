@@ -16,32 +16,33 @@ cleanup() {
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-alpine_bootstrap "$work/mini" "${CACHE_DIR:-/var/cache/convergent/alpine}"
+cache=${CACHE_DIR:-/var/cache/convergent/alpine}
+alpine_bootstrap "$work/mini" "$cache"
 root=$mini/target
 alpine_prepare
 packages=$(cat "$here/packages")
 alpine_apk --initdb add $packages
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die 'not Alpine 3.24' ;; esac
+# Any Alpine rebuild of the source pin supplies the plugins; a new upstream version stops here.
+remmina_version=1.4.43
+remmina_installed=$(awk '/^P:/ { p = $0 == "P:remmina" } p && /^V:/ { print substr($0, 3) }' "$root/lib/apk/db/installed")
+[ "${remmina_installed%-r[0-9]*}" = "$remmina_version" ] || die "Alpine remmina '$remmina_installed' is not the source pin $remmina_version"
 # Rebuild the pinned Alpine executable with the Secret-Service-only policy; retain its matching plugins.
 alpine_apk add --virtual .remmina-build build-base cmake samurai patch gettext-dev \
     avahi-ui-dev curl-dev freerdp freerdp-dev fuse3-dev gnutls-dev gtk+3.0-dev json-glib-dev \
     libayatana-appindicator-dev libgcrypt-dev libjpeg-turbo-dev libsecret-dev libsodium-dev \
     libssh-dev libvncserver-dev libxkbfile-dev openssl-dev pcre2-dev python3-dev vte3-dev zlib-dev
-alpine_curl -fsSL --proto '=https' --proto-redir '=https' \
-    https://gitlab.com/Remmina/Remmina/-/archive/v1.4.43/Remmina-v1.4.43.tar.gz -o "$work/remmina.tar.gz"
-printf '%s  %s\n' \
+alpine_pinned "https://gitlab.com/Remmina/Remmina/-/archive/v$remmina_version/Remmina-v$remmina_version.tar.gz" \
     8d96f4ef89ef36bf6ebb548a5d36a58828c09b54dcc4e76494e6110f3a683d84291f449ed59efc8414b5c4f646fa9f8432d0fa97e9d4ac745d737741c3549c42 \
-    "$work/remmina.tar.gz" | sha512sum -c -
+    "$cache/Remmina-v$remmina_version.tar.gz"
 mkdir -p "$root/tmp/remmina-build"
-tar -xzf "$work/remmina.tar.gz" --strip-components=1 -C "$root/tmp/remmina-build"
+tar -xzf "$cache/Remmina-v$remmina_version.tar.gz" --strip-components=1 -C "$root/tmp/remmina-build"
 cp "$here/secret-service-only.patch" "$root/tmp/remmina-build/"
-# Alpine's patch from a 3.24-stable commit; a branch path can change or vanish.
-alpine_curl -fsSL --proto '=https' --proto-redir '=https' \
-    https://raw.githubusercontent.com/alpinelinux/aports/35f5eb2864e50dd4448758d31f3e2a32f733ab84/community/remmina/remmina-1.0.0-dsofix.patch \
-    -o "$root/tmp/remmina-build/dsofix.patch"
-printf '%s  %s\n' \
+# Alpine's patch from the 3.24-stable commit of 1.4.43-r0, as which build/advisories judges the binary; a branch path can change or vanish.
+alpine_pinned https://raw.githubusercontent.com/alpinelinux/aports/35f5eb2864e50dd4448758d31f3e2a32f733ab84/community/remmina/remmina-1.0.0-dsofix.patch \
     47657c9e2db48db1c6498fd177426ea2121b2fef3f4ab09e967f6f75fd1e64758ea68cbb036d20e9375b8d7618f63aad53fd14e367aafb2c44d865a6f220f47d \
-    "$root/tmp/remmina-build/dsofix.patch" | sha512sum -c -
+    "$cache/remmina-1.0.0-dsofix-35f5eb28.patch"
+cp "$cache/remmina-1.0.0-dsofix-35f5eb28.patch" "$root/tmp/remmina-build/dsofix.patch"
 chroot "$root" /bin/sh -eu <<'COMPILE'
 cd /tmp/remmina-build
 patch -p1 <dsofix.patch

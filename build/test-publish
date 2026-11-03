@@ -202,11 +202,34 @@ if command -v python3 >/dev/null 2>&1; then
 else
     echo 'test-publish: bucket listing fixtures skipped (python3 unavailable)'
 fi
-# A timed-out clone takes the normal fetch-failure branch, never cached GLSAs.
-sed -n '/^if .*git clone /,/^branch=/p' "$here/advisories" | sed '$d' >"$work/clone"
-timeout() { [ "$1 $2 $3 $4 $5" = '-k 10 120 git clone' ] || die 'unbounded clone'; echo bounded >"$work/timeout"; return 124; }
+# A timed-out clone retries once from an empty tree, then takes the normal fetch-failure branch, never cached GLSAs.
+sed -n '/^glsa_url=/p; /^if .*git clone /,/^branch=/p' "$here/advisories" | sed '$d' >"$work/clone"
+grep -q '^glsa_url=https://' "$work/clone" || die 'GLSA URL not extracted'
+timeout() {
+    [ "$1 $2 $3 $4 $5" = '-k 10 120 git clone' ] || die 'unbounded clone'
+    [ ! -e "$glsa/partial" ] || die 'clone retried into a partial tree'
+    : >"$glsa/partial"
+    echo bounded >>"$work/timeout"
+    return 124
+}
+sleep() { :; }
 glsa=$work/glsa
+mkdir "$glsa"
 . "$work/clone"
-[ "$(cat "$work/timeout")" = bounded ]
+printf 'bounded\nbounded\n' | cmp - "$work/timeout"
 grep -q 'GLSA HTTPS fetch failed' "$work/host.json"
-echo 'test-publish: original layout, interrupted pairs, recovery, readers, Remmina and clone deadline passed'
+# Feed fetches retry network failures; a failed one is marked, never served from cache.
+sed -n '/^fetch() {$/,/^}$/p' "$here/advisories" >"$work/fetch"
+[ -s "$work/fetch" ]
+curl() {
+    case " $* " in *' --retry 2 --retry-connrefused '*) ;; *) return 1 ;; esac
+    while [ "$1" != -o ]; do shift; done
+    echo feed >"$2"
+}
+cache=$work/feeds
+mkdir "$cache"
+. "$work/fetch"
+fetch feed.json https://fixture/feed.json
+[ "$(cat "$cache/feed.json")" = feed ]
+[ ! -e "$work/feed.json.failed" ]
+echo 'test-publish: original layout, interrupted pairs, recovery, readers, Remmina, clone deadline and retries passed'
