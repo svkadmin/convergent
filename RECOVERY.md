@@ -158,6 +158,9 @@ network and an address.
    lspci -nnk | grep -A3 -i network          # "Kernel driver in use: vfio-pci" is right
    sudo guests status                        # wan must be running
    ```
+   wan or svc stopped (Incus gives up after ten crashes in a minute): `sys guests update` starts it.
+   If it does not stay up, rebuild it from the installed release (svc likewise):
+   `sudo guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local`
 3. What wan saw at boot:
    ```sh
    sudo grep -i -E 'iwlwifi|wlan|firmware' /var/log/incus/wan/console.log | tail -n 20

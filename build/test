@@ -1221,6 +1221,45 @@ polling=
 if running fw2; then exit 1; fi
 if stopped fw2; then exit 1; fi
 [ "$(wc -l <"$work/bounds")" = 3 ]
+# Reads and config calls are bounded outside polling too: a frozen VM monitor held the instance listing,
+# and every guests command and its INT-immune cleanup with it. One line names the VM whose own state
+# read times out as well; after a timed-out read, cleanup's clear skips the listing.
+eval "$(sed -n '/^ic() {/,/^}/p; /^frozen_hint() {/,/^}/p; /^autorestart_clear() (/,/^)/p' /usr/local/sbin/guests)"
+type frozen_hint >/dev/null
+state=$work/state/guests frozen=
+timeout() {
+    echo "$*" >>"$work/ic-bounds"
+    case "$*" in
+    "-k 1 30 incus --force-local query /1.0/instances/$frozen_vm/state?project=default") return 124 ;;
+    '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default')
+        [ -z "$frozen_vm" ] || return 124
+        echo '[{"name":"fw2","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+    '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart') ;;
+    *) return 1 ;;
+    esac
+}
+for frozen_vm in '' fw2 wan unknown; do
+    : >"$work/ic-bounds"
+    if [ -z "$frozen_vm" ]; then
+        autorestart_clear
+        grep -qx -- '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' "$work/ic-bounds"
+        continue
+    fi
+    if autorestart_clear 2>"$work/err"; then exit 1; fi
+    [ "$(wc -l <"$work/err")" = 1 ]
+    case $frozen_vm in
+    wan) grep -q "timed out; wan's QEMU .* /run/incus/wan/qemu.pid, then rerun" "$work/err" ;;
+    fw2) grep -q "timed out; fw2's QEMU .*the checker kills a frozen firewall, then rerun" "$work/err" ;;
+    *) grep -q 'timed out; if a guest QEMU is frozen, kill the pid in /run/incus/<name>/qemu.pid' "$work/err" ;;
+    esac
+    if grep -q 'config unset' "$work/ic-bounds"; then exit 1; fi
+done
+if ic query '/1.0/instances?recursion=1&project=default' >/dev/null 2>&1; then exit 1; fi
+[ "$frozen" = 1 ]
+: >"$work/ic-bounds"
+if autorestart_clear; then exit 1; fi
+[ ! -s "$work/ic-bounds" ]
 echo 'test-firewall-heal: restart gates, limits, unknown state, hung QEMU and bounded guest stop passed'
 HEAL
 sh -eu <<'DRAIN' || bad $LINENO
