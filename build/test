@@ -1591,7 +1591,8 @@ GUEST_GUARDS
         # Diagnostics get their own bound through the real ic/probe path.
         eval "$(sed -n '/^ic() {/,/^}/p; /^probe() (/,/^)/p' /usr/local/sbin/guests)"
         cut() { [ "$*" = '-d. -f1 /proc/uptime' ] || return 97; echo 100; }
-        healthy() { fail 'health check failed'; }
+        # Guest stderr and console text reach unattended logs and terminals bounded and without controls.
+        healthy() { printf 'x\033]52;c;eA==\007\n' >&2; head -c 131072 /dev/zero | tr '\000' x >&2; fail 'health check failed'; }
         timeout() {
             printf '%s\n' "$*" >"$work/console-bound"
             [ "$1 $2 $3" = '-k 1 14' ] || return 1
@@ -1601,7 +1602,8 @@ GUEST_GUARDS
         incus() {
             printf '%s\n' "$*" >"$work/console-call"
             [ "$sample" != expired ] || return 124
-            seq 1 25
+            seq 1 24
+            printf '25\033[2J\n'
         }
         for sample in ready expired; do
             for check in pin seed_applied healthy; do
@@ -1618,6 +1620,8 @@ GUEST_GUARDS
                     fi
                     grep -q "$check $node timed out after 0s" "$work/err"
                     grep -q 'guests: next:' "$work/err"
+                    if grep -q "$(printf '[\033\007]')" "$work/err"; then exit 1; fi
+                    [ "$(wc -c <"$work/err")" -le 70000 ]
                 done
             done
         done

@@ -67,6 +67,10 @@ sed -n '/^[[:space:]]*\(if \)\{0,1\}\(carp\|diag\|wifi\|portal\|actual\)=.*\$(/p
 [ "$(wc -l <"$scratch/check-reads")" = 5 ]
 sed -n '/^[[:space:]]*have=\$(guest_reply /p' "$repo/tools/dns-push" >>"$scratch/check-reads"
 [ "$(wc -l <"$scratch/check-reads")" = 6 ]
+# Replies redirected into scratch files are bounded too.
+sed -n '/rsh "\$node" ifconfig >"\$work\/\$node"/p' "$repo/tools/check" >>"$scratch/check-reads"
+sed -n '/rsh "\$fw" "cat \$rdir\/local-names.conf" >/p' "$repo/tools/dns-push" >>"$scratch/check-reads"
+[ "$(wc -l <"$scratch/check-reads")" = 8 ]
 while IFS= read -r line; do
     printf '%s\n' "$line" >"$scratch/read"
     sh -n "$scratch/read"
@@ -94,6 +98,46 @@ for fault in transfer differs; do
     esac
 done
 result=0
+# Update and topology probes write firewall replies to state-disk scratch files.
+{
+    sed -n '/rsh "\$1" .ifconfig. >"\$work\/carp"/p; /rsh "\$1" .ifconfig pfsync0. >/p' "$repo/tools/guests"
+    sed -n '/rsh "\$1" ifconfig >"\$work\/carp"/p; /rsh "\$node" .if test -f \/etc\/convergent\/segments; then cat/p
+        /rsh "\$node" ifconfig >"\$work\/carp"/p' "$repo/rootfs/usr/lib/convergent/incus/fw-topology"
+} >"$scratch/file-reads"
+[ "$(wc -l <"$scratch/file-reads")" = 5 ]
+(
+    set -- fw1
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >"$scratch/read"
+        sh -n "$scratch/read"
+        case $line in *segments*) bound=4096 ;; *) bound=65536 ;; esac
+        printf 'valid\n' >"$reply"
+        result=0
+        (. "$scratch/read")
+        for fault in overflow transfer; do
+            printf 'valid\n' >"$reply"
+            result=0
+            case $fault in overflow) head -c "$bound" /dev/zero >>"$reply" ;; transfer) result=7 ;; esac
+            if (. "$scratch/read"); then echo "accepted $fault: $line" >&2; exit 1; fi
+        done
+    done <"$scratch/file-reads"
+)
+# Unattended apply and init log only bounded diagnostics: probes and mutators keep guest stdout out.
+(
+    sed -n '/rsh "\$1" .pfctl -nf \/etc\/pf\.conf./p' "$repo/tools/guests" >"$scratch/quiet"
+    [ "$(wc -l <"$scratch/quiet")" = 1 ]
+    sed -n '/^healthy() {/,/^}/p; /^locked() (/,/^)/p; /^fw_mutate() {/,/^}/p' "$repo/tools/guests" >"$scratch/quiet-functions"
+    [ -s "$scratch/quiet-functions" ]; sh -n "$scratch/quiet-functions"; . "$scratch/quiet-functions"
+    set -- fw1
+    conf=/unused
+    printf 'valid\n' >"$reply"
+    result=0
+    (. "$scratch/quiet") >"$scratch/output"
+    healthy fw1 >>"$scratch/output"
+    healthy wan >>"$scratch/output"
+    fw_mutate fw1 true >>"$scratch/output"
+    [ ! -s "$scratch/output" ]
+)
 
 sed -n '/^seed_applied() {/,/^}/p' "$repo/tools/guests" >"$scratch/seed"
 [ -s "$scratch/seed" ]; sh -n "$scratch/seed"; . "$scratch/seed"

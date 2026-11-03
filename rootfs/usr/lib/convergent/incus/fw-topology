@@ -76,7 +76,7 @@ topology_recover() {
     topology_retire
 }
 topology_old_role() {
-    rsh "$1" ifconfig >"$work/carp" || return
+    guest_reply 65536 rsh "$1" ifconfig >"$work/carp" || return
     awk -v want="$2" -f "$lib/carp.awk" "$state/fw.topology/segments.old" "$work/carp" >/dev/null
 }
 work_network() {
@@ -132,9 +132,9 @@ topology_update() {
         jq -e '{architecture,config,devices,profiles,description,ephemeral}' "$work/instance" >"$work/topology/$node.json"
         ic query "/1.0/instances/$node/snapshots?recursion=1" | \
             jq -e 'all(.[]; .name | split("/")[-1] | startswith("guests-"))' >/dev/null || die "$node has owner snapshots"
-        rsh "$node" 'if test -f /etc/convergent/segments; then cat /etc/convergent/segments; fi' >"$work/segments.$node"
+        guest_reply 4096 rsh "$node" 'if test -f /etc/convergent/segments; then cat /etc/convergent/segments; fi' >"$work/segments.$node"
         [ -s "$work/segments.$node" ] || cp "$lib/segments" "$work/segments.$node"
-        rsh "$node" ifconfig >"$work/carp"
+        guest_reply 65536 rsh "$node" ifconfig >"$work/carp"
         case $node in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
         awk -v want="$want" -f "$lib/carp.awk" "$work/segments.$node" "$work/carp" >/dev/null || die 'old pair membership is unhealthy'
     done
