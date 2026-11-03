@@ -55,7 +55,7 @@ svc_storage_check() (
 # also bounds the SSH banner, which a loaded, relinking firewall missed: wait half the probe's bound,
 # and let its stalls run into a 120 s keepalive rather than the config's 30 s.
 rsh() {
-    probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=12 "$@" ||
+    guest_stderr probe ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=12 "$@" ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 # Only read-only probes use the retry budget; mutators must finish under their locks.
@@ -83,7 +83,7 @@ locked() (
 )
 # A relinking firewall (nested tests: minutes at full CPU) can take longer than 30 s to answer a write.
 fw_mutate() {
-    locked timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 "$@" >/dev/null ||
+    locked guest_stderr timeout -k 5 120 ssh -F "$conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 "$@" >/dev/null ||
         { code=$?; fail "ssh $* failed (status $code)" || return "$code"; }
 }
 retry() {
@@ -1361,7 +1361,7 @@ rebuild() {
         if ! carp "$peer" MASTER; then
             if stopped "$1"; then die "$peer must be MASTER on all registered segments before rebuilding $1"; fi
             # The peer takes over only with coherent CARP (MASTER or BACKUP) on every registered segment.
-            rsh "$peer" ifconfig >"$work/carp" && awk -v mode=status -f "$lib/carp.awk" /etc/convergent/segments "$work/carp" >/dev/null ||
+            guest_reply 65536 rsh "$peer" ifconfig >"$work/carp" && awk -v mode=status -f "$lib/carp.awk" /etc/convergent/segments "$work/carp" >/dev/null ||
                 die "$peer must be MASTER or BACKUP on every registered segment before $1 stops"
             starting=$1
             stop_guest "$1"

@@ -18,7 +18,7 @@ firewall_mutate() (
 	trap '' HUP INT TERM
 	set +e
 	script=$(printf '%s\n' "$2" | sed "s/'/'\\\\''/g")
-	(run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
+	(guest_stderr run timeout -k 5 30 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -n "$1" 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
 sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_CREAT|O_NOFOLLOW, 0600) or exit 1;
 flock($lock, LOCK_EX|LOCK_NB) or exit 1;
 # Keep the lock across exec and in mutation children.
@@ -28,7 +28,7 @@ syswrite($lock, "$$\n") == length("$$\n") or exit 1;
 exec "/bin/sh", "-ec", $ARGV[0];
 exit 1;
 '\'' '\''trap "exit 1" HUP INT TERM
-'"$script""'" 9>&- 8>&-)
+'"$script""'" >/dev/null 9>&- 8>&-)
 	code=$?
 	exit "$code"
 )

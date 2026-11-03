@@ -84,8 +84,8 @@ upstream_net() {
 
 open_side() {
 	case $1 in
-	wan) rsh wan portal on ;;
-	*) rsh "$1" "pfctl -t portal_dns -T replace $wan_addr && pfctl -t portal_lan -T replace $lan" ;;
+	wan) rsh wan portal on >/dev/null ;;
+	*) rsh "$1" "pfctl -t portal_dns -T replace $wan_addr && pfctl -t portal_lan -T replace $lan" >/dev/null ;;
 	esac
 }
 

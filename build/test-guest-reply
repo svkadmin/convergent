@@ -61,6 +61,9 @@ code=0
 guest_stderr hostile >"$scratch/output" 2>"$scratch/error" || code=$?
 [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" guest_stderr
 guest_stderr true
+flood() { head -c 131072 /dev/zero | tr '\000' x >&2; }
+guest_stderr flood 2>"$scratch/error" || :
+[ "$(wc -c <"$scratch/error")" = 65536 ]
 # Remote stderr of dns-push and portal SSH calls.
 { sed -n '/^rsh\(_in\|_wait\)\{0,1\}() {/p' "$repo/tools/dns-push"; sed -n '/^rsh() {/p' "$repo/tools/portal"; } >"$scratch/rsh"
 [ "$(wc -l <"$scratch/rsh")" = 4 ]
@@ -74,6 +77,26 @@ guest_stderr true
         ${line%%(*} fw1 true </dev/null >"$scratch/output" 2>"$scratch/error" || code=$?
         [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" "${line%%(*}"
     done <"$scratch/rsh"
+)
+# guests SSH probes and mutators: remote stderr bounded and filtered, mutator stdout dropped.
+sed -n '/^rsh() {/,/^}/p; /^locked() (/,/^)/p; /^fw_mutate() {/,/^}/p' "$repo/tools/guests" >"$scratch/guests-rsh"
+[ "$(grep -c '^[a-z_]*() [{(]$' "$scratch/guests-rsh")" = 3 ]; sh -n "$scratch/guests-rsh"
+(
+    . "$scratch/guests-rsh"
+    conf=unused
+    fail() { return 1; }
+    probe() { "$@"; }
+    timeout() { shift 3; "$@"; }
+    for call in rsh fw_mutate; do
+        ssh() { hostile; }
+        code=0
+        $call fw1 true </dev/null >"$scratch/output" 2>"$scratch/error" || code=$?
+        [ "$code" = 7 ]; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" "$call"
+        case $call in rsh) raw_out ;; *) [ ! -s "$scratch/output" ] ;; esac
+        ssh() { flood; }
+        $call fw1 true </dev/null >/dev/null 2>"$scratch/error" || :
+        [ "$(wc -c <"$scratch/error")" = 65536 ]
+    done
 )
 # guests failure diagnostics: remote stderr and the console tail.
 sed -n '/^retry() {/,/^}/p' "$repo/tools/guests" >"$scratch/retry"
@@ -140,12 +163,14 @@ result=0
 # Update and topology probes write firewall replies to state-disk scratch files.
 {
     sed -n '/rsh "\$1" .ifconfig. >"\$work\/carp"/p; /rsh "\$1" .ifconfig pfsync0. >/p' "$repo/tools/guests"
+    sed -n '/rsh "\$peer" ifconfig >"\$work\/carp" && awk /s/ && awk .*//p' "$repo/tools/guests"
     sed -n '/rsh "\$1" ifconfig >"\$work\/carp"/p; /rsh "\$node" .if test -f \/etc\/convergent\/segments; then cat/p
         /rsh "\$node" ifconfig >"\$work\/carp"/p' "$repo/rootfs/usr/lib/convergent/incus/fw-topology"
 } >"$scratch/file-reads"
-[ "$(wc -l <"$scratch/file-reads")" = 5 ]
+[ "$(wc -l <"$scratch/file-reads")" = 6 ]
 (
     set -- fw1
+    peer=fw2
     while IFS= read -r line; do
         printf '%s\n' "$line" >"$scratch/read"
         sh -n "$scratch/read"
@@ -223,6 +248,10 @@ done
     code=0
     firewall_rsh fw1 true >"$scratch/output" 2>"$scratch/error" || code=$?
     [ "$code" = 7 ]; raw_out; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" firewall_rsh
+    run() { shift 4; [ "$1" = ssh ] || exit 97; hostile; }
+    code=0
+    firewall_mutate fw1 true >"$scratch/output" 2>"$scratch/error" || code=$?
+    [ "$code" = 7 ]; [ ! -s "$scratch/output" ]; grep -qx 'err]52;c;eA==' "$scratch/error"; shown "$scratch/error" firewall_mutate
 )
 # firewall_role reads the host registry: the firewall answers only data (ifconfig, legacy probe); a hostile
 # reply never reaches awk's argument list.
@@ -394,5 +423,37 @@ sed -n '/^status() {/,/^}/p' "$repo/tools/portal" >"$scratch/portal-status"
             grep -qx "$failed  unreachable: status probe failed" "$scratch/output"
         fi
     done
+)
+# Mutators keep guest stdout off the owner's terminal and keep their status.
+sed -n '/^open_side() {/,/^}/p' "$repo/tools/portal" >"$scratch/open-side"
+[ -s "$scratch/open-side" ]; sh -n "$scratch/open-side"
+(
+    . "$scratch/open-side"
+    wan_addr=192.0.2.1 lan=192.0.2.0/24
+    rsh() { printf 'out\033[2J\n'; return 7; }
+    for side in wan fw1; do
+        code=0
+        open_side "$side" >"$scratch/output" || code=$?
+        [ "$code" = 7 ]; [ ! -s "$scratch/output" ]
+    done
+)
+sed -n '/^# Stage, hash and validate/,/^cp "\$work\/list\.raw" "\$state\/list\.rpz\.new"$/p' "$repo/tools/dns-push" |
+    sed '$d' >"$scratch/dns-mutators"
+[ "$(grep -c 'rsh_in\|rsh_wait' "$scratch/dns-mutators")" = 4 ]; sh -n "$scratch/dns-mutators"
+(
+    die() { echo "dns-push: $*" >&2; exit 1; }
+    fws=fw1 rdir=/unused durable=: lock=: unlock=: restore=: selftest=probe selftest_addr=192.0.2.53
+    state=$scratch/dns-state work=$scratch/dns-work
+    mkdir -p "$state" "$work"
+    : >"$work/blocklist.rpz"; : >"$work/local-owner.conf"
+    rsh() { sha256sum <"$work/$file" | cut -d' ' -f1; }
+    rsh_in() { cat >/dev/null; echo rsh_in >>"$scratch/dns-calls"; printf 'out\033[2J\n'; }
+    rsh_wait() { echo rsh_wait >>"$scratch/dns-calls"; printf 'out\033[2J\n'; }
+    : >"$scratch/dns-calls"
+    (. "$scratch/dns-mutators") >"$scratch/output"
+    [ ! -s "$scratch/output" ]; [ "$(wc -l <"$scratch/dns-calls")" = 5 ]
+    rsh_wait() { return 7; }
+    if (. "$scratch/dns-mutators") >/dev/null 2>"$scratch/error"; then exit 1; fi
+    grep -qx 'dns-push: candidate check failed on fw1 (status 7)' "$scratch/error"
 )
 echo 'test-guest-reply: byte limits, transfer failures, cleanup and production readbacks passed'

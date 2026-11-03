@@ -353,7 +353,7 @@ awk -v allow="$work/allow" -v probe="$selftest" -v addr="$selftest_addr" -v refr
 # Stage, hash and validate both candidates before activation.
 for fw in $fws; do
 	for file in blocklist.rpz local-owner.conf; do
-		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file" || die "cannot stage $file on $fw (status $?)"
+		rsh_in "$fw" "cat >$rdir/$file.new && chmod 644 $rdir/$file.new" <"$work/$file" >/dev/null || die "cannot stage $file on $fw (status $?)"
 		want=$(sha256sum <"$work/$file" | cut -d' ' -f1)
 		have=$(guest_reply 128 rsh "$fw" "sha256 -q $rdir/$file.new") || die "cannot hash $file on $fw (status $?)"
 		[ "$have" = "$want" ] || die "stage hash differs on $fw"
@@ -363,7 +363,7 @@ for fw in $fws; do
 		sed 's|$rdir/local-owner\.conf|$rdir/local-owner.conf.new|; s|$rdir/blocklist\.rpz|$rdir/blocklist.rpz.new|' unbound.conf >dns-check.conf &&
 		unbound-checkconf $rdir/dns-check.conf >/dev/null &&
 		cp -p blocklist.rpz blocklist.rpz.prev && cp -p local-owner.conf local-owner.conf.prev &&
-		durable blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev" || die "candidate check failed on $fw (status $?)"
+		durable blocklist.rpz.new local-owner.conf.new blocklist.rpz.prev local-owner.conf.prev" >/dev/null || die "candidate check failed on $fw (status $?)"
 done
 # Journal both firewalls before activation.
 mkdir "$state/cache.before"
@@ -383,14 +383,14 @@ for fw in $fws; do
 		durable blocklist.rpz local-owner.conf
 		unbound-checkconf $rdir/unbound.conf >/dev/null
 		rcctl check unbound >/dev/null || rcctl start unbound
-		unbound-control reload_keep_cache >/dev/null" || die "activation failed on $fw; its previous data is restored"
+		unbound-control reload_keep_cache >/dev/null" >/dev/null || die "activation failed on $fw; its previous data is restored"
 	# Nested test firewalls reloaded this list in 7-43 s, some in 270-330 s (wan-watch demotes a silent
 	# MASTER meanwhile): the reload gets 14 minutes to answer.
 	rsh_wait "$fw" "end=\$((\$(date +%s) + 840)); while [ \$(date +%s) -lt \$end ]; do
 		host -W 2 -t A $selftest 127.0.0.1 2>&1 | grep -Fq 'has address $selftest_addr' &&
 			host -W 2 -t A blocked-$selftest 127.0.0.1 2>&1 | grep -q NXDOMAIN && exit 0
 		sleep 2
-	done; exit 1" || die "$fw does not answer the pushed records"
+	done; exit 1" >/dev/null || die "$fw does not answer the pushed records"
 done
 cp "$work/list.raw" "$state/list.rpz.new"
 mv "$state/list.rpz.new" "$state/list.rpz"
