@@ -519,6 +519,81 @@ export work
 )
 echo 'test-boot-privacy: camera passed'
 
+# Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
+sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
+    sed -e "s|/run/convergent|$work/wired|g" -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
+check_script "$work/wired-functions"
+grep -q 'wired prune' "$work/wired-functions"
+mkdir "$work/wired"
+(
+    w=$work/wired
+    . "$work/wired-functions"
+    die() { echo "devices: $*" >&2; exit 1; }
+    usage() { exit 2; }
+    ask() { :; }
+    flock() { [ "$*" = '-n 9' ] || exit 97; }
+    logger() { :; }
+    rc_service() { [ "$*" = 'usbguard restart' ] || exit 97; }
+    role='{"type":"usb","vendorid":"0bda","productid":"8153","serial":"S1","required":"false"}'
+    timeout() {
+        case "$1 $2 $3 $4" in
+        '-k 1 30 incus') [ "$6" = query ] || exit 97 ;;
+        '-k 1 120 incus') [ "$8" = config ] || exit 97; echo "$*" >>"$w/calls" ;;
+        *) exit 97 ;;
+        esac
+        shift 3
+        "$@"
+    }
+    incus() {
+        case $* in
+        '--force-local query /1.0/instances/wan?project=default')
+            printf '{"type":"virtual-machine","devices":{"wired-uplink":%s}}\n' "$(cat "$w/role")" ;;
+        '--force-local --project default config device remove wan wired-uplink') echo null >"$w/role" ;;
+        *) echo "unexpected incus: $*" >&2; exit 97 ;;
+        esac
+    }
+    # Numbered as list-rules shows them; append-rule -a 0 puts a rule first.
+    usbguard() {
+        case $1 in
+        list-rules) cat "$w/rules" ;;
+        append-rule)
+            [ "$2 $3" = '-a 0' ] || exit 97
+            { echo "$(($(wc -l <"$w/rules") + 100)): $4"; cat "$w/rules"; } >"$w/rules.new"
+            mv "$w/rules.new" "$w/rules" ;;
+        remove-rule) grep -v "^$2: " "$w/rules" >"$w/rules.new"; mv "$w/rules.new" "$w/rules" ;;
+        generate-policy) cat "$w/generated" ;;
+        *) exit 97 ;;
+        esac
+    }
+    nic='allow id 0bda:8153 serial "S1" name "LAN" hash "h1" with-interface { ff:ff:00 }'
+    kbd='allow id 046d:c31c serial "" name "Kbd" hash "h2" with-interface 03:01:01'
+    reset() { echo "$role" >"$w/role"; printf '5: %s\n7: %s\n' "$kbd" "$nic" >"$w/rules"; : >"$w/calls"; }
+    removed='-k 1 120 incus --force-local --project default config device remove wan wired-uplink'
+    # sys wired remove goes through the bound.
+    reset
+    (wired remove)
+    [ "$(cat "$w/calls")" = "$removed" ] || exit 1
+    # Revoking another device keeps the role; revoking the NIC's only rule drops it, and says so.
+    reset
+    (revoke 5) >"$w/out"
+    [ ! -s "$w/calls" ] && [ "$(cat "$w/role")" != null ] || exit 1
+    reset
+    (revoke 7) >"$w/out"
+    [ "$(cat "$w/calls")" = "$removed" ] && [ "$(cat "$w/role")" = null ] || exit 1
+    grep -q 'removed its role from wan' "$w/out" || exit 1
+    # Enrol without the NIC drops the role; with it, the role stays.
+    printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
+    for answers in 'yes no' 'yes yes'; do
+        reset
+        printf '%s\n' $answers | (enrol) >"$w/out"
+        case $answers in
+        'yes no') [ "$(cat "$w/calls")" = "$removed" ] || exit 1 ;;
+        *) [ ! -s "$w/calls" ] || exit 1 ;;
+        esac
+    done
+)
+echo 'test-boot-privacy: wired role bound and prune passed'
+
 # Execute the shipped commands, substituting only the socket readiness probe.
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |

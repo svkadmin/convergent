@@ -14,6 +14,64 @@ bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 # Firewall stderr lands in the audited report: bounded and filtered.
 rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&- 7>&-; }
+# wan's wired role as devices wired attach sets it. Incus 7.0.1 matches hotplug uevents, which carry no
+# serial, to no serial-pinned role: a replugged NIC stays off wan until the role is added again.
+# Prints the serial when its one present NIC is authorized, allowed by USBGuard and has an interface off
+# usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan.
+wired_lost() (
+    serial=$(timeout -k 1 30 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
+        jq -er 'select(.status == "Running") | .devices["wired-uplink"] |
+            select(del(.serial) == {type: "usb", vendorid: "0bda", productid: "8153", required: "false"}) | .serial') || exit 2
+    case $serial in ''|*[!A-Za-z0-9_.:-]*) exit 2 ;; esac
+    found=0 lost=0
+    for d in /sys/bus/usb/devices/*; do
+        [ "$(cat "$d/idVendor" "$d/idProduct" "$d/serial" "$d/authorized" 2>/dev/null)" = "$(printf '0bda\n8153\n%s\n1' "$serial")" ] || continue
+        found=$((found + 1))
+        for i in "$d/${d##*/}":*; do [ ! -e "$i" ] || [ "$(basename "$(readlink "$i/driver")")" = usbfs ] || lost=1; done
+    done
+    [ "$found:$lost" = 1:1 ] && timeout -k 1 30 usbguard list-devices -a 9>&- 8>&- 7>&- 2>/dev/null | serial=$serial awk '
+        $2 == "allow" && $3 == "id" && $4 == "0bda:8153" && index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
+        END {exit n != 1}' || exit 1
+    echo "$serial"
+)
+# Minute self-heal: wired_lost in two runs in a row removes and re-adds that role under the guests
+# lock, once per loss. wired-heal keeps the outcome for the scan.
+wired_heal() (
+    strike=/run/convergent/wired-strike outcome=/run/convergent/wired-heal
+    ic() { timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; }
+    heal_allowed || exit 0
+    serial=$(wired_lost)
+    case $? in 0) ;; 1) rm -f "$strike" "$outcome"; exit 0 ;; *) exit 0 ;; esac
+    case $(cat "$outcome" 2>/dev/null) in
+    '') ;;
+    healed\ *) echo "lost $serial" >"$outcome"; echo 'SELF-HEAL wired uplink: wan lost the NIC again after a re-attach'; exit 0 ;;
+    *) echo 'SELF-HEAL wired uplink: wan does not hold the NIC; no second re-attach'; exit 0 ;;
+    esac
+    read -r uptime rest </proc/uptime
+    now=${uptime%.*} was= at=
+    [ ! -f "$strike" ] || read -r was at <"$strike"
+    case $at in ''|*[!0-9]*) at=0 ;; esac
+    # A guest reconfiguring the NIC releases it for a moment: act on the second run in a row only.
+    if [ "$was" != "$serial" ] || [ "$((now - at))" -gt 90 ]; then
+        echo "$serial $now" >"$strike"
+        echo 'SELF-HEAL wired uplink: wan does not hold the NIC; re-attaching next minute if that persists'
+        exit 0
+    fi
+    # Reads above run unlocked (a frozen wan stalls them); the change is re-checked under the lock.
+    exec 8>/run/convergent/guests.lock
+    flock -n 8 && [ "$(wired_lost)" = "$serial" ] || exit 0
+    rm -f "$strike"
+    if ic config device remove wan wired-uplink &&
+        ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false; then
+        echo "healed $serial" >"$outcome"
+        logger -t check 'wired uplink: wan did not hold its NIC for two runs; role removed and added again' 2>/dev/null || :
+        echo 'SELF-HEAL wired uplink: role removed and added again'
+    else
+        echo "failed $serial" >"$outcome"
+        logger -p user.err -t check 'wired uplink: re-adding its role failed' 2>/dev/null || :
+        echo 'SELF-HEAL wired uplink: re-adding its role failed'
+    fi
+)
 [ "$(id -u)" = 0 ] || die 'run as root'
 if awk '$2 == "/var" && $3 == "btrfs" && $4 ~ /(^|,)ro(,|$)/ {found=1}
     END {exit !found}' /proc/mounts; then
@@ -166,6 +224,7 @@ if [ "${1:-}" = auto ]; then (
     . /usr/lib/convergent/incus/firewall-heal
     # Built on tmpfs: the audited reports are rewritten only when their content changes.
     firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
+    wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
     exec 8>/run/convergent/guests.lock
     if flock -s -n 8; then
@@ -218,7 +277,8 @@ if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     elapsed=$(($(date +%s) - last))
     if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$interval" ] &&
         [ ! /var/lib/convergent/guests/updates -nt "$state/last" ] &&
-        [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ]; then exit 0; fi
+        [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ] &&
+        [ ! /run/convergent/wired-heal -nt "$state/last" ]; then exit 0; fi
 fi
 work=$(mktemp -d "$state/.run.XXXXXX") || die 'cannot create scratch directory'
 trap 'rm -rf "$work"' 0
@@ -408,6 +468,11 @@ radio=$(jq -r '.[] | select((.project // "default") == "default" and .name == "w
 if [ -n "$radio" ]; then
     [ "$(basename "$(readlink "/sys/bus/pci/devices/$radio/driver")")" = vfio-pci ] || bad 'wan radio is not owned by vfio-pci'
     [ "$(find "/sys/bus/pci/devices/$radio/iommu_group/devices" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] || bad 'wan radio does not have a private IOMMU group'
+fi
+# What wired_heal has not fixed: a loss it is not about to retry, or a role it could not add again.
+pending=$(find /run/convergent/wired-strike -mmin -3 -exec cut -d ' ' -f 1 {} + 2>/dev/null)
+if serial=$(wired_lost) && [ "$serial" != "$pending" ] || grep -qs '^failed ' /run/convergent/wired-heal; then
+    bad 'wan wired uplink: the allowed NIC is not passed through; recovery: sys wired remove, then sys wired attach (reboot if Incus refuses it)'
 fi
 
 # facts boot also exports these; do not duplicate its metric series.

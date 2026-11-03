@@ -402,6 +402,31 @@ if [ "${1:-}" = --install-options ]; then
 	if (. "$work/usbguard-check") 2>"$work/usbguard-error"; then die 'accepted an IPCAccessControl.d grant'; fi
 	grep -q 'granted by IPCAccessControl.d' "$work/usbguard-error"
 	)
+	# USB NICs are wan's: the drop takes their host drivers, and a survivor or built-in fails the image.
+	sed -n '/^# Remove hardware classes/,/keeps a USB network driver/p' "$here/image" >"$work/module-drop"
+	grep -q 'keeps a USB network driver' "$work/module-drop"
+	sh -n "$work/module-drop"
+	(
+	. "$here/build.conf"
+	root=$work/drop kver=test
+	out=$root modules=$root/lib/modules/$kver
+	bld() { :; }
+	for f in net/usb/r8152.ko net/usb/usbnet.ko net/usb/cdc_ether.ko net/ethernet/realtek/r8169.ko net/mii.ko; do
+		mkdir -p "$modules/kernel/drivers/${f%/*}"
+		: >"$modules/kernel/drivers/$f"
+	done
+	printf '%s\n' 'kernel/drivers/net/usb/r8152.ko: kernel/drivers/net/mii.ko' \
+		'kernel/drivers/net/usb/cdc_ether.ko: kernel/drivers/net/usb/usbnet.ko kernel/drivers/net/mii.ko' \
+		'kernel/drivers/net/usb/usbnet.ko: kernel/drivers/net/mii.ko' \
+		'kernel/drivers/net/ethernet/realtek/r8169.ko: kernel/drivers/net/mii.ko' 'kernel/drivers/net/mii.ko:' >"$modules/modules.dep"
+	echo kernel/drivers/usb/host/xhci-hcd.ko >"$modules/modules.builtin"
+	. "$work/module-drop"
+	printf '%s\n' kernel/drivers/net/ethernet/realtek/r8169.ko kernel/drivers/net/mii.ko | cmp - "$out/modules.after"
+	echo kernel/drivers/net/usb/r8152.ko >>"$modules/modules.builtin"
+	if (. "$work/module-drop") 2>"$work/drop-error"; then die 'accepted a built-in USB network driver'; fi
+	grep -q 'keeps a USB network driver' "$work/drop-error"
+	)
+	for module in usbnet r8152; do grep -qx "install $module /bin/false" "$here/../rootfs/etc/modprobe.d/convergent.conf"; done
 	# Media must match the selected slot, including older releases.
 	sed -n '/^# Compare with the selected release/,/^fi$/p' "$here/../install/install" >"$work/topology-check"
 	[ -s "$work/topology-check" ]
