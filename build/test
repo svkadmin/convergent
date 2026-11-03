@@ -919,6 +919,10 @@ unbound_up() {
         n=$((n + 1)); [ "$n" -lt 10 ] || return 1; sleep 10
     done
 }
+# Empty when Incus does not answer in time.
+ic_status() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" 2>/dev/null | jq -r .status 2>/dev/null; }
+# A traced block's trap starts with ": CV-TRAP": the command before it is the one that failed.
+trace_tail() { sed '/ : CV-TRAP$/q' "$1" | grep -E '^[+]+CV-' | tail -n 25 | cut -c1-200; }
 [ "$1" = 0 ] || { sync; echo CV-UPDATE-RESULT 1; exit 1; }
 EOF
 	if [ "$mode" = guests-maint ]; then
@@ -2378,8 +2382,10 @@ cv_time firewall-self-heal
     set -e
     . /usr/lib/convergent/incus/firewall-heal
     fw_pid() { timeout -k 1 30 incus --force-local query "/1.0/instances/$1/state?project=default" | jq -er '.pid | select(. > 1)'; }
-    broken= inhibited= frozen= leased=
-    trap 'for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
+    broken= inhibited= frozen= leased= dhcpd=
+    # fw-leases' resume: rcctl disable dropped the flags.
+    dhcpd_on='rcctl enable dhcpd && rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags) && { rcctl check dhcpd >/dev/null || rcctl start dhcpd; }'
+    trap ': CV-TRAP; for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$dhcpd" ] || for f in fw1 fw2; do fwssh "$f" "$dhcpd_on" >/dev/null 2>&1 || :; done; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
     trap 'exit 1' HUP INT TERM
     # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
@@ -2392,6 +2398,41 @@ cv_time firewall-self-heal
     before=$(fw_pid fw2)
     broken=fw2
     fwssh fw2 'rcctl stop unbound'
+    # A minute run that finds the heal lock held skips its observation; fw2's 180 s window must survive it.
+    # check auto's own steps come before the lock: hold it 45 s past the minute. A slow fw1 answer drops
+    # the window on both codes: then once more.
+    cv_time firewall-self-heal-window
+    window=/run/convergent/firewall-heal/fw2 tries=0 windowed=
+    until [ -n "$windowed" ]; do
+        tries=$((tries + 1)); [ "$tries" -le 3 ]
+        deadline=$(($(date +%s) + 300))
+        until [ -f "$window" ]; do
+            [ "$(date +%s)" -lt "$deadline" ]; sleep 1
+        done
+        exec 7>/run/convergent/firewall-heal.lock
+        flock -w 120 7
+        if ! read -r first0 prev0 <"$window"; then exec 7>&-; continue; fi
+        sleep "$((($(date +%s) / 60 + 1) * 60 + 45 - $(date +%s)))" 7>&-
+        exec 7>&-
+        deadline=$(($(date +%s) + 300))
+        while :; do
+            [ "$(date +%s)" -lt "$deadline" ]; sleep 2
+            [ -f "$window" ] || break
+            read -r first1 prev1 <"$window" || continue
+            [ "$prev1" = "$prev0" ] || break
+        done
+        if [ -f "$window" ]; then
+            [ "$first1" = "$first0" ]
+            [ "$((prev1 - prev0))" -ge 100 ]
+            windowed=1
+        else
+            # Gone with a restart: the window reached 180 s without a reset.
+            sleep 5
+            restarted=0
+            [ ! -f /run/convergent/firewall-heal/fw2.restarted ] || read -r restarted </run/convergent/firewall-heal/fw2.restarted
+            [ "$restarted" -lt "$first0" ] || windowed=1
+        fi
+    done
     # Each heal observation probes both nodes for 10 s; one slow fw1 answer restarts the 180 s window.
     deadline=$(($(date +%s) + 1500))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
@@ -2413,12 +2454,37 @@ cv_time firewall-self-heal
     # (after the 600 s grace of the restart above, then 180 s of failed probes).
     cv_time firewall-self-heal-frozen
     # A lease hold a run could not resume (its peer frozen) must not inhibit this heal; the heal resumes it.
+    # Its allocators are disabled, as fw-leases holds them: the probe must still pass fw1 as MASTER.
+    # Under the heal lock, so no run resumes the hold before fw2 freezes.
+    cv_time firewall-self-heal-held
     mkdir -p /var/lib/convergent/guests/leases
+    exec 7>/run/convergent/firewall-heal.lock
+    flock -w 120 7
     touch /var/lib/convergent/guests/leases/held
     leased=1
-    before=$(fw_pid fw2)
+    dhcpd=1
+    for f in fw1 fw2; do
+        fwssh "$f" 'set -e; rcctl disable dhcpd; if rcctl check dhcpd >/dev/null; then rcctl stop dhcpd; fi' 7>&-
+    done
+    before=$(fw_pid fw2 7>&-)
     frozen=$before
     kill -STOP "$before"
+    exec 7>&-
+    # Status reads Incus under a bound and names the frozen node, inside the heal's 180 s window. Should
+    # Incus still answer the listing, status must answer before any heal could kill the QEMU.
+    cv_time firewall-self-heal-status
+    status_start=$(date +%s) rc=0
+    timeout -s KILL 300 /usr/local/sbin/guests status >"$release/frozen-status" 2>"$release/frozen-status.err" || rc=$?
+    took=$(($(date +%s) - status_start))
+    cat "$release/frozen-status.err" >&2
+    if [ "$rc" = 0 ]; then
+        [ "$took" -lt 170 ]
+        grep -q '^fw2 ' "$release/frozen-status"
+    else
+        [ "$rc" != 137 ]
+        [ "$took" -lt 240 ]
+        grep -q "incus query timed out; fw2's QEMU no longer answers Incus; the checker kills a frozen firewall" "$release/frozen-status.err"
+    fi
     deadline=$(($(date +%s) + 1800))
     until current=$(fw_pid fw2) && [ "$current" != "$before" ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
@@ -2442,6 +2508,10 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
     leased=
+    for f in fw1 fw2; do
+        fwssh "$f" 'rcctl check dhcpd >/dev/null && rcctl ls on | grep -qx dhcpd'
+    done
+    dhcpd=
     # With both firewalls failing there is no healthy MASTER to fall back on: no attempt, no restart.
     cp /run/convergent/firewall-heal/attempts "$release/heal-attempts"
     pid1=$(fw_pid fw1) pid2=$(fw_pid fw2)
@@ -2464,7 +2534,7 @@ cv_time firewall-self-heal
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
 )
-[ "$?" = 0 ] || { grep -E '^[+]+CV-HEAL ' /var/log/firewall-self-heal-test.log | tail -n 25 | cut -c1-200
+[ "$?" = 0 ] || { trace_tail /var/log/firewall-self-heal-test.log
     sed 's/^/CV-HEAL state /' /var/lib/convergent/check/firewall-heal 2>/dev/null | tail -n 10 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
@@ -2593,6 +2663,9 @@ cv_time maintenance-reboot
     unbound_up fw1 || { fw1_state 'unbound not running after the boot'; exit 1; }
     # fw-seed restarts syslogd and starts three services.
     fwssh fw1 '/usr/local/libexec/convergent/fw-seed && test -f /etc/convergent/seeded/maintenance'
+    # rc's Unbound limit after a reboot and fw-seed: install.site's rcctl disable once stripped it to 30 s.
+    cv_time maintenance-reboot-unbound-timeout
+    fwssh fw1 '[ "$(rcctl get unbound timeout)" = 120 ]'
     # wan-watch's demotion ties sysmaint's 128 and can hand MASTER back for a while.
     fw_settled -t 600 fw1:backup fw2:master
     for f in fw1 fw2; do
@@ -2766,6 +2839,42 @@ REMOTE
 done
 EOF
 	fi
+	if [ "$mode" = guests-update ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time firewall-pair-start
+# A pair Incus left stopped: the checker starts both after 180 s of stopped observations, not on the first.
+(
+    set -e
+    stopped=
+    trap ': CV-TRAP; [ -z "$stopped" ] || for f in fw1 fw2; do [ "$(ic_status "$f")" = Running ] || ic start "$f" || :; done' 0
+    trap 'exit 1' HUP INT TERM
+    PS4='+CV-PAIR ${SECONDS}s '; exec 2>/var/log/firewall-pair-start-test.log; set -x
+    uptime_s() { read -r up rest </proc/uptime; echo "${up%.*}"; }
+    # Not inside the kernel relink guests init left running.
+    fw_settled fw1 fw2
+    t0=$(uptime_s)
+    stopped=1
+    ic stop fw1 fw2 --force
+    while [ "$(uptime_s)" -lt "$((t0 + 150))" ]; do
+        [ "$(ic_status fw1)" != Running ]
+        [ "$(ic_status fw2)" != Running ]
+        sleep 10
+    done
+    until [ "$(ic_status fw1)" = Running ] && [ "$(ic_status fw2)" = Running ]; do
+        [ "$(uptime_s)" -lt "$((t0 + 600))" ]; sleep 10
+    done
+    stopped=
+    for f in fw1 fw2; do
+        read -r restarted <"/run/convergent/firewall-heal/$f.restarted"
+        [ "$((restarted - t0))" -ge 170 ]
+    done
+    [ "$(awk -v t="$t0" '$1 >= t' /run/convergent/firewall-heal/attempts | wc -l)" = 2 ]
+    # One more nested boot and kernel relink for both.
+    fw_settled -t 3600 fw1:master fw2:backup
+)
+[ "$?" = 0 ] || { trace_tail /var/log/firewall-pair-start-test.log; fw_diag; bad $LINENO; }
+EOF
+	fi
 	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time handoff-recovery
 # guests-update comes here first after guests init booted the pair, which may still relink: a relinking
@@ -2798,6 +2907,35 @@ done
 ic config trust remove "$old_client" || bad $LINENO
 ic config trust add-certificate "$tls/incus-client.crt" --type metrics --name svc-metrics || bad $LINENO
 old_client=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | cut -d' ' -f1)
+cv_time certificate-clock
+# Under a clock behind the release build the due certificates stay as they are, not reissued to expire.
+(
+    set -e
+    built=$(cat /usr/lib/convergent/release)
+    read -r u0 rest </proc/uptime; u0=${u0%.*}; t0=$(date +%s)
+    moved=
+    # The saved epoch plus the uptime since.
+    restore() { read -r u rest </proc/uptime; date -u -s "@$((t0 + ${u%.*} - u0))" >/dev/null; }
+    trap ': CV-TRAP; [ -z "$moved" ] || restore' 0
+    trap 'exit 1' HUP INT TERM
+    PS4='+CV-CLOCK ${SECONDS}s '; exec 2>/var/log/certificate-clock-test.log; set -x
+    sha256sum "$tls/"*.crt >"$release/tls-forced"
+    stamp=$(printf '%s\n' "$built" | sed -n 's/^\([0-9]\{4\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)\([0-9]\{2\}\)$/\1-\2-\3 \4:\5/p')
+    [ -n "$stamp" ]
+    moved=1
+    date -u -s "@$(($(date -u -d "$stamp" +%s) - 3600))" >/dev/null
+    code=0
+    /usr/local/sbin/guests apply >/var/log/guests-update-clock.log 2>&1 || code=$?
+    restore
+    moved=
+    [ "$(date -u +%Y%m%d%H%M)" -ge "$built" ]
+    [ "$code" = 0 ]
+    grep -q 'certificates: clock behind the release build; skipping' /var/log/guests-update-clock.log
+    sha256sum -c "$release/tls-forced"
+    # The apply released the recreated handoff on fw1.
+    fw_settled fw1:master fw2:backup
+)
+[ "$?" = 0 ] || { trace_tail /var/log/certificate-clock-test.log; tail -n 15 /var/log/guests-update-clock.log; bad $LINENO; }
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-pins" || bad $LINENO
 for cert in server incus-server incus-client; do
@@ -2815,6 +2953,25 @@ ic config trust list --format json >"$release/trust" || bad $LINENO
 new_client=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | cut -d' ' -f1)
 jq -e --arg fp "$new_client" '.[] | select(.fingerprint == $fp and .type == "metrics")' "$release/trust" >/dev/null || bad $LINENO
 sha256sum "$tls/"*.crt >"$release/tls-renewed"
+cv_time guests-start-stopped
+# Nothing due: apply still starts a wan or svc Incus left stopped.
+(
+    set -e
+    trap ': CV-TRAP; for g in wan svc; do [ "$(ic_status "$g")" = Running ] || ic start "$g" || :; done' 0
+    trap 'exit 1' HUP INT TERM
+    PS4='+CV-START ${SECONDS}s '; exec 2>/var/log/guests-start-stopped-test.log; set -x
+    ic stop wan --force
+    ic stop svc
+    /usr/local/sbin/guests apply >/var/log/guests-update-start-stopped.log 2>&1
+    grep -qx 'guests: starting stopped wan' /var/log/guests-update-start-stopped.log
+    grep -qx 'guests: starting stopped svc' /var/log/guests-update-start-stopped.log
+    deadline=$(($(date +%s) + 600))
+    until [ "$(ic_status svc)" = Running ] && timeout 30 ssh -F /etc/convergent/ssh_config wan check >/dev/null 2>&1; do
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 5
+    done
+    fw_settled fw1:master fw2:backup
+)
+[ "$?" = 0 ] || { trace_tail /var/log/guests-start-stopped-test.log; tail -n 15 /var/log/guests-update-start-stopped.log; fw_diag; bad $LINENO; }
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-renewed" || bad $LINENO
 cv_time firewall-update
@@ -2847,10 +3004,13 @@ awk '/^\+ replace fw2$/ && n == 0 {n++}
     END {exit !(n == 4)}' /var/log/guests-update-fw.log || bad $LINENO
 # fw1, replaced last, relinks its kernel and answers late.
 fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; bad $LINENO; }
+cv_time firewall-update-roles
 for f in fw1 fw2; do
 	# A replaced fw2 is seeded into the upgrade group at demotion 0; only fw1 must leave it.
 	case $f in fw1) want=MASTER groups='handoff|upgrade|sysmaint' ;; fw2) want=BACKUP groups='handoff|sysmaint' ;; esac
 	timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$f" 'test ! -e /etc/convergent/seeded/maintenance' || bad $LINENO
+	# A freshly installed image keeps rc's 120 s Unbound limit.
+	timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$f" '[ "$(rcctl get unbound timeout)" = 120 ]' || bad $LINENO
 	carp=$(timeout 120 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=60 "$f" ifconfig) || bad $LINENO
 	printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || bad $LINENO
 	printf '%s\n' "$carp" | grep -Eq "^[[:space:]]*groups:.* ($groups)( |\$)" && bad $LINENO
@@ -3405,6 +3565,29 @@ cmp "$release/guests/svc/incus.yaml" "$installed/incus.yaml" || bad $LINENO
 status=$?
 echo CV-UPDATE status "$status"
 [ "$status" = 0 ] || bad $LINENO
+cv_time wired-lock-wait
+# A wired role command waits for a running guest operation rather than failing at once.
+(
+    set -e
+    holder=
+    trap ': CV-TRAP; [ -z "$holder" ] || kill "$holder" 2>/dev/null || :' 0
+    trap 'exit 1' HUP INT TERM
+    PS4='+CV-WIRED ${SECONDS}s '; exec 2>/var/log/wired-lock-test.log; set -x
+    rm -f "$release/wired-held"
+    # The holder becomes sleep: killing it releases the lock.
+    ( exec 9>/run/convergent/guests.lock; flock -w 120 9; : >"$release/wired-held"; exec sleep 20 ) &
+    holder=$!
+    n=0
+    until [ -f "$release/wired-held" ]; do
+        n=$((n + 1)); [ "$n" -lt 130 ]; sleep 1
+    done
+    wired_start=$(date +%s)
+    /usr/local/sbin/devices wired status >/var/log/wired-lock-status.log 2>&1
+    [ "$(($(date +%s) - wired_start))" -ge 15 ]
+    wait "$holder"
+    holder=
+)
+[ "$?" = 0 ] || { trace_tail /var/log/wired-lock-test.log; tail -n 5 /var/log/wired-lock-status.log; bad $LINENO; }
 cv_time firewall-no-peer
 pair_ok() {
     for f in fw1 fw2; do
@@ -3421,10 +3604,19 @@ exec 7>/run/convergent/firewall-heal.lock
 flock -w 120 7 || exit 1
 # A peer that cannot take over: the rebuild gives up after GUEST_BOOT_TIMEOUT and restarts fw1.
 awk '{print} $0 == "carp() {" {print "    [ \"$1\" != fw2 ] || return 1"}' /usr/local/sbin/guests >"$release/guests-no-peer"
+# The rebuild also starts a svc Incus left stopped: its soak needs it.
+cv_time firewall-no-peer-svc
+trap '[ "$(ic_status svc)" = Running ] || ic start svc || :' 0
+trap 'exit 1' HUP INT TERM
+ic stop svc || bad $LINENO
 GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/guests-rebuild-no-peer.log
 code=$?
 echo CV-REBUILD no-peer "$code"
 [ "$code" = 1 ] && grep -q '^+ start_guest fw1$' /var/log/guests-rebuild-no-peer.log || { tail -n 15 /var/log/guests-rebuild-no-peer.log; bad $LINENO; }
+n=0
+until [ "$(ic_status svc)" = Running ]; do
+    n=$((n + 1)); [ "$n" -lt 6 ] || { echo "CV-REBUILD svc $(ic_status svc)"; bad $LINENO; }; sleep 10
+done
 # The next step's rebuild checks and demotes fw1: the restarted fw1 must finish its boot and relink first.
 fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; exit 1; }
 ) || bad $LINENO
@@ -3494,10 +3686,32 @@ for step in journal rebuilt; do
             sleep 10
         done
     fi
+    resume_log=/var/log/guests-rebuild-kill-$step-resume.log
+    if [ "$step" = journal ]; then
+        # fw2 unreachable from the host for a while: the rollback waits for it rather than failing fw2's
+        # lease resume at once. The route goes 30 s into that wait (600 s without one).
+        cv_time firewall-rebuild-peer-wait
+        : >"$resume_log"
+        ip route add blackhole 100.80.1.3/32 || bad $LINENO
+        (
+            PS4='+CV-UNBLOCK ${SECONDS}s '; exec 2>/var/log/guests-rebuild-unblock.log; set -x
+            deadline=$(($(date +%s) + 600))
+            until grep -qx 'guests: waiting for reachable fw2' "$resume_log" || [ "$(date +%s)" -ge "$deadline" ]; do sleep 2; done
+            sleep 30
+            ip route del blackhole 100.80.1.3/32
+        ) &
+        unblock=$!
+        trap 'ic config unset fw1 boot.autorestart; ic config unset fw2 boot.autorestart; kill "$unblock" 2>/dev/null; ip route del blackhole 100.80.1.3/32 2>/dev/null' 0
+    fi
     resumed=1
     cv_time "firewall-rebuild-$step-resume"
-    sh -x "$release/guests-fw-timed" apply 3>&1 2>"/var/log/guests-rebuild-kill-$step-resume.log" || { resumed=; tail -n 15 "/var/log/guests-rebuild-kill-$step-resume.log"; fw_diag; bad $LINENO; }
+    sh -x "$release/guests-fw-timed" apply 3>&1 2>"$resume_log" || { resumed=; tail -n 15 "$resume_log"; fw_diag; bad $LINENO; }
     if [ "$step" = journal ]; then
+        kill "$unblock" 2>/dev/null
+        wait "$unblock"
+        ip route del blackhole 100.80.1.3/32 2>/dev/null
+        grep -qx 'guests: waiting for reachable fw2' "$resume_log" &&
+            ! grep -q 'must be healthy on all registered segments' "$resume_log" || { tail -n 15 /var/log/guests-rebuild-unblock.log; bad $LINENO; }
         # The rollback's own hold may already have cleared fw1's key.
         for f in fw1 fw2; do [ -z "$(ic config get "$f" boot.autorestart)" ] || ic config unset "$f" boot.autorestart || bad $LINENO; done
         trap - 0 HUP INT TERM
