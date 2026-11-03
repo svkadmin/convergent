@@ -24,7 +24,7 @@ if grep -q /var/lib/convergent "$stagework/publish"; then die 'publish fixture w
     echo '}'
     echo 'recover'
 } >"$stagework/recover"
-grep -q 'maintenance_due || return 0' "$stagework/recover"
+grep -qF 'maintenance_due || { start_stopped; return 0; }' "$stagework/recover"
 grep -q 'rm -rf' "$stagework/recover"
 cat >"$stagework/run" <<'STAGE'
 set -eu
@@ -33,6 +33,7 @@ dir=$root/download staged=$root/stages latest=43 changed=remmina rsum=signed syn
 die() { echo "$*" >&2; exit 1; }
 flock() { :; }
 maintenance_due() { return 1; }
+start_stopped() { :; }
 # Only ownership and flushing are simulated; moves and removals use real files.
 stat() {
     if [ "$2" = '%u %a %F' ]; then
