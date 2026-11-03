@@ -23,8 +23,8 @@ guest_reply() (
 )
 # Guest text for the owner's terminal: no control bytes but newline and tab (escapes, OSC 52).
 guest_text() { tr -d '\000-\010\013-\037\177'; }
-# Remote stderr through guest_text; stdout and the status stay as they are.
+# Remote stderr bounded (64 KiB) and through guest_text; stdout and the status stay as they are.
 guest_stderr() {
-    { _guest_rc=$({ { _guest_rc=0; "$@" 2>&1 >&3 3>&- 4>&- || _guest_rc=$?; printf '%s\n' "$_guest_rc" >&4; } | guest_text >&2; } 4>&1); } 3>&1
+    { _guest_rc=$({ { _guest_rc=0; "$@" 2>&1 >&3 3>&- 4>&- || _guest_rc=$?; printf '%s\n' "$_guest_rc" >&4; } | head -c 65536 | guest_text >&2; } 4>&1); } 3>&1
     return "${_guest_rc:-1}"
 }
