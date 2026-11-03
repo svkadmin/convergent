@@ -3046,7 +3046,7 @@ grep -q 'damaged backup' /var/log/guests-update-legacy-damaged.log && [ -f "$sta
 incus --force-local query /1.0/instances/svc/state | jq -e '.status == "Running"' >/dev/null || bad $LINENO
 cp "$release/legacy.tar.gz" "$state/backups/svc-$legacy.tar.gz" || bad $LINENO
 sh -x /usr/local/sbin/guests apply 2>/var/log/guests-update-legacy.log || { tail -n 15 /var/log/guests-update-legacy.log; bad $LINENO; }
-awk '/^\+ ic config set svc boot.autorestart=false user.convergent.autorestart=true$/ && n == 0 {n++}
+awk '/^\+ hold_set svc boot.autorestart=false user.convergent.autorestart=true$/ && n == 0 {n++}
     /^\+ ic delete svc$/ && n == 1 {n++}
     /^\+ ic import \/var\/lib\/convergent\/guests\/backups\/svc-guests-.*-legacy.tar.gz svc$/ && n == 2 {n++}
     END {exit !(n == 3)}' /var/log/guests-update-legacy.log || bad $LINENO
