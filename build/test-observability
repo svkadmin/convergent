@@ -253,7 +253,7 @@ sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"
 )
 [ "$(cat "$work/facts-flock")" = '-w 60 9' ]
 grep -qx ran "$work/facts-ran"
-# A host clock step reaches the guests: wan's chrony steps at any time; each firewall's ntpd restarts once a
+# A host clock step reaches the guests: wan's chrony steps at any time; each firewall steps by rdate once a
 # boot, after the host first synchronizes, bounded, and again only until it succeeded.
 grep -qx 'makestep 1.0 -1' "$repo/guests/wan/rootfs/etc/chrony/chrony.conf"
 sed -n '/^nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	fw_ntpd'
@@ -267,7 +267,9 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     chronyc() { [ "$*" = '-n tracking' ] || exit 97; printf 'Stratum         : 3\nLeap status     : %s\n' "$leap"; }
     timeout() {
         target=${13}
-        [ "$#" = 14 ] && [ "$*" = "-k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 $target rcctl restart ntpd" ] || exit 97
+        [ "$#" = 14 ] && [ "$*" = "-k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 $target rdate -n 100.80.1.10" ] || exit 97
+        # The DNS push lock is held shared through the step.
+        if command flock -n "$run/dns-push.lock" true; then exit 97; fi
         echo "$target" >>"$work/ntpd-calls"
         [ "$target" != "$down" ]
     }
@@ -284,6 +286,17 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     printf '%s\n' fw1 fw2 fw2 | cmp - "$work/ntpd-calls"
     down=; fw_ntpd; fw_ntpd
     printf '%s\n' fw1 fw2 fw2 fw2 | cmp - "$work/ntpd-calls"
+    # A firewall check reports stopped is not asked every minute.
+    rm "$run"/fw-ntpd.*; : >"$work/ntpd-calls"; mkdir -p "$run/status"
+    echo 'uplink=up wan=up fw1=master fw2=down svc=up browsers=0 remote=off' >"$run/status/topology"
+    fw_ntpd; fw_ntpd
+    printf '%s\n' fw1 | cmp - "$work/ntpd-calls"
+    # A DNS push's firewall-side wait runs on that clock: no step while one holds its lock.
+    rm "$run"/fw-ntpd.* "$run/status/topology"; : >"$work/ntpd-calls"
+    (exec 5>"$run/dns-push.lock"; command flock -n 5; fw_ntpd)
+    [ ! -s "$work/ntpd-calls" ]
+    fw_ntpd
+    printf '%s\n' fw1 fw2 | cmp - "$work/ntpd-calls"
 )
 # Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
 sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |

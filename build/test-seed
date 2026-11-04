@@ -81,14 +81,17 @@ sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stoppe
     incus() { exit 97; }
     svc_storage_check() { echo check >>"$scratch/starts"; [ "$scenario" != nested ]; }
     stopped() { case " $down " in *" $1 "*) ;; *) return 1 ;; esac; }
+    paused() { case " $paused " in *" $1 "*) ;; *) return 1 ;; esac; }
     running() { case " $up " in *" $1 "*) ;; *) return 1 ;; esac; }
     die() { echo "$*" >"$scratch/died"; exit 1; }
     wan='-k 5 60 incus --force-local --project default start wan'
-    for scenario in none both raced retried failed nested; do
+    for scenario in none both raced retried failed nested paused; do
         : >"$scratch/starts"; rm -f "$scratch/died"
-        down='wan svc' up= start=ok
+        down='wan svc' up= start=ok paused=
         case $scenario in
         none) down= ;;
+        # An ENOSPC-paused (Error) or Frozen guest: a bounded forced restart, svc after its storage check.
+        paused) down= paused='wan svc' ;;
         raced) down=wan up=wan start=failed ;;
         failed) start=failed ;;
         retried) down=wan start=once ;;
@@ -109,6 +112,8 @@ sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stoppe
             printf '%s\n' "$wan" 'sleep 10' "$wan" 'sleep 10' "$wan" | cmp - "$scratch/starts"
             grep -qx 'cannot start wan; rebuild it: guests update wan /var/lib/convergent/release-guests/guests/wan --trusted-local' "$scratch/died" ;;
         nested) [ "$(cat "$scratch/starts")" = check ] ;;
+        paused) printf '%s\n' '-k 5 60 incus --force-local --project default restart wan --force' check \
+            '-k 5 60 incus --force-local --project default restart svc --force' | cmp - "$scratch/starts" ;;
         esac
     done
 )

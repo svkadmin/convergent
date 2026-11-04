@@ -156,6 +156,11 @@ stopped() {
     guest_state=$(probe incus --force-local query "/1.0/instances/$1/state?project=default") || return 1
     [ "$(printf '%s\n' "$guest_state" | jq -r .status)" = Stopped ]
 }
+# ENOSPC leaves QEMU in io-error, which Incus reports as Error; a pause is Frozen.
+paused() {
+    guest_state=$(probe incus --force-local query "/1.0/instances/$1/state?project=default") || return 1
+    case $(printf '%s\n' "$guest_state" | jq -r .status) in Error|Frozen) ;; *) return 1 ;; esac
+}
 autorestart_hold() {
     # Mark in the same update; imports and renames keep ownership of the override.
     hold_set "$1" boot.autorestart=false user.convergent.autorestart=true
@@ -907,15 +912,22 @@ start_guest() {
 # Incus leaves a guest stopped after ten crashes in a minute; nothing else starts wan or svc again.
 start_stopped() {
     for node in wan svc; do
-        stopped "$node" || continue
-        echo "guests: starting stopped $node"
+        # Nothing heals a paused wan or svc either: a forced restart, as the checker's for a paused pair.
+        if paused "$node"; then
+            echo "guests: restarting paused $node"
+            set -- restart "$node" --force
+        else
+            stopped "$node" || continue
+            echo "guests: starting stopped $node"
+            set -- start "$node"
+        fi
         [ "$node" != svc ] || svc_storage_check || return
         # Bounded as the checker's start, so a stall cannot keep the locks; Incus may have restarted it meanwhile.
         # Three tries as start_guest: the last QEMU may still hold the VFIO group.
         attempt=0
-        until timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- || running "$node"; do
+        until timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- || running "$node"; do
             [ $((attempt += 1)) -lt 3 ] ||
-                die "cannot start $node; rebuild it: guests update $node /var/lib/convergent/release-guests/guests/$node --trusted-local"
+                die "cannot $1 $node; rebuild it: guests update $node /var/lib/convergent/release-guests/guests/$node --trusted-local"
             sleep 10 || return
         done
     done
