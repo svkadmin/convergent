@@ -1592,7 +1592,7 @@ debugfs() {
         case $sample in
         missing) return 0 ;;
         short) printf ab >out/profile ;;
-        *) printf abc >out/profile ;;
+        *) printf '[Settings]' >out/profile ;;
         esac
         [ "$sample" != dump-error ] || echo 'dump: Input/output error while reading ext2 file' >&2 ;;
     *) return 1 ;;
@@ -1611,7 +1611,7 @@ for sample in good empty absent oversized count total list-error dump-error miss
     count) awk 'BEGIN {for (i=1; i<=257; i++) print "/6/100600/0/0/" i ".psk/3/"}' >>"$work/list" ;;
     total) awk 'BEGIN {for (i=1; i<=65; i++) print "/6/100600/0/0/" i ".psk/65536/"}' >>"$work/list" ;;
     malformed) echo '/6/100600/0/0/broken' >>"$work/list" ;;
-    *) printf '/6/100600/0/0/C V.psk/3/\n' >>"$work/list" ;;
+    *) printf '/6/100600/0/0/C V.psk/10/\n' >>"$work/list" ;;
     esac
     # Never traverse subdirectories, follow symlinks, or dump unapproved names.
     printf '/7/040700/0/0/nested//\n/8/120777/0/0/link.psk/10/\n/9/100600/0/0/cache/999999/\n' >>"$work/list"
@@ -1621,7 +1621,7 @@ for sample in good empty absent oversized count total list-error dump-error miss
         case $sample in good|empty|absent) cat "$work/err"; die "rejected $sample" ;; esac
     fi
     case $sample in
-    good) [ "$(cat "$work/iwd/C V.psk")" = abc ] && [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
+    good) [ "$(cat "$work/iwd/C V.psk")" = '[Settings]' ] && [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
     empty|absent|oversized|count|total|list-error|malformed) [ ! -e "$work/dumps" ] ;;
     *) [ ! -e "$work/iwd/C V.psk" ] ;;
     esac

@@ -1,3 +1,4 @@
+. /usr/lib/convergent/guest-reply.sh
 title=Browser
 alias=br
 actions='status	Show running browsers	root
@@ -22,7 +23,9 @@ browser_start() (
 	if ! kill -0 "$pid" 2>/dev/null; then
 		wait "$pid"; result=$?
 		if [ "$result" != 0 ]; then
-			reason=$(awk '/browser: / {reason=$0} {last=$0} END {print (reason != "" ? reason : last)}' "$log")
+			# The log holds guest output too (launcher, cleanup tails): bounded and filtered.
+			reason=$(awk '/browser: / {reason=$0} {last=$0} END {print (reason != "" ? reason : last)}' "$log" |
+				head -c 65536 | guest_text)
 			rm -f "$log"
 			die "${reason:-browser exited ($result)}"
 		fi

@@ -218,6 +218,47 @@ for mode in check write; do
     (booted=42 latest=44 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ -z "$sync" ])
 done
 echo 'test-release-compat: bounded USB copies, online resumption and older boot fixtures passed'
+# sys update usb names the stick's filesystem as rescue does: no probed driver, no journal replay.
+sed 's/\[ -b "\$source" \]/[ -n "$source" ]/' "$repo/rootfs/usr/lib/convergent/sys/90-update" >"$work/update-module"
+grep -q '\[ -n "\$source" \] || die' "$work/update-module" || die 'update module block-device check moved'
+sh -n "$work/update-module"
+for fs in vfat exfat ext4 btrfs xfs udf iso9660 ntfs3 none; do
+    : >"$work/update-calls"
+    rc=0
+    (
+        . "$work/update-module"
+        die() { echo "$*" >&2; exit 1; }
+        onearg() { answer=$2; }
+        path() { :; }
+        realpath() { printf '%s\n' "$3"; }
+        mountpoint() { return 1; }
+        confirm() { return 1; }
+        lsblk() {
+            case $1 in
+            -snro) echo usb ;;
+            -dnro) [ "$2 $3" = 'FSTYPE --' ] || exit 97; [ "$fs" = none ] || echo "$fs" ;;
+            *) exit 97 ;;
+            esac
+        }
+        run() { printf '%s\n' "$*" >>"$work/update-calls"; [ "$1" != find ]; }
+        update_media /dev/sdz1
+    ) >"$work/update-log" 2>&1 || rc=$?
+    [ "$rc" != 0 ] || die "update media accepted fixture $fs"
+    case $fs in
+    vfat|exfat) mount="sudo mount -t $fs -o ro,nodev,nosuid,noexec -- /dev/sdz1 /run/sys-update" ;;
+    ext4) mount='sudo mount -t ext4 -o ro,nodev,nosuid,noexec,noload -- /dev/sdz1 /run/sys-update' ;;
+    btrfs) mount='sudo mount -t btrfs -o ro,nodev,nosuid,noexec,nologreplay -- /dev/sdz1 /run/sys-update' ;;
+    *) mount= ;;
+    esac
+    if [ -n "$mount" ]; then
+        grep -qxF "$mount" "$work/update-calls" || die "USB $fs not mounted by name"
+        grep -qxF 'sudo umount -- /run/sys-update' "$work/update-calls" || die "USB $fs left mounted"
+    else
+        if grep -q mount "$work/update-calls"; then die "mounted a $fs USB stick"; fi
+        grep -qx 'use a FAT, exFAT, ext4 or Btrfs USB filesystem' "$work/update-log" || die "no reason for $fs"
+    fi
+done
+echo 'test-release-compat: sys update usb mounts only named FAT, exFAT, ext4 or Btrfs sticks'
 # A failed flush must still kill states, retain tracking and allow cleanup to retry.
 (
 . "$repo/rootfs/usr/lib/convergent/update.sh"

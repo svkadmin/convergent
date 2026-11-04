@@ -498,6 +498,70 @@ if command -v jq >/dev/null 2>&1; then
         rm -rf "$work/topology"
     )
     echo 'test-topology: profiles of renamed work domains are pruned, or refused while used'
+    # Saved profiles whose only failure is a running VM's agent missing the guest API change reconcile;
+    # any other instance failure still fails.
+    (
+        . "$lib/fw-topology"
+        lib=$scratch/lib-edit
+        mkdir -p "$lib/work"
+        : >"$lib/work/work-dev-a.yaml"
+        ic() { [ "$*" = 'project list --format json' ] || return 1; echo '[{"name":"owner"}]'; }
+        logger() { echo "logger $*" >>"$scratch/edit-log"; }
+        incus() {
+            case "$*" in
+            *'project set owner features.networks=false') ;;
+            *'profile list --format json') echo '[{"name":"work-dev-a","used_by":["/1.0/instances/vm1?project=owner"],"devices":{"eth0":{"type":"nic","network":"work"}}}]' ;;
+            *'profile edit work-dev-a') [ -z "$edit_error" ] || { printf 'Error: %s\n\n' "$edit_error" >&2; return 1; } ;;
+            *) return 1 ;;
+            esac
+        }
+        saved='The following instances failed to update (profile change still saved):'
+        for sample in none agent handle vsock device mixed header other; do
+            case $sample in
+            none) edit_error= ;;
+            agent) edit_error="$saved
+ - Project: owner, Instance: vm1: Failed connecting to the agent: context deadline exceeded" ;;
+            handle) edit_error="$saved
+ - Project: owner, Instance: vm1: Failed getting agent client handle: VM agent isn't currently running" ;;
+            vsock) edit_error="$saved
+ - Project: owner, Instance: vm1: Failed sending host vsock information to the agent: EOF" ;;
+            device) edit_error="$saved
+ - Project: owner, Instance: vm1: Failed to update device \"eth0\": busy" ;;
+            mixed) edit_error="$saved
+ - Project: owner, Instance: vm1: Failed connecting to the agent: EOF
+ - Project: owner, Instance: ct1: Failed to update device \"eth0\": busy" ;;
+            header) edit_error=$saved ;;
+            other) edit_error='Profile not found' ;;
+            esac
+            rm -f "$scratch/edit-log"
+            if (work_profiles) 2>"$scratch/edit-err"; then
+                case $sample in none|agent|handle|vsock) ;; *) echo "accepted $sample" >&2; exit 1 ;; esac
+                [ "$sample" = none ] || grep -q 'work profile work-dev-a saved' "$scratch/edit-log"
+            else
+                case $sample in none|agent|handle|vsock) cat "$scratch/edit-err" >&2; exit 1 ;; esac
+                grep -qF "$edit_error" "$scratch/edit-err"
+            fi
+        done
+    )
+    echo 'test-topology: a running VM agent that misses the guest API change does not fail the reconcile'
+    # Work profiles carry the guests' guest API and Btrfs ioctl settings; devices stay NIC-only.
+    (
+        root=$scratch/host
+        mkdir -p "$root/etc"
+        cp "$repo/rootfs/etc/nftables.rules" "$root/etc/"
+        command sh "$here/networks" host "$root"
+        sed -n '/^  security.syscalls.deny: |$/,/^  security.guestapi: "false"$/p' "$repo/guests/browser/incus/base.yaml" >"$scratch/guest-config"
+        [ "$(wc -l <"$scratch/guest-config")" = 6 ]
+        printf 'devices:\n  eth0:\n    type: nic\n    network: work\n    name: eth0\n    vlan: N\n    security.mac_filtering: "true"\n' >"$scratch/work-devices"
+        count=0
+        for profile in "$root/usr/lib/convergent/incus/work/"work-*.yaml; do
+            sed -n '/^config:$/,/^devices:$/p' "$profile" | sed '1d;$d' | cmp - "$scratch/guest-config"
+            sed -n '/^devices:$/,$p' "$profile" | sed 's/^    vlan: "[0-9]*"$/    vlan: N/' | cmp - "$scratch/work-devices"
+            count=$((count + 1))
+        done
+        [ "$count" = 4 ]
+    )
+    echo 'test-topology: work profiles turn the guest API off and deny Btrfs subvolume ioctls'
     # The storage repair hint names the migration's own image when no update journal exists.
     (
         awk '/^storage_check\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/storage"

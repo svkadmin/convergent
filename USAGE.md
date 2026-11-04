@@ -637,6 +637,11 @@ within the same family. System segments are blocked. Internet works; home-LAN ac
 baked-in canonical RFC1918 prefixes. Topology updates stop both firewalls; failure
 restores both old images. Hash mismatch keeps work access closed.
 
+Work profiles turn the Incus guest API off and deny Btrfs subvolume ioctls to work containers.
+`incus exec`, `incus file` and the console still reach a work VM through its agent; only `/dev/incus`
+inside the guest (`user.*` keys, ready state) no longer answers. Set `security.guestapi=true` on an
+instance that needs it.
+
 Host shutdown preserves ephemeral work guests. Running work guests with default or `last-state`
 autostart return at the next boot.
 

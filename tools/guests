@@ -1156,6 +1156,36 @@ wan_extract() {
         [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c %s "$file")" = "$size" ] ||
             die 'incomplete wan iwd profile'
         [ ! -s "$work/wan-output" ] || die 'unexpected wan extraction output'
+        # The old wan never chooses what the new one parses: a short INI with what iwd keeps for the
+        # networks wan joins, or the profile stays behind (that network asks for its passphrase again).
+        if [ "$size" -gt 4096 ] || [ "$(LC_ALL=C tr -d '\n -~' <"$file" | wc -c)" != 0 ] || ! awk -v type="${name##*.}" '
+            $0 == "" {next}
+            /^\[[A-Za-z]+\]$/ {
+                section = substr($0, 2, length($0) - 2)
+                if ((section != "Settings" && !(section == "Security" && type == "psk")) || seen["[" section]++) exit 1
+                next
+            }
+            {
+                eq = index($0, "=")
+                if (section == "" || eq < 2 || length($0) > 512) exit 1
+                key = substr($0, 1, eq - 1); value = substr($0, eq + 1)
+                if (seen[section "." key]++) exit 1
+                if (section == "Settings" && key ~ /^(AutoConnect|Hidden|TransitionDisable)$/) ok = value ~ /^(true|false)$/
+                else if (section == "Settings" && key == "DisabledTransitionModes")
+                    ok = value ~ /^(personal|enterprise|open)(,(personal|enterprise|open))*$/
+                else if (section == "Security" && key == "Passphrase") ok = length(value) >= 8 && length(value) <= 128
+                else if (section == "Security" && key == "PreSharedKey") ok = length(value) == 64 && value !~ /[^0-9A-Fa-f]/
+                else if (section == "Security" && key ~ /^SAE-PT-Group(19|20)$/)
+                    ok = value != "" && length(value) <= 256 && value !~ /[^0-9A-Fa-f]/
+                else ok = 0
+                if (!ok) exit 1
+            }
+        ' "$file"; then
+            logger -p user.warning -t guests 'wan: a Wi-Fi profile with unexpected content was not carried over' 2>/dev/null || :
+            echo "guests: wan Wi-Fi profile $name not carried over: unexpected content" >&2
+            rm "$file" || die 'cannot remove wan extraction scratch file'
+            continue
+        fi
         install -m 600 -- "$file" "$work/iwd/$name" || die 'cannot save wan iwd profile'
         rm "$file" || die 'cannot remove wan extraction scratch file'
     done <"$work/wan-files"

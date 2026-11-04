@@ -477,7 +477,8 @@ roots before either boots. Work stays closed until validation.
 [Recovery](RECOVERY.md#4-guests-init-or-guests-update-stopped).
 
 WAN networks are extracted from the old partition in userspace by unprivileged debugfs, keeping
-only iwd .psk/.open/.8021x files; never mount the old disk. Browser replacement keeps both def/int
+only iwd .psk/.open/.8021x files of at most 4 KiB with the settings iwd writes for joined networks
+(no EAP); others are logged and left behind. Never mount the old disk. Browser replacement keeps both def/int
 backups until both pass, then advances the tmp alias. Failure restores both and shared profiles.
 
 Legacy web/admin objects migrate to def/int under browser-update.lock. profiles.before and durable

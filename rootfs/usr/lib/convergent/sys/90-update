@@ -24,6 +24,15 @@ update_media() (
 	path "$source"
 	[ -b "$source" ] || die 'source must be a block device or its mountpoint'
 	lsblk -snro TRAN -- "$source" | grep -qx usb || die 'source must be on USB'
+	# As rescue: named filesystems only (never a probed driver), no journal replay on a read-only mount.
+	fs=$(lsblk -dnro FSTYPE -- "$source") || die 'cannot read the USB filesystem type'
+	options=ro,nodev,nosuid,noexec
+	case $fs in
+	vfat|exfat) ;;
+	ext4) options=$options,noload ;;
+	btrfs) options=$options,nologreplay ;;
+	*) die 'use a FAT, exFAT, ext4 or Btrfs USB filesystem' ;;
+	esac
 	target=/run/sys-update
 	[ ! -L "$target" ] || die 'update mountpoint is a symlink'
 	if mountpoint -q "$target"; then
@@ -45,7 +54,7 @@ update_media() (
 	trap cleanup 0
 	trap 'exit 1' HUP INT TERM
 	run sudo mkdir -p "$target" || exit 1
-	(umask 022; run sudo mount -o ro,nodev,nosuid,noexec -- "$source" "$target") || exit 1
+	(umask 022; run sudo mount -t "$fs" -o "$options" -- "$source" "$target") || exit 1
 	mounted=1
 	run find "$target" -xdev -type f -name manifest >"$list" || exit 1
 	[ -s "$list" ] || die 'no release directories containing manifest'

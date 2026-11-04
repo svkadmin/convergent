@@ -475,4 +475,114 @@ sed -n '/^# Stage, hash and validate/,/^cp "\$work\/list\.raw" "\$state\/list\.r
     if (. "$scratch/dns-mutators") >/dev/null 2>"$scratch/error"; then exit 1; fi
     grep -qx 'dns-push: candidate check failed on fw1 (status 7)' "$scratch/error"
 )
+# Browser launch failures: the guest's log tails, sys browser's reason and incus-ui's int commands reach
+# the owner's terminal bounded and filtered.
+sed -n '/^        for log in "\$run"\/\*\.log; do /p' "$repo/tools/browser" >"$scratch/tails"
+[ "$(wc -l <"$scratch/tails")" = 1 ]; sh -n "$scratch/tails"
+(
+    run=$scratch/browser-run
+    mkdir "$run"
+    printf 'browser: \033]52;c;eA==\007 spoofed\n' >"$run/browser.log"
+    head -c 131072 /dev/zero | tr '\000' x >"$run/wayland.log"
+    . "$scratch/tails" 2>"$scratch/error"
+    grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'browser log tails'
+    [ "$(wc -c <"$scratch/error")" -le 65600 ]
+)
+sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
+    "$repo/rootfs/usr/lib/convergent/sys/70-browser" >"$scratch/browser-module"
+sh -n "$scratch/browser-module"
+(
+    . "$scratch/browser-module"
+    die() { echo "$*" >&2; exit 1; }
+    trace() { :; }
+    setsid() { printf 'browser: \033]52;c;eA==\007 spoofed\n' >&2; return 1; }
+    XDG_RUNTIME_DIR=$scratch/xdg
+    mkdir "$XDG_RUNTIME_DIR"
+    if browser_start def 2>"$scratch/error"; then exit 1; fi
+    grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'sys browser'
+)
+{
+    sed -n '/^int_exec() {/p; /^int_exec_raw() {/p' "$repo/tools/incus-ui"
+    sed -n '/^    --import)$/,/unlocked full-administration session in int/p' "$repo/tools/incus-ui" | sed '1d; s/ ;;$//'
+} >"$scratch/import"
+[ "$(grep -c '^int_exec' "$scratch/import")" = 2 ] || exit 1
+grep -q '^ *int_exec ' "$scratch/import"
+if grep 'ic exec int' "$scratch/import" | grep -qv '^int_exec_raw() {'; then exit 1; fi
+sh -n "$scratch/import"
+cat >"$scratch/import-driver" <<'DRIVER'
+set -eu
+. "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
+run=$scratch/ui-run
+logger() { :; }
+die() { echo "$*" >&2; exit 1; }
+ic() {
+    case $1 in
+    exec) printf 'out\033[2J\n'; printf 'err\033]52;c;eA==\007\n' >&2; return "$exec_rc" ;;
+    config) : >"$scratch/ui-trusted" ;;
+    *) exit 97 ;;
+    esac
+}
+. "$scratch/import"
+DRIVER
+for exec_rc in 0 7; do
+    rm -rf "$scratch/ui-run" "$scratch/ui-trusted"
+    mkdir "$scratch/ui-run"
+    for file in import.p12 ca.crt client.crt; do echo fixture >"$scratch/ui-run/$file"; done
+    code=0
+    (export repo scratch exec_rc; sh "$scratch/import-driver") </dev/null >"$scratch/output" 2>"$scratch/error" || code=$?
+    [ ! -s "$scratch/output" ]; shown "$scratch/error" 'incus-ui import'
+    case $exec_rc in
+    0) [ "$code" = 0 ] && [ -f "$scratch/ui-trusted" ] && [ -f "$scratch/ui-run/trusted" ] || exit 1
+        [ "$(grep -cx 'out\[2J' "$scratch/error")" = 4 ] && [ "$(grep -cx 'err]52;c;eA==' "$scratch/error")" = 4 ] || exit 1 ;;
+    7) [ "$code" = 7 ] && [ ! -e "$scratch/ui-trusted" ] && [ ! -e "$scratch/ui-run/trusted" ] || exit 1 ;;
+    esac
+done
+# A wan replacement carries only short iwd profiles with what iwd writes; the rest stays behind.
+sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p' "$repo/tools/guests" >"$scratch/wan"
+[ "$(grep -c '^wan_[a-z]*() [{(]$' "$scratch/wan")" = 3 ]; sh -n "$scratch/wan"
+(
+    LC_ALL=C; export LC_ALL
+    . "$scratch/wan"
+    work=$scratch/wan-work profiles=$scratch/wan-profiles
+    mkdir -p "$work/wan-read/out" "$work/iwd" "$profiles"
+    die() { echo "die $*" >&2; exit 1; }
+    logger() { echo "logger $*" >>"$scratch/wan-log"; }
+    setpriv() { shift 4; "$@"; }
+    ulimit() { :; }
+    pt=$(head -c 128 /dev/zero | tr '\000' a)
+    printf '[Security]\nPassphrase=convergent-test-only\nSAE-PT-Group19=%s\n\n[Settings]\nAutoConnect=false\nHidden=true\n' "$pt" >"$profiles/good.psk"
+    printf '[Settings]\nAutoConnect=false\nTransitionDisable=true\nDisabledTransitionModes=personal,open\n' >"$profiles/=43562074657374.open"
+    : >"$profiles/empty.open"
+    printf '[Security]\nPassphrase=convergent-test-only\n[IPv4]\nSendHostname=true\n' >"$profiles/foreign.psk"
+    { printf '[Security]\nPassphrase='; head -c 61440 /dev/zero | tr '\000' x; printf '\n'; } >"$profiles/long.psk"
+    printf '[Security]\nEAP-Method=TLS\n' >"$profiles/eap.8021x"
+    printf '[Security]\nPassphrase=abc\033]52;c;eA==\007defgh\n' >"$profiles/control.psk"
+    printf '[Security]\nPassphrase=convergent-test-only\nPassphrase=convergent-test-two\n' >"$profiles/twice.psk"
+    printf '[Security]\nPreSharedKey=xyz\n' >"$profiles/key.psk"
+    printf '[Security]\nPassphrase=convergent-test-only\n' >"$profiles/secret.open"
+    printf 'Passphrase=convergent-test-only\n' >"$profiles/bare.psk"
+    n=10
+    for p in "$profiles"/*; do
+        printf '/%s/100600/0/0/%s/%s/\n' "$n" "${p##*/}" "$(stat -c %s "$p")" >>"$scratch/wan-list"
+        printf '%s %s\n' "$n" "${p##*/}" >>"$scratch/wan-map"
+        n=$((n + 1))
+    done
+    debugfs() {
+        case $2 in
+        'ls -p /var/lib') printf '/5/040700/0/0/.//\n/4/040755/0/0/..//\n/6/040700/0/0/iwd//\n' ;;
+        'ls -p <6>') printf '/6/040700/0/0/.//\n/5/040755/0/0/..//\n'; cat "$scratch/wan-list" ;;
+        'dump <'*'> out/profile')
+            inode=${2#dump <}; inode=${inode%%>*}
+            cp "$profiles/$(awk -v n="$inode" '$1 == n {print $2}' "$scratch/wan-map")" out/profile ;;
+        *) return 1 ;;
+        esac
+    }
+    wan_extract 2>"$scratch/error"
+    for name in good.psk =43562074657374.open empty.open; do cmp "$profiles/$name" "$work/iwd/$name"; done
+    [ "$(ls -A "$work/iwd" | wc -l)" = 3 ]
+    [ "$(grep -c 'not carried over: unexpected content$' "$scratch/error")" = 8 ]
+    [ "$(grep -c 'not carried over' "$scratch/wan-log")" = 8 ]
+    shown "$scratch/error" wan_extract
+)
 echo 'test-guest-reply: byte limits, transfer failures, cleanup and production readbacks passed'
+echo 'test-guest-reply: browser tails, sys browser reasons, incus-ui imports and wan profiles are bounded and filtered'

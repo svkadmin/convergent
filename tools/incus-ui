@@ -1,6 +1,7 @@
 #!/bin/sh
 # Fixed session operations are called by browser; certificate administration requires owner sudo.
 set -eu
+. /usr/lib/convergent/guest-reply.sh
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH LC_ALL=C
 umask 077
@@ -21,6 +22,9 @@ ic() {
     if [ "$1" = query ]; then timeout -k 1 30 incus --force-local "$@" 9>&- 8>&- 7>&- 6>&-
     else timeout -k 1 30 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; fi
 }
+# Both streams of an int command are guest text on the owner's terminal: bounded and filtered.
+int_exec() { guest_stderr int_exec_raw "$@"; }
+int_exec_raw() { ic exec int "$@" >&2; }
 finish() {
     result=$?
     trap - 0
@@ -179,12 +183,12 @@ case $action in
         cp "$tls/ca.crt" "$run/ca.crt" ;;
     --import)
         [ -s "$run/import.p12" ] || die 'session was not unlocked'
-        ic exec int -- sh -eu -c 'test -f /run/incus-ui-ready; test -d /run/incus-ui/nssdb'
-        ic exec int --user 1000 --group 1000 -- sh -eu -c \
+        int_exec -- sh -eu -c 'test -f /run/incus-ui-ready; test -d /run/incus-ui/nssdb'
+        int_exec --user 1000 --group 1000 -- sh -eu -c \
             'umask 077; cat >/run/incus-ui/import.p12' <"$run/import.p12"
-        ic exec int --user 1000 --group 1000 -- sh -eu -c \
+        int_exec --user 1000 --group 1000 -- sh -eu -c \
             'umask 077; cat >/run/incus-ui/ca.crt' <"$run/ca.crt"
-        ic exec int --user 1000 --group 1000 -- sh -eu -c '
+        int_exec --user 1000 --group 1000 -- sh -eu -c '
             trap "rm -f /run/incus-ui/import.p12 /run/incus-ui/ca.crt" 0
             certutil -A -d sql:/run/incus-ui/nssdb -n convergent-ca -t C,, -i /run/incus-ui/ca.crt
             pk12util -i /run/incus-ui/import.p12 -d sql:/run/incus-ui/nssdb -W "" -K ""

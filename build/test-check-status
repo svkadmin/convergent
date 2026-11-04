@@ -97,3 +97,46 @@ for tick in 1 2 3 4; do
     [ "$(stat -c %Y "$status/portal")" -gt "$previous" ]
 done
 echo 'check status: repeated expiry contention refreshes the portal sample'
+# The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.
+sed -n '/^autostart() {/,/^}/p' "$repo/tools/check" | sed "s|\([ #]\)/home\([ /]\)|\1$work/home\2|g" >"$work/autostart"
+[ -s "$work/autostart" ]; sh -n "$work/autostart"
+[ "$(grep -c "$work/home" "$work/autostart")" = 3 ]
+grep -q "timeout -k 1 120 find $work/home " "$work/autostart"
+sed 's/timeout -k 1 120 find/timeout -k 1 2 find/' "$work/autostart" >"$work/autostart-fast"
+grep -q 'timeout -k 1 2 find' "$work/autostart-fast"
+owner=$work/home/owner
+mkdir -p "$owner/.config/sway" "$work/scan"
+printf 'echo hi\n' >"$owner/.bashrc"
+printf 'include /etc/sway/config\n' >"$owner/.config/sway/config"
+scan() {
+    started=$(date +%s) rc=0
+    LC_ALL=C timeout -k 1 90 sh -c '. "$1"; work=$2; autostart' sh "$1" "$work/scan" 2>"$work/scan.err" || rc=$?
+    elapsed=$(($(date +%s) - started))
+}
+scan "$work/autostart"
+[ "$rc" = 0 ]
+# Same lines as sha256sum on the file: accepted baselines stay valid.
+sha256sum "$owner/.bashrc" "$owner/.config/sway/config" | LC_ALL=C sort | cmp - "$work/scan/autostart"
+truncate -s 1T "$owner/.bashrc"
+scan "$work/autostart"
+[ "$rc" = 1 ] && [ "$elapsed" -lt 30 ] || exit 1
+grep -qx "autostart file over 67108864 bytes: $owner/.bashrc" "$work/scan.err"
+printf 'echo hi\n' >"$owner/.bashrc"
+# The sway include check reads the same capped copy.
+truncate -s 67108865 "$owner/.config/sway/config"
+scan "$work/autostart"
+[ "$rc" = 1 ] && [ "$elapsed" -lt 30 ] || exit 1
+grep -qx "autostart file over 67108864 bytes: $owner/.config/sway/config" "$work/scan.err"
+printf 'include /etc/sway/config\n' >"$owner/.config/sway/config"
+# A read that never returns ends with the deadline, not with the locks held.
+(
+    fake=$(mktemp -d /var/tmp/check-fake.XXXXXX)
+    trap 'rm -rf "$fake"' 0
+    REAL_FIND=$(command -v find); export REAL_FIND
+    printf '#!/bin/sh\ncase " $* " in *" -exec "*) exec sleep 20 ;; esac\nexec "$REAL_FIND" "$@"\n' >"$fake/find"
+    chmod 755 "$fake/find"
+    PATH=$fake:$PATH
+    scan "$work/autostart-fast"
+    [ "$rc" != 0 ] && [ "$elapsed" -lt 15 ] || exit 1
+)
+echo 'check: the autostart scan fails oversized files at once and a hang at its deadline'

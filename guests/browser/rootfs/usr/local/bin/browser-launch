@@ -50,6 +50,9 @@ fi
 cd /home/browser
 # The host allows one launcher per role; a lock left by a renamed or killed container names another host.
 rm -f profile/SingletonLock profile/SingletonSocket profile/SingletonCookie
+# An Incus session never opens the profile a Grafana session wrote: a fresh one on int's per-boot tmpfs.
+profile=/home/browser/profile
+[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile
 
 exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LOGNAME=browser \
     LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
@@ -58,5 +61,5 @@ exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LO
     LIBVA_DRIVER_NAME=iHD \
     /usr/bin/chromium --ozone-platform=wayland --class="convergent-$role" \
     --enable-features=AcceleratedVideoDecodeLinuxGL,AcceleratedVideoDecodeLinuxZeroCopyGL \
-    --user-data-dir=/home/browser/profile --password-store=basic --no-first-run \
+    --user-data-dir="$profile" --password-store=basic --no-first-run \
     --disable-background-networking --disable-component-update --disable-breakpad "$@"
