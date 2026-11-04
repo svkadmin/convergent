@@ -96,6 +96,33 @@ EOF
 		grep -Fq "block in log quick on $parent to 100.80.0.0/16" "$fw/etc/pf.conf"
 	done <"$registry"
 	if grep -E '@(WORK|HOME)_[A-Z_]+@' "$fw/etc/pf.conf" "$work/$topology/wan/etc/nftables.nft" "$work/$topology/host/etc/nftables.rules"; then exit 1; fi
+	# One segment must not fill pf's shared table: every work and browsing rule has a rule-wide max, and
+	# their expanded sum, doubled for a forwarded flow's outbound state, leaves 10,000 for management.
+	awk -v headroom=10000 '
+		$1 == "set" && $2 == "limit" { for (i = 3; i < NF; i++) if ($i == "states") limit = $(i + 1) + 0 }
+		$2 == "=" && $3 ~ /^"/ { v = $0; sub(/^[^"]*"/, "", v); sub(/"[^"]*$/, "", v); macro["$" $1] = v }
+		/^pass in quick on vlan[0-9]+ / || /^pass in on \$if_web .* from \$a_webbr to ! <nonpublic> / {
+			rules++
+			if (!match($0, /[(, ]max [0-9]+[,)]/)) { print "uncapped: " $0; bad = 1; next }
+			n = substr($0, RSTART + 5, RLENGTH - 6) + 0
+			line = ""
+			for (i = 1; i <= NF && $i != "keep"; i++) line = line " " (($i in macro) ? macro[$i] : $i)
+			copies = 1
+			while (match(line, /\{[^}]*\}/)) {
+				list = substr(line, RSTART + 1, RLENGTH - 2)
+				gsub(/ - /, "-", list); gsub(/,/, " ", list)
+				copies *= split(list, item, " ")
+				line = substr(line, RSTART + RLENGTH)
+			}
+			sum += n * copies
+		}
+		END {
+			print "pf states: " rules " capped rules, " sum " expanded, limit " limit
+			if (bad || rules != 17 || !limit || 2 * sum + headroom > limit) exit 1
+		}' "$fw/etc/pf.conf"
+	grep -Fxq '	private-address: ::1/128' "$fw/var/unbound/etc/unbound.conf"
+	grep -Fxq '	private-address: ::/128' "$fw/var/unbound/etc/unbound.conf"
+	grep -Fxq 'pass quick on $if_sync inet proto udp from $sync_addrs to 224.0.1.240 port 8067 no state' "$fw/etc/pf.conf"
 done
 if cmp -s "$work/default/fw/etc/convergent/topology.sha256" "$work/changed/fw/etc/convergent/topology.sha256"; then exit 1; fi
 # The baseline registry still certifies an old pair during coordinated rollback.

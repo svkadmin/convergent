@@ -317,6 +317,12 @@ DHCP
 	done
 	listen "$name" "$base.10" 8080
 done 3<"$work_rows"
+# dhcpd -y also sends those lease updates to 224.0.1.240; pf passes them instead of logging blocks.
+for f in fw1 fw2; do
+	timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$f" \
+		'pkill -ALRM -x pflogd; sleep 2; out=$(tcpdump -n -r /var/log/pflog "udp and dst host 224.0.1.240" 2>/dev/null) && test -z "$out"' ||
+		{ echo "CV-PF FAIL $f: dhcpd sync multicast blocked or pflog unreadable"; result=1; }
+done
 # A one-vCPU firewall relinks its kernel for minutes after booting; the L2 storm's PF logging on top
 # of that made CARP advertisements late and the pair flap into the first work probes. Let it finish.
 cv_time settle
