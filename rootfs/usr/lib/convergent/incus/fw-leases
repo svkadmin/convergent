@@ -1,6 +1,7 @@
 #!/bin/sh
 # Quiesce both allocators while checkpointing and seeding a replacement. A replacement still booting and
-# relinking took over 30 s for the rcctl calls below.
+# relinking took over 30 s for the rcctl calls below. A node being replaced (an uncommitted pair migration
+# replaces both) may stay silent: its root and leases come from the saved copy.
 leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
@@ -19,7 +20,7 @@ fi' >"$work/leases.$lease_node"; then
             mv "$work/leases.$lease_node" "$state/leases/$lease_node" && sync || return
             lease_sources=$((lease_sources + 1))
         else
-            [ "${rebuilding:-}" = "$lease_node" ] || return 1
+            [ "${rebuilding:-}" = "$lease_node" ] || { [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]; } || return 1
         fi
     done
     [ "$lease_sources" != 0 ] || [ -f "$state/leases/saved" ] || return 1
@@ -37,7 +38,7 @@ if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; the
     mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
     sync
 fi' <"$state/leases/saved"; then
-            [ "${rebuilding:-}" = "$lease_node" ] || return 1
+            [ "${rebuilding:-}" = "$lease_node" ] || { [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]; } || return 1
         fi
     done
     touch "$state/leases/quiesced" && sync

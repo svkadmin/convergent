@@ -87,6 +87,21 @@ cp "$state/leases/fw2" "$work/fw2.before"
 if leases_hold; then exit 1; fi
 cmp "$work/fw2.before" "$state/leases/fw2"
 rm -f "$state/leases/held"
+# A silent node fails the checkpoint, except in an uncommitted pair migration that replaces both roots.
+(
+	rsh() { [ "$1" != fw2 ] || return 255; case $2 in *'cat /var/db/dhcpd.leases'*) cat "$work/live/$1" ;; *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live/$1" ;; esac; }
+	cp "$work/new" "$work/live/fw2"
+	if leases_hold; then exit 1; fi
+	mkdir "$state/fw.topology"
+	touch "$state/fw.topology/committed"
+	if leases_hold; then exit 1; fi
+	[ ! -e "$state/leases/quiesced" ]
+	rm "$state/fw.topology/committed"
+	leases_hold
+	[ -e "$state/leases/quiesced" ]
+)
+rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
+cp "$work/old" "$work/live/fw1"
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
 command -v healthy >/dev/null && command -v cleanup >/dev/null

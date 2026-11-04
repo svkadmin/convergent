@@ -2003,6 +2003,11 @@ storage_check() {
         case $type in virtual-machine) codes="3, '$name', '', (SELECT id FROM projects WHERE name = 'default'), 1" ;;
         *) codes="0, '$name', '', (SELECT id FROM projects WHERE name = 'default'), 0" ;; esac
         image=$(awk -v g="$name" '$1 == g {print $3; exit}' "$state/pending" 2>/dev/null) || image=
+        # A pair migration rebuilds from its own journal: the old root until committed, the new one after.
+        if [ -z "$image" ]; then
+            if [ -f "$state/fw.topology/committed" ]; then generation=new; else generation=old; fi
+            image=$(cat "$state/fw.topology/$name.$generation" 2>/dev/null) || image=
+        fi
         die "$name has no storage record (a rebuild cut by a power loss); put it back, rebuild, then recover: sudo incus admin sql global \"INSERT INTO storage_volumes (storage_pool_id, node_id, type, name, description, project_id, content_type, creation_date) VALUES ((SELECT id FROM storage_pools WHERE name = 'default'), (SELECT id FROM nodes), $codes, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))\"; sudo incus --force-local --project default rebuild ${image:-<image>} $name; sys guests update"
     done <"$work/orphans"
     for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state; do

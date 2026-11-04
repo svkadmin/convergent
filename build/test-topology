@@ -23,6 +23,7 @@ stopped() { ! running "$1"; }
 locked() { "$@"; }
 retry() { "$@"; }
 healthy() { running "$1"; }
+reachable() { running "$1"; }
 start_guest() { seed_start "$1"; }
 seed_remove() { echo "unseed $1" >>"$log"; }
 image_alias() { echo "alias $1 $2" >>"$log"; }
@@ -414,3 +415,110 @@ echo 'test-topology: update redoes its own unhealthy committed wan or svc in pla
     rm -f "$state/fw.handoff" "$state/carp-pass"
 )
 echo 'test-topology: update fw waits for booting firewalls and records its images once committed'
+# A replay at boot meets firewalls Incus has just started: holds first, then a read-only wait for sshd,
+# then the real lease checkpoint; a node silent throughout is replaced from the saved leases.
+(
+    . "$lib/fw-leases"
+    retry() { echo "retry $*" >>"$log"; tries=0; until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done; }
+    reachable() { rsh "$1" true >/dev/null; }
+    rsh() {
+        case $1 in fw2) [ "$((boots += 1))" -gt "$silent" ] || return 255 ;; esac
+        case $2 in
+        true) ;;
+        *'rcctl disable dhcpd'*) echo "read $1" >>"$log" ;;
+        *'cat >/var/db/dhcpd.leases.new'*) cat >/dev/null ;;
+        *) return 1 ;;
+        esac
+    }
+    for silent in 2 1000; do
+        journal
+        rm -rf "$state/leases" "$scratch/fw1.held" "$scratch/fw2.held"
+        for f in fw1 fw2; do echo running >"$scratch/$f.status"; done
+        boots=0
+        topology_hold
+        stopped fw1 && stopped fw2
+        [ -f "$state/leases/quiesced" ]
+        awk '$0 == "hold fw2" {h=NR} $0 == "retry reachable fw2" {w=NR} $0 == "read fw1" {r=NR} END {exit !(h && w && r && h < w && w < r)}' "$log"
+        if [ "$silent" = 2 ]; then grep -qx 'read fw2' "$log"; elif grep -qx 'read fw2' "$log"; then exit 1; fi
+    done
+    rm -rf "$state/fw.topology" "$state/leases"
+)
+echo 'test-topology: rollback holds both, waits for a booting firewall and checkpoints around a silent one'
+# A committed node that never answers is redone from the journal, never left without an exit.
+(
+    journal
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; done
+    touch "$state/fw.topology/committed" "$scratch/fw2.broken"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    rebuild_root() { stopped "$1" || return 1; echo "rebuild $1 $2" >>"$log"; rm -f "$scratch/$1.broken"; printf '%s\n' "$2" >"$scratch/$1.image"; }
+    leases_hold() { echo "checkpoint ${rebuilding:-}" >>"$log"; }
+    leases_resume() { echo resume >>"$log"; }
+    topology_recover
+    [ ! -e "$state/fw.topology" ]
+    if grep -q '^rebuild fw1' "$log"; then exit 1; fi
+    awk '$0 == "checkpoint fw2" {h=NR} $0 == "stop fw2" {s=NR} $0 == "rebuild fw2 new" {r=NR} $0 == "boot fw2" {b=NR} $0 == "resume" {u=NR}
+        END {exit !(h && h < s && s < r && r < b && b < u)}' "$log"
+    running fw1 && running fw2
+)
+echo 'test-topology: a committed migration redoes a node that never becomes healthy'
+if command -v jq >/dev/null 2>&1; then
+    # A renamed work domain's profile stays on a VLAN another domain may own: used refuses, unused goes.
+    (
+        . "$lib/fw-topology"
+        lib=$scratch/lib
+        mkdir -p "$lib/work"
+        : >"$lib/work/work-eng-a.yaml"
+        ic() { [ "$*" = 'project list --format json' ] || return 1; echo '[{"name":"default"},{"name":"owner"}]'; }
+        incus() { echo "incus $*" >>"$log"; case "$*" in *'profile list --format json') cat "$scratch/profiles.json" ;; esac; }
+        cmp() { :; }
+        image_dir=$scratch
+        die() { echo "$*" >&2; exit 1; }
+        import_image() { echo import >>"$log"; exit 1; }
+        used='"/1.0/instances/vm?project=owner"'
+        nic='{"eth0":{"type":"nic","network":"work","vlan":"320"}}'
+        for users in "$used" ''; do
+            printf '[{"name":"default","used_by":[%s]},{"name":"work-eng-a","used_by":[%s],"devices":%s},{"name":"work-dev-a","used_by":[],"devices":%s},{"name":"work-dev-b","used_by":[%s],"devices":%s},{"name":"work-lab","used_by":[%s],"devices":{"root":{"type":"disk"}}},{"name":"work-old","used_by":[]}]\n' \
+                "$used" "$used" "$nic" "$nic" "$users" "$nic" "$used" >"$scratch/profiles.json"
+            : >"$log"
+            if (topology_update) 2>"$scratch/err"; then exit 1; fi
+            if [ -n "$users" ]; then
+                grep -q 'work-dev-b is no longer a work domain' "$scratch/err"
+                if grep -q -e '^import' -e 'profile delete' "$log"; then exit 1; fi
+                if work_profiles 2>/dev/null; then exit 1; fi
+                if grep -q 'profile delete work-dev-b' "$log"; then exit 1; fi
+            else
+                grep -qx import "$log"
+                if grep -q 'profile delete' "$log"; then exit 1; fi
+                work_profiles
+                grep -q 'profile delete work-dev-a ' "$log" && grep -q 'profile delete work-dev-b ' "$log"
+                if grep -q -e 'profile delete work-eng-a' -e 'profile delete default' -e 'profile delete work-lab' -e 'profile delete work-old' "$log"; then exit 1; fi
+            fi
+        done
+        [ ! -e "$state/fw.topology" ]
+        rm -rf "$work/topology"
+    )
+    echo 'test-topology: profiles of renamed work domains are pruned, or refused while used'
+    # The storage repair hint names the migration's own image when no update journal exists.
+    (
+        awk '/^storage_check\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/storage"
+        [ -s "$scratch/storage" ]
+        sh -n "$scratch/storage"
+        . "$scratch/storage"
+        pool=$scratch/pool
+        ic() { case $1 in query) echo '[{"name":"fw2","type":"virtual-machine"}]' ;; storage) echo '[]' ;; *) return 1 ;; esac; }
+        die() { echo "$*" >"$scratch/hint"; exit 1; }
+        rm -f "$state/pending"
+        mkdir -p "$state/fw.topology"
+        echo old-image >"$state/fw.topology/fw2.old"
+        echo new-image >"$state/fw.topology/fw2.new"
+        for generation in old new; do
+            [ "$generation" = old ] || touch "$state/fw.topology/committed"
+            if (storage_check); then exit 1; fi
+            grep -q "rebuild $generation-image fw2; sys guests update" "$scratch/hint"
+        done
+        rm -rf "$state/fw.topology"
+    )
+    echo 'test-topology: the storage repair hint names the migration image'
+else
+    echo 'test-topology: SKIP jq work profile and storage hint fixtures (jq unavailable)'
+fi

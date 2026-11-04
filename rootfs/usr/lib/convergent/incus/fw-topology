@@ -1,10 +1,12 @@
 #!/bin/sh
 # Sourced by guests: a topology change is one durable, firewall pair rebuild.
 topology_hold() {
-    leases_hold || return
     for node in fw1 fw2; do
         hold_set "$node" boot.autostart=false boot.autorestart=false || return
     done
+    # A replay at boot meets firewalls Incus has just started: wait read-only for their sshd first.
+    for node in fw1 fw2; do if running "$node"; then retry reachable "$node" || :; fi; done
+    leases_hold || return
     for node in fw1 fw2; do
         stopped "$node" || locked force_stop "$node" || return
         stopped "$node" || return
@@ -34,8 +36,15 @@ topology_retire() {
 }
 topology_finish() {
     for node in fw1 fw2; do
-        running "$node" || start_guest "$node" || return
-        retry healthy "$node" || return
+        # A committed node that never answers is redone from the journal, as a committed rebuild is.
+        if ! { running "$node" || start_guest "$node"; } || ! retry healthy "$node"; then
+            (rebuilding=$node; leases_hold) || return
+            stopped "$node" || locked force_stop "$node" || return
+            seed_remove "$node" || return
+            rebuild_root "$node" "$(cat "$state/fw.topology/$node.new")" || return
+            seed_start "$node" || return
+            leases_resume || return
+        fi
         image_alias "$node" "$(cat "$state/fw.topology/$node.new")" || return
     done
     retry pair fw1 fw2 || return
@@ -115,10 +124,26 @@ work_profiles() {
         fi
         incus --force-local --project owner profile edit "$name" <"$file" 9>&- 8>&- 7>&- 6>&- || return
     done
+    work_stale prune
+}
+# A renamed work domain leaves its profile on a VLAN another domain may now own: an unused one goes,
+# a used one refuses.
+work_stale() {
+    ic project list --format json >"$work/projects" || return
+    jq -e 'any(.[]; .name == "owner")' "$work/projects" >/dev/null || return 0
+    incus --force-local --project owner profile list --format json 9>&- 8>&- 7>&- 6>&- >"$work/profiles" || return
+    # Only NIC-only work-network profiles, the shape work_profiles installs: other work-* profiles are the owner's.
+    jq -r '.[] | select((.name | startswith("work-")) and ((.devices // {}) | keys) == ["eth0"] and .devices.eth0.network == "work") | "\(.name) \(.used_by | length)"' "$work/profiles" >"$work/work-profiles" || return
+    while read -r name users; do
+        [ ! -f "$lib/work/$name.yaml" ] || continue
+        [ "$users" = 0 ] || { fail "owner profile $name is no longer a work domain but still in use; move its instances to a current work-* profile"; return 1; }
+        [ "${1:-}" != prune ] || incus --force-local --project owner profile delete "$name" 9>&- 8>&- 7>&- 6>&- || return
+    done <"$work/work-profiles"
 }
 topology_update() {
     step=topology-prepare
     cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'firewall topology differs from booted host'
+    work_stale || die 'a former work-domain profile is still in use'
     mkdir "$work/topology"
     for node in fw1 fw2; do
         import_only=1

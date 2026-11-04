@@ -61,7 +61,8 @@ printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-mainte
 )
 lib=/usr/lib/convergent/incus
 state=/var/lib/convergent/guests
-for fault in fw1 fw2 none; do
+# hold: Incus restarts fw2 right after the journal; the cleanup's rollback must wait for its sshd.
+for fault in hold fw1 fw2 none; do
     # A fault's rollback reboots the pair: a relinking fw1 missed adverts and fw2 was MASTER for 8 s.
     fw_settled -t 3600 fw1:master fw2:backup
     cv_time "topology-$fault"
@@ -70,7 +71,10 @@ for fault in fw1 fw2 none; do
     else
         awk -v fault="$fault" '
             {print}
-            /^        rebuild_root "\$node" .*\/\$node.new/ {
+            fault == "hold" && /^    mv "\$work\/topology" "\$state\/fw\.topology"$/ {
+                print "    incus --force-local --project default restart fw2 --force 9>&- 8>&- 7>&- 6>&-; die \"injected during hold\""; n++
+            }
+            fault != "hold" && /^        rebuild_root "\$node" .*\/\$node.new/ {
                 print "        [ \"$node\" != \"" fault "\" ] || die \"injected after rebuild\""; n++
             }
             END {exit n != 1}' "$lib/fw-topology" >"$release/fw-topology-fault"
@@ -100,4 +104,4 @@ for fault in fw1 fw2 none; do
 done
 # The gate opens once both firewalls answer; one still relinking can take many minutes.
 timeout -k 5 1500 sh -c 'until sh "$1/work-gate"; do sleep 10; done' sh "$lib"
-echo 'CV-TOPOLOGY legacy migration and both rebuild faults passed'
+echo 'CV-TOPOLOGY legacy migration, the hold fault and both rebuild faults passed'
