@@ -251,6 +251,8 @@ fw_ntpd() {
 	for node in fw1 fw2; do
 		[ ! -e "$run/fw-ntpd.$node" ] || continue
 		if grep -Fq " $node=down " "$run/status/topology" 2>/dev/null; then continue; fi
+		# Nor one the heal observes: its restart takes this lock without waiting.
+		[ ! -e "$run/firewall-heal/$node" ] && [ ! -e "$run/firewall-heal/pair" ] || continue
 		timeout -k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 \
 			"$node" 'rdate -n 100.80.1.10' </dev/null >/dev/null 2>&1 9>&- 7>&- || continue
 		: >"$run/fw-ntpd.$node" || bad "cannot record the $node clock step"

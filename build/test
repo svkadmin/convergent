@@ -1115,7 +1115,8 @@ grep -qx '30 fw1' "$bounds"
 list_slow=0
 # check auto's sweeps keep the shared guests lock for their full bound behind a frozen QEMU, into the next
 # minute: while the heal observes a firewall they wait, or every restart is inhibited by the guests lock.
-sed -n '/^# After self-heal: a frozen QEMU/,/^# End Remmina\./p' /usr/local/sbin/check | sed "s|/run/convergent|$work/run|g" >"$work/sweeps"
+sed -n '/^# After self-heal: a frozen QEMU/,/^# End Remmina\./p' /usr/local/sbin/check |
+    sed -e "s|/run/convergent|$work/run|g" -e "s|/proc/|$work/proc/|g" >"$work/sweeps"
 grep -q 'remote reap' "$work/sweeps"
 sweeps() (
     # Each sweep leaves a background shared holder, as one still running into the next minute.
@@ -1150,6 +1151,22 @@ rm "$work/run/firewall-heal/pair"
 sweeps
 [ "$(wc -l <"$work/swept")" = 2 ]
 release
+# A firewall the heal cannot restart for two minutes (three an hour) stops no sweep for good.
+cp "$work/run/firewall-heal/attempts" "$work/attempts.saved"
+cp "$work/proc/uptime" "$work/uptime.saved"
+echo '5000 5000' >"$work/run/firewall-heal/fw2"
+echo '5000.00 0' >"$work/proc/uptime"
+: >"$work/swept"
+printf '%s\n' 1500 4000 4000 >"$work/run/firewall-heal/attempts"
+sweeps
+[ ! -s "$work/swept" ]
+printf '%s\n' 1600 4000 4000 >"$work/run/firewall-heal/attempts"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
+rm "$work/run/firewall-heal/fw2"
+mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
+mv "$work/uptime.saved" "$work/proc/uptime"
 # Prefix neighbours must not change the exact instance state.
 test_status=STOPPED
 [ "$(heal_state fw2)" = STOPPED ]

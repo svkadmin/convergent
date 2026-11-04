@@ -297,6 +297,12 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     [ ! -s "$work/ntpd-calls" ]
     fw_ntpd
     printf '%s\n' fw1 fw2 | cmp - "$work/ntpd-calls"
+    # Nor a node the heal observes: its restart would find the lock held.
+    rm "$run"/fw-ntpd.*; : >"$work/ntpd-calls"; mkdir -p "$run/firewall-heal"
+    : >"$run/firewall-heal/fw2"; fw_ntpd
+    printf '%s\n' fw1 | cmp - "$work/ntpd-calls"
+    rm "$run"/fw-ntpd.* "$run/firewall-heal/fw2"; : >"$work/ntpd-calls"; : >"$run/firewall-heal/pair"; fw_ntpd
+    [ ! -s "$work/ntpd-calls" ]
 )
 # Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
 sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |

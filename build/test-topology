@@ -373,8 +373,10 @@ echo 'test-topology: update redoes its own unhealthy committed wan or svc in pla
 # read-only for sshd. The images are recorded once the pair is committed, before any later step.
 (
     awk '/^update\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/update"
-    sed -n '/^reachable() {/p' "$repo/tools/guests" >>"$scratch/update"
+    sed -n '/^reachable() {/p; /^work_profiles_due() {/,/^}/p; /^maintenance_due() {/,/^}/p' "$repo/tools/guests" >>"$scratch/update"
     grep -q '^reachable() {' "$scratch/update"
+    grep -q '^work_profiles_due() {' "$scratch/update"
+    grep -q '^maintenance_due() {' "$scratch/update"
     sh -n "$scratch/update"
     . "$scratch/update"
     applying= browser_locked=1 rebuilding= pending=
@@ -403,16 +405,38 @@ echo 'test-topology: update redoes its own unhealthy committed wan or svc in pla
         esac
     }
     commit_update() { echo commit >>"$log"; }
-    record_installed() { echo "record $1" >>"$log"; }
-    work_profiles() { echo profiles >>"$log"; [ -z "$fault" ] || exit 1; }
-    for fault in '' profiles; do
+    # The work profiles are due from before the images are recorded until they land.
+    record_installed() { [ -e "$state/work-profiles.due" ] || exit 97; echo "record $1" >>"$log"; }
+    work_profiles() { echo profiles >>"$log"; [ "$fault" != profiles ] || exit 1; }
+    work_stale() { echo stale >>"$log"; [ "$fault" != stale ]; }
+    for fault in '' stale profiles; do
         : >"$log"; boots=0
+        rm -f "$state/work-profiles.due"
         if [ -z "$fault" ]; then (update fw "$scratch/fw-image") >/dev/null
         elif (update fw "$scratch/fw-image") >/dev/null 2>&1; then exit 1; fi
+        # A profile still in use refuses before anything changes.
+        [ "$(head -n 1 "$log")" = stale ]
+        if [ "$fault" = stale ]; then [ "$(cat "$log")" = stale ]; continue; fi
         awk '$0 == "retry reachable fw1" {r=NR} $0 == "read fw1" && !p {p=NR} END {exit !(r && p && r < p)}' "$log"
         awk '$0 == "commit" {c=NR} $0 == "record fw" {r=NR} $0 == "profiles" {w=NR} END {exit !(c && c < r && r < w)}' "$log"
+        if [ -z "$fault" ]; then [ ! -e "$state/work-profiles.due" ]; else [ -e "$state/work-profiles.due" ]; fi
     done
     rm -f "$state/fw.handoff" "$state/carp-pass"
+    # A failure after the commit keeps maintenance due: apply reruns the profiles until they land.
+    touch "$state/normalized"
+    certificates_due() { return 1; }
+    browser_legacy() { return 1; }
+    maintenance_due
+    if (work_profiles_due) 2>/dev/null; then exit 1; fi
+    [ -e "$state/work-profiles.due" ]
+    fault=
+    work_profiles_due
+    [ ! -e "$state/work-profiles.due" ]
+    if maintenance_due; then exit 1; fi
+    rm "$state/normalized"
+    awk '/^apply\(\) \{/ {a=1} a && $0 == "    work_profiles_due" {w=NR}
+        a && /^    \[ -d "\$staged" \] \|\| \{ certificates_apply/ && !s {s=NR} a && /^}/ {exit}
+        END {exit !(w && s && w < s)}' "$repo/tools/guests"
 )
 echo 'test-topology: update fw waits for booting firewalls and records its images once committed'
 # A replay at boot meets firewalls Incus has just started: holds first, then a read-only wait for sshd,
@@ -528,15 +552,18 @@ if command -v jq >/dev/null 2>&1; then
             if (topology_update) 2>"$scratch/err"; then exit 1; fi
             if [ -n "$users" ]; then
                 # work-eng-a, its VLAN's profile, exists already: only a detach is left.
-                grep -q 'work-dev-b is no longer a work domain but still in use by vm; detach it from each: sudo incus --force-local --project owner profile remove <instance> work-dev-b' "$scratch/err"
+                grep -q 'owner profile work-dev-b has a reserved work- name and shape but is no current work domain, and is in use by vm; detach it from each: sudo incus --force-local --project owner profile remove <instance> work-dev-b' "$scratch/err"
                 if grep -q -e '^import' -e 'profile delete' -e 'profile rename' "$log"; then exit 1; fi
                 if work_profiles 2>/dev/null; then exit 1; fi
                 if grep -q -e 'profile delete work-dev-b' -e 'profile create' "$log"; then exit 1; fi
             else
                 grep -qx import "$log"
                 if grep -q -e 'profile delete' -e 'profile rename' "$log"; then exit 1; fi
+                logger() { echo "logger $*" >>"$log"; }
                 work_profiles
                 [ "$(grep 'profile delete' "$log")" = "$(printf 'incus --force-local --project owner profile delete %s\n' work-dev-a work-dev-b)" ]
+                # Each deletion is logged.
+                [ "$(grep '^logger .*deleted' "$log")" = "$(printf 'logger -t guests deleted unused work profile %s: no current work domain\n' work-dev-a work-dev-b)" ]
                 # Renamed before its successor is created: same devices, so its instances carry over.
                 [ "$(grep 'profile rename' "$log")" = 'incus --force-local --project owner profile rename work-jhn-old work-eng-b' ]
                 awk '/profile rename work-jhn-old work-eng-b$/ {r=NR} /profile (create|edit) work-eng-b$/ && !c {c=NR} END {exit !(r && c && r < c)}' "$log"
@@ -546,7 +573,7 @@ if command -v jq >/dev/null 2>&1; then
         printf '[{"name":"work-x","used_by":[%s],"devices":%s},{"name":"work-y","used_by":[%s],"devices":%s}]\n' \
             "$used" "$(nic 360)" "$used" "$(nic 360)" >"$scratch/profiles.json"
         if work_stale 2>"$scratch/err"; then exit 1; fi
-        grep -q 'work-y is no longer a work domain' "$scratch/err"
+        grep -q 'work-y has a reserved work- name and shape but is no current work domain' "$scratch/err"
         [ ! -e "$state/fw.topology" ]
         rm -rf "$work/topology"
     )

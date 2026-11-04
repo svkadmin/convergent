@@ -215,7 +215,9 @@ for version in current old missing shared; do
             esac
         else
             [ "$rc" != 0 ] && [ ! -s "$work/services-called" ] || die "opened $version $mode"
-            grep -q 'run sys update install' "$work/error"
+            # Only the Incus session line is missing: this release's guests are staged already.
+            if [ "$version" = shared ]; then grep -q 'close the browsers, then sys guests update' "$work/error"
+            else grep -q 'run sys update install' "$work/error"; fi
         fi
     done
 done

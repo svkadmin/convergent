@@ -1672,6 +1672,8 @@ update() {
     case $1 in
     fw)
         [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+        # Refused before anything changes, not by work_profiles after the commit.
+        work_stale || die 'a work- profile that is no current work domain is still in use'
         ic profile set fw boot.autorestart=true
         # Installs from before 1 GiB: KARL beside the blocklist ran 384 MiB out of memory. A running
         # VM cannot always grow, so each keeps its old size locally until replace() drops the pin.
@@ -1731,8 +1733,11 @@ ifconfig -g handoff carpdemote 128'
         commit_update
         fi
         # Recorded once committed: a later failure must not redo the update, nor leave rebuild on the old images.
+        # The profiles stay due until they land, retried by apply.
+        touch "$state/work-profiles.due"
+        sync
         record_installed "$1" "$2"
-        work_profiles
+        work_profiles_due
         ;;
     # Remmina: the shared volume deliberately never participates in app rollback.
     remmina)
@@ -1857,8 +1862,14 @@ record_installed() {
     rm -f "$installed/guests/$1.stale"
     sync
 }
+work_profiles_due() {
+    [ -f "$state/work-profiles.due" ] || return 0
+    work_profiles || die 'work profiles not reconciled; fix the error above, then sys guests update'
+    rm -f "$state/work-profiles.due"
+    sync
+}
 maintenance_due() {
-    for journal in preparing pending committed browser.ready browser.rename profiles.before dns.stale fw.handoff; do
+    for journal in preparing pending committed browser.ready browser.rename profiles.before dns.stale fw.handoff work-profiles.due; do
         [ ! -e "$state/$journal" ] || return 0
     done
     [ -f "$state/normalized" ] || return 0
@@ -1923,6 +1934,8 @@ apply() {
     # A fw update's soak needs wan and svc: started once no rollback is due.
     [ -f "$state/pending" ] || [ -f "$state/preparing" ] || start_stopped
     dns_restore
+    # A committed fw update whose work profiles failed.
+    work_profiles_due
     [ -d "$staged" ] || { certificates_apply; return 0; }
     [ "$(stat -c '%u %a %F' "$staged")" = '0 700 directory' ] || die "$staged is not root's private directory"
     for entry in "$staged"/* "$staged"/.[!.]* "$staged"/..?*; do

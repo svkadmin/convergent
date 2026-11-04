@@ -162,7 +162,10 @@ work_stale() {
     while read -r name vlan users; do
         [ ! -f "$lib/work/$name.yaml" ] || continue
         if [ -z "$users" ]; then
-            [ "${1:-}" != prune ] || incus --force-local --project owner profile delete "$name" 9>&- 8>&- 7>&- 6>&- || return
+            if [ "${1:-}" = prune ]; then
+                incus --force-local --project owner profile delete "$name" 9>&- 8>&- 7>&- 6>&- || return
+                logger -t guests "deleted unused work profile $name: no current work domain" 2>/dev/null || :
+            fi
             continue
         fi
         target=
@@ -174,7 +177,7 @@ work_stale() {
             target=$new
             break
         done
-        [ -n "$target" ] || { fail "owner profile $name is no longer a work domain but still in use by $users; detach it from each: sudo incus --force-local --project owner profile remove <instance> $name"; return 1; }
+        [ -n "$target" ] || { fail "owner profile $name has a reserved work- name and shape but is no current work domain, and is in use by $users; detach it from each: sudo incus --force-local --project owner profile remove <instance> $name"; return 1; }
         claimed="$claimed $target"
         [ "${1:-}" != prune ] || incus --force-local --project owner profile rename "$name" "$target" 9>&- 8>&- 7>&- 6>&- || return
     done <"$work/work-profiles"
@@ -182,7 +185,7 @@ work_stale() {
 topology_update() {
     step=topology-prepare
     cmp -s "$image_dir/topology.sha256" /etc/convergent/topology.sha256 || die 'firewall topology differs from booted host'
-    work_stale || die 'a former work-domain profile is still in use'
+    work_stale || die 'a work- profile that is no current work domain is still in use'
     mkdir "$work/topology"
     for node in fw1 fw2; do
         import_only=1
