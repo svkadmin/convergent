@@ -14,7 +14,8 @@ start() {
 	rm -f /run/convergent/guests-stopping
 	if [ -e /var/lib/convergent/guests/initialized ]; then
 		incus --force-local admin waitready --timeout=120 || return 1
-		/usr/local/sbin/incus-ui cleanup || return 1
+		# Not a boot failure: the minute checker retries the cleanup and logs each failure.
+		/usr/local/sbin/incus-ui cleanup || ewarn "Incus UI cleanup failed; the minute checker retries it"
 	fi
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
