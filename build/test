@@ -551,6 +551,25 @@ aaaa-0002'
 		case $chip in dell_ddv) [ "$n" = 1 ] ;; *) [ "$n" = 0 ] ;; esac || die "node_exporter dell_smm exclusion beside $chip"
 	done
 	)
+	(
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	# Only beta images carry debugging: the debug tool or a builder diagnostic fails any other.
+	sed -n '/^# Debugging is beta-only/,/^fi$/p' "$here/image" >"$work/stable-check"
+	grep -q 'carries a copy of' "$work/stable-check"
+	sh -n "$work/stable-check"
+	repo=${here%/build} root=$work/root CHANNEL=stable
+	mkdir -p "$root/usr/local/sbin" "$root/usr/lib"
+	(. "$work/stable-check")
+	cp "$repo/build/diagnostics/field-check" "$root/usr/lib/renamed"
+	if (. "$work/stable-check") 2>"$work/error"; then die 'stable image accepted a builder diagnostic'; fi
+	grep -q 'carries a copy of build/diagnostics/field-check' "$work/error"
+	(CHANNEL=beta; . "$work/stable-check")
+	rm "$root/usr/lib/renamed"
+	: >"$root/usr/local/sbin/debug"
+	if (. "$work/stable-check") 2>"$work/error"; then die 'stable image accepted the debug tool'; fi
+	grep -q 'carries the debug tool' "$work/error"
+	)
 	echo 'test: install options passed'
 	exit 0
 fi

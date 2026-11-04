@@ -34,6 +34,8 @@ start() {
 				sleep 5
 			done
 			umask 077
+			# A UTC header per run: the log spans boots.
+			date -u "+== %Y-%m-%dT%H:%M:%SZ apply" >>/var/log/guests-update.log
 			/usr/local/sbin/guests apply >>/var/log/guests-update.log 2>&1 || echo failed >"$1/guests-update"' sh "$st" </dev/null >/dev/null 2>&1 &
 		eend 0
 		return 0
@@ -50,6 +52,7 @@ start() {
 			sleep 5
 		done
 		for try in 1 2; do
+			date -u "+== %Y-%m-%dT%H:%M:%SZ init" >>/var/log/guests-setup.log
 			/usr/local/sbin/guests init "$1" >>/var/log/guests-setup.log 2>&1 && { echo done >"$2/setup"; exit 0; }
 		done
 		echo failed >"$2/setup"' sh "$src" "$st" </dev/null >/dev/null 2>&1 &

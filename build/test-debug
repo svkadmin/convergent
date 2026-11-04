@@ -49,4 +49,34 @@ refuse 'another laptop' 'not signed by the pinned laptop'
 refuse corruption 'replaced or corrupt'
 echo 'test: debug output authentication passed'
 
+# Fetch withdraws the published request when it is the fetched one, and reports failed deletions.
+sed -n '/^	rc=0$/,/^	exit "\$rc"$/p' "$here/debug" >"$work/delete"
+grep -q 'debug/\$f"' "$work/delete"; sh -n "$work/delete"
+ep=https://bucket.test CHANNEL=beta last=$work/last fail=
+s3() {
+	[ "$1 $2 $3 $4" = '-o /dev/null -X DELETE' ] || exit 97
+	printf '%s\n' "$5" >>"$work/calls"
+	[ "$5" != "$fail" ]
+}
+published="$ep/debug-out/$id
+$ep/beta/debug/script
+$ep/beta/debug/script.sig"
+printf '%s\n' "$id" >"$last"
+: >"$work/calls"
+(. "$work/delete") || die 'cleanup failed'
+printf '%s\n' "$published" | cmp -s - "$work/calls" || die 'left the request published'
+printf '%s\n' 00000000000000000000000000000009 >"$last"
+: >"$work/calls"
+(. "$work/delete") || die 'cleanup failed'
+printf '%s\n' "$ep/debug-out/$id" | cmp -s - "$work/calls" || die 'withdrew a later request'
+printf '%s\n' "$id" >"$last"
+for fail in "$ep/debug-out/$id" "$ep/beta/debug/script" "$ep/beta/debug/script.sig"; do
+	: >"$work/calls"
+	if (. "$work/delete") 2>"$work/error"; then die "hid a failed deletion of $fail"; fi
+	case $fail in */debug-out/*) want="output for $id" ;; *) want=${fail#"$ep/"} ;; esac
+	grep -qxF "debug: cannot delete $want" "$work/error" || die "unreported deletion failure: $fail"
+	printf '%s\n' "$published" | cmp -s - "$work/calls" || die "stopped after a failed deletion of $fail"
+done
+echo 'test: debug fetch cleanup passed'
+
 sh "$here/test-diag"

@@ -204,7 +204,12 @@ evidence](USAGE.md#release-and-network-evidence).
 Pin `sudo debug key` from the laptop as `/etc/convergent/keys/debug-laptop.pub` on the builder.
 Beta-only `build/debug send <script-file> <purpose>` embeds a 24-hour upload link for a random key;
 `build/debug fetch [id]` verifies laptop signature/request binding, rejects replay/corruption and
-decrypts. [Owner execution/consent/output limits](USAGE.md#health-and-alerts).
+decrypts, then deletes the output and, for the last request sent, the published script.
+[Owner execution/consent/output limits](USAGE.md#health-and-alerts).
+
+The maintained field check is builder-only: `build/debug send build/diagnostics/field-check "<purpose>"`.
+It reads release, services, check status lines (no diffs), guest logs, firewalls, wan and Incus state,
+never keys, seeds or TLS state; `build/image` fails a non-beta image that carries it or the debug tool.
 
 ## Test in QEMU
 

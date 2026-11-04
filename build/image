@@ -496,6 +496,16 @@ missing=$(chroot "$root" /bin/sh -c 'find /usr/bin /usr/sbin /usr/libexec /usr/l
 [ -z "$missing" ] || { printf '%s\n' "$missing" >&2; die "libraries missing in the image (above)"; }
 # Releases are published: no private key may be in the image.
 ! grep -rlIsx -e "-----BEGIN [A-Z ]*PRIVATE KEY-----" "$root" || die "private key material in the image root (above)"
+# Debugging is beta-only: no debug tool and no copy of a builder diagnostic, under any name.
+if [ "$CHANNEL" != beta ]; then
+	[ ! -e "$root/usr/local/sbin/debug" ] && [ ! -L "$root/usr/local/sbin/debug" ] || die "the $CHANNEL image carries the debug tool"
+	for f in "$repo"/build/diag/* "$repo"/build/diagnostics/*; do
+		[ -f "$f" ] && [ -s "$f" ] || continue
+		if find "$root" -xdev -type f -size "$(stat -c %s "$f")c" -exec cmp -s "$f" {} \; -print | grep .; then
+			die "the $CHANNEL image carries a copy of ${f#"$repo"/} (above)"
+		fi
+	done
+fi
 
 # 4. The EROFS image and its dm-verity hash tree, one after the other in the slot image.
 bld mkfs.erofs -zlz4hc "$rel/root.erofs" /image-root >/dev/null

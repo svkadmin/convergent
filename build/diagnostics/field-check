@@ -1,0 +1,96 @@
+#!/bin/sh
+# field-check: read-only field diagnostic, sent with build/debug send; builder-only, never in an image.
+# Reads no keys or seeds, nothing under /var/lib/convergent/guests/tls, and none of the checker's diffs.
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C
+# tools/debug stops the run at 300 s: start nothing after 270 s.
+end=$(($(date +%s) + 270))
+s=/var/lib/convergent/guests
+sec() { printf '\n===== %s =====\n' "$1"; }
+# t <seconds> <command...>: bounded by its own limit and by what is left of the run.
+t() {
+	lim=$1; shift
+	left=$((end - $(date +%s)))
+	[ "$left" -gt 2 ] || { echo "(skipped, out of time: $*)"; return 124; }
+	[ "$lim" -le "$left" ] || lim=$left
+	timeout -k 2 "$lim" "$@"
+}
+r() { t "$1" ssh -n -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$2" "$3"; }
+# Per firewall. Failure starts with the lines after them: a tail alone misses the cause.
+fwcmd=$(cat <<'EOF'
+uptime
+ifconfig carp | grep -E '^carp|status:|carpdemote|demote'
+pfctl -si | head -n 12
+echo '-- rcctl ls failed'; rcctl ls failed
+rcctl check unbound dhcpd wan_watch sshd node_exporter
+echo "-- dhcpd flags: $(rcctl get dhcpd flags)"
+c=$(rcctl get unbound class)
+echo "-- _unbound class $c: ulimit -n $(su -c "$c" -s /bin/sh _unbound -c 'ulimit -n')"
+echo '-- dhcpd and node_exporter: failure starts'
+{ gzip -dc /var/log/daemon.0.gz 2>/dev/null; cat /var/log/daemon; } | grep -aE ' (dhcpd|node_exporter)(\[[0-9]+\])?: ' |
+	grep -aiE -A 8 'panic|fatal|exiting|abort|signal|can.?t|cannot|unable|no subnet|terminat' | tail -n 150
+echo '-- dhcpd and node_exporter: last 40'
+grep -aE ' (dhcpd|node_exporter)(\[[0-9]+\])?: ' /var/log/daemon | tail -n 40
+echo '-- daemon log: last 30'
+tail -n 30 /var/log/daemon
+EOF
+)
+
+sec 'release and time'
+t 5 cat /usr/lib/convergent/version /usr/lib/convergent/release
+t 5 uname -r; t 5 uptime; t 5 date -u
+t 10 chronyc -n tracking 2>&1 | head -n 15
+sec 'check report (status lines only)'
+# The diffs quote /etc, account password hashes included: only the report's own status lines.
+t 10 awk 'NR == 1 && /^[0-9-]+T[0-9:]+Z$/ || /^(FAIL|WARN|SELF-HEAL|OK) /' /var/lib/convergent/check/last
+sec 'services'
+echo '-- crashed'; t 10 rc-status --crashed
+t 20 rc-status -a 2>&1 | head -n 80
+sec 'setup and bless (last 40)'
+t 10 grep -aE 'convergent-(setup|bless)| slot(\[[0-9]+\])?: ' /var/log/messages | tail -n 40
+t 30 slot status 2>&1 | head -n 40
+sec 'disk and memory'
+t 10 df -h / /var /home; t 5 free -m
+t 20 btrfs filesystem usage -T /var 2>&1 | head -n 25
+sec 'guest journals'
+t 5 ls -la "$s/" /var/lib/convergent/guest-updates/ 2>&1 | head -n 60
+for f in pending preparing committed fw.handoff; do [ ! -e "$s/$f" ] || { echo "-- $f"; t 5 cat "$s/$f"; }; done
+t 5 tail -n 40 "$s/updates"
+for f in setup guests-update guests-pending topology; do
+	[ ! -e "/run/convergent/status/$f" ] || { printf '%s: ' "$f"; t 5 cat "/run/convergent/status/$f"; }
+done
+sec 'guests update and setup logs'
+# Each run starts with a "== <UTC time> apply|init" line.
+for f in /var/log/guests-update.log /var/log/guests-setup.log; do
+	echo "-- $f: last runs"; t 10 grep -n '^== ' "$f" | tail -n 5
+	t 10 tail -n 120 "$f"
+done
+sec 'incus'
+t 30 incus --force-local list --all-projects -c nstL -f compact 2>&1 | head -n 40
+echo '-- incusd.log: last 60'; t 10 tail -n 60 /var/log/incus/incusd.log
+sec 'firewalls'
+for node in fw1 fw2; do
+	printf -- '--- %s\n' "$node"
+	r 60 "$node" "$fwcmd" 2>&1 | head -n 400
+done
+sec 'wan'
+r 40 wan diag 2>&1 | tail -n 150
+sec 'guests status'
+t 60 guests status 2>&1 | head -n 80
+sec 'kernel'
+t 10 dmesg 2>&1 | grep -aiE 'error|fail|warn|usb|iwlwifi|vfio|oom|segfault|i915' | tail -n 80
+sec 'host log (warnings and errors, last 400)'
+t 10 grep -aiE 'err|warn|fail|crit|alert|denied|refus|timed out' /var/log/messages | tail -n 400
+sec 'host log (last 200)'
+t 10 tail -n 200 /var/log/messages
+sec 'usbguard'
+t 10 usbguard list-devices 2>&1 | head -n 40
+sec 'incus info'
+t 30 incus --force-local list --all-projects --fast -f json </dev/null | jq -r '.[] | "\(.project) \(.name)"' |
+while read -r p n; do
+	case $p in '' | *[!A-Za-z0-9_-]*) continue ;; esac
+	case $n in '' | *[!A-Za-z0-9-]*) continue ;; esac
+	printf -- '--- %s/%s\n' "$p" "$n"
+	t 20 incus --force-local info --project "$p" "$n" </dev/null 2>&1 | head -n 60
+done
+sec end
