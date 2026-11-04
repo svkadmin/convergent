@@ -237,12 +237,28 @@ daily() {
 	publish daily daily
 }
 
+# Firewall ntpd only slews a host clock step (0.5% at most); a restart steps it. Once a boot, after this host
+# first synchronizes; each node until its restart succeeds, bounded.
+fw_ntpd() {
+	[ -e "$sdir/guests/initialized" ] || return 0
+	[ ! -e "$run/fw-ntpd.fw1" ] || [ ! -e "$run/fw-ntpd.fw2" ] || return 0
+	chronyc -n tracking 2>/dev/null | awk -F ' *: *' '$1 == "Leap status" {leap = $2} END {exit leap != "Normal"}' || return 0
+	for node in fw1 fw2; do
+		[ ! -e "$run/fw-ntpd.$node" ] || continue
+		timeout -k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 \
+			"$node" 'rcctl restart ntpd' </dev/null >/dev/null 2>&1 9>&- || continue
+		: >"$run/fw-ntpd.$node" || bad "cannot record the $node ntpd restart"
+		log "$node ntpd restarted: host time synchronized"
+	done
+}
+
 nts() {
 	new_buf
 	fact_nts
 	publish nts nts
 	hourly
 	logger -t cv-heartbeat alive
+	fw_ntpd
 }
 
 # Read Btrfs evidence hourly; no scrub, rescan or quota mutation is requested.

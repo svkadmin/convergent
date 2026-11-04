@@ -246,6 +246,9 @@ slew ([adjtime(2)](https://man.openbsd.org/OpenBSD-7.9/adjtime.2)). Each SSH cal
 command fails, stop and fix that error, then repeat with fresh verified UTC; time services may
 remain stopped. No validation policy changes are needed.
 
+wan takes its time from the host's clock and follows a step by itself; to step it at once, run
+`sudo timeout -k 5 60 incus --force-local --project default exec wan -- rc-service chronyd restart`.
+
 Check `date -u` on the host and with `sudo ssh -F /etc/convergent/ssh_config fw1 date -u`
 (repeat for fw2). All three should agree with the trusted clock. With Wi-Fi restored, retry
 `sys wifi test`, then `sudo chronyc online` and `chronyc sources -v`. Success: DNS works and at

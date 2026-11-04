@@ -253,6 +253,38 @@ sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"
 )
 [ "$(cat "$work/facts-flock")" = '-w 60 9' ]
 grep -qx ran "$work/facts-ran"
+# A host clock step reaches the guests: wan's chrony steps at any time; each firewall's ntpd restarts once a
+# boot, after the host first synchronizes, bounded, and again only until it succeeded.
+grep -qx 'makestep 1.0 -1' "$repo/guests/wan/rootfs/etc/chrony/chrony.conf"
+sed -n '/^nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	fw_ntpd'
+sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
+[ -s "$work/fw-ntpd" ]; sh -n "$work/fw-ntpd"
+(
+    . "$work/fw-ntpd"
+    run=$work/ntpd-run sdir=$work/ntpd-state
+    mkdir -p "$run" "$sdir/guests"
+    bad() { exit 97; }; log() { :; }
+    chronyc() { [ "$*" = '-n tracking' ] || exit 97; printf 'Stratum         : 3\nLeap status     : %s\n' "$leap"; }
+    timeout() {
+        target=${13}
+        [ "$#" = 14 ] && [ "$*" = "-k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 $target rcctl restart ntpd" ] || exit 97
+        echo "$target" >>"$work/ntpd-calls"
+        [ "$target" != "$down" ]
+    }
+    touch "$sdir/guests/initialized"
+    leap='Not synchronised' down=; : >"$work/ntpd-calls"
+    fw_ntpd
+    [ ! -s "$work/ntpd-calls" ]
+    # No firewalls before setup finished.
+    rm "$sdir/guests/initialized"
+    leap=Normal; fw_ntpd
+    [ ! -s "$work/ntpd-calls" ]
+    touch "$sdir/guests/initialized"
+    down=fw2; fw_ntpd; fw_ntpd
+    printf '%s\n' fw1 fw2 fw2 | cmp - "$work/ntpd-calls"
+    down=; fw_ntpd; fw_ntpd
+    printf '%s\n' fw1 fw2 fw2 fw2 | cmp - "$work/ntpd-calls"
+)
 # Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
 sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |
     sed "s|/run/openrc/started/convergent-bless|$work/blessed|" >"$work/facts-release"
