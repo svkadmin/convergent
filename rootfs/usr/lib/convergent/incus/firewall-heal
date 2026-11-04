@@ -100,12 +100,14 @@ heal_resume() (
     [ ! -f "$state/leases/held" ] || exit 1
     heal_note "work DHCP resumed; lease hold released"
 )
-# Both nodes STOPPED and neither in its restart grace.
+# Both nodes STOPPED, or paused (ENOSPC leaves QEMU in io-error, which Incus reports as ERROR), and neither
+# in its restart grace.
 heal_pair_stopped() {
     for pair_node in fw1 fw2; do
         pair_restarted=0
         [ ! -f "$heal/$pair_node.restarted" ] || read -r pair_restarted <"$heal/$pair_node.restarted"
-        [ "$((now - pair_restarted))" -ge 600 ] && [ "$(heal_state "$pair_node")" = STOPPED ] || return 1
+        [ "$((now - pair_restarted))" -ge 600 ] || return 1
+        case $(heal_state "$pair_node") in STOPPED|ERROR|FROZEN) ;; *) return 1 ;; esac
     done
 }
 firewall_heal() (
@@ -136,19 +138,23 @@ firewall_heal() (
         printf '%s %s\n' "$first" "$now" >"$heal/pair" || exit 1
         exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
         if [ "$((now - first))" -lt 180 ]; then
-            echo "SELF-HEAL fw1, fw2: stopped for $((now - first))s; both start after 180s"
+            echo "SELF-HEAL fw1, fw2: stopped or paused for $((now - first))s; both start after 180s"
         elif flock -n 8 && flock -n 6 && heal_allowed && heal_pair_stopped; then
             for node in fw1 fw2; do
+                # Only a stopped VM starts; a paused one is ended and started again.
+                case $(heal_state "$node") in STOPPED) action=start ;; ERROR|FROZEN) action=restart ;; *) continue ;; esac
                 read -r uptime rest </proc/uptime
                 printf '%s\n' "${uptime%.*}" >>"$heal/attempts" || exit 1
                 attempts=$((attempts + 1))
                 printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
-                heal_note "$node start requested; fw1 and fw2 both stopped ($attempts/3)"
+                heal_note "$node $action requested; fw1 and fw2 both stopped or paused ($attempts/3)"
                 (
                     trap '' HUP INT TERM
-                    timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&- ||
-                        { heal_note "$node start failed or timed out"; exit 1; }
-                    heal_note "$node start completed; awaiting health probes"
+                    set -- "$action" "$node"
+                    [ "$action" = start ] || set -- "$@" --force
+                    timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ||
+                        { heal_note "$node $action failed or timed out"; exit 1; }
+                    heal_note "$node $action completed; awaiting health probes"
                 ) >/dev/null 2>&1 || :
             done
         else

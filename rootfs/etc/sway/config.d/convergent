@@ -27,8 +27,8 @@ for_window [sandbox_engine="^convergent$"] title_format "[browser] %title"
 for_window [sandbox_engine="^convergent$" sandbox_app_id="^def$" sandbox_instance_id="^def$"] title_format "[def] %title"
 for_window [sandbox_engine="^convergent$" sandbox_app_id="^tmp$" sandbox_instance_id="^tmp-([2-9][0-9]|portal)$"] title_format "[tmp] %title"
 for_window [sandbox_engine="^convergent$" sandbox_app_id="^int$" sandbox_instance_id="^int$"] title_format "[int] %title"
-bindsym Mod4+b exec sh -c 'l=$(mktemp "$XDG_RUNTIME_DIR/browser-def.XXXXXX.log") || exit 1; browser def 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser def failed)"'
-bindsym Mod4+Shift+t exec sh -c 'l=$(mktemp "$XDG_RUNTIME_DIR/browser-tmp.XXXXXX.log") || exit 1; browser tmp 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser tmp failed)"'
+bindsym Mod4+b exec sh -c 'l=$(mktemp "$XDG_RUNTIME_DIR/browser-def.XXXXXX.log") || exit 1; browser def 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser def failed)"; rm -f "$l"'
+bindsym Mod4+Shift+t exec sh -c 'l=$(mktemp "$XDG_RUNTIME_DIR/browser-tmp.XXXXXX.log") || exit 1; browser tmp 2>"$l" || swaynag -t warning -m "$(grep "^browser: " "$l" | tail -n 1 | grep . || tail -n 1 "$l" | grep . || echo browser tmp failed)"; rm -f "$l"'
 
 # Brightness keys: the stock bindings call brightnessctl, which Gentoo does not have.
 unbindsym --locked XF86MonBrightnessDown

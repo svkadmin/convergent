@@ -45,9 +45,9 @@ while :; do
 			[ "$lost" -lt 2 ] || want=128
 		fi
 	fi
-	# Reuse this round's probes; publish only once per minute.
+	# Reuse this round's probes; publish only once per minute, and at once after a backward clock step.
 	now=$(date +%s)
-	if [ $((now - metrics_at)) -ge 60 ]; then
+	if [ $((now - metrics_at)) -ge 60 ] || [ "$now" -lt "$metrics_at" ]; then
 		metrics=/var/node_exporter/textfile
 		if {
 			echo "convergent_wan_watch_probe_timestamp_seconds $now"

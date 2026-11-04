@@ -250,6 +250,14 @@ mkdir "$work/textfile"
         else grep -qx "convergent_wan_watch_probe_up $up" "$prom" || die "probe_up: $c"; fi
         grep -q '^convergent_wan_watch_probe_timestamp_seconds [0-9]' "$prom" || die "probe timestamp: $c"
     done
+    # A backward clock step leaves the last publication in the future: publish at once, not an hour later.
+    for ahead in 30 3600; do
+        rm -f "$prom"
+        owned=0 good=0 lost=0 dns_lost=0 dns=up forward=1 wan_up=1 metrics_at=$(($(date +%s) + ahead))
+        . "$work/wan-round"; [ ! -e "$work/wan-bad" ] || exit 97; . "$work/wan-publish"
+        [ -f "$prom" ] || die "no publication after a backward step: $ahead"
+        [ "$metrics_at" -le "$(date +%s)" ] || die "future metrics time kept: $ahead"
+    done
 )
 echo 'test-boot-privacy: firewall local health passed'
 
@@ -688,6 +696,24 @@ check_script "$work/mic-locked"
     done
 )
 echo 'test-boot-privacy: microphone passed'
+
+# The browser keys name a failed launch's reason and leave no launch log behind.
+sed -n -e "s/^bindsym Mod4+b exec sh -c '\(.*\)'$/\1/p" -e "s/^bindsym Mod4+Shift+t exec sh -c '\(.*\)'$/\1/p" "$sway" >"$work/browser-keys"
+[ "$(wc -l <"$work/browser-keys")" = 2 ] || die 'browser key bindings not found'
+check_script "$work/browser-keys"
+(
+    XDG_RUNTIME_DIR=$work/xdg-keys
+    mkdir "$XDG_RUNTIME_DIR"
+    swaynag() { printf '%s\n' "$*" >>"$work/nags"; }
+    for result in 1 0; do
+        browser() { echo "browser: $1 refused" >&2; return "$result"; }
+        while IFS= read -r key; do (eval "$key"); done <"$work/browser-keys"
+    done
+    printf '%s\n' '-t warning -m browser: def refused' '-t warning -m browser: tmp refused' | cmp - "$work/nags" ||
+        die 'browser key failure not named'
+    [ -z "$(ls -A "$XDG_RUNTIME_DIR")" ] || die 'browser key launch logs left behind'
+)
+echo 'test-boot-privacy: browser keys passed'
 
 # The boot waiter polls the host bridge every five seconds and gives up after an hour.
 sed -n '/^if \[ "\${1:-}" != repair \]; then$/,/^fi$/p' "$repo/rootfs/usr/lib/convergent/incus/host-net" |
