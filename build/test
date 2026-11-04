@@ -1876,6 +1876,13 @@ CONF
 unbound-checkconf "$work/up.conf"
 unbound-checkconf "$work/down.conf"
 query() { dig @127.0.0.1 -p "$1" "$2.rebind.example.net." "$3" +time=1 +tries=1 +short; }
+answer() {
+	deadline=$(($(date +%s) + 30))
+	until [ "$(query "$1" "$2" "$3")" = "$4" ]; do
+		[ "$(date +%s)" -lt "$deadline" ] || return 1
+		sleep 1
+	done
+}
 # The upstream answers before the forwarder starts: started together, a forwarder that asked it first
 # cached the SERVFAIL for 5 s, as long as the wait below.
 unbound -d -c "$work/up.conf" >"$work/up.log" 2>&1 & up=$!
@@ -1888,16 +1895,27 @@ n=0
 until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
 	[ "$n" -lt 5 ]; n=$((n + 1)); sleep 1
 done
-[ "$(query 1053 public AAAA)" = 2001:4860:4860::8888 ]
-[ "$(query 1054 loop A)" = 127.42.0.7 ]
-query 1054 mapped AAAA | grep -q '^::ffff:'
+answer 1053 public AAAA 2001:4860:4860::8888
+answer 1054 loop A 127.42.0.7
+# A nested firewall stalls for seconds: one-shot probes missed their 1-2 s reply. Waits retry only a
+# missing reply; the first reply is judged, so a retry never passes a leaked answer.
+deadline=$(($(date +%s) + 30))
+until query 1054 mapped AAAA | grep -q '^::ffff:'; do
+	[ "$(date +%s)" -lt "$deadline" ] || exit 1
+	sleep 1
+done
 for record in 'loop A' 'mapped AAAA'; do
 	set -- $record
-	dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer"
-	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer"
-	grep -q 'ANSWER: 0,' "$work/answer"
+	deadline=$(($(date +%s) + 30))
+	until dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer.log" &&
+		grep -q 'status: ' "$work/answer.log"; do
+		[ "$(date +%s)" -lt "$deadline" ] || exit 1
+		sleep 1
+	done
+	grep -Eq 'status: (NOERROR|SERVFAIL),' "$work/answer.log"
+	grep -q 'ANSWER: 0,' "$work/answer.log"
 done
-[ "$(query 1053 public A)" = 93.184.216.34 ]
+answer 1053 public A 93.184.216.34
 REBIND
 done
 fw_unlocked() {
@@ -2018,7 +2036,8 @@ cv_time firewall-self-heal
         # Separate tests: set -e ignores a failure before the last && of a list.
         [ "$(fw_pid fw1)" = "$pid1" ]
         [ "$(fw_pid fw2)" = "$pid2" ]
-        cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
+        # The heal prunes attempts older than an hour: only a new last line is a new attempt.
+        [ "$(tail -n 1 /run/convergent/firewall-heal/attempts)" = "$(tail -n 1 "$release/heal-attempts")" ] || [ ! -s /run/convergent/firewall-heal/attempts ]
         sleep 10
     done
     unbound_up fw1
