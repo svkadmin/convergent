@@ -249,7 +249,7 @@ at the top. Full output: `$XDG_RUNTIME_DIR/browser-def.*.log` or
 | def | everyday browsing | profile and downloads kept in a 4 GiB volume |
 | tmp | anything untrusted; several at once | container deleted on close; history, cookies and cache cleared |
 | tmp --portal | captive portals; opens `http://<uplink-gateway>/` unless given a URL | container deleted on close; owns portal mode |
-| int | Grafana; Incus after a session unlock | profile kept in a 512 MiB volume; UI key lives only in session memory |
+| int | Grafana; Incus after a session unlock | Grafana: profile kept in a 512 MiB volume. Incus: its own profile in tmpfs, gone when int stops; UI key lives only in session memory |
 
 A second def or int start without a URL raises the open window; with a URL it is refused. Portal
 mode refuses one; normal tmp runs many at once. Downloads stay in the container; no action moves a
@@ -304,7 +304,9 @@ Saved hidden networks reconnect from the scan cache first, then rescan if needed
 After a network's passphrase changes, `sys wifi forget` it first, or the first connect fails
 on the old passphrase and a retry succeeds.
 Credentials are stored in wan; replacement also stages root-only copies on encrypted host storage,
-which can remain until recovery or cleanup completes.
+which can remain until recovery or cleanup completes. Replacement carries a saved profile over only if
+it is a WPA-PSK/SAE or open network in the shape iwd writes for a joined one (at most 4 KiB; no EAP).
+Others are logged and must be joined again.
 Scan completion polls for 15 seconds after initiation; initiation/results
 have separate timeouts. Failures propagate with guidance; association without IPv4 reports DHCP
 failure.
@@ -424,7 +426,7 @@ images/seed. Finish updates/handoffs first. The peer must be healthy and own all
 replacement, or run coherent CARP on every segment if the target still runs; a target Incus cannot
 stop is ended by its verified QEMU pid. Maintenance may name the target; undo afterward. Rebuild waits for guest/DNS locks,
 checks/seeds replacement, restores normal roles and pushes stored DNS. It first starts a wan or svc that
-Incus left stopped. Browsers may stay open.
+Incus left stopped or paused. Browsers may stay open.
 Repeat the same command after interruption to resume.
 
 ## Backups
@@ -441,7 +443,8 @@ and mounted at a root-owned directory (not the laptop disk), and the owner's Inc
 owner's containers and profiles, and custom filesystem/ISO volumes of both projects, including
 `remmina-state` and `share`, plus Grafana's matching `admin-password` and `secret-key` in
 `grafana-secrets/`. Close browsers and Remmina and stop every instance using `share`.
-Keep them stopped throughout backup. It verifies readback and retains three generations.
+Keep them stopped throughout backup. It waits up to 120 s for a running guest operation before
+refusing. It verifies readback and retains three generations.
 One disk serves one laptop: each generation records `machine-id`, and backup refuses a disk that
 holds another laptop's. After Start over, restore `etc/machine-id` from `etc.tar` to keep the disk.
 VM instances, custom block volumes, system guest instances and the rest of `/var/lib/convergent` are excluded
@@ -451,7 +454,9 @@ the disk before unplugging. Restore steps: [RECOVERY 11](RECOVERY.md#11-start-ov
 ## Health and alerts
 
 Secure Boot off produces SecureBootNotVerified/CheckerFailed; no accepted baseline also produces
-CollectorBroken. FirewallRulesetDrift requires an expected hash and reports mismatches. Inspect
+CollectorBroken. FirewallRulesetDrift requires an expected hash and reports mismatches.
+PfRuleStatesFull means a forwarding rule hit its state cap, so its new flows drop unlogged;
+WanConntrackHigh means wan's NAT table is over 80%, and new NAT flows drop when it fills. Inspect
 alert names, not counts. `sys alerts` / `sys security alerts`, or clicking bar counts, opens
 severity, name, summary/description and API active-since time. Invalid/unavailable responses report
 errors.
@@ -479,7 +484,9 @@ sudo check accept-fw <guest-dir>/fw   # updated firewall hashes, same Secure Boo
 Baseline input needs manifest and guests/fw/fw{1,2}.{pf,rules}.sha256. Acceptance needs def, int and
 Remmina to exist: open and close each once first. Reaccept baselines lacking tmp's or Remmina's
 profile. Check fails without a baseline or with Secure Boot off. Acceptance does not verify
-manifest signatures: verify the release yourself first.
+manifest signatures: verify the release yourself first. Check and accept wait up to 120 s for a minute
+run's locks. The autostart scan gives up after 120 s and reads at most 64 MiB of each owner file; a
+larger file fails the check, and the report names it.
 [Checks/timings](ARCHITECTURE.md#8-observability).
 
 `sys selftest` authenticates sudo once and writes ~/selftest-YYYYmmdd-HHMMSS.txt with bounded
@@ -501,8 +508,8 @@ Security → Release compares booted/latest signed IDs, inventory versions and a
 missing/invalid/unavailable is unknown; over two days warns. Versions describe releases, not live
 guests after partial updates; pruned installed releases may lack status.
 
-Network shows registry CARP segments, parent traffic, Unbound recursion/SERVFAIL, Wi-Fi signal/
-bitrate/observed roams and firewall-to-WAN RTT/loss. These probes do not prove Internet access.
+Network shows registry CARP segments, parent traffic, pf and WAN conntrack utilization, Unbound
+recursion/SERVFAIL, Wi-Fi signal/bitrate/observed roams and firewall-to-WAN RTT/loss. These probes do not prove Internet access.
 Blocked rankings count sampled logged packets, capped at five/second/firewall.
 
 From the owner login, `sys firewall capture <interface-or-segment> <seconds>` (e.g.
@@ -567,7 +574,8 @@ firewall hashes. Updates written by 0.1.5 or older keep none: accept with the re
 the build host or stick. Only the latest written release is kept: accept each release before writing the next.
 
 USB: copy latest/latest.sig, manifest/manifest.sig, slot.img, both release .efi files, guests/,
-guests.manifest/guests.manifest.sig and any remmina.manifest/remmina.manifest.sig to FAT32/exFAT.
+guests.manifest/guests.manifest.sig and any remmina.manifest/remmina.manifest.sig to FAT32/exFAT
+(`sys update usb` also takes ext4 and Btrfs, and refuses any other filesystem).
 Once guests exist, latest naming guests requires their signed manifest. Approve USB with
 `sudo devices list`, `sudo devices allow <number>`, then `sys update usb`. By hand:
 
@@ -601,7 +609,8 @@ Close browsers/Remmina. After host reboot/bless, apply order is svc, wan, fw, br
 while legacy web/admin objects exist, browser goes first and migrates them. Bar: GUESTS / GUESTS
 failed; retry sys guests update. If the newest host lacks its guests, sys update install
 fetches/applies them immediately. With no update pending, sys guests update also starts a wan or svc
-that Incus left stopped after ten crashes in a minute; if three tries fail, it names the manual rebuild.
+that Incus left stopped after ten crashes in a minute, or paused on a full disk (forced restart); if three
+tries fail, it names the manual rebuild.
 Browser updates advance future tmp/portal images; def/int normally replaces one instance, but migration
 updates both.
 
@@ -631,8 +640,10 @@ sudo guests update remmina $g/remmina
 Select owner NIC-only profiles `work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn-a`, or
 `work-dom-jhn-b` (configured family names); supply disks/resources separately. Owner shares managed
 networks, retaining its own profiles. `work-` profile names are reserved: after a domain rename, a
-NIC-only `work-` profile left behind is renamed to its VLAN's new profile, or removed when unused. Use DHCP or static .1–.48, /26, gateway/DNS .62 in the
-[selected prefix](ARCHITECTURE.md#41-addressing); Incus NIC settings do not configure the guest OS.
+NIC-only `work-` profile left behind is renamed to its VLAN's new profile, or removed when unused. One
+still used by an instance, with no new domain profile on its VLAN, stops the update until that
+instance detaches it; the message names the command. Use DHCP or static .1–.48, /26, gateway/DNS .62
+in the [selected prefix](ARCHITECTURE.md#41-addressing); Incus NIC settings do not configure the guest OS.
 Work guests can communicate within their own VLAN; routing to other work VLANs is blocked, including
 within the same family. System segments are blocked. Internet works; home-LAN access requires
 baked-in canonical RFC1918 prefixes. Topology updates stop both firewalls; failure

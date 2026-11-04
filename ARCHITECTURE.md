@@ -74,8 +74,10 @@ NAT. A passed-through USB Ethernet adapter provides the optional wired uplink vi
 - Credentials arrive over SSH stdin and are stored in wan; replies are sanitized. Replacement also
   stages root-only copies on encrypted host storage, which can remain until recovery or cleanup
   completes. The host checks Wi-Fi IPv4 six times, five seconds apart after association. Saved
-  networks survive replacement.
+  networks survive replacement unless they fail the check in section 7.2.
 - No Incus agent/guest API; host-only SSH on transit uses OpenSSH's default key exchange.
+- NAT conntrack holds 65,536 flows; a full table drops new NAT flows. `WanConntrackHigh` fires above
+  80% for five minutes.
 - Upstream output allows DHCP; transit output allows replies/syslog. Input allows management,
   metrics and firewall probes. Private forwarding is limited by section 4.2.
 - Overlapping upstream leases are refused and raise UpstreamOverlap. Each uplink keeps its own refusal,
@@ -85,7 +87,8 @@ NAT. A passed-through USB Ethernet adapter provides the optional wired uplink vi
 - Incus does not re-attach a replugged NIC by serial. The minute checker therefore re-adds wan's wired
   role after two runs without the allowed NIC, three times an hour at most, then reports a failure.
   Revoke and enrol remove the role once no USBGuard allow rule names the NIC.
-- PTP over KVM disciplines guest chrony without a network time listener.
+- PTP over KVM disciplines guest chrony without a network time listener; chrony follows the host's
+  clock even when it steps.
 - HPET off, free-page reporting on. Limits: section 11.
 
 Controls: [Wi-Fi](USAGE.md#wi-fi), [Devices](USAGE.md#devices), [Captive
@@ -102,12 +105,14 @@ firewall failures from host kernel failures.
 - **wan-watch:** rc.d service demotes wanwatch by 128 after two lost WAN probe rounds or ten rounds
   without local DNS or IPv4 forwarding; three good rounds recover. Each WAN probe round sends three
   probes 300 ms apart, bounded to one second; any reply passes. Group counter survives restarts
-- **PF:** Routing/filtering, per-source state limits, transit MSS clamp and release ruleset hashes
+- **PF:** Routing/filtering, per-source and rule-wide state caps (web, guests, work forwarding) in a
+  100,000-state table, transit MSS clamp and release ruleset hashes
 - **Unbound:** Resolver on CARP gateways, so DNS follows failover. It gets 120 s to start before rc
   kills it. fw-seed sets that limit at seeding, not in the image.
 - **DHCP:** Work VLANs only; synchronized leases checkpointed across replacement
 - **Management:** Host-only SSH, NTP from host, exporter and TLS syslog to svc; default route via
-  wan
+  wan. ntpd only slews, so the host steps each firewall's clock once per boot (rdate) after it
+  synchronizes
 - **Maintenance:** Separate `sysmaint` demotion by 128 across registered CARP interfaces preserves
   health/upgrade counters; host journal survives interruptions; guest/DNS locks serialize operations
 
@@ -121,15 +126,17 @@ The minute checker restarts a firewall after three minutes of failed checks only
 healthy and MASTER on every registered segment. It waits ten minutes after host boot or its own
 restart, permits three attempts/hour, and is inhibited by guest journals, DNS pushes, maintenance
 and shutdown. One missed minute run does not restart the three-minute count. If Incus left both
-firewalls stopped, the checker starts both after 180 s in that state, under the same inhibitions; each
-start counts as an attempt and needs ten minutes since that node's last start.
+firewalls stopped or paused (ERROR or FROZEN, as after a full disk), the checker starts or restarts both
+after 180 s in that state, under the same inhibitions; each start counts as an attempt and needs ten
+minutes since that node's last start.
 A lease hold left by a run that could not reach a node does not inhibit it: once both
 firewalls answer their health probe, the checker resumes work DHCP and releases the hold; while the
 hold is set, the probe accepts a disabled dhcpd.
 A firewall QEMU unreadable by Incus is killed using its pid file after verifying the instance in its
 command line, then restarted, unless the checker is inhibited. wan and inhibited QEMUs are ended by
 hand ([RECOVERY 4](RECOVERY.md#a-frozen-guest-qemu)). Guest replacement uses the same stop procedure.
-Attempts appear in syslog and the checker report.
+Attempts appear in syslog and the checker report. While firewall-heal tracks a firewall, the checker's
+browser and Remmina orphan sweeps wait.
 
 On shutdown, `convergent-setup` drains work guests, browsers/Remmina, svc, wan, then firewalls, with
 20 seconds per guest for graceful stop before forcing. Autorestart is held during stopping; previous
@@ -176,7 +183,9 @@ PKCS#12 and public certificate persist in root-only TLS state. Each session prom
 terminal, verifies the fingerprint and imports as UID 1000 into fresh tmpfs NSS state. Both
 persistent NSS locations are masked, even for plain int. Import precedes trust; closing int stops
 it and removes session trust/data. Boot and check auto clean orphans; interrupted rotation restores
-a complete credential directory. Grafana-only launches receive no key.
+a complete credential directory. Grafana-only launches receive no key. An Incus session also gets its
+own Chromium profile, on a tmpfs that ends when int stops, and a policy limited to the Incus origin;
+Grafana sessions get neither.
 Commands/endpoint: [USAGE, Incus management](USAGE.md#incus-management).
 
 #### Remmina
@@ -197,7 +206,8 @@ Sizes: section 11; commands/sharing: [USAGE, Remote desktops](USAGE.md#remote-de
 
 `guests init` creates project owner with NIC-only work profiles and shared managed networks,
 keeping profiles separate. The owner supplies disks/resources in Incus; sys guest creation is
-planned. Configuration: [USAGE, Work VMs](USAGE.md#work-vms).
+planned. Configuration: [USAGE, Work VMs](USAGE.md#work-vms). Work profiles have the Incus guest API
+off and deny Btrfs subvolume ioctls inside work containers; `work-` names are reserved.
 
 ## 4. Network
 
@@ -237,7 +247,7 @@ free. Replacements receive stored DNS policy before promotion.
 ### 4.2 Flows
 
 Allowed IPv4 flows; application replies use state. TCP/UDP DNS 53 to the local gateway is allowed on
-host/svc/web/admin/guests/work except Remmina.
+host/svc/web/admin/guests/work except Remmina. Work UDP DNS states expire after 15 s.
 
 | From | To | Ports | Reason |
 |---|---|---|---|
@@ -288,7 +298,8 @@ bridges ignore ARP; strict reverse-path filtering and disabled forwarding preven
 - Unbound serves internal segments, validates DNSSEC and forwards over IPv4 DoT with
   address/certificate-name pairs. AAAA answers remain. The DoH canary returns NXDOMAIN to encourage
   system resolution.
-- Rebinding protection strips configured private/shared/loopback IPv4 and IPv4-mapped IPv6 answers.
+- Rebinding protection strips configured private/shared/loopback IPv4 and IPv4-mapped IPv6 answers,
+  and IPv6 loopback and unspecified answers.
 - Built-in names/reverse records come from local-names.conf at build time. Owner records and RPZ
   blocklist are validated/pushed together over SSH. Failed weekly downloads retain the last good
   list; owner exceptions exempt subdomains.
@@ -459,7 +470,9 @@ then keeps only a complete, valid set, or stops and says to set the clock and re
 
 Signed latest binds guests.manifest and separate remmina.manifest hashes; the latter preserves
 older readers. Host manifests remain unchanged; host-only releases are valid. Guest identity is
-SHA256SUMS plus profiles. Delivery/retry/staleness: [USAGE](USAGE.md#releases-and-guests).
+SHA256SUMS plus profiles. Delivery/retry/staleness: [USAGE](USAGE.md#releases-and-guests). A USB
+source mounts read-only with its filesystem type named (FAT, exFAT, ext4 or Btrfs), without journal
+replay.
 
 Guest replacements require a good host and serialize operations. Snapshot custom state before
 rebuilding in place; retain the old image until checks pass. Failure/interruption rebuilds/reseeds
@@ -467,13 +480,16 @@ the old image and restores snapshots; keep three snapshots/volume. Remmina exclu
 
 Incus reads and config changes in guest operations are bounded at 120 s. A frozen VM monitor holds the
 instance listing, so a timeout names the frozen guest and its recovery. With no update pending, apply
-also starts a wan or svc that Incus left stopped after ten crashes in a minute. A firewall rebuild
-starts them first; its soak needs wan.
+also starts a wan or svc that Incus left stopped after ten crashes in a minute, or paused on a full
+disk (restarted with a forced restart). A firewall rebuild starts them first; its soak needs wan. A
+firewall update waits read-only for running firewalls' sshd before its SSH reads; a topology replay
+does the same.
 
 With unchanged topology, replace fw2, check CARP/pfsync/rules/DNS/traffic, fail over, then replace
 fw1. Failure restores the target before touching its peer. Reseed DHCP leases and push stored DNS
-when available. Topology changes stop both firewalls under a durable journal; failure restores both
-roots before either boots. Work stays closed until validation.
+when available. Topology changes stop both firewalls under a durable journal, holding work DHCP before
+the lease checkpoint; failure restores both roots before either boots. Once committed, a firewall that
+never answers is rebuilt from the journal. Work stays closed until validation.
 [Recovery](RECOVERY.md#4-guests-init-or-guests-update-stopped).
 
 WAN networks are extracted from the old partition in userspace by unprivileged debugfs, keeping
@@ -569,7 +585,8 @@ GuestRouteInjected, IncusPoolHigh, ReleaseOld, GuestImageOld and GuestReleaseEOL
 
 The checker compares verity, firewall hashes, Incus/tmp/Remmina profiles, writable etc,
 autostart/SUID inventories, VFIO/device ownership and CARP against an accepted release; upstream
-connectivity is excluded. Results feed CheckerFailed/Stale.
+connectivity is excluded. Results feed CheckerFailed/Stale. The autostart scan gives up after 120 s and
+reads at most 64 MiB of each owner file.
 [Baseline commands](USAGE.md#health-and-alerts). Dashboard generators own shipped JSON in
 `guests/svc/dashboards`; its README describes checks and collection boundaries. [Operator
 views](USAGE.md#health-and-alerts).

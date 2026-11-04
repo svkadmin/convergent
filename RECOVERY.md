@@ -144,8 +144,9 @@ If a step fails twice identically, photograph the last output screen and leave t
 
 A VM whose QEMU froze answers no Incus read or change: `guests` stops with "<guest>'s QEMU no longer
 answers Incus". The checker restarts a frozen firewall unless a guest journal, maintenance or shutdown
-inhibits it. If Incus left both firewalls stopped, the checker starts them after 180 s, under the same
-inhibitions. For wan, or a firewall while that heal is inhibited, end the QEMU yourself:
+inhibits it. If Incus left both firewalls stopped or paused on a full disk, the checker starts or
+restarts them after 180 s, under the same inhibitions. For wan, or a firewall while that heal is
+inhibited, end the QEMU yourself:
 
 ```sh
 sudo timeout 30 incus --force-local query '/1.0/instances/<guest>/state?project=default'; echo $?  # 124: frozen
@@ -165,8 +166,8 @@ Finish handoff/maintenance before upgrading the host. `/var/lib/convergent/guest
 retains both old images/configurations and holds both firewalls stopped during replacement.
 Never start a partial pair manually, delete the journal, prune its images or clear its holds.
 Rerun `sudo guests apply` or the original `sudo guests update fw <image-dir>`: uncommitted work
-restores both old roots before either starts; committed work finishes startup. Failed recovery
-retains the journal and holds for retry. Inspect `guests status`, the update log and both consoles.
+restores both old roots before either starts; committed work finishes startup, and a node that never
+answers is rebuilt from the journal. Failed recovery retains the journal and holds for retry. Inspect `guests status`, the update log and both consoles.
 `check auto` reopens work access once topology validation passes. Replacement preserves DHCP leases.
 
 A committed migration (`fw.topology/committed` exists) whose firewalls answer but never form fw1
@@ -222,8 +223,9 @@ lower serial once (local pushes keep the stored list meanwhile).
 
 A clock years off can prevent both firewall DoT certificate validation and the host's NTS
 key exchange. With no usable saved NTS cookies, DNS and authenticated time cannot bootstrap
-each other. Correct the host **and both firewalls**; correcting only the host leaves firewall
-ntpd slewing a large offset. Do not disable certificate checks or add unauthenticated servers.
+each other. Correct the host **and both firewalls**: ntpd only slews a large offset, and the host's
+automatic step of each firewall runs only once per boot, so it misses a host correction made later. Do not disable
+certificate checks or add unauthenticated servers.
 
 Obtain current UTC from an independently trusted clock (for example, a correctly set offline
 device). Compare it with `date -u` on the host. Replace `YYYY-MM-DD HH:MM:SS` below with that
