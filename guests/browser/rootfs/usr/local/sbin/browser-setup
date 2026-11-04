@@ -78,6 +78,11 @@ if [ "$role" = int ]; then
     chmod 600 /run/incus-ui/nssdb/*
     mount -o bind /run/incus-ui/nssdb /home/browser/.pki/nssdb
     mount -o bind /run/incus-ui/nssdb /home/browser/.local/share/pki/nssdb
+    # An Incus session's home, caches and downloads, with the same nssdb.
+    mkdir -p /run/incus-ui/home/.pki/nssdb /run/incus-ui/home/.local/share/pki/nssdb /run/incus-ui/home/Downloads
+    chown -R 1000:1000 /run/incus-ui/home
+    mount -o bind /run/incus-ui/nssdb /run/incus-ui/home/.pki/nssdb
+    mount -o bind /run/incus-ui/nssdb /run/incus-ui/home/.local/share/pki/nssdb
     touch /run/incus-ui-ready
 fi
 printf '%s\n' "$role" >/run/browser-role

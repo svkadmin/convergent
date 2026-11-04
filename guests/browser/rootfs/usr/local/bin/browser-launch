@@ -50,11 +50,12 @@ fi
 cd /home/browser
 # The host allows one launcher per role; a lock left by a renamed or killed container names another host.
 rm -f profile/SingletonLock profile/SingletonSocket profile/SingletonCookie
-# An Incus session never opens the profile a Grafana session wrote: a fresh one on int's per-boot tmpfs.
-profile=/home/browser/profile
-[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile
+# An Incus session never opens what a Grafana session wrote: profile, home and caches on int's per-boot tmpfs.
+profile=/home/browser/profile home=/home/browser
+[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile home=/run/incus-ui/home
 
-exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/browser USER=browser LOGNAME=browser \
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$home" USER=browser LOGNAME=browser \
+    XDG_CACHE_HOME="$home/.cache" XDG_CONFIG_HOME="$home/.config" \
     LANG=C.UTF-8 XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=/mnt/browser/wayland-0 \
     PULSE_SERVER=unix:/mnt/browser/pipewire-0 GTK_USE_PORTAL=0 NO_AT_BRIDGE=1 \
     DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent DBUS_SYSTEM_BUS_ADDRESS=unix:path=/nonexistent \

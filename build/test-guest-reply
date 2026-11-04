@@ -537,6 +537,20 @@ for exec_rc in 0 7; do
     7) [ "$code" = 7 ] && [ ! -e "$scratch/ui-trusted" ] && [ ! -e "$scratch/ui-run/trusted" ] || exit 1 ;;
     esac
 done
+# Browser readiness and session probes: guest stdout dropped, stderr bounded and filtered.
+sed -n '/^attempts=0$/,/^done$/p; /^# Refuse argv-only guests /,/^if \[ -n "\$portal_mode" \]; then$/p' "$repo/tools/browser" |
+    sed '$d' >"$scratch/probes"
+[ "$(grep -c 'incus --force-local --project default exec "\$name" --' "$scratch/probes")" = 4 ]; sh -n "$scratch/probes"
+(
+    role=int incus_ui=1 name=int ready=/run/browser-ready launcher=/usr/local/bin/browser-launch
+    die() { echo "$*" >&2; exit 1; }
+    sleep() { :; }
+    timeout() { shift 3; "$@"; }
+    incus() { echo call >>"$scratch/probe-calls"; hostile || :; }
+    . "$scratch/probes"
+) >"$scratch/output" 2>"$scratch/error"
+[ "$(wc -l <"$scratch/probe-calls")" = 4 ] && [ ! -s "$scratch/output" ] || exit 1
+[ "$(grep -cx 'err]52;c;eA==' "$scratch/error")" = 4 ] || exit 1; shown "$scratch/error" 'browser probes'
 # A wan replacement carries only short iwd profiles with what iwd writes; the rest stays behind.
 sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p' "$repo/tools/guests" >"$scratch/wan"
 [ "$(grep -c '^wan_[a-z]*() [{(]$' "$scratch/wan")" = 3 ]; sh -n "$scratch/wan"
@@ -585,4 +599,4 @@ sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/
     shown "$scratch/error" wan_extract
 )
 echo 'test-guest-reply: byte limits, transfer failures, cleanup and production readbacks passed'
-echo 'test-guest-reply: browser tails, sys browser reasons, incus-ui imports and wan profiles are bounded and filtered'
+echo 'test-guest-reply: browser tails and probes, sys browser reasons, incus-ui imports and wan profiles are bounded and filtered'

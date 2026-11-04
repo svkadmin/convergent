@@ -171,9 +171,9 @@ check_script "$work/services"
 guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
 sed '/^url=\$(head -c /,/^esac$/d' "$guest" >"$work/argv-only"
 check_script "$work/argv-only"
-# A guest from before the Incus session profile: it would hand Grafana's profile to the certificate.
-grep -vxF '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile' "$guest" >"$work/shared"
-if cmp -s "$guest" "$work/shared"; then die 'launcher lacks the Incus session profile'; fi
+# A guest from before the Incus session home: it would hand Grafana's home and caches to the certificate.
+sed 's#^\(\[ .* || profile=/run/incus-ui/profile\) home=/run/incus-ui/home$#\1#' "$guest" >"$work/shared"
+if cmp -s "$guest" "$work/shared"; then die 'launcher lacks the Incus session home'; fi
 for version in current old missing shared; do
     for mode in def tmp portal grafana incus remmina; do
         : >"$work/services-called"
@@ -294,25 +294,24 @@ awk '/^# Refuse argv-only guests / {guard = NR}
     write_url "$@" >"$work/expected"
     cmp "$work/expected" "$work/blocked-input"
 )
-# An Incus session never opens the profile a Grafana session wrote: int's per-boot tmpfs holds a fresh one.
-sed -n '/^profile=\/home\/browser\/profile$/,/ || profile=/p' "$guest" >"$work/profile"
+# An Incus session never opens what a Grafana session wrote: int's per-boot tmpfs holds its profile, home and caches.
+sed -n '/^profile=\/home\/browser\/profile home=\/home\/browser$/,$p' "$guest" | sed 's/^exec env -i /launch_env /' >"$work/profile"
 check_script "$work/profile"
-[ "$(wc -l <"$work/profile")" = 2 ] || die 'unexpected profile selection'
-grep -qF -- '--user-data-dir="$profile"' "$guest" || die 'launcher ignores the session profile'
+grep -q '^launch_env ' "$work/profile" || die 'unexpected launcher exec'
 grep -q '^    mount -t tmpfs -o size=[0-9]*m,mode=0700,nosuid,nodev,noexec tmpfs /run/incus-ui$' \
     "$repo/guests/browser/rootfs/usr/local/sbin/browser-setup" || die 'the Incus profile is not on tmpfs'
+launch_env() { printf '%s\n' "$@" >"$work/launch"; }
 for sample in grafana incus def; do
-    profile=
+    home=/home/browser profile=/home/browser/profile other=/run/incus-ui
     case $sample in
         grafana) role=int; set -- http://100.80.2.10:3000/ ;;
-        incus) role=int; set -- https://100.80.1.10:8443/ui/ ;;
+        incus) role=int; set -- https://100.80.1.10:8443/ui/; home=/run/incus-ui/home profile=/run/incus-ui/profile other=/home/browser ;;
         def) role=def; set -- https://100.80.1.10:8443/ui/ ;;
     esac
-    . "$work/profile"
-    case $sample in
-        incus) [ "$profile" = /run/incus-ui/profile ] || die "profile for $sample: $profile" ;;
-        *) [ "$profile" = /home/browser/profile ] || die "profile for $sample: $profile" ;;
-    esac
+    (. "$work/profile")
+    printf '%s\n' "HOME=$home" "XDG_CACHE_HOME=$home/.cache" "XDG_CONFIG_HOME=$home/.config" "--user-data-dir=$profile" >"$work/expected"
+    grep -E '^(HOME|XDG_CACHE_HOME|XDG_CONFIG_HOME)=|^--user-data-dir=' "$work/launch" | cmp -s "$work/expected" - &&
+        ! grep -qF "$other" "$work/launch" || die "launcher paths for $sample"
 done
 # Policies as the image builds them; int boots into Grafana's, an Incus session narrows to its origin.
 root=$work/root
@@ -331,7 +330,10 @@ for role in def tmp int; do
     case $role in
         def) jq -e 'has("URLAllowlist") | not' "$policy" >/dev/null ;;
         tmp) jq -e '.IncognitoModeAvailability == 2 and .MetricsReportingEnabled == false' "$policy" >/dev/null ;;
-        int) jq -e '.URLAllowlist == ["http://100.80.2.10:3000", "https://100.80.1.10:8443"] and
+        # Grafana's policy names no Incus origin.
+        int) jq -e '.URLAllowlist == ["http://100.80.2.10:3000"] and
+            .ManagedBookmarks == [{"name": "Grafana", "url": "http://100.80.2.10:3000/"}] and
+            ([.. | strings | select(contains("8443"))] | length) == 0 and .DownloadDirectory == "/home/browser/Downloads/int" and
             .RestoreOnStartupURLs == ["http://100.80.2.10:3000/"] and .MetricsReportingEnabled == false' "$policy" >/dev/null ;;
     esac || die "boot policy for $role"
 done
@@ -347,11 +349,28 @@ for sample in def unready int; do
         [ "$rc" = 0 ] || die 'Incus session policy refused'
         jq -e '.URLAllowlist == ["https://100.80.1.10:8443"] and .URLBlocklist[0] == "*" and
             .RestoreOnStartupURLs == ["https://100.80.1.10:8443/ui/"] and (.ManagedBookmarks | length) == 1 and
-            .MetricsReportingEnabled == false and .DeveloperToolsAvailability == 2' "$policy" >/dev/null ||
+            .MetricsReportingEnabled == false and .DeveloperToolsAvailability == 2 and
+            .DownloadDirectory == "/run/incus-ui/home/Downloads"' "$policy" >/dev/null ||
             die 'Incus session policy allows more than the Incus origin'
     else
         [ "$rc" != 0 ] && cmp -s "$work/grafana-policy" "$policy" || die "narrowed the policy of a $sample container"
     fi
 done
+# browser-setup prepares that home, its downloads and the session's nssdb at both NSS paths.
+sed -n '/^if \[ "\$role" = int \]; then$/,/^fi$/p' "$setup" |
+    sed "s|/home/browser/|$root/home/browser/|g; s|/run/|$root/run/|g" >"$work/setup-int"
+check_script "$work/setup-int"
+(
+    role=int
+    mount() { printf '%s\n' "$*" >>"$work/mounts"; }
+    certutil() { : >"$root/run/incus-ui/nssdb/cert9.db"; }
+    chown() { :; }
+    . "$work/setup-int"
+)
+for nss in .pki/nssdb .local/share/pki/nssdb; do
+    [ -d "$root/run/incus-ui/home/$nss" ] && grep -qxF -- "-o bind $root/run/incus-ui/nssdb $root/run/incus-ui/home/$nss" "$work/mounts" ||
+        die "Incus session home lacks $nss"
+done
+[ -d "$root$(jq -r .DownloadDirectory "$policy")" ] || die 'Incus session downloads missing'
 echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions, rollback hosts and writer locks passed'
-echo 'browser-url: Incus sessions get a tmpfs profile and the Incus origin alone; Grafana sessions keep theirs'
+echo 'browser-url: Incus sessions get a tmpfs profile, home, caches and downloads and the Incus origin alone; Grafana sessions keep theirs'

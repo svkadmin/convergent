@@ -366,8 +366,9 @@ ic start "$name"
 mapping=$(ic config get "$name" volatile.idmap.current)
 guest_uid=$(printf '%s\n' "$mapping" | jq -er '.[] | select(.Isuid and .Nsid <= 1000 and (.Nsid + .Maprange) > 1000) | .Hostid + 1000 - .Nsid')
 setfacl -m "u:$guest_uid:rw" "$wayland_socket" "$run/sockets/pulse-0"
+# Guest bytes never reach the owner's terminal raw: stdout dropped, stderr filtered.
 attempts=0
-until timeout -k 1 30 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&-; do
+until guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- test -f "$ready" 9>&- 8>&- 7>&- 6>&- >/dev/null; do
     attempts=$((attempts + 1))
     [ "$attempts" -lt 30 ] || die 'browser setup timed out'
     sleep 1
@@ -376,16 +377,16 @@ done
 if [ "$role" != remmina ]; then
     # Bounded: a hostile guest can make the probe block (e.g. a FIFO launcher) while we hold the locks.
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
-        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
+        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- >/dev/null ||
         die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
 fi
-# An Incus session: int's tmpfs profile and the Incus origin alone, never Grafana's profile or origin.
+# An Incus session: int's tmpfs profile and home and the Incus origin alone, never Grafana's.
 if [ -n "$incus_ui" ]; then
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
-        grep -Fqx '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
+        grep -Fqx '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile home=/run/incus-ui/home' "$launcher" 9>&- 8>&- 7>&- 6>&- >/dev/null ||
         die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
-        /usr/local/sbin/browser-setup incus-ui 9>&- 8>&- 7>&- 6>&- || die 'cannot limit the int browser to the Incus UI'
+        /usr/local/sbin/browser-setup incus-ui 9>&- 8>&- 7>&- 6>&- >/dev/null || die 'cannot limit the int browser to the Incus UI'
 fi
 if [ -n "$portal_mode" ]; then
     portal=1
