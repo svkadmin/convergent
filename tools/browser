@@ -383,7 +383,7 @@ fi
 if [ -n "$incus_ui" ]; then
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
         grep -Fqx '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
-        die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+        die 'browser guest needs updating: close the browsers, then sys guests update'
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
         /usr/local/sbin/browser-setup incus-ui 9>&- 8>&- 7>&- 6>&- || die 'cannot limit the int browser to the Incus UI'
 fi
