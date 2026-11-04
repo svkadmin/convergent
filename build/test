@@ -2633,7 +2633,8 @@ cv_time firewall-self-heal
         # Separate tests: set -e ignores a failure before the last && of a list.
         [ "$(fw_pid fw1)" = "$pid1" ]
         [ "$(fw_pid fw2)" = "$pid2" ]
-        cmp "$release/heal-attempts" /run/convergent/firewall-heal/attempts
+        # The heal prunes attempts older than an hour: only a new last line is a new attempt.
+        [ "$(tail -n 1 /run/convergent/firewall-heal/attempts)" = "$(tail -n 1 "$release/heal-attempts")" ] || [ ! -s /run/convergent/firewall-heal/attempts ]
         sleep 10
     done
     unbound_up fw1
