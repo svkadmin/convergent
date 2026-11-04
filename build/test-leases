@@ -102,6 +102,24 @@ rm -f "$state/leases/held"
 )
 rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
 cp "$work/old" "$work/live/fw1"
+# Nothing read and nothing saved: accepted only when both roots are replaced (a migration cut after its
+# holds, or both committed nodes listed as rebuilding), never with one peer's leases left out.
+mv "$state/leases/saved" "$work/saved.keep"
+(
+	running() { return 1; }
+	if leases_hold; then exit 1; fi
+	if (rebuilding=fw1; leases_hold); then exit 1; fi
+	mkdir "$state/fw.topology"
+	touch "$state/fw.topology/committed"
+	if leases_hold; then exit 1; fi
+	(rebuilding='fw1 fw2'; leases_hold)
+	[ -e "$state/leases/quiesced" ]
+	rm -f "$state/leases/quiesced" "$state/leases/saved" "$state/fw.topology/committed"
+	leases_hold
+	[ -e "$state/leases/quiesced" ]
+)
+rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
+mv "$work/saved.keep" "$state/leases/saved"
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
 command -v healthy >/dev/null && command -v cleanup >/dev/null
@@ -223,6 +241,18 @@ if (
 ) 2>"$work/cleanup.err"; then exit 1; fi
 grep -qx failed "$work/status"
 grep -qx 'cleanup: pair rollback pending; both firewalls held; rerun sys guests update' "$work/cleanup.err"
+# A committed one goes forward on running firewalls: no rollback, no holds claimed.
+touch "$state/fw.topology/committed"
+if (
+    unmount_root() { :; }; logger() { :; }
+    fail() { echo "$step: $*" >&2; return 1; }
+    topology_recover() { return 1; }
+    update_status() { :; }
+    manual_stage= recovering= starting= applying=1 step=test
+    cleanup 1
+) 2>"$work/cleanup.err"; then exit 1; fi
+grep -qx 'cleanup: pair commit pending; rerun sys guests update' "$work/cleanup.err"
+rm "$state/fw.topology/committed"
 rmdir "$state/fw.topology"
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (

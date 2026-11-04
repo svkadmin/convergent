@@ -630,7 +630,8 @@ sudo guests update remmina $g/remmina
 
 Select owner NIC-only profiles `work-dom-dev-a`, `work-dom-dev-b`, `work-dom-jhn-a`, or
 `work-dom-jhn-b` (configured family names); supply disks/resources separately. Owner shares managed
-networks, retaining its own profiles. Use DHCP or static .1–.48, /26, gateway/DNS .62 in the
+networks, retaining its own profiles. `work-` profile names are reserved: after a domain rename, a
+NIC-only `work-` profile left behind is renamed to its VLAN's new profile, or removed when unused. Use DHCP or static .1–.48, /26, gateway/DNS .62 in the
 [selected prefix](ARCHITECTURE.md#41-addressing); Incus NIC settings do not configure the guest OS.
 Work guests can communicate within their own VLAN; routing to other work VLANs is blocked, including
 within the same family. System segments are blocked. Internet works; home-LAN access requires

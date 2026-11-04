@@ -421,8 +421,12 @@ echo 'test-topology: update fw waits for booting firewalls and records its image
     . "$lib/fw-leases"
     retry() { echo "retry $*" >>"$log"; tries=0; until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done; }
     reachable() { rsh "$1" true >/dev/null; }
+    # dying: fw2 stops during the wait, which ends at once instead of running out.
     rsh() {
-        case $1 in fw2) [ "$((boots += 1))" -gt "$silent" ] || return 255 ;; esac
+        case $1:$silent in
+        fw2:dying) echo "probe $1" >>"$log"; echo stopped >"$scratch/fw2.status"; return 255 ;;
+        fw2:*) [ "$((boots += 1))" -gt "$silent" ] || return 255 ;;
+        esac
         case $2 in
         true) ;;
         *'rcctl disable dhcpd'*) echo "read $1" >>"$log" ;;
@@ -430,7 +434,7 @@ echo 'test-topology: update fw waits for booting firewalls and records its image
         *) return 1 ;;
         esac
     }
-    for silent in 2 1000; do
+    for silent in 2 1000 dying; do
         journal
         rm -rf "$state/leases" "$scratch/fw1.held" "$scratch/fw2.held"
         for f in fw1 fw2; do echo running >"$scratch/$f.status"; done
@@ -438,8 +442,9 @@ echo 'test-topology: update fw waits for booting firewalls and records its image
         topology_hold
         stopped fw1 && stopped fw2
         [ -f "$state/leases/quiesced" ]
-        awk '$0 == "hold fw2" {h=NR} $0 == "retry reachable fw2" {w=NR} $0 == "read fw1" {r=NR} END {exit !(h && w && r && h < w && w < r)}' "$log"
+        awk '$0 == "hold fw2" {h=NR} $0 == "retry topology_settled fw2" {w=NR} $0 == "read fw1" {r=NR} END {exit !(h && w && r && h < w && w < r)}' "$log"
         if [ "$silent" = 2 ]; then grep -qx 'read fw2' "$log"; elif grep -qx 'read fw2' "$log"; then exit 1; fi
+        [ "$silent" != dying ] || [ "$(grep -cx 'probe fw2' "$log")" = 1 ]
     done
     rm -rf "$state/fw.topology" "$state/leases"
 )
@@ -461,13 +466,49 @@ echo 'test-topology: rollback holds both, waits for a booting firewall and check
     running fw1 && running fw2
 )
 echo 'test-topology: a committed migration redoes a node that never becomes healthy'
+# Both committed nodes silent (an fsck prompt): both are redone under one real checkpoint, neither refused.
+(
+    . "$lib/fw-leases"
+    journal
+    rm -rf "$state/leases"
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; touch "$scratch/$f.broken"; done
+    touch "$state/fw.topology/committed"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    rebuild_root() { stopped "$1" || return 1; echo "rebuild $1 $2" >>"$log"; rm -f "$scratch/$1.broken"; printf '%s\n' "$2" >"$scratch/$1.image"; }
+    rsh() { [ ! -e "$scratch/$1.broken" ] || return 255; case $2 in *'cat >/var/db/dhcpd.leases.new'*) cat >/dev/null ;; esac; }
+    pair() { [ ! -e "$scratch/fw1.broken" ] && [ ! -e "$scratch/fw2.broken" ]; }
+    topology_recover
+    [ ! -e "$state/fw.topology" ] && [ ! -e "$state/leases/held" ]
+    grep -qx 'rebuild fw1 new' "$log" && grep -qx 'rebuild fw2 new' "$log"
+    running fw1 && running fw2
+    rm -rf "$state/leases"
+)
+echo 'test-topology: a committed migration redoes both silent nodes'
+# A start Incus refuses for a moment is tried again: a committed-good root is never rebuilt for it.
+(
+    journal
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; done
+    echo running >"$scratch/fw2.status"
+    touch "$state/fw.topology/committed"
+    retry() { tries=0; until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done; }
+    start_guest() { [ -e "$scratch/fw1.refused" ] || { touch "$scratch/fw1.refused"; return 1; }; seed_start "$1"; }
+    topology_recover
+    [ ! -e "$state/fw.topology" ] && [ -e "$scratch/fw1.refused" ]
+    if grep -q '^rebuild ' "$log"; then exit 1; fi
+    running fw1 && running fw2
+)
+echo 'test-topology: a committed node whose start is refused once is started again, not rebuilt'
 if command -v jq >/dev/null 2>&1; then
-    # A renamed work domain's profile stays on a VLAN another domain may own: used refuses, unused goes.
+    # A renamed work domain's profile stays on a VLAN another domain may own: unused goes, used takes the
+    # name of the not yet created profile on its VLAN, other used ones refuse. Owner shapes are never touched.
     (
         . "$lib/fw-topology"
         lib=$scratch/lib
         mkdir -p "$lib/work"
-        : >"$lib/work/work-eng-a.yaml"
+        for vlan in 320:a 360:b; do
+            printf 'config: {}\ndevices:\n  eth0:\n    type: nic\n    network: work\n    name: eth0\n    vlan: "%s"\n    security.mac_filtering: "true"\n' \
+                "${vlan%:*}" >"$lib/work/work-eng-${vlan#*:}.yaml"
+        done
         ic() { [ "$*" = 'project list --format json' ] || return 1; echo '[{"name":"default"},{"name":"owner"}]'; }
         incus() { echo "incus $*" >>"$log"; case "$*" in *'profile list --format json') cat "$scratch/profiles.json" ;; esac; }
         cmp() { :; }
@@ -475,29 +516,41 @@ if command -v jq >/dev/null 2>&1; then
         die() { echo "$*" >&2; exit 1; }
         import_image() { echo import >>"$log"; exit 1; }
         used='"/1.0/instances/vm?project=owner"'
-        nic='{"eth0":{"type":"nic","network":"work","vlan":"320"}}'
+        nic() { printf '{"eth0":{"type":"nic","network":"work","name":"eth0","vlan":"%s","security.mac_filtering":"true"}}' "$1"; }
+        # work-mine (no MAC filtering), work-ten (VLAN outside the four) and work-mtu (an extra key) are owner-made.
+        mine='{"eth0":{"type":"nic","network":"work","vlan":"320"}}'
+        ten='{"eth0":{"type":"nic","network":"work","name":"eth0","vlan":"100","security.mac_filtering":"true"}}'
+        mtu='{"eth0":{"type":"nic","network":"work","name":"eth0","vlan":"330","security.mac_filtering":"true","mtu":"1400"}}'
         for users in "$used" ''; do
-            printf '[{"name":"default","used_by":[%s]},{"name":"work-eng-a","used_by":[%s],"devices":%s},{"name":"work-dev-a","used_by":[],"devices":%s},{"name":"work-dev-b","used_by":[%s],"devices":%s},{"name":"work-lab","used_by":[%s],"devices":{"root":{"type":"disk"}}},{"name":"work-old","used_by":[]}]\n' \
-                "$used" "$used" "$nic" "$nic" "$users" "$nic" "$used" >"$scratch/profiles.json"
+            printf '[{"name":"default","used_by":[%s]},{"name":"work-eng-a","used_by":[%s],"devices":%s},{"name":"work-dev-a","used_by":[],"devices":%s},{"name":"work-dev-b","used_by":[%s],"devices":%s},{"name":"work-lab","used_by":[%s],"devices":{"root":{"type":"disk"}}},{"name":"work-old","used_by":[]},{"name":"work-mine","used_by":[%s],"devices":%s},{"name":"work-ten","used_by":[],"devices":%s},{"name":"work-mtu","used_by":[],"devices":%s},{"name":"work-jhn-old","used_by":[%s],"devices":%s}]\n' \
+                "$used" "$used" "$(nic 320)" "$(nic 330)" "$users" "$(nic 320)" "$used" "$used" "$mine" "$ten" "$mtu" "$used" "$(nic 360)" >"$scratch/profiles.json"
             : >"$log"
             if (topology_update) 2>"$scratch/err"; then exit 1; fi
             if [ -n "$users" ]; then
-                grep -q 'work-dev-b is no longer a work domain' "$scratch/err"
-                if grep -q -e '^import' -e 'profile delete' "$log"; then exit 1; fi
+                # work-eng-a, its VLAN's profile, exists already: only a detach is left.
+                grep -q 'work-dev-b is no longer a work domain but still in use by vm; detach it from each: sudo incus --force-local --project owner profile remove <instance> work-dev-b' "$scratch/err"
+                if grep -q -e '^import' -e 'profile delete' -e 'profile rename' "$log"; then exit 1; fi
                 if work_profiles 2>/dev/null; then exit 1; fi
-                if grep -q 'profile delete work-dev-b' "$log"; then exit 1; fi
+                if grep -q -e 'profile delete work-dev-b' -e 'profile create' "$log"; then exit 1; fi
             else
                 grep -qx import "$log"
-                if grep -q 'profile delete' "$log"; then exit 1; fi
+                if grep -q -e 'profile delete' -e 'profile rename' "$log"; then exit 1; fi
                 work_profiles
-                grep -q 'profile delete work-dev-a ' "$log" && grep -q 'profile delete work-dev-b ' "$log"
-                if grep -q -e 'profile delete work-eng-a' -e 'profile delete default' -e 'profile delete work-lab' -e 'profile delete work-old' "$log"; then exit 1; fi
+                [ "$(grep 'profile delete' "$log")" = "$(printf 'incus --force-local --project owner profile delete %s\n' work-dev-a work-dev-b)" ]
+                # Renamed before its successor is created: same devices, so its instances carry over.
+                [ "$(grep 'profile rename' "$log")" = 'incus --force-local --project owner profile rename work-jhn-old work-eng-b' ]
+                awk '/profile rename work-jhn-old work-eng-b$/ {r=NR} /profile (create|edit) work-eng-b$/ && !c {c=NR} END {exit !(r && c && r < c)}' "$log"
             fi
         done
+        # Two left on one VLAN: only one can take its name, so the check refuses before the migration.
+        printf '[{"name":"work-x","used_by":[%s],"devices":%s},{"name":"work-y","used_by":[%s],"devices":%s}]\n' \
+            "$used" "$(nic 360)" "$used" "$(nic 360)" >"$scratch/profiles.json"
+        if work_stale 2>"$scratch/err"; then exit 1; fi
+        grep -q 'work-y is no longer a work domain' "$scratch/err"
         [ ! -e "$state/fw.topology" ]
         rm -rf "$work/topology"
     )
-    echo 'test-topology: profiles of renamed work domains are pruned, or refused while used'
+    echo 'test-topology: profiles of renamed work domains are pruned, renamed onto their VLAN, or refused'
     # The storage repair hint names the migration's own image when no update journal exists.
     (
         awk '/^storage_check\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/storage"

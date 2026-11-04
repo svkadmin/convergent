@@ -1,7 +1,11 @@
 #!/bin/sh
 # Quiesce both allocators while checkpointing and seeding a replacement. A replacement still booting and
-# relinking took over 30 s for the rcctl calls below. A node being replaced (an uncommitted pair migration
-# replaces both) may stay silent: its root and leases come from the saved copy.
+# relinking took over 30 s for the rcctl calls below. A node being replaced (listed in rebuilding; an
+# uncommitted pair migration replaces both) may stay silent: its root and leases come from the saved copy.
+lease_replaced() {
+    case " ${rebuilding:-} " in *" $1 "*) return 0 ;; esac
+    [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]
+}
 leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
@@ -20,10 +24,12 @@ fi' >"$work/leases.$lease_node"; then
             mv "$work/leases.$lease_node" "$state/leases/$lease_node" && sync || return
             lease_sources=$((lease_sources + 1))
         else
-            [ "${rebuilding:-}" = "$lease_node" ] || { [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]; } || return 1
+            lease_replaced "$lease_node" || return 1
         fi
     done
-    [ "$lease_sources" != 0 ] || [ -f "$state/leases/saved" ] || return 1
+    # Nothing read and nothing saved (a migration cut after its holds, both committed nodes silent): only
+    # when both roots are replaced, so no peer keeps leases the replacement would not know.
+    [ "$lease_sources" != 0 ] || [ -f "$state/leases/saved" ] || { lease_replaced fw1 && lease_replaced fw2; } || return 1
     for lease_node in fw1 fw2 saved; do
         [ -f "$state/leases/$lease_node" ] || : >"$state/leases/$lease_node" || return
     done
@@ -38,7 +44,7 @@ if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; the
     mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
     sync
 fi' <"$state/leases/saved"; then
-            [ "${rebuilding:-}" = "$lease_node" ] || { [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]; } || return 1
+            lease_replaced "$lease_node" || return 1
         fi
     done
     touch "$state/leases/quiesced" && sync

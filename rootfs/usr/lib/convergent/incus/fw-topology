@@ -5,13 +5,16 @@ topology_hold() {
         hold_set "$node" boot.autostart=false boot.autorestart=false || return
     done
     # A replay at boot meets firewalls Incus has just started: wait read-only for their sshd first.
-    for node in fw1 fw2; do if running "$node"; then retry reachable "$node" || :; fi; done
+    for node in fw1 fw2; do if running "$node"; then retry topology_settled "$node" || :; fi; done
     leases_hold || return
     for node in fw1 fw2; do
         stopped "$node" || locked force_stop "$node" || return
         stopped "$node" || return
     done
 }
+# A dying node ends the wait as an answer does; a start Incus refuses for a moment is tried again.
+topology_settled() { reachable "$1" || stopped "$1"; }
+topology_started() { running "$1" || start_guest "$1"; }
 topology_autostart() {
     for node in fw1 fw2; do
         topology_unset "$node" user.convergent.autorestart || return
@@ -35,18 +38,23 @@ topology_retire() {
     rm -rf "$state/fw.topology.retired"
 }
 topology_finish() {
+    # A committed node that never answers is redone from the journal, as a committed rebuild is. Both are
+    # judged first: a silent peer is redone too, never left refusing the other's checkpoint.
+    redo=
     for node in fw1 fw2; do
-        # A committed node that never answers is redone from the journal, as a committed rebuild is.
-        if ! { running "$node" || start_guest "$node"; } || ! retry healthy "$node"; then
-            (rebuilding=$node; leases_hold) || return
+        if ! retry topology_started "$node" || ! retry healthy "$node"; then redo=${redo:+$redo }$node; fi
+    done
+    if [ -n "$redo" ]; then
+        (rebuilding=$redo; leases_hold) || return
+        for node in $redo; do
             stopped "$node" || locked force_stop "$node" || return
             seed_remove "$node" || return
             rebuild_root "$node" "$(cat "$state/fw.topology/$node.new")" || return
             seed_start "$node" || return
-            leases_resume || return
-        fi
-        image_alias "$node" "$(cat "$state/fw.topology/$node.new")" || return
-    done
+        done
+        leases_resume || return
+    fi
+    for node in fw1 fw2; do image_alias "$node" "$(cat "$state/fw.topology/$node.new")" || return; done
     retry pair fw1 fw2 || return
     work_profiles || return
     topology_autostart || return
@@ -116,6 +124,8 @@ work_profiles() {
         ic project create owner -c features.networks=false -c features.profiles=true || return
     fi
     incus --force-local project set owner features.networks=false 9>&- 8>&- 7>&- 6>&- || return
+    # Before creation: a renamed domain's used profile takes its successor's name.
+    work_stale prune || return
     for file in "$lib"/work/*.yaml; do
         name=${file##*/}; name=${name%.yaml}
         incus --force-local --project owner profile list --format json 9>&- 8>&- 7>&- 6>&- >"$work/profiles" || return
@@ -124,20 +134,40 @@ work_profiles() {
         fi
         incus --force-local --project owner profile edit "$name" <"$file" 9>&- 8>&- 7>&- 6>&- || return
     done
-    work_stale prune
 }
-# A renamed work domain leaves its profile on a VLAN another domain may now own: an unused one goes,
-# a used one refuses.
+# A renamed work domain leaves its profile on a VLAN another domain may now own: an unused one goes, a used
+# one takes the name of the not yet created profile on its VLAN (same devices: its instances carry over),
+# any other used one refuses.
 work_stale() {
     ic project list --format json >"$work/projects" || return
     jq -e 'any(.[]; .name == "owner")' "$work/projects" >/dev/null || return 0
     incus --force-local --project owner profile list --format json 9>&- 8>&- 7>&- 6>&- >"$work/profiles" || return
-    # Only NIC-only work-network profiles, the shape work_profiles installs: other work-* profiles are the owner's.
-    jq -r '.[] | select((.name | startswith("work-")) and ((.devices // {}) | keys) == ["eth0"] and .devices.eth0.network == "work") | "\(.name) \(.used_by | length)"' "$work/profiles" >"$work/work-profiles" || return
-    while read -r name users; do
+    # Only the exact shape work_profiles installs: work- names are reserved, other shapes are the owner's.
+    jq -r '.[] | select((.name | startswith("work-")) and ((.devices // {}) | keys) == ["eth0"] and
+        (.devices.eth0 | keys == ["name", "network", "security.mac_filtering", "type", "vlan"] and .type == "nic" and
+            .network == "work" and .name == "eth0" and .["security.mac_filtering"] == "true" and
+            (.vlan as $v | any("320", "330", "360", "370"; . == $v))))
+        | "\(.name) \(.devices.eth0.vlan) \([.used_by[]? | sub("^/1.0/instances/"; "") | split("?")[0]] | join(","))"' \
+        "$work/profiles" >"$work/work-profiles" || return
+    claimed=
+    while read -r name vlan users; do
         [ ! -f "$lib/work/$name.yaml" ] || continue
-        [ "$users" = 0 ] || { fail "owner profile $name is no longer a work domain but still in use; move its instances to a current work-* profile"; return 1; }
-        [ "${1:-}" != prune ] || incus --force-local --project owner profile delete "$name" 9>&- 8>&- 7>&- 6>&- || return
+        if [ -z "$users" ]; then
+            [ "${1:-}" != prune ] || incus --force-local --project owner profile delete "$name" 9>&- 8>&- 7>&- 6>&- || return
+            continue
+        fi
+        target=
+        for file in "$lib"/work/*.yaml; do
+            new=${file##*/}; new=${new%.yaml}
+            [ "$(awk '$1 == "vlan:" {gsub(/"/, "", $2); print $2}' "$file")" = "$vlan" ] || continue
+            jq -e --arg n "$new" 'all(.[]; .name != $n)' "$work/profiles" >/dev/null || break
+            case " $claimed " in *" $new "*) break ;; esac
+            target=$new
+            break
+        done
+        [ -n "$target" ] || { fail "owner profile $name is no longer a work domain but still in use by $users; detach it from each: sudo incus --force-local --project owner profile remove <instance> $name"; return 1; }
+        claimed="$claimed $target"
+        [ "${1:-}" != prune ] || incus --force-local --project owner profile rename "$name" "$target" 9>&- 8>&- 7>&- 6>&- || return
     done <"$work/work-profiles"
 }
 topology_update() {

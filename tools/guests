@@ -286,7 +286,11 @@ cleanup() {
     step=cleanup
     [ -z "$manual_stage" ] || rm -rf "$manual_stage" || { fail "cannot remove $manual_stage"; result=1; }
     if [ -n "$work" ] && [ -d "$state/fw.topology" ]; then
-        topology_recover || { fail 'pair rollback pending; both firewalls held; rerun sys guests update'; [ -z "$applying" ] || update_status failed; exit 1; }
+        topology_recover || {
+            # A committed migration goes forward on running firewalls.
+            if [ -f "$state/fw.topology/committed" ]; then fail 'pair commit pending; rerun sys guests update'
+            else fail 'pair rollback pending; both firewalls held; rerun sys guests update'; fi
+            [ -z "$applying" ] || update_status failed; exit 1; }
     fi
     unmount_root || { fail "cannot detach root mount or loop device"; [ -z "$applying" ] || update_status failed; exit 1; }
     clear_probes || { fail 'cannot remove probe routes'; result=1; }

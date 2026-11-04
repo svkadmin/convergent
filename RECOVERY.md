@@ -166,6 +166,12 @@ restores both old roots before either starts; committed work finishes startup. F
 retains the journal and holds for retry. Inspect `guests status`, the update log and both consoles.
 `check auto` reopens work access once topology validation passes. Replacement preserves DHCP leases.
 
+A committed migration (`fw.topology/committed` exists) whose firewalls answer but never form fw1
+MASTER/fw2 BACKUP fails the pair check on every run. Both already run the new image: find the
+demoted node (`sudo ssh -F /etc/convergent/ssh_config fw1 'ifconfig -g carp; ifconfig carp | grep carp:'`,
+then fw2), restore a lost WAN first ([section 6](#6-wi-fi-works-no-internet)), restart that node with
+`sudo incus --force-local --project default restart fw1 --force` (or fw2), then rerun `sudo guests apply`.
+
 ## 5. No Wi-Fi
 
 The `wan` VM owns the radio; host `ip link` cannot show it. Success: `sys wifi status` shows the
