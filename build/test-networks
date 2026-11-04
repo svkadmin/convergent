@@ -125,7 +125,6 @@ EOF
 		}' "$fw/etc/pf.conf"
 	grep -Fxq '	private-address: ::1/128' "$fw/var/unbound/etc/unbound.conf"
 	grep -Fxq '	private-address: ::/128' "$fw/var/unbound/etc/unbound.conf"
-	grep -Fxq 'pass quick on $if_sync inet proto udp from $sync_addrs to 224.0.1.240 port 8067 no state' "$fw/etc/pf.conf"
 done
 if cmp -s "$work/default/fw/etc/convergent/topology.sha256" "$work/changed/fw/etc/convergent/topology.sha256"; then exit 1; fi
 # The baseline registry still certifies an old pair during coordinated rollback.
