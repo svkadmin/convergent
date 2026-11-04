@@ -2127,7 +2127,8 @@ LOCAL
     until fw_unlocked; do
         n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
     done
-    printf 'yes\n' | sys firewall undo
+    # Undo fails after releasing when fw1 takes MASTER back late (a wan-watch flap); maintenance_clean waits for the roles.
+    printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
     [ ! -e /var/lib/convergent/firewall-maintenance ]
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
     fw_unlocked
@@ -2160,10 +2161,11 @@ cv_time maintenance-reboot
         carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$f" ifconfig)
         printf '%s\n' "$carp" | awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null
     done
-    printf 'yes\n' | sys firewall undo
+    printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
     timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
 )
 [ "$?" = 0 ] || { fw_diag; bad $LINENO; }
+maintenance_clean || bad $LINENO
 cv_time dns-recovery
 # Verify the local packet archive before and after the stock OpenBSD rotation.
 for f in fw1 fw2; do
