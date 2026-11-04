@@ -261,6 +261,8 @@ done
 
 # Startup failure must flush Cage's tail even while the producer is still alive.
 sed -n '/^cleanup() {/,/^}/p' "$here/../tools/browser" >"$work/cleanup"
+# The tails pass through guest_text.
+cp "$here/../rootfs/usr/lib/convergent/guest-reply.sh" "$work/guest-reply.sh"
 cat >"$work/cage-producer" <<'EOF'
 #!/bin/sh
 set -eu
@@ -278,6 +280,7 @@ set -eu
 children= active= grafana= portal= browser= capture= cage= cage_capture=
 role=remmina name=remmina uid=1000 gid=1000
 mkdir -p "$run/sockets" "$run/state"
+. "$work/guest-reply.sh"
 . "$work/cleanup"
 trap cleanup 0
 install() { for path do :; done; mkdir -p "$path"; }

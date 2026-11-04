@@ -3,6 +3,15 @@ set -eu
 umask 022
 die() { echo "browser-setup: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "root required"
+# The host narrows an Incus UI session to the Incus origin before its launcher runs.
+if [ "$#" = 1 ] && [ "$1" = incus-ui ]; then
+    [ "$(cat /run/browser-role)" = int ] && [ -f /run/incus-ui-ready ] || die "not a prepared int container"
+    jq -e '.incus | select(type == "object")' /usr/share/convergent-browser/int/policies.json \
+        >/etc/chromium/policies/managed/browser.json.new
+    mv /etc/chromium/policies/managed/browser.json.new /etc/chromium/policies/managed/browser.json
+    exit 0
+fi
+[ "$#" = 0 ] || die "usage: browser-setup [incus-ui]"
 role=$BROWSER_ROLE
 case ${BROWSER_PORTAL:-0}:$role in
     0:*) ;;
@@ -25,12 +34,13 @@ case $role in
 esac
 rm -f /run/browser-ready /run/browser-portal /run/incus-ui-ready
 mode=normal
+[ "$role" != int ] || mode=grafana
 if [ "${BROWSER_PORTAL:-0}" = 1 ]; then
     mode=portal
     touch /run/browser-portal
 fi
 jq -e --arg role "$role" --arg mode "$mode" \
-    'if $role == "tmp" then .[$mode] else . end | select(type == "object")' \
+    'if $role == "def" then . else .[$mode] end | select(type == "object")' \
     "/usr/share/convergent-browser/$role/policies.json" >/etc/chromium/policies/managed/browser.json
 printf 'auto lo\niface lo inet loopback\n\nauto eth0\niface eth0 inet static\n    address %s/%s\n    gateway %s\n' \
     "$address" "$prefix" "$gateway" >/etc/network/interfaces
@@ -57,8 +67,9 @@ if [ "$role" = int ]; then
         chown 1000:1000 "$path"
         chmod 700 "$path"
     done
+    # Per boot, so per session: also an Incus session's Chromium profile.
     mkdir -p /run/incus-ui
-    mount -t tmpfs -o size=16m,mode=0700,nosuid,nodev,noexec tmpfs /run/incus-ui
+    mount -t tmpfs -o size=256m,mode=0700,nosuid,nodev,noexec tmpfs /run/incus-ui
     chown 1000:1000 /run/incus-ui
     mkdir -m 700 /run/incus-ui/nssdb
     chown 1000:1000 /run/incus-ui/nssdb

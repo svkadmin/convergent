@@ -8,6 +8,7 @@ trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 die() { echo "test-browser-url: $*" >&2; exit 1; }
 check_script() { [ -s "$1" ] || die "empty extraction: $1"; sh -n "$1"; }
+. "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
 sed -n '/^send_url() {/,/^}/p' "$repo/tools/browser" >"$work/send"
 sed -n '/^if \[ "$(id -u)" != 0 \]; then$/,/^fi$/p' "$repo/tools/browser" >"$work/owner"
 sed -n '/^if \[ "${1:-}" = --session \]; then$/,/^fi$/p' "$repo/tools/browser" |
@@ -170,7 +171,10 @@ check_script "$work/services"
 guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
 sed '/^url=\$(head -c /,/^esac$/d' "$guest" >"$work/argv-only"
 check_script "$work/argv-only"
-for version in current old missing; do
+# A guest from before the Incus session profile: it would hand Grafana's profile to the certificate.
+grep -vxF '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile' "$guest" >"$work/shared"
+if cmp -s "$guest" "$work/shared"; then die 'launcher lacks the Incus session profile'; fi
+for version in current old missing shared; do
     for mode in def tmp portal grafana incus remmina; do
         : >"$work/services-called"
         rc=0
@@ -182,14 +186,14 @@ for version in current old missing; do
                 incus) role=int incus_ui=1 ;;
             esac
             launcher=$guest
-            case $version in old) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; esac
+            case $version in old) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; shared) launcher=$work/shared ;; esac
             service_call() { printf '%s\n' "$*" >>"$work/services-called"; }
             portal_on() { return 0; }
             ic() {
                 if [ "$1" = exec ] && [ "$2" = "$name" ]; then
                     [ "$3" = -- ] || return 1
                     shift 3
-                    "$@"
+                    case $1 in /usr/local/sbin/browser-setup) service_call "$@" ;; *) "$@" ;; esac
                 else
                     service_call "$@"
                 fi
@@ -199,11 +203,12 @@ for version in current old missing; do
             incus() { [ "$1 $2 $3" = '--force-local --project default' ] && shift 3; ic "$@"; }
             . "$work/services"
         ) >"$work/error" 2>&1 || rc=$?
-        if [ "$version" = current ] || [ "$mode" = remmina ]; then
+        if [ "$version" = current ] || [ "$mode" = remmina ] || { [ "$version" = shared ] && [ "$mode" != incus ]; }; then
             [ "$rc" = 0 ] || die "rejected $version $mode"
             case $mode in
                 portal) grep -qx begin "$work/services-called" ;;
-                incus) printf '%s\n' --unlock --import >"$work/expected"
+                # The Incus-only policy is in place before the certificate enters int.
+                incus) printf '%s\n' '/usr/local/sbin/browser-setup incus-ui' --unlock --import >"$work/expected"
                     cmp "$work/expected" "$work/services-called" ;;
                 grafana) grep -qx 'exec svc -- rc-service grafana start' "$work/services-called" ;;
                 *) [ ! -s "$work/services-called" ] ;;
@@ -289,4 +294,64 @@ awk '/^# Refuse argv-only guests / {guard = NR}
     write_url "$@" >"$work/expected"
     cmp "$work/expected" "$work/blocked-input"
 )
+# An Incus session never opens the profile a Grafana session wrote: int's per-boot tmpfs holds a fresh one.
+sed -n '/^profile=\/home\/browser\/profile$/,/ || profile=/p' "$guest" >"$work/profile"
+check_script "$work/profile"
+[ "$(wc -l <"$work/profile")" = 2 ] || die 'unexpected profile selection'
+grep -qF -- '--user-data-dir="$profile"' "$guest" || die 'launcher ignores the session profile'
+grep -q '^    mount -t tmpfs -o size=[0-9]*m,mode=0700,nosuid,nodev,noexec tmpfs /run/incus-ui$' \
+    "$repo/guests/browser/rootfs/usr/local/sbin/browser-setup" || die 'the Incus profile is not on tmpfs'
+for sample in grafana incus def; do
+    profile=
+    case $sample in
+        grafana) role=int; set -- http://100.80.2.10:3000/ ;;
+        incus) role=int; set -- https://100.80.1.10:8443/ui/ ;;
+        def) role=def; set -- https://100.80.1.10:8443/ui/ ;;
+    esac
+    . "$work/profile"
+    case $sample in
+        incus) [ "$profile" = /run/incus-ui/profile ] || die "profile for $sample: $profile" ;;
+        *) [ "$profile" = /home/browser/profile ] || die "profile for $sample: $profile" ;;
+    esac
+done
+# Policies as the image builds them; int boots into Grafana's, an Incus session narrows to its origin.
+root=$work/root
+mkdir -p "$root/run" "$root/etc/chromium/policies/managed"
+sed -n '/^for role in def tmp int; do$/,/^done$/p' "$repo/guests/browser/build" >"$work/policy-build"
+check_script "$work/policy-build"
+(here=$repo/guests/browser; . "$work/policy-build")
+setup=$repo/guests/browser/rootfs/usr/local/sbin/browser-setup
+paths="s|/usr/share/convergent-browser/|$root/usr/share/convergent-browser/|g; s|/etc/chromium/|$root/etc/chromium/|g; s|/run/|$root/run/|g"
+sed -n '/^mode=normal$/,/managed\/browser\.json$/p' "$setup" | sed "$paths" >"$work/policy-boot"
+sed -n '/^if \[ "\$#" = 1 \] && \[ "\$1" = incus-ui \]; then$/,/^fi$/p' "$setup" | sed "$paths" >"$work/policy-incus"
+for part in policy-boot policy-incus; do check_script "$work/$part"; done
+policy=$root/etc/chromium/policies/managed/browser.json
+for role in def tmp int; do
+    (unset BROWSER_PORTAL; . "$work/policy-boot")
+    case $role in
+        def) jq -e 'has("URLAllowlist") | not' "$policy" >/dev/null ;;
+        tmp) jq -e '.IncognitoModeAvailability == 2 and .MetricsReportingEnabled == false' "$policy" >/dev/null ;;
+        int) jq -e '.URLAllowlist == ["http://100.80.2.10:3000", "https://100.80.1.10:8443"] and
+            .RestoreOnStartupURLs == ["http://100.80.2.10:3000/"] and .MetricsReportingEnabled == false' "$policy" >/dev/null ;;
+    esac || die "boot policy for $role"
+done
+cp "$policy" "$work/grafana-policy"
+for sample in def unready int; do
+    rm -f "$root/run/incus-ui-ready"
+    cp "$work/grafana-policy" "$policy"
+    case $sample in def) echo def ;; *) echo int ;; esac >"$root/run/browser-role"
+    [ "$sample" != int ] || : >"$root/run/incus-ui-ready"
+    rc=0
+    (set -- incus-ui; . "$work/policy-incus") >"$work/error" 2>&1 || rc=$?
+    if [ "$sample" = int ]; then
+        [ "$rc" = 0 ] || die 'Incus session policy refused'
+        jq -e '.URLAllowlist == ["https://100.80.1.10:8443"] and .URLBlocklist[0] == "*" and
+            .RestoreOnStartupURLs == ["https://100.80.1.10:8443/ui/"] and (.ManagedBookmarks | length) == 1 and
+            .MetricsReportingEnabled == false and .DeveloperToolsAvailability == 2' "$policy" >/dev/null ||
+            die 'Incus session policy allows more than the Incus origin'
+    else
+        [ "$rc" != 0 ] && cmp -s "$work/grafana-policy" "$policy" || die "narrowed the policy of a $sample container"
+    fi
+done
 echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions, rollback hosts and writer locks passed'
+echo 'browser-url: Incus sessions get a tmpfs profile and the Incus origin alone; Grafana sessions keep theirs'

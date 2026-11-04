@@ -349,7 +349,8 @@ dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $
 autostart() {
     find /home -mindepth 1 -maxdepth 1 -type l -print >"$work/home.links" || return 1
     [ ! -s "$work/home.links" ] || return 1
-    find /home \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
+    # Bounded: an owner's file that never ends (or turns into a FIFO) must not hold check.lock and guests.lock.
+    copy=$work/autostart.copy timeout -k 1 120 find /home \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
         -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
         -o -path '*/.sway/*' -o -path '*/.i3/*' -o -path '*/.config/i3/*' -o -path '*/.config/mako/*' \
         -o -path '*/.config/pipewire/*' -o -path '*/.config/wireplumber/*' \
@@ -367,8 +368,14 @@ autostart() {
         -o -path '*/.config/fish' -o -path '*/.config/autostart-scripts' \
         -o -path '*/.config/plasma-workspace' -o -path '*/.config/plasma-workspace/env' \
         -o -path '*/.local/share/autostart' \) -exec sh -c '
+            # One capped read into root scratch: a sparse or growing file fails fast, and the checks below
+            # and the hash see the same bytes. 64 MiB leaves room for binaries in ~/.local/bin.
+            cap=67108864
             for file do
                 [ ! -L "$file" ] || { echo "autostart symlink: $file" >&2; exit 1; }
+                case $file in *[[:cntrl:]\\]*) echo "autostart name with a control byte or backslash" >&2; exit 1 ;; esac
+                head -c "$((cap + 1))" -- "$file" >"$copy" || exit 1
+                [ "$(stat -c %s -- "$copy")" -le "$cap" ] || { echo "autostart file over $cap bytes: $file" >&2; exit 1; }
                 relative=${file#/home/}; relative=${relative#*/}
                 case $relative in
                 .sway/*|.i3/*|.config/sway/*|.config/i3/*)
@@ -396,7 +403,7 @@ autostart() {
                             included = 1
                         }
                         END { if (line != "") exit 1 }
-                    '\'' "$file" || { echo "autostart unsafe include: $file" >&2; exit 1; } ;;
+                    '\'' "$copy" || { echo "autostart unsafe include: $file" >&2; exit 1; } ;;
                 esac
                 pattern=
                 case $relative in
@@ -409,9 +416,10 @@ autostart() {
                 esac
                 # Exempt sys settings only when every line is inert.
                 if [ -n "$pattern" ]; then
-                    awk "/^([[:blank:]]*(#.*)?|$pattern)$/ {next} {exit 1}" "$file" && continue
+                    awk "/^([[:blank:]]*(#.*)?|$pattern)$/ {next} {exit 1}" "$copy" && continue
                 fi
-                sha256sum "$file" || exit 1
+                sum=$(sha256sum <"$copy") || exit 1
+                printf "%s  %s\n" "${sum%% *}" "$file"
             done
         ' sh '{}' + >"$work/autostart.raw" && sort "$work/autostart.raw" >"$work/autostart"
 }

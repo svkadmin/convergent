@@ -50,8 +50,15 @@ host)
 	mkdir -p "$root/usr/lib/convergent/incus/work"
 	while read -r iface vhid parent segment prefix gateway family; do
 		[ "$family" != system ] && [ "${iface#\#}" = "$iface" ] || continue
+		# As every shipped guest: no guest API, and work containers keep their subvolumes in their qgroup.
 		cat >"$root/usr/lib/convergent/incus/work/work-$segment.yaml" <<EOF
-config: {}
+config:
+  security.syscalls.deny: |
+    ioctl errno 1 [1,0x50009401,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x5000940e,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009417,SCMP_CMP_MASKED_EQ,0xffffffff]
+    ioctl errno 1 [1,0x50009418,SCMP_CMP_MASKED_EQ,0xffffffff]
+  security.guestapi: "false"
 devices:
   eth0:
     type: nic

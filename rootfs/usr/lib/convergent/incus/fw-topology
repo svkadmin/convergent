@@ -132,7 +132,16 @@ work_profiles() {
         if ! jq -e --arg n "$name" 'any(.[]; .name == $n)' "$work/profiles" >/dev/null; then
             incus --force-local --project owner profile create "$name" 9>&- 8>&- 7>&- 6>&- || return
         fi
-        incus --force-local --project owner profile edit "$name" <"$file" 9>&- 8>&- 7>&- 6>&- || return
+        # A running VM whose agent does not answer misses the live guest API change; Incus saves the
+        # profile and refuses that API per request anyway. Any other instance failure still fails.
+        if ! incus --force-local --project owner profile edit "$name" <"$file" 9>&- 8>&- 7>&- 6>&- 2>"$work/profile-edit"; then
+            awk '$0 == "" {next}
+                NR == 1 {ok = ($0 == "Error: The following instances failed to update (profile change still saved):"); next}
+                /^ - Project: owner, Instance: [^ :,]+: Failed (getting agent client handle|connecting to the agent|sending host vsock information to the agent)/ {n++; next}
+                {ok = 0}
+                END {exit !(ok && n)}' "$work/profile-edit" || { cat "$work/profile-edit" >&2; return 1; }
+            logger -t guests "work profile $name saved; a running VM's agent missed its guest API change" 2>/dev/null || :
+        fi
     done
 }
 # A renamed work domain leaves its profile on a VLAN another domain may now own: an unused one goes, a used

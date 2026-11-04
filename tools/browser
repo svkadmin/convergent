@@ -2,6 +2,7 @@
 # ARCHITECTURE 3.5, 4.1, 4.2, 9, 10, 12; install root:root 0755 as /usr/local/sbin/browser.
 # Narrow sudo validates fixed browser sessions; Incus administration also requires a passphrase.
 set -eu
+. /usr/lib/convergent/guest-reply.sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH LC_ALL=C
 umask 077
@@ -244,7 +245,8 @@ cleanup() {
     done
     for child in $children; do wait "$child" 2>/dev/null; done
     if [ "$result" != 0 ]; then
-        for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" >&2; done
+        # browser.log is the guest's own output: bounded and filtered like other guest text.
+        for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" | head -c 65536 | guest_text >&2; done
     fi
     rm -rf -- "$run" || result=1
     exit "$result"
@@ -373,9 +375,17 @@ done
 # Refuse argv-only guests before opening services.
 if [ "$role" != remmina ]; then
     # Bounded: a hostile guest can make the probe block (e.g. a FIFO launcher) while we hold the locks.
-    timeout -k 1 30 incus --force-local --project default exec "$name" -- \
+    guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
         grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
         die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+fi
+# An Incus session: int's tmpfs profile and the Incus origin alone, never Grafana's profile or origin.
+if [ -n "$incus_ui" ]; then
+    guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
+        grep -Fqx '[ "$role:${1:-}" != int:https://100.80.1.10:8443/ui/ ] || profile=/run/incus-ui/profile' "$launcher" 9>&- 8>&- 7>&- 6>&- ||
+        die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+    guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
+        /usr/local/sbin/browser-setup incus-ui 9>&- 8>&- 7>&- 6>&- || die 'cannot limit the int browser to the Incus UI'
 fi
 if [ -n "$portal_mode" ]; then
     portal=1

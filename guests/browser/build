@@ -30,11 +30,12 @@ alpine_apk --initdb add alpine-release alpine-baselayout busybox busybox-openrc 
     ifupdown-ng ca-certificates jq nss-tools 'chromium>=156.0.8078.79-r0' mesa-egl mesa-dri-gallium libva intel-media-driver
 case $(cat "$root/etc/alpine-release") in 3.24.*) ;; *) die "not Alpine 3.24" ;; esac
 cp -R "$here/rootfs/." "$root/"
+# tmp (normal, portal) and int (grafana, incus) keep one policy per session kind.
 for role in def tmp int; do
     mkdir -p "$root/usr/share/convergent-browser/$role"
     jq -s --arg role "$role" '
         .[0] as $base | .[1] |
-        if $role == "tmp" then map_values($base * .) else $base * . end' \
+        if $role == "def" then $base * . else map_values($base * .) end' \
         "$here/policies.json" "$here/roles/$role/policies.json" \
         >"$root/usr/share/convergent-browser/$role/policies.json"
     jq -e 'type == "object"' \
