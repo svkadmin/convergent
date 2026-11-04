@@ -52,6 +52,11 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations: {summary: 'pf state table above 80% on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: WanConntrackHigh
+        expr: node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"} > 0.8
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'wan conntrack table above 80%; new NAT flows drop when full', dashboard: '/d/cv-network-path'}
       - alert: UpstreamOverlap
         expr: (max(convergent_wan_upstream_overlap{node="wan"}) > 0) or (max(cv_wan_overlap_events) > 0)
         labels: {severity: critical, compartment: wan, tag: convergent-alert}

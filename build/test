@@ -2320,6 +2320,7 @@ server:
 	local-data: "public.rebind.example.net. 60 IN A 93.184.216.34"
 	local-data: "public.rebind.example.net. 60 IN AAAA 2001:4860:4860::8888"
 	local-data: "loop.rebind.example.net. 60 IN A 127.42.0.7"
+	local-data: "loop6.rebind.example.net. 60 IN AAAA ::1"
 	local-data: "mapped.rebind.example.net. 60 IN AAAA ::ffff:93.184.216.34"
 CONF
 cat "$work/common" >"$work/down.conf"
@@ -2354,6 +2355,7 @@ until [ "$(query 1053 public A)" = 93.184.216.34 ]; do
 done
 answer 1053 public AAAA 2001:4860:4860::8888
 answer 1054 loop A 127.42.0.7
+answer 1054 loop6 AAAA ::1
 # A nested firewall stalls for seconds: one-shot probes missed their 1-2 s reply (0.1.6 fw2). Waits retry
 # only a missing reply; the first reply is judged, so a retry never passes a leaked answer.
 deadline=$(($(date +%s) + 30))
@@ -2361,7 +2363,7 @@ until query 1054 mapped AAAA | grep -q '^::ffff:'; do
 	[ "$(date +%s)" -lt "$deadline" ] || exit 1
 	sleep 1
 done
-for record in 'loop A' 'mapped AAAA'; do
+for record in 'loop A' 'loop6 AAAA' 'mapped AAAA'; do
 	set -- $record
 	deadline=$(($(date +%s) + 30))
 	until dig @127.0.0.1 -p 1053 "$1.rebind.example.net." "$2" +time=2 +tries=1 +noall +comments +answer >"$work/answer.log" &&

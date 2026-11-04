@@ -641,6 +641,15 @@ grep -q 'convergent_dns_source_refreshed_seconds.* > time()' "$work/blocklist-ru
 # A skipped WAN probe is a local fault; the transit alert reads probe_up only.
 sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up == 0'
 sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok == 0'
+# wan's conntrack table exceeds pf's per-source totals and alerts before it drops new NAT flows.
+sed -n '/- alert: WanConntrackHigh/{n;p;n;p;}' "$rules" >"$work/conntrack-rule"
+grep -qx '        expr: node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"} > 0.8' "$work/conntrack-rule"
+grep -qx '        for: 5m' "$work/conntrack-rule"
+grep -q -- '--collector.conntrack ' "$repo/guests/wan/rootfs/etc/conf.d/node-exporter"
+grep -qx 'net.netfilter.nf_conntrack_max=65536' "$repo/guests/wan/rootfs/etc/sysctl.d/90-convergent.conf"
+grep -qx 'net.netfilter.nf_conntrack_buckets=16384' "$repo/guests/wan/rootfs/etc/sysctl.d/90-convergent.conf"
+# Loaded before sysctl runs, so both keys exist then.
+grep -qx 'nft_ct' "$repo/guests/wan/rootfs/etc/modules"
 # The Guests table's VM uptime needs node_boot_time_seconds on every VM.
 grep -q -- '--collector.stat ' "$repo/guests/wan/rootfs/etc/conf.d/node-exporter"
 echo 'observability: scrub superblock, persistent grace and alert assertions passed'

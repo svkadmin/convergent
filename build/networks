@@ -97,14 +97,15 @@ subnet $base.0 netmask 255.255.255.192 {
 }
 EOF
 		printf '\tinterface: %s\n\taccess-control: %s allow\n' "$gateway" "$prefix" >>"$dns"
+		# Rule-wide max: any address in the /26 is valid, so per-source limits alone let one segment fill pf.
 		cat >>"$rules" <<EOF
-pass in quick on $parent inet proto { tcp udp } from $prefix to $gateway port 53 keep state (source-track rule, max-src-states 200)
-pass in quick on $parent inet proto icmp from $prefix to $gateway icmp-type echoreq keep state
+pass in quick on $parent inet proto { tcp udp } from $prefix to $gateway port 53 keep state (source-track rule, max-src-states 200, max 600)
+pass in quick on $parent inet proto icmp from $prefix to $gateway icmp-type echoreq keep state (max 200)
 block in log quick on $parent to self
 block in log quick on $parent to <work_infra>
 block in log quick on $parent to 100.80.0.0/16
-pass in quick on $parent inet from $prefix to <home_lan> keep state (source-track rule, max-src-states 2000)
-pass in quick on $parent inet from $prefix to ! <nonpublic> keep state (source-track rule, max-src-states 2000)
+pass in quick on $parent inet from $prefix to <home_lan> keep state (source-track rule, max-src-states 2000, max 1000)
+pass in quick on $parent inet from $prefix to ! <nonpublic> keep state (source-track rule, max-src-states 2000, max 3000)
 block in log quick on $parent
 EOF
 	done <"$registry"
