@@ -277,18 +277,19 @@ incus --force-local --project default profile show browser-base |
 	incus --force-local --project owner profile edit pf-base
 work_rows=/run/convergent/pf-work-segments
 awk '$7 == "dev" || $7 == "jhn" {print}' /etc/convergent/segments >"$work_rows"
-# pflog is also quiet when nothing is sent: each peer captures the other's dhcpd sync multicast
-# (either node may answer a lease) while the leases below are handed out.
+# pflog is also quiet when nothing is sent: each peer captures the other's dhcpd sync update
+# (either node may answer a lease) while the leases below are handed out. -Y names the peer's
+# address, so dhcpd sends unicast only; -y vio1 just joins 224.0.1.240 to listen.
 mcast_pids=
 for f in fw1 fw2; do
-	case $f in fw1) peer=100.80.0.18 ;; *) peer=100.80.0.17 ;; esac
+	case $f in fw1) self=100.80.0.17 peer=100.80.0.18 ;; *) self=100.80.0.18 peer=100.80.0.17 ;; esac
 	timeout -k 5 2460 /usr/bin/ssh -n -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 -F /etc/convergent/ssh_config "$f" \
-		"timeout 2400 tcpdump -l -n -c 1 -i vio1 'udp and src host $peer and dst host 224.0.1.240 and dst port 8067'" \
+		"timeout 2400 tcpdump -l -n -c 1 -i vio1 'udp and src host $peer and dst host $self and dst port 8067'" \
 		>"/run/convergent/pf-mcast-$f" 2>"/run/convergent/pf-mcast-$f.err" &
 	mcast_pids="$mcast_pids $!"
 done
 timeout 120 sh -c 'until grep -q "listening on" /run/convergent/pf-mcast-fw1.err && grep -q "listening on" /run/convergent/pf-mcast-fw2.err; do sleep 1; done' ||
-	{ echo 'CV-PF FAIL sync multicast capture did not start'; result=1; }
+	{ echo 'CV-PF FAIL sync capture did not start'; result=1; }
 while read -r iface vhid parent label prefix gateway family <&3; do
 	vlan=${parent#vlan}
 	name=pf-work-$vlan
@@ -324,17 +325,16 @@ DHCP
 		tries=0
 		until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$f" "grep -F 'lease $address {' /var/db/dhcpd.leases" >/dev/null; do
 			tries=$((tries + 1))
-			[ "$tries" -lt 15 ] || { result=1; break; }
+			[ "$tries" -lt 15 ] || { echo "CV-PF FAIL $f: no lease $address from $name"; result=1; break; }
 			sleep 1
 		done
 	done
 	listen "$name" "$base.10" 8080
 done 3<"$work_rows"
-# dhcpd -y also sends those lease updates to 224.0.1.240: one reached its peer, and pf passes them
-# instead of logging blocks.
-timeout 60 sh -c 'until grep -q " > 224.0.1.240.8067: " /run/convergent/pf-mcast-fw1 /run/convergent/pf-mcast-fw2; do sleep 1; done' || {
-	cat /run/convergent/pf-mcast-fw1.err /run/convergent/pf-mcast-fw2.err | sed 's/^/CV-PF mcast: /'
-	echo 'CV-PF FAIL no dhcpd sync multicast reached the peer'; result=1
+# One lease update reached its peer on the sync link, and pf logs no block of the sync group.
+timeout 60 sh -c 'until grep -Eq " > 100\.80\.0\.1[78]\.8067: " /run/convergent/pf-mcast-fw1 /run/convergent/pf-mcast-fw2; do sleep 1; done' || {
+	cat /run/convergent/pf-mcast-fw1.err /run/convergent/pf-mcast-fw2.err | sed 's/^/CV-PF sync: /'
+	echo 'CV-PF FAIL no dhcpd sync update reached the peer'; result=1
 }
 kill $mcast_pids 2>/dev/null || :
 mcast_pids=
