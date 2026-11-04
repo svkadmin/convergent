@@ -104,7 +104,10 @@ sysctl() { echo 1; }
 rcctl() { return 0; }
 pfctl() {
 	case $1 in
-	-si) printf 'Status: Enabled\n current entries 12\nCounters\n  match 12\n' ;;
+	-vsi) printf 'Status: Enabled\n current entries 12\nSource Tracking Table\n  current entries 3\nCounters\n  match 12\n%s' "${limits-Limit Counters
+  max states per rule                    7            0.0/s
+  max-src-states                         2            0.0/s
+}" ;;
 	-sm) echo 'states hard limit 10000' ;;
 	-sr) echo pass ;;
 	esac
@@ -132,7 +135,7 @@ sh -n "$work/run"
 sh -n "$work/mocks"
 sh -n "$work/run"
 echo '; convergent-source-refreshed-seconds 1000' >"$work/blocklist.rpz"
-for failed in '' 'unbound-control status' 'unbound-control stats_noreset' 'pfctl -si' 'pfctl -sm' 'pfctl -sr'; do
+for failed in '' 'unbound-control status' 'unbound-control stats_noreset' 'pfctl -vsi' 'pfctl -sm' 'pfctl -sr'; do
 	: >"$work/calls"
 	echo stale >"$work/convergent_fw.prom"
 	failed=$failed calls=$work/calls sh "$work/run"
@@ -161,4 +164,10 @@ echo '; convergent-source-refreshed-seconds 1000' >"$work/blocklist.rpz"
 carp_groups='carp wanwatch' failed= calls=$work/calls sh "$work/run"
 grep -qx 'convergent_fw_facts_success 1' "$work/convergent_fw.prom"
 grep -qx 'convergent_carp_group_present{group="upgrade"} 0' "$work/convergent_fw.prom"
+# A tripped rule-wide max is exported; a reply without Limit Counters fails the facts.
+grep -qx 'convergent_pf_states 12' "$work/convergent_fw.prom"
+grep -qx 'convergent_pf_limit_counter_total{name="max states per rule"} 7' "$work/convergent_fw.prom"
+if grep -q 'max-src-states' "$work/convergent_fw.prom"; then exit 1; fi
+limits= failed= calls=$work/calls sh "$work/run"
+grep -qx 'convergent_fw_facts_success 0' "$work/convergent_fw.prom"
 echo 'fw-facts: bounded probes, publication and source-age fixtures passed'

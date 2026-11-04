@@ -39,7 +39,7 @@ The bar refreshes at 5s, inputs at 10s and alerts at 30s. Observation does not a
 
 Native VM CPU/memory/filesystems are primary; QEMU accounting is uncoloured secondary detail.
 Stopped on-demand guests remain selectable through inventory/history. Incus scrapes at 60s with
-four-minute rates. Initial Overview query count is 16; Network 28, with 23 diagnostic queries hidden
+four-minute rates. Initial Overview query count is 16; Network 29, with 23 diagnostic queries hidden
 behind a collapsed row. Counts include logs; expanding details adds load. Host collectors are explicit;
 PSI and diskstats feed dashboards. [Memory/cache limits](../../../ARCHITECTURE.md#11-resource-budget-unmeasured-estimates)
 and [retention](../../../ARCHITECTURE.md#8-observability) bound collection.

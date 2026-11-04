@@ -94,14 +94,17 @@ EOF
 		grep -Fxq 'group wanwatch' "$fw/etc/hostname.$iface"
 		grep -Fq "carppeer $base.@WORKPEER@" "$fw/etc/hostname.$iface"
 		grep -Fq "block in log quick on $parent to 100.80.0.0/16" "$fw/etc/pf.conf"
+		# A DNS state lives 15 s, not 60 s, so the rule's 600 cap is not reached by normal lookups.
+		grep -Fxq "pass in quick on $parent inet proto { tcp udp } from $prefix to $gateway port 53 keep state (source-track rule, max-src-states 200, max 600, udp.first 15, udp.multiple 15)" "$fw/etc/pf.conf"
 	done <"$registry"
 	if grep -E '@(WORK|HOME)_[A-Z_]+@' "$fw/etc/pf.conf" "$work/$topology/wan/etc/nftables.nft" "$work/$topology/host/etc/nftables.rules"; then exit 1; fi
-	# One segment must not fill pf's shared table: every work and browsing rule has a rule-wide max, and
+	# One segment must not fill pf's shared table: every work, browsing and guests rule has a rule-wide max, and
 	# their expanded sum, doubled for a forwarded flow's outbound state, leaves 10,000 for management.
 	awk -v headroom=10000 '
 		$1 == "set" && $2 == "limit" { for (i = 3; i < NF; i++) if ($i == "states") limit = $(i + 1) + 0 }
 		$2 == "=" && $3 ~ /^"/ { v = $0; sub(/^[^"]*"/, "", v); sub(/"[^"]*$/, "", v); macro["$" $1] = v }
-		/^pass in quick on vlan[0-9]+ / || /^pass in on \$if_web .* from \$a_webbr to ! <nonpublic> / {
+		/^pass in quick on vlan[0-9]+ / || /^pass in on \$if_web .* from \$a_webbr to ! <nonpublic> / ||
+		/^pass in on \$if_guests .* to ! <nonpublic> / {
 			rules++
 			if (!match($0, /[(, ]max [0-9]+[,)]/)) { print "uncapped: " $0; bad = 1; next }
 			n = substr($0, RSTART + 5, RLENGTH - 6) + 0
@@ -118,7 +121,7 @@ EOF
 		}
 		END {
 			print "pf states: " rules " capped rules, " sum " expanded, limit " limit
-			if (bad || rules != 17 || !limit || 2 * sum + headroom > limit) exit 1
+			if (bad || rules != 18 || !limit || 2 * sum + headroom > limit) exit 1
 		}' "$fw/etc/pf.conf"
 	grep -Fxq '	private-address: ::1/128' "$fw/var/unbound/etc/unbound.conf"
 	grep -Fxq '	private-address: ::/128' "$fw/var/unbound/etc/unbound.conf"

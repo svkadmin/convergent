@@ -52,6 +52,10 @@ groups:
         for: 5m
         labels: {severity: warning}
         annotations: {summary: 'pf state table above 80% on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
+      - alert: PfRuleStatesFull
+        expr: increase(convergent_pf_limit_counter_total{node=~"fw1|fw2",name="max states per rule"}[10m]) > 0
+        labels: {severity: warning}
+        annotations: {summary: 'A pf rule reached its state cap on {{ $labels.node }}; its new flows drop unlogged', dashboard: '/d/cv-network-path'}
       - alert: WanConntrackHigh
         expr: node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"} > 0.8
         for: 5m

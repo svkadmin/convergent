@@ -556,7 +556,7 @@ Implemented rules: `guests/svc/rootfs/etc/vmalert/alerts.yaml`.
 
 | Area | Alerts |
 |---|---|
-| Path | FirewallDown, WanWatchDown, WanWatchProbeFailed, WanWatchLocalFailed, CarpSplit (both masters or none), CarpFlapping, CarpMixedRoles, PfsyncNotReady, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, WanConntrackHigh, UpstreamOverlap |
+| Path | FirewallDown, WanWatchDown, WanWatchProbeFailed, WanWatchLocalFailed, CarpSplit (both masters or none), CarpFlapping, CarpMixedRoles, PfsyncNotReady, NoDefaultRoute, FirewallRulesetDrift, StateTableHigh, PfRuleStatesFull, WanConntrackHigh, UpstreamOverlap |
 | DNS | ResolverDown, ResolverStale, BlocklistStale, InternetProbeFailed |
 | Compartments | GuestStopped, ServiceDown, GuestOOM |
 | Hardware and capacity | NvmeSpareLow, NvmeErrors, BatteryLow, StateVolumeHigh, StateReadOnly, BtrfsDeviceErrors, VolumeQuotaHigh, ScrubNeedsAttention |

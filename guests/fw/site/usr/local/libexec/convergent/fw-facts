@@ -49,13 +49,16 @@ capture() {
 	if capture pfsync ifconfig pfsync0; then
 		printf '%s\n' "$data" | awk '/flags=/ {up=($0 ~ /RUNNING/)} /defer:/ {df=($0 ~ /defer: on/)} END {printf "convergent_pfsync_up %d\nconvergent_pfsync_defer %d\n",up,df}'
 	fi
-	if capture pf timeout -k 1 5 pfctl -si; then
+	# -v adds Limit Counters: a rule's max drops new states silently.
+	if capture pf timeout -k 1 5 pfctl -vsi; then
 		printf '%s\n' "$data" | awk '
 			/^Status:/ {printf "convergent_pf_enabled %d\n",($2 == "Enabled"); status=1}
 			/current entries/ && !done {print "convergent_pf_states " $3; done=1}
-			/^Counters/ {c=1; next} /^[^ \t]/ {c=0}
+			/^Counters/ {c=1; next} /^Limit Counters/ {c=0; l=1; next} /^[^ \t]/ {c=0; l=0}
 			c && $2 ~ /^[0-9]+$/ {printf "convergent_pf_counter_total{name=\"%s\"} %s\n",$1,$2}
-			END {exit !(status && done)}' || ok=0
+			l && $5 ~ /^[0-9]+$/ && $1 " " $2 " " $3 " " $4 == "max states per rule" {
+				printf "convergent_pf_limit_counter_total{name=\"max states per rule\"} %s\n",$5; limit=1}
+			END {exit !(status && done && limit)}' || ok=0
 	fi
 	if capture limits timeout -k 1 5 pfctl -sm; then
 		printf '%s\n' "$data" | awk '/^states/ {print "convergent_pf_state_limit " $4; found=1} END {exit !found}' || ok=0

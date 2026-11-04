@@ -679,7 +679,12 @@ grep -qx '        expr: node_nf_conntrack_entries{node="wan"} / node_nf_conntrac
 grep -qx '        for: 5m' "$work/conntrack-rule"
 grep -q -- '--collector.conntrack ' "$repo/guests/wan/rootfs/etc/conf.d/node-exporter"
 grep -qx 'net.netfilter.nf_conntrack_max=65536' "$repo/guests/wan/rootfs/etc/sysctl.d/90-convergent.conf"
-grep -qx 'net.netfilter.nf_conntrack_buckets=16384' "$repo/guests/wan/rootfs/etc/sysctl.d/90-convergent.conf"
+# Each flow hashes twice: one bucket per entry keeps chains near two at a full table.
+grep -qx 'net.netfilter.nf_conntrack_buckets=65536' "$repo/guests/wan/rootfs/etc/sysctl.d/90-convergent.conf"
+# A rule's state cap drops new flows unlogged; its Limit Counter alerts.
+sed -n '/- alert: PfRuleStatesFull/{n;p;n;p;}' "$rules" >"$work/rule-cap-rule"
+grep -qx '        expr: increase(convergent_pf_limit_counter_total{node=~"fw1|fw2",name="max states per rule"}\[10m\]) > 0' "$work/rule-cap-rule"
+grep -qx '        labels: {severity: warning}' "$work/rule-cap-rule"
 # Loaded before sysctl runs, so both keys exist then.
 grep -qx 'nft_ct' "$repo/guests/wan/rootfs/etc/modules"
 # The Guests table's VM uptime needs node_boot_time_seconds on every VM.
@@ -934,6 +939,10 @@ assert '+ on() ((count((max(cv_release_check_success) == 1) and (max(cv_release_
 assert ') or (max(cv_release_status_not_applicable_release) == max(cv_release_number{which="booted"}))) or vector(0)) == bool 0), 2)' in security_expr
 resolver = next(c for p in network['panels'] for c in [p] + p.get('panels', []) if c['title'] == 'Resolver input ages')
 assert resolver['targets'][0]['expr'] == 'max by (node) (time() - convergent_dns_source_refreshed_seconds)'
+# WanConntrackHigh links here: its cause sits visibly beside pf's utilization.
+top = {p['title']: p for p in network['panels']}
+assert top['WAN conntrack utilization']['targets'][0]['expr'] == '100 * node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"}'
+assert top['WAN conntrack utilization']['gridPos']['y'] == top['pf state utilization']['gridPos']['y']
 columns = panels['Active alerts - explanations']['transformations'][1]['options']['includeByName']
 assert columns['exported_node'] and 'node' not in columns
 dashlib = importlib.import_module('dashlib')
