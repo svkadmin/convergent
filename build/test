@@ -2956,13 +2956,17 @@ cv_time firewall-pair-start
 # A pair Incus left stopped: the checker starts both after 180 s of stopped observations, not on the first.
 (
     set -e
-    stopped=
-    trap ': CV-TRAP; [ -z "$stopped" ] || for f in fw1 fw2; do [ "$(ic_status "$f")" = Running ] || ic start "$f" || :; done' 0
+    stopped= held=
+    trap ': CV-TRAP; [ -z "$stopped" ] || for f in fw1 fw2; do [ "$(ic_status "$f")" = Running ] || ic start "$f" || :; done
+        [ -z "$held" ] || for f in fw1 fw2; do ic config unset "$f" boot.autorestart || :; done' 0
     trap 'exit 1' HUP INT TERM
     PS4='+CV-PAIR ${SECONDS}s '; exec 2>/var/log/firewall-pair-start-test.log; set -x
     uptime_s() { read -r up rest </proc/uptime; echo "${up%.*}"; }
     # Not inside the kernel relink guests init left running.
     fw_settled fw1 fw2
+    # Without the hold the fw profile's autorestart starts a forced stop again within 10 s.
+    held=1
+    for f in fw1 fw2; do ic config set "$f" boot.autorestart=false; done
     t0=$(uptime_s)
     stopped=1
     ic stop fw1 fw2 --force
@@ -2975,6 +2979,8 @@ cv_time firewall-pair-start
         [ "$(uptime_s)" -lt "$((t0 + 600))" ]; sleep 10
     done
     stopped=
+    for f in fw1 fw2; do ic config unset "$f" boot.autorestart; done
+    held=
     for f in fw1 fw2; do
         read -r restarted <"/run/convergent/firewall-heal/$f.restarted"
         [ "$((restarted - t0))" -ge 170 ]
@@ -3068,9 +3074,12 @@ cv_time guests-start-stopped
 # Nothing due: apply still starts a wan or svc Incus left stopped.
 (
     set -e
-    trap ': CV-TRAP; for g in wan svc; do [ "$(ic_status "$g")" = Running ] || ic start "$g" || :; done' 0
+    trap ': CV-TRAP; for g in wan svc; do [ "$(ic_status "$g")" = Running ] || ic start "$g" || :; done
+        ic config unset wan boot.autorestart || :' 0
     trap 'exit 1' HUP INT TERM
     PS4='+CV-START ${SECONDS}s '; exec 2>/var/log/guests-start-stopped-test.log; set -x
+    # As for the pair: without the hold Incus starts wan again before apply looks.
+    ic config set wan boot.autorestart=false
     ic stop wan --force
     ic stop svc
     /usr/local/sbin/guests apply >/var/log/guests-update-start-stopped.log 2>&1
@@ -5093,7 +5102,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=36000 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=39600 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -5391,13 +5400,13 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=12600 ;; guests-update) budget=36000 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=39600 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
 	# past their limits; guests and guests-maint run PF (+1800 for its wait on fw1's relink). guests-update
 	# skips those smokes; its firewall rebuild interruptions boot fw1 three times (~1 h) and the topology
 	# migration after them about eight times (~2.5 h); relink settles before those steps and the fault steps
-	# took it past 7 h.
+	# took it past 7 h, then past 10 h with the fault steps.
 	budget=$((budget + 3660))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
