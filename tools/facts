@@ -237,19 +237,26 @@ daily() {
 	publish daily daily
 }
 
-# Firewall ntpd only slews a host clock step (0.5% at most); a restart steps it. Once a boot, after this host
-# first synchronizes; each node until its restart succeeds, bounded.
+# Firewall ntpd only slews a host clock step (0.5% at most) and never steps at securelevel 1; rdate does,
+# from this host, and ntpd keeps the residual. Once a boot, after this host first synchronizes; each node
+# until its step succeeds, bounded, while check reports it running. A DNS push waits on that clock: never during one.
 fw_ntpd() {
 	[ -e "$sdir/guests/initialized" ] || return 0
 	[ ! -e "$run/fw-ntpd.fw1" ] || [ ! -e "$run/fw-ntpd.fw2" ] || return 0
 	chronyc -n tracking 2>/dev/null | awk -F ' *: *' '$1 == "Leap status" {leap = $2} END {exit leap != "Normal"}' || return 0
+	umask 077
+	exec 7>"$run/dns-push.lock"
+	umask 022
+	flock -s -n 7 || { exec 7>&-; return 0; }
 	for node in fw1 fw2; do
 		[ ! -e "$run/fw-ntpd.$node" ] || continue
+		if grep -Fq " $node=down " "$run/status/topology" 2>/dev/null; then continue; fi
 		timeout -k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 \
-			"$node" 'rcctl restart ntpd' </dev/null >/dev/null 2>&1 9>&- || continue
-		: >"$run/fw-ntpd.$node" || bad "cannot record the $node ntpd restart"
-		log "$node ntpd restarted: host time synchronized"
+			"$node" 'rdate -n 100.80.1.10' </dev/null >/dev/null 2>&1 9>&- 7>&- || continue
+		: >"$run/fw-ntpd.$node" || bad "cannot record the $node clock step"
+		log "$node clock stepped to this host's"
 	done
+	exec 7>&-
 }
 
 nts() {

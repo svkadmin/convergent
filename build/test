@@ -1267,6 +1267,18 @@ for test_status in ERROR FROZEN; do
     cmp "$work/calls" "$work/expected"
     grep -q 'fw2 restart completed' "$work/run/firewall-heal/event"
 done
+# A pair restart Incus cannot drive (frozen monitor): that same QEMU, still silent, is killed and started.
+rm -rf "$work/run/firewall-heal" "$work/proc/4141" "$work/proc/4242" "$work/incus"
+qemu 4242 fw2 "$work/incus/fw2/qemu.pid"
+mkdir -p "$work/incus/fw1" "$work/proc/4141"; echo 4141 >"$work/incus/fw1/qemu.pid"
+printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name fw1 -uuid x -pidfile "$work/incus/fw1/qemu.pid" >"$work/proc/4141/cmdline"
+test_status=ERROR failed=1 autorestart=0
+: >"$work/calls"
+for t in 1000 1060 1120 1180; do tick "$t"; done
+printf '%s\n' '--force-local --project default restart fw1 --force' 'kill -KILL 4141' '--force-local --project default start fw1' \
+    '--force-local --project default restart fw2 --force' 'kill -KILL 4242' '--force-local --project default start fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+failed=0
 bounds=$work/probe-bounds test_status=RUNNING test_peer=MASTER
 # guests' stop_guest ends a VM the same way once Incus can neither stop nor force it.
 eval "$(sed -n '/^stop_guest() {/,/^}/p; /^force_stop() {/,/^}/p' /usr/local/sbin/guests)"

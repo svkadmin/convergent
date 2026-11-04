@@ -156,6 +156,9 @@ sudo kill -KILL "$pid"
 
 Then rerun the guests command that failed.
 
+A wan (or svc) paused on a full disk (`sudo guests status` shows ERROR or FROZEN; no uplink): free space,
+then `sudo guests apply` restarts it with `restart --force`; if that times out, end its QEMU as above.
+
 ### Interrupted work-topology migration
 
 Finish handoff/maintenance before upgrading the host. `/var/lib/convergent/guests/fw.topology`

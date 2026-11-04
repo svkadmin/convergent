@@ -57,8 +57,12 @@ heal_kill() {
     if heal_probe "$1" >/dev/null; then return 1; fi
     # At load 17 the healthy peer's probe took the full 10 s and a frozen fw2 waited 16 more minutes.
     [ "$(heal_probe "$2" 30)" = master ] && heal_allowed || return 1
+    heal_end "$1" "$3"
+}
+# $2: the QEMU pid seen before the failed restart; only that one is killed.
+heal_end() {
     pid=$(heal_qemu "$1") || return 1
-    [ "$pid" = "$3" ] || return 1
+    [ "$pid" = "$2" ] || return 1
     kill -KILL "$pid" || return 1
     heal_note "$1 QEMU $pid no longer answers Incus; killed for a restart"
     for wait in 1 2 3 4 5 6 7 8 9 10 11 12; do
@@ -150,9 +154,15 @@ firewall_heal() (
                 heal_note "$node $action requested; fw1 and fw2 both stopped or paused ($attempts/3)"
                 (
                     trap '' HUP INT TERM
+                    original_pid=$(heal_qemu "$node") || original_pid=
                     set -- "$action" "$node"
                     [ "$action" = start ] || set -- "$@" --force
+                    # As for one node: Incus cannot drive a frozen monitor, --force included; end that same
+                    # QEMU while the node still answers nothing, then start it.
                     timeout -k 5 60 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ||
+                        { [ "$action" = restart ] && [ -n "$original_pid" ] && ! heal_probe "$node" >/dev/null &&
+                            heal_allowed && heal_end "$node" "$original_pid" && { [ "$(heal_state "$node")" = RUNNING ] ||
+                            timeout -k 5 60 incus --force-local --project default start "$node" 9>&- 8>&- 7>&- 6>&-; }; } ||
                         { heal_note "$node $action failed or timed out"; exit 1; }
                     heal_note "$node $action completed; awaiting health probes"
                 ) >/dev/null 2>&1 || :
