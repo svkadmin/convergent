@@ -217,7 +217,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "timeseries",
       "title": "DNS · queries and cache hits",
       "gridPos": {
@@ -304,7 +304,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 23,
       "type": "timeseries",
       "title": "DNS · mean recursion latency",
       "gridPos": {
@@ -378,7 +378,7 @@
       }
     },
     {
-      "id": 23,
+      "id": 24,
       "type": "timeseries",
       "title": "DNS · SERVFAIL rate",
       "gridPos": {
@@ -452,7 +452,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 25,
       "type": "timeseries",
       "title": "Wi-Fi · signal",
       "gridPos": {
@@ -528,7 +528,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 26,
       "type": "timeseries",
       "title": "Wi-Fi · link bitrate",
       "gridPos": {
@@ -603,7 +603,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 27,
       "type": "timeseries",
       "title": "Wi-Fi · observed roams",
       "gridPos": {
@@ -678,7 +678,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 28,
       "type": "timeseries",
       "title": "WAN watch · RTT",
       "gridPos": {
@@ -752,7 +752,7 @@
       }
     },
     {
-      "id": 28,
+      "id": 29,
       "type": "timeseries",
       "title": "WAN watch · packet loss",
       "gridPos": {
@@ -1317,7 +1317,7 @@
       ]
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "state-timeline",
       "title": "CARP · all segments",
       "gridPos": {
@@ -1415,7 +1415,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "logs",
       "title": "Firewall and CARP changes",
       "gridPos": {
@@ -1483,7 +1483,7 @@
       ]
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "timeseries",
       "title": "Segments · in",
       "gridPos": {
@@ -1557,7 +1557,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "timeseries",
       "title": "Segments · out",
       "gridPos": {
@@ -1631,7 +1631,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 30,
       "type": "table",
       "title": "Blocked · top sources",
       "gridPos": {
@@ -1682,7 +1682,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 31,
       "type": "table",
       "title": "Blocked · top destinations",
       "gridPos": {
@@ -1733,7 +1733,7 @@
       }
     },
     {
-      "id": 31,
+      "id": 32,
       "type": "table",
       "title": "Blocked · top destination ports",
       "gridPos": {
@@ -1858,7 +1858,81 @@
       }
     },
     {
-      "id": 33,
+      "id": 9,
+      "type": "timeseries",
+      "title": "WAN conntrack utilization",
+      "gridPos": {
+        "x": 12,
+        "y": 74,
+        "w": 12,
+        "h": 6
+      },
+      "description": "Source: wan node_exporter conntrack. Alert at 80% for 5m; a full table drops new NAT flows.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "metrics"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * node_nf_conntrack_entries{node=\"wan\"} / node_nf_conntrack_entries_limit{node=\"wan\"}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "metrics"
+          },
+          "editorMode": "code",
+          "instant": false,
+          "range": true,
+          "legendFormat": "wan"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "—",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#79BCF5"
+          },
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "gradientMode": "none",
+            "axisSoftMax": 100
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "last"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 34,
       "type": "row",
       "title": "Troubleshooting - routes, pf and interfaces",
       "collapsed": true,
@@ -2241,7 +2315,7 @@
           ]
         },
         {
-          "id": 9,
+          "id": 10,
           "type": "stat",
           "title": "",
           "gridPos": {
@@ -2356,7 +2430,7 @@
           }
         },
         {
-          "id": 10,
+          "id": 11,
           "type": "stat",
           "title": "",
           "gridPos": {
@@ -2532,7 +2606,7 @@
           }
         },
         {
-          "id": 12,
+          "id": 13,
           "type": "timeseries",
           "title": "pf · states against limit",
           "gridPos": {
@@ -2619,7 +2693,7 @@
           }
         },
         {
-          "id": 13,
+          "id": 14,
           "type": "timeseries",
           "title": "pf · diagnostic counters",
           "gridPos": {
@@ -2693,7 +2767,7 @@
           }
         },
         {
-          "id": 15,
+          "id": 16,
           "type": "table",
           "title": "Default route · presence and next hop",
           "gridPos": {
@@ -2819,7 +2893,7 @@
           ]
         },
         {
-          "id": 16,
+          "id": 17,
           "type": "stat",
           "title": "Resolver input ages",
           "gridPos": {
@@ -3082,7 +3156,7 @@
           }
         },
         {
-          "id": 17,
+          "id": 18,
           "type": "timeseries",
           "title": "WAN · traffic by interface",
           "gridPos": {
@@ -3167,7 +3241,7 @@
           }
         },
         {
-          "id": 18,
+          "id": 19,
           "type": "timeseries",
           "title": "Interfaces · errors and queue drops",
           "gridPos": {
@@ -3278,7 +3352,7 @@
       ]
     },
     {
-      "id": 32,
+      "id": 33,
       "type": "text",
       "title": "Not collected",
       "description": "Collection boundaries: scrape.yaml, tools/facts, tools/check, fw-facts and wan-check.",

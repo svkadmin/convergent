@@ -24,6 +24,7 @@ cleanup() {
 	set +e
 	cv_time cleanup
 	[ -z "${canary_pid:-}" ] || canary_end || r=1
+	[ -z "${mcast_pids:-}" ] || kill $mcast_pids 2>/dev/null
 	[ -z "${w1_stopped:-}" ] || { ic start fw1; ic config unset fw1 boot.autorestart
 		timeout -k 5 1800 sh -c 'until command ssh -n -F /etc/convergent/ssh_config fw1 "rcctl check dhcpd"; do sleep 5; done'; } || r=1
 	# Restore the preferred master if a work probe fails during maintenance. Undo refuses while a firewall
@@ -276,6 +277,18 @@ incus --force-local --project default profile show browser-base |
 	incus --force-local --project owner profile edit pf-base
 work_rows=/run/convergent/pf-work-segments
 awk '$7 == "dev" || $7 == "jhn" {print}' /etc/convergent/segments >"$work_rows"
+# pflog is also quiet when nothing is sent: each peer captures the other's dhcpd sync multicast
+# (either node may answer a lease) while the leases below are handed out.
+mcast_pids=
+for f in fw1 fw2; do
+	case $f in fw1) peer=100.80.0.18 ;; *) peer=100.80.0.17 ;; esac
+	timeout -k 5 2460 /usr/bin/ssh -n -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=30 -F /etc/convergent/ssh_config "$f" \
+		"timeout 2400 tcpdump -l -n -c 1 -i vio1 'udp and src host $peer and dst host 224.0.1.240 and dst port 8067'" \
+		>"/run/convergent/pf-mcast-$f" 2>"/run/convergent/pf-mcast-$f.err" &
+	mcast_pids="$mcast_pids $!"
+done
+timeout 120 sh -c 'until grep -q "listening on" /run/convergent/pf-mcast-fw1.err && grep -q "listening on" /run/convergent/pf-mcast-fw2.err; do sleep 1; done' ||
+	{ echo 'CV-PF FAIL sync multicast capture did not start'; result=1; }
 while read -r iface vhid parent label prefix gateway family <&3; do
 	vlan=${parent#vlan}
 	name=pf-work-$vlan
@@ -317,7 +330,15 @@ DHCP
 	done
 	listen "$name" "$base.10" 8080
 done 3<"$work_rows"
-# dhcpd -y also sends those lease updates to 224.0.1.240; pf passes them instead of logging blocks.
+# dhcpd -y also sends those lease updates to 224.0.1.240: one reached its peer, and pf passes them
+# instead of logging blocks.
+timeout 60 sh -c 'until grep -q " > 224.0.1.240.8067: " /run/convergent/pf-mcast-fw1 /run/convergent/pf-mcast-fw2; do sleep 1; done' || {
+	cat /run/convergent/pf-mcast-fw1.err /run/convergent/pf-mcast-fw2.err | sed 's/^/CV-PF mcast: /'
+	echo 'CV-PF FAIL no dhcpd sync multicast reached the peer'; result=1
+}
+kill $mcast_pids 2>/dev/null || :
+mcast_pids=
+rm -f /run/convergent/pf-mcast-fw1 /run/convergent/pf-mcast-fw2 /run/convergent/pf-mcast-fw1.err /run/convergent/pf-mcast-fw2.err
 for f in fw1 fw2; do
 	timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$f" \
 		'pkill -ALRM -x pflogd; sleep 2; out=$(tcpdump -n -r /var/log/pflog "udp and dst host 224.0.1.240" 2>/dev/null) && test -z "$out"' ||

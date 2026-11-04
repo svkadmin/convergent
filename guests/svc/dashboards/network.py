@@ -28,6 +28,8 @@ def generate():
     p.table('CARP demotion groups', [target('convergent_carp_demotion')], grid(0, 0, 12, 6), ['node','group'], ['demotion'],
             'wanwatch, maintenance, upgrade and handoff demotions explain role changes. A nonzero administrative demotion is not automatically a fault.')
     p.timeseries('pf state utilization', [target('100 * convergent_pf_states / convergent_pf_state_limit', '{{node}}')], grid(12, 0, 12, 6), 'percent', 'Alert at 80% for 5m; absolute counts remain in diagnostics.', max_=100)
+    p.timeseries('WAN conntrack utilization', [target('100 * node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"}', 'wan')], grid(12, 0, 12, 6), 'percent',
+                 'Source: wan node_exporter conntrack. Alert at 80% for 5m; a full table drops new NAT flows.', max_=100)
     p.stat("", [target('max by (node) (convergent_pf_enabled and on(node) (' + FW + '))', "pf · {{node}}"),
                 target('max by (node) (convergent_pfsync_up and on(node) (' + FW + '))', "pfsync · {{node}}"),
                 target('max by (node) (convergent_unbound_up and on(node) (' + FW + '))', "resolver · {{node}}")],
@@ -99,7 +101,7 @@ def generate():
     # Put user-visible failures before histories; keep generated geometry deterministic.
     def priority(panel):
         title = panel['title']
-        for i, prefix in enumerate(('Internet', 'DNS', 'Wi-Fi', 'WAN watch', 'Firewall readiness', 'CARP readiness', 'CARP ', 'Firewall and', 'Segments', 'Blocked', 'pf state utilization')):
+        for i, prefix in enumerate(('Internet', 'DNS', 'Wi-Fi', 'WAN watch', 'Firewall readiness', 'CARP readiness', 'CARP ', 'Firewall and', 'Segments', 'Blocked', 'pf state utilization', 'WAN conntrack')):
             if title.startswith(prefix):
                 return i
         return 99 if panel['type'] == 'text' else 90
