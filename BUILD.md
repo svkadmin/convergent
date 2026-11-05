@@ -6,7 +6,7 @@ installation: [USAGE, Install](USAGE.md#install).
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TD
   E["build/buildenv<br/>signed stage3 and Portage snapshot"]
   P["build/packages"]
   I["build/image<br/>root, firmware, initramfs, rescue UKI<br/>EROFS + verity, two UKIs, manifest"]
@@ -15,7 +15,7 @@ flowchart LR
   S["build/sign<br/>manifest.sig, packages.sig, guest manifest signatures<br/>latest + latest.sig"]
   T["build/test modes in QEMU"]
   PU["build/publish<br/>advisory gate · upload channel/REL and latest<br/>keep 2 releases, 9 GiB"]
-  ST["build/stick · USB disk image"]
+  ST["build/stick · disk image"]
   L["laptop: sys update install"]
   N["laptop: write the image, or convergent-install"]
   A["build/advisories-publish<br/>signed status per release"]
