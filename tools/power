@@ -173,7 +173,10 @@ case ${1:-} in
 		*) manual=; rm -f /run/convergent-power.manual || rc=1 ;;
 		esac
 	fi ;;
-ac|battery) [ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); manual=$1 ;;
+ac|battery)
+	[ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); manual=$1
+	# The old choice ends now: an early exit must not leave it for the next supply event.
+	rm -f /run/convergent-power.manual || exit 1 ;;
 charge|thermal)
 	[ "$#" = 2 ] || die 'use power charge off|55-100 or power thermal quiet|balanced|performance'
 	"$1" "$2"
