@@ -696,50 +696,69 @@ one. [Start over](#11-start-over).
 
 ## 19. Copy your data by hand
 
-Symptom: `/home` or a work VM must be kept off the laptop, before Start over (recipe 11) or as a
-routine copy.
+Symptom: `/home`, a work VM or the `share` volume must be kept off the laptop, before Start over
+(recipe 11) or as a routine copy.
 
-There is no backup tool. Copy to a LUKS-encrypted USB disk with `cryptsetup` and `rsync` from the
-image; the disk must be allowed in USBGuard ([USAGE, USB](USAGE.md#usb)). Browsers, Grafana history,
+There is no backup tool. Copy to a LUKS-encrypted USB disk with `cryptsetup`, `rsync` and `incus`
+from the image; the disk must be allowed in USBGuard ([USAGE, USB](USAGE.md#usb)). Each copy goes
+into a new dated folder, so an earlier copy stays until you delete it. Browsers, Grafana history,
 Remmina's keyring and the system guests are not copied: setup creates them again.
 
-1. Once per disk, find it with `lsblk -o NAME,SIZE,MODEL,TRAN` (`usb`, never the laptop disk) and
-   format it; this erases it:
+1. Once per disk, find it with `lsblk -o NAME,SIZE,MODEL,TRAN`, then erase and format it. The
+   first line refuses anything that is not a USB disk:
    ```sh
+   [ "$(lsblk -dno TRAN /dev/sdX)" = usb ] || echo 'STOP: not a USB disk'
    sudo cryptsetup luksFormat /dev/sdX
    sudo cryptsetup open /dev/sdX cv-copy
    sudo mkfs.btrfs /dev/mapper/cv-copy
    sudo cryptsetup close cv-copy
    ```
-2. Open and mount it:
+2. Open and mount it, then check the mount. Stop if the last line does not print
+   `/dev/mapper/cv-copy`: a copy would land on the laptop instead.
    ```sh
    sudo cryptsetup open /dev/sdX cv-copy
-   sudo mkdir -p -m 700 /run/copy
-   sudo mount /dev/mapper/cv-copy /run/copy
+   sudo mkdir -p /run/copy
+   sudo mount -o nodev,nosuid,noexec /dev/mapper/cv-copy /run/copy && sudo chmod 700 /run/copy
+   findmnt -no SOURCE /run/copy
    ```
-3. Copy your home, and each work VM stopped:
+3. Copy into a new folder. Stop each work VM first; an export needs free state space for its VM.
+   Close Remmina and stop every VM using `share` before exporting it.
    ```sh
-   sudo rsync -aHAX --delete /home/<owner>/ /run/copy/home/
-   sudo mkdir -p /run/copy/vms
+   d=/run/copy/$(date -u +%Y%m%d-%H%M)
+   sudo mkdir "$d"
+   sudo rsync -aHAX /home/<owner>/ "$d/home/"
    sudo incus --force-local --project owner stop <vm>
-   sudo incus --force-local --project owner export <vm> /run/copy/vms/<vm>.tar.gz
+   sudo incus --force-local --project owner export <vm> "$d/<vm>.tar.gz"
+   sudo incus --force-local --project default storage volume export default share "$d/share.tar.gz"
    ```
-4. Unmount and close it before unplugging:
+4. Check the home copy: this prints nothing when it matches.
+   ```sh
+   sudo rsync -aHAXcn --itemize-changes /home/<owner>/ "$d/home/"
+   ```
+5. Unmount and close it before unplugging:
    ```sh
    sync
    sudo umount /run/copy
    sudo cryptsetup close cv-copy
    ```
 
-Restore is the reverse: open and mount the disk (step 2), then copy back and close it (step 4):
+Restore: open and mount the disk (step 2), copy back from the folder you choose, then close it
+(step 5). A VM import needs a name no instance uses; the `share` copy comes back beside the live
+volume, to copy files from:
 
 ```sh
-sudo rsync -aHAX /run/copy/home/ /home/<owner>/
-sudo incus --force-local --project owner import /run/copy/vms/<vm>.tar.gz
+sudo rsync -aHAX "$d/home/" /home/<owner>/
+sudo chown -R <owner>: /home/<owner>
+sudo incus --force-local --project owner import "$d/<vm>.tar.gz" <vm>-restored
+sudo incus --force-local --project default storage volume import default "$d/share.tar.gz" share-restored
 ```
 
-Success: `rsync` and `incus export` end without an error, and `sudo cryptsetup status cv-copy`
-reports it inactive before you unplug the disk.
+Copies made by `sys backup` in 0.1.6 and older hold `home.tar`, `etc.tar` and Incus archives:
+extract home with `sudo tar --acls --xattrs --numeric-owner -C / -xpf home.tar`, and import the
+archives with the same `incus` commands.
+
+Success: steps 3 and 4 end without an error or output, and `sudo cryptsetup status cv-copy`
+reports the device inactive before you unplug the disk.
 
 ## 20. The state disk is lost or read-only
 

@@ -229,8 +229,8 @@ creating it if needed. Keep notes as plain `.md`: `:e name.md` opens one, `:w` s
 ## The sys tool
 
 The form is `sys AREA [ACTION] [ARGS]`. The first action in each row of the table is the default.
-An unknown second word becomes an argument to that default: `sys wifi foo` is a usage error,
-because `status` takes none. Missing arguments are prompted for; partial lists are usage
+An unknown second word is a usage error: `sys wifi foo` fails, because `status` takes no
+arguments. Missing arguments are prompted for; partial lists are usage
 errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No).
 A `sys` confirmation or DNS edit left unanswered for a minute counts as No; USB and wired prompts
 wait.
