@@ -71,6 +71,29 @@ sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
 sed -n '/^rebuild() {/,/^}/p' "$repo/tools/guests" |
     awk '/a firewall handoff is pending/ {checked=NR} /^    start_stopped$/ {start=NR} !/^ *#/ && /fw_check|soak/ && !probe {probe=NR}
         END {exit !(checked && start > checked && probe > start)}'
+# An open browser defers only browser work: wan and svc still start, unless a rollback is due.
+{
+    echo 'apply_open() {'
+    sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" | sed -n '/^    if ! flock -n 6; then$/,/^    fi$/p'
+    echo '}'
+} >"$scratch/apply-open"
+[ "$(grep -c 'flock -n 6' "$scratch/apply-open")" = 1 ] || die 'apply browser gate not found'
+sh -n "$scratch/apply-open"
+for journal in none pending preparing; do
+    rm -rf "$scratch/open-state" "$scratch/started"
+    mkdir "$scratch/open-state"
+    [ "$journal" = none ] || : >"$scratch/open-state/$journal"
+    (
+        state=$scratch/open-state
+        . "$scratch/apply-open"
+        flock() { [ "$*" = '-n 6' ] || exit 97; return 1; }
+        start_stopped() { : >"$scratch/started"; }
+        apply_open >/dev/null
+        [ "$browser_pending" = 1 ] || exit 97
+    )
+    if [ "$journal" = none ]; then [ -f "$scratch/started" ] || die 'open browser skipped start_stopped'
+    elif [ -e "$scratch/started" ]; then die "start_stopped ran with $journal"; fi
+done
 sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stopped"
 [ "$(grep -c '^start_stopped() {$' "$scratch/start-stopped")" = 1 ]
 (

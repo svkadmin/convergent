@@ -24,6 +24,11 @@ depend() {
 }
 
 start() {
+	# Bless disarms before its marker exists; after it, a start would arm a reset on a good release.
+	if [ -e /run/openrc/started/convergent-bless ]; then
+		einfo "The release is already good; the watchdog stays disarmed"
+		return 0
+	fi
 	ebegin "Feeding the watchdog"
 	if [ ! -c /dev/watchdog ] || ! command exec 3>/dev/watchdog; then
 		logger -t convergent-watchdog "cannot open /dev/watchdog; continuing without a watchdog"
