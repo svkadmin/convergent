@@ -115,7 +115,7 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
         *) echo "unexpected incus: $*" >&2; exit 97 ;;
         esac
     }
-    usbguard() { [ "$*" = 'list-devices -a' ] || exit 97; cat "$w/allowed"; }
+    usbguard() { [ "$*" = 'list-devices -a' ] || exit 97; [ "$guard" = up ] || return 1; cat "$w/allowed"; }
     heal_allowed() { [ "$inhibit" = 0 ]; }
     # held: wan takes the NIC while the heal waits for the lock.
     flock() { [ "$*" = '-n 8' ] || exit 97; [ "$busy" = 0 ] || return 1; [ "$held" = 0 ] || driver usbfs; }
@@ -127,7 +127,7 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     reported() { rm -f "$w/bad"; (set +e; . "$work/wired-scan"); [ -s "$w/bad" ]; }
     is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] || exit 1; }
     gone() { [ ! -e "$1" ] || exit 1; }
-    inhibit=0 busy=0 held=0 add=ok strike=$w/run/wired-strike outcome=$w/run/wired-heal
+    inhibit=0 busy=0 held=0 add=ok guard=up strike=$w/run/wired-strike outcome=$w/run/wired-heal
     echo Running >"$w/status"; echo "$role" >"$w/role"; echo 1 >"$w/sys/1-2/authorized"
     printf '%s\n' "$allowed" >"$w/allowed"; : >"$w/calls"
     # Held: every interface on usbfs.
@@ -185,14 +185,31 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     : >"$w/calls"; driver ''; run 2300; run 2360; run 2420
     is "$w/calls" ''; is "$outcome" 'failed S1'
     reported
-    # An hour after the first two, one more.
-    driver usbfs; run 4700; driver ''; run 4720; run 4780
+    # The capped outcome is not rewritten (a newer one makes the minute run a full scan).
+    command touch -d @1 "$outcome"; run 2480; is "$w/calls" ''
+    [ "$(stat -c %Y "$outcome")" = 1 ] || exit 1
+    # An hour after the first two, one more, with no replug in between.
+    run 4720; run 4780
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
     is "$w/run/wired-attempts" "$(printf '2160\n4780')"
     # One skipped minute run (a frozen firewall overran it) keeps the strike.
     driver usbfs; run 4840; gone "$outcome"; : >"$w/calls"; driver ''
     run 4900; run 5020
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'
+    # USBGuard not answering keeps the strike and the outcome, and the loss stays reported.
+    run 5080; is "$strike" 'S1 5080'; echo 'failed S1' >"$outcome"
+    guard=down; run 5140; is "$strike" 'S1 5080'; is "$outcome" 'failed S1'
+    reported
+)
+# The scan reports a USBGuard that does not answer.
+sed -n '/^timeout -k 1 10 usbguard list-rules /p' "$repo/tools/check" >"$work/guard-scan"
+[ -s "$work/guard-scan" ]; sh -n "$work/guard-scan"
+(
+    bad() { echo "$*" >>"$work/guard-bad"; }
+    timeout() { [ "$1 $2 $3 $4 $5" = '-k 1 10 usbguard list-rules' ] || exit 97; shift 3; "$@"; }
+    usbguard() { [ "$guard" = up ]; }
+    guard=up; . "$work/guard-scan"; [ ! -e "$work/guard-bad" ]
+    guard=down; . "$work/guard-scan"; grep -qx 'USBGuard does not answer: sudo rc-service usbguard restart' "$work/guard-bad"
 )
 echo 'observability: wired uplink re-attach and report passed'
 # A scan killed outright leaves its scratch directory: a later run prunes it a day on, never a live one.

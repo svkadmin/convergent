@@ -240,8 +240,8 @@ edit() {
 	echo "Proposed $file change (both firewalls):"
 	diff -u "$work/$file.before" "$work/edit" || [ $? = 1 ] || die 'cannot show diff'
 	printf 'Apply this change? [yes/No] '
-	IFS= read -r answer || die 'input cancelled'
-	[ "$answer" = yes ] || die 'not applied'
+	# Bounded: the push lock is held here, and self-heal waits for it.
+	timeout --foreground -k 1 60 sh -c 'IFS= read -r a && [ "$a" = yes ]' || die 'not applied'
 	# Journal local inputs too; a failed or interrupted push restores both layers.
 	mkdir "$state/edit.before.new"
 	cp "$work/allow.before" "$state/edit.before.new/allow"

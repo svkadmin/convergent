@@ -17,7 +17,8 @@ rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&-
 # wan's wired role as devices wired attach sets it. Incus 7.0.1 matches hotplug uevents, which carry no
 # serial, to no serial-pinned role: a replugged NIC stays off wan until the role is added again.
 # Prints the serial when its one present NIC is authorized, allowed by USBGuard and has an interface off
-# usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan.
+# usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan or
+# without USBGuard's answer.
 wired_lost() (
     # 10 s: a late answer only defers the re-attach; 30 s with a firewall fault overran the minute run.
     serial=$(timeout -k 1 10 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
@@ -30,7 +31,10 @@ wired_lost() (
         found=$((found + 1))
         for i in "$d/${d##*/}":*; do [ ! -e "$i" ] || [ "$(basename "$(readlink "$i/driver")")" = usbfs ] || lost=1; done
     done
-    [ "$found:$lost" = 1:1 ] && timeout -k 1 30 usbguard list-devices -a 9>&- 8>&- 7>&- 2>/dev/null | serial=$serial awk '
+    [ "$found:$lost" = 1:1 ] || exit 1
+    # No answer is not "NIC fine": it keeps the strike and the outcome.
+    allowed=$(timeout -k 1 30 usbguard list-devices -a 9>&- 8>&- 7>&- 2>/dev/null) || exit 2
+    printf '%s\n' "$allowed" | serial=$serial awk '
         $2 == "allow" && $3 == "id" && $4 == "0bda:8153" && index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
         END {exit n != 1}' || exit 1
     echo "$serial"
@@ -47,6 +51,8 @@ wired_heal() (
     '') ;;
     # A dock that drops the NIC again after a re-attach is a fresh loss; the hourly cap bounds it.
     healed\ *) rm -f "$outcome" ;;
+    # Kept for the scan; the cap below decides, so one retry follows once the hour has passed.
+    failed\ *) ;;
     *) echo 'SELF-HEAL wired uplink: wan does not hold the NIC; no second re-attach'; exit 0 ;;
     esac
     read -r uptime rest </proc/uptime
@@ -70,8 +76,11 @@ wired_heal() (
     awk -v now="$now" '$1 > now-3600 {print}' "$attempts" >"$attempts.new" &&
         mv "$attempts.new" "$attempts" || exit 1
     if [ "$(wc -l <"$attempts")" -ge 3 ]; then
-        echo "failed $serial" >"$outcome"
-        logger -p user.err -t check 'wired uplink: three re-attaches in the last hour; no more' 2>/dev/null || :
+        # Rewritten only on change: a newer outcome makes the next minute run a full scan.
+        [ "$(cat "$outcome" 2>/dev/null)" = "failed $serial" ] || {
+            echo "failed $serial" >"$outcome"
+            logger -p user.err -t check 'wired uplink: three re-attaches in the last hour; no more' 2>/dev/null || :
+        }
         echo 'SELF-HEAL wired uplink: three re-attaches in the last hour; no more'
         exit 0
     fi
@@ -503,6 +512,8 @@ if [ -n "$radio" ]; then
     [ "$(basename "$(readlink "/sys/bus/pci/devices/$radio/driver")")" = vfio-pci ] || bad 'wan radio is not owned by vfio-pci'
     [ "$(find "/sys/bus/pci/devices/$radio/iommu_group/devices" -mindepth 1 -maxdepth 1 | wc -l)" = 1 ] || bad 'wan radio does not have a private IOMMU group'
 fi
+# Checked at bless only otherwise: a dead daemon leaves every replugged device unauthorized.
+timeout -k 1 10 usbguard list-rules >/dev/null 2>&1 9>&- 8>&- 7>&- || bad 'USBGuard does not answer: sudo rc-service usbguard restart'
 # What wired_heal has not fixed: a loss it is not about to retry, or a role it could not add again.
 pending=$(find /run/convergent/wired-strike -mmin -3 -exec cut -d ' ' -f 1 {} + 2>/dev/null)
 if serial=$(wired_lost) && [ "$serial" != "$pending" ] || grep -qs '^failed ' /run/convergent/wired-heal; then

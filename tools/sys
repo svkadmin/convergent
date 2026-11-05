@@ -18,10 +18,10 @@ trace() {
 }
 run() { trace "$@"; "$@"; }
 ask() { printf '%s: ' "$1" >&2; IFS= read -r answer || die 'input cancelled'; }
+# Bounded: callers can hold guests.lock and dns-push.lock, which self-heal waits for.
 confirm() {
 	printf '%s? [yes/No] ' "$1" >&2
-	IFS= read -r answer || return 1
-	[ "$answer" = yes ]
+	timeout --foreground -k 1 60 sh -c 'IFS= read -r a && [ "$a" = yes ]'
 }
 secret() (
 	[ -t 0 ] || die 'passphrase needs a terminal'
