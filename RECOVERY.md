@@ -2,7 +2,8 @@
 
 Run commands on the laptop as the owner unless a step says otherwise; `sudo` marks the ones that
 need root. Find your symptom in the index, follow the numbered steps in order and stop at the
-success check. Each recipe says what to do when a step fails.
+success check. Each recipe says what to do when a step fails. A `sys` `[yes/No]` prompt left
+unanswered for 60 s counts as No.
 
 ## Symptom index
 
@@ -54,7 +55,8 @@ What a tool prints, and the recipe that answers it.
 | `<guest> has no storage record (a rebuild cut by a power loss)` | [14](#14-incus-state-torn-by-a-power-loss) |
 | `<volume> was moved aside by a snapshot restore cut by a power loss` | [14](#14-incus-state-torn-by-a-power-loss) |
 | `<volume> still has its pre-restore copy` | [14](#14-incus-state-torn-by-a-power-loss) |
-| `invalid CA pair`, `invalid CA key` | [18](#18-damaged-ca-or-management-key) |
+| `invalid CA pair`, `invalid CA key`, `invalid CA certificate` | [18](#18-damaged-ca-or-management-key) |
+| `slot: cannot read the highest blessed release` | [2](#2-a-new-release-does-not-boot-or-does-not-become-good) |
 | `invalid management private key`, `missing management private key` | [18](#18-damaged-ca-or-management-key) |
 | `state disk lost or read-only: reboot` (also on the bar) | [20](#20-the-state-disk-is-lost-or-read-only) |
 | `a browser is open; close it, then sys guests update` | [USAGE, Guest updates](USAGE.md#guest-updates) |
@@ -69,7 +71,7 @@ from the image, `<version>` the Convergent version and `<kernel>` the kernel ver
 | Entry | What it boots | When to pick it | What it costs |
 |---|---|---|---|
 | `SLOT A \| <name> <version> - <kernel>`, `SLOT B …` | that slot's release, straight into services | to go back by hand (recipe 3); the newest release with tries left is the default | one try while the release is not yet good |
-| the same entry ending in `(Recovery)` | the same release, with the Recovery menu before any service | a root shell or a password reset | one try while the release is not yet good; nothing marks it good |
+| the same entry ending in `(Recovery)` | the same release, with the Recovery menu before any service | a root shell or a password reset | one try while the release is not yet good; only Continue leads to the bless |
 | `RESCUE \| <name> <version> - <kernel>` | the standalone rescue initramfs; no slot root | neither slot boots; a release from USB; logs to USB | nothing: it never counts a try or marks a release good |
 
 ## Recovery boot menu
@@ -170,7 +172,9 @@ the bar shows `rel <release> good`.
 
 If it fails: `convergent-bless` prints what the health checks found (a crashed or stopped service
 of the default runlevel, a protection not running, Incus not answering). Fix that, then run the
-three commands again, within the watchdog window.
+three commands again, within the watchdog window. `slot: cannot read the highest blessed release`
+means the state file `highest` is damaged: in the Recovery root shell, write the release ID the
+menu names into it (`echo <release> >/run/cv-state/highest`), then Continue.
 
 The release does not boot, or the previous one came back by itself:
 
@@ -199,7 +203,7 @@ after it became good.
    sudo slot status          # booted: the slot you picked
    ```
 3. To stay on the older release, press `d` on its entry in the menu for a persistent default (the
-   next `slot write` clears it), or write it into both slots (Rescue option 3, once per slot).
+   next `slot write` clears it), or write it over the newer slot too (Rescue option 3).
    Otherwise the newer slot stays the default.
 
 Success: `sudo slot status` shows the chosen release as booted.
@@ -232,7 +236,8 @@ error.
    ```
 2. Retry. First-boot setup: `sys guests setup` (completed steps are skipped). An update: fix the
    printed cause, then `sys guests update`; a failed update has already restored the old guest.
-3. If fw1 stays silent after a handoff, run `sys firewall rebuild fw1`, then `sys guests update`.
+3. If fw1 stays silent after a handoff, run `sys firewall rebuild fw1`, then `sys guests update` to
+   apply the rest and clear `GUESTS failed`.
    After a commit, rebuild the silent firewall the same way; for wan or svc run the printed
    `guests update` command, then `sys guests update`.
 
@@ -263,8 +268,8 @@ sudo kill -KILL "$pid"
 Then rerun the guests command that failed. Success: `sys guests status` shows the guest `running`.
 
 A wan or svc paused on a full disk (`sys guests status` shows `error` or `frozen`; no uplink):
-free space, then `sys guests update` restarts it with `restart --force`; if that times out, end
-its QEMU as above.
+free space, then `sys guests update` restarts it with `restart --force`; if three tries fail, run
+the printed `guests update … --trusted-local` command.
 
 ### Interrupted work-topology migration
 
@@ -357,11 +362,9 @@ If it fails: send the output of step 1.
 Symptom: `latest is signed more than 5 minutes in the future; check the clock`,
 `certificates: cannot issue under this clock`, or DNS and time never come up together.
 
-A clock years off breaks the firewalls' DNS-over-TLS certificate checks and the host's NTS key
-exchange; without saved NTS cookies, DNS and authenticated time cannot bootstrap each other.
-Correct the host and both firewalls: ntpd only slews a large offset, and the host steps each
-firewall once per boot, so a later host correction is missed. Do not disable certificate checks or
-add unauthenticated servers.
+A clock years off breaks the firewalls' DNS-over-TLS checks and the host's NTS exchange, so DNS and
+time cannot bootstrap each other. Correct the host and both firewalls: ntpd only slews, and the host
+steps each firewall once per boot. Never disable certificate checks or add unauthenticated servers.
 
 1. Get the current UTC from an independently trusted clock (a correctly set offline device, for
    example) and compare it with `date -u` on the host.
@@ -443,7 +446,7 @@ If Incus refuses the NIC, reboot.
 | wan warnings, kernel, Wi-Fi, DHCP and time messages | `/var/log/wan/diag.log` in wan (root only, 256 KiB, one rotation); `sys wifi test` shows its last 200 lines |
 | Release checks, boot tries | `sudo slot status`; `slot:` lines in `/var/log/messages` |
 | Self-test of this boot | `sys selftest` writes `~/selftest-YYYYmmdd-HHMMSS.txt` (PASS, FAIL or SKIP per check) |
-| Services | `rc-status -a` (all runlevels); `sudo rc-service <name> status`, `restart` |
+| Services | `rc-status -a` (all runlevels); `sudo rc-service <name> status`, `restart`; `convergent-setup` takes `start` only |
 | Guests | `/var/log/incus/<guest>/console.log` and `qemu.log`; `/var/log/incus/incusd.log` |
 | Guest setup and updates | `/var/log/guests-setup.log`, `/var/log/guests-update.log` |
 | Security audit | `/var/log/audit/audit.log` |
@@ -485,7 +488,7 @@ Symptom: none; do this once the laptop is in daily use.
 > is gone. Keep the header backup on offline encrypted media.
 
 1. Add the passphrase and save the header. The boot prompt types only the US layout: first run
-   `sys keyboard next` until the bar shows `us`, and use printable ASCII only.
+   `sys keyboard next` until the bar shows `US`, and use printable ASCII only.
    ```sh
    sudo cryptsetup luksAddKey /dev/disk/by-partlabel/cv-state
    sudo cryptsetup luksHeaderBackup /dev/disk/by-partlabel/cv-state --header-backup-file <file>
@@ -571,9 +574,8 @@ rm /var/lib/convergent/crash/bert-<sha256>
 Success: `CrashRecorded` clears once no archived file remains.
 
 If the release keeps crashing, boot the other slot (recipe 3). For a driver that oopses
-repeatedly, `sudo sysctl -w kernel.panic_on_oops=0` disables the panic until reboot; the running
-root is read-only, so keeping that needs a new release. Firmware must support EFI variable writes
-during a panic, so an empty archive alone does not prove that the last shutdown was clean.
+repeatedly, `sudo sysctl -w kernel.panic_on_oops=0` stops the panics until reboot. An empty archive
+does not prove a clean shutdown: not every firmware writes pstore during a panic.
 
 ## 14. Incus state torn by a power loss
 
@@ -605,10 +607,11 @@ is refused.
    sudo incus-ui cleanup
    ```
    The checker retries it every minute, and boot cleanup runs before the greeter.
-2. A launcher still holds the session lock: close its terminal, or stop the unlocked session and
-   invalidate its credential:
+2. A launcher still holds the session lock: close its terminal, or stop the unlocked session,
+   delete its credential and set up a new one with a new passphrase:
    ```sh
    sudo incus-ui revoke
+   sudo incus-ui setup
    ```
 3. Forgotten passphrase or expired certificate: with `int` closed, create a new encrypted bundle:
    ```sh
@@ -617,14 +620,13 @@ is refused.
 4. After restoring state from a backup: revoke, then set up a fresh credential before opening
    `int`.
 
-Success: `sys browser incus` unlocks the session and `int` opens the UI.
+Success: `sys browser incus` unlocks the session and `int` opens the UI. The passphrase prompt
+waits 120 s; `passphrase cancelled or timed out` means run `sys browser incus` again.
 
-If it fails: cleanup stops `int` before discarding its session journal; trust is revoked even if
-the stop fails, and the journal stays for a retry. It also stops an orphaned Grafana and restores
-svc's 350 MiB idle limit when its 768 MiB session limit was left behind. Open WebSockets need
-`int` stopped, not just the certificate removed. Never import the private key into persistent NSS
-state. `/var/log/messages` holds the `incus-ui` events; the local Unix-socket CLI keeps working
-while the web interface does not.
+If it fails: `cleanup` stops `int`, removes the trust and keeps the journal if the stop fails; it
+also stops an orphaned Grafana and restores svc's 350 MiB limit. Open WebSockets need `int`
+stopped, not just the certificate removed. Never import the private key into persistent NSS state.
+`/var/log/messages` holds the `incus-ui` events; `incus` on the Unix socket keeps working.
 
 ## 16. Remmina session or keyring failure
 
@@ -635,9 +637,13 @@ Symptom: Remmina does not open or close, or its keyring password is lost.
    sys remote close
    ```
 2. Resume an interrupted update with `sys guests update`.
-3. A lost keyring password cannot be recovered. Keep an offline copy, then, with Remmina stopped,
-   move the `.local/share/keyrings` directory of the `remmina-state` volume aside. The next open
-   creates a new encrypted keyring; enter the remote credentials again.
+3. A lost keyring password cannot be recovered. Keep an offline copy, run `sys remote close`, then
+   move the keyrings aside:
+   ```sh
+   v=/var/lib/incus/storage-pools/default/custom/default_remmina-state
+   sudo mv "$v/.local/share/keyrings" "$v/.local/share/keyrings.lost"
+   ```
+   The next open creates a new encrypted keyring; enter the remote credentials again.
 
 Success: `sys remote open` opens Remmina.
 
@@ -650,8 +656,8 @@ uses `share` before backing it up or restoring it (recipe 19).
 Symptom: the Security dashboard lacks advisory status, blocked-packet samples or radio metrics.
 
 1. Run `sys update check` and inspect Security › Release › Advisory evidence. A missing or
-   tampered status is unknown, not zero advisories; payload updates stay independent. Check the
-   clocks before investigating future or replayed metadata.
+   tampered status means unknown, not zero advisories. Check the clocks before chasing future or
+   replayed metadata.
 2. Absent blocked-packet samples: on each firewall check `rcctl check pflog_stream`, the TLS
    syslog path to svc, and whether the relevant PF rule logs. `rcctl restart pflog_stream`
    restarts sampling; suppression summaries mean the sample cap was reached.
@@ -669,7 +675,7 @@ status](BUILD.md#daily-advisory-status)). After a firewall crash, remove abandon
 
 ## 18. Damaged CA or management key
 
-Symptom: `guests` stops with `invalid CA pair` or `invalid CA key`.
+Symptom: `guests` stops with `invalid CA pair`, `invalid CA key` or `invalid CA certificate`.
 
 1. Close the browsers.
 2. Replace the local CA:
@@ -700,10 +706,9 @@ Needs: the laptop installed, with first boot and the automatic guest setup compl
 disk unlocked and mounted; the browsers and Remmina closed (`sys remote close`); no guest setup,
 update or browser launch during the restore. There is no restore tool: run the steps as root.
 
-A generation made by this release carries `projects/<owner>/profiles.json` and `grafana-secrets/`;
-older generations may lack either, and the steps say what to do then. Older generations may also
-name the browser archives `browser-web-state.tar.gz` and `browser-admin-state.tar.gz`: use them for
-`def` and `int`.
+Generations from this release carry `projects/<owner>/profiles.json` and `grafana-secrets/`; older
+ones may lack either (the steps say what to do then) and may name the browser archives
+`browser-web-state.tar.gz` (`def`) and `browser-admin-state.tar.gz` (`int`).
 
 #### Verify the generation
 

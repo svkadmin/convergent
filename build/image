@@ -1,8 +1,8 @@
 #!/bin/sh
-# image: assemble a release from the staging root (ARCHITECTURE section 6, steps 3 to 6):
+# image: assemble a release from the staging root (ARCHITECTURE section 6, steps 3 to 5):
 # the image root, the EROFS image with its dm-verity tree, the initramfs, and one UKI per slot.
-# Runs as root on the build host after build/packages. The UKIs stay unsigned; signing with
-# the owner's offline key is the last step of a release (section 6, step 7).
+# Runs as root on the build host after build/packages. The UKIs stay unsigned; build/sign signs
+# the manifest with the channel key (section 6, step 7).
 #   build/image [release]      release defaults to the UTC date and time
 set -eu
 
