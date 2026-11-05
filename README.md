@@ -11,7 +11,7 @@ the network, monitoring and browsers in separate Incus guests.
   `fw1`/`fw2` CARP pair, `svc`, the `def`, `tmp` and `int` browsers, Remmina and work VMs.
 - **Monitoring.** `svc` runs VictoriaMetrics, VictoriaLogs, alert rules and Grafana.
 - **Recoverability.** A release that does not become good falls back to the previous one, which
-  keeps its own `/var`. Recovery and Rescue boot entries and encrypted USB backups cover the rest.
+  keeps its own `/var`. Recovery and Rescue boot entries cover the rest; data is copied by hand.
 
 PF on the firewalls decides what passes between guests. The Incus UI opens through `int`.
 

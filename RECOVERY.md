@@ -26,7 +26,7 @@ unanswered for 60 s counts as No.
 | Data and keys | 9 | [Read the encrypted state from another Linux](#9-read-the-encrypted-state-from-another-linux) |
 | Data and keys | 10 | [Second passphrase and header backup](#10-second-passphrase-and-header-backup) |
 | Data and keys | 11 | [Start over](#11-start-over) |
-| Data and keys | 19 | [Restore a backup](#19-restore-a-backup) |
+| Data and keys | 19 | [Copy your data by hand](#19-copy-your-data-by-hand) |
 | Data and keys | 20 | [The state disk is lost or read-only](#20-the-state-disk-is-lost-or-read-only) |
 | Evidence | 8 | [Where the logs are](#8-where-the-logs-are) |
 | Evidence | 17 | [Missing release or network evidence](#17-missing-release-or-network-evidence) |
@@ -510,13 +510,12 @@ leaves no other way.
 > [!CAUTION]
 > Writing the disk image erases everything on the laptop disk, including `/home`.
 
-1. If the laptop still runs, make a backup ([USAGE, Backups](USAGE.md#backups)).
+1. If the laptop still runs, copy your data ([recipe 19](#19-copy-your-data-by-hand)).
 2. [Write the disk image](USAGE.md#install) and complete first boot, including the automatic guest
    setup.
-3. Restore the backup ([19. Restore a backup](#19-restore-a-backup)).
+3. Copy your data back (recipe 19).
 
-Success: first boot ends with `rel <release> good` and no `SETUP` on the bar; recipe 19 ends with
-its own check.
+Success: first boot ends with `rel <release> good` and no `SETUP` on the bar.
 
 ## 12. An online update fails
 
@@ -617,8 +616,6 @@ is refused.
    ```sh
    sudo incus-ui rotate
    ```
-4. After restoring state from a backup: revoke, then set up a fresh credential before opening
-   `int`.
 
 Success: `sys browser incus` unlocks the session and `int` opens the UI. The passphrase prompt
 waits 120 s; `passphrase cancelled or timed out` means run `sys browser incus` again.
@@ -649,7 +646,7 @@ Success: `sys remote open` opens Remmina.
 
 If it fails: a manual rollback uses a retained `guests-*` snapshot of `remmina-state` while
 Remmina is stopped; leave `share` alone, because it may hold newer work. Stop every instance that
-uses `share` before backing it up or restoring it (recipe 19).
+uses `share` before copying or replacing it.
 
 ## 17. Missing release or network evidence
 
@@ -697,200 +694,52 @@ A damaged or lost management key (`invalid management private key`,
 `missing management private key`) cannot be replaced: the firewalls and wan accept only the old
 one. [Start over](#11-start-over).
 
-## 19. Restore a backup
+## 19. Copy your data by hand
 
-Symptom: `/home`, writable `/etc` files, owner profiles, containers or volumes must come back from
-a backup generation ([USAGE, Backups](USAGE.md#backups)).
+Symptom: `/home` or a work VM must be kept off the laptop, before Start over (recipe 11) or as a
+routine copy.
 
-Needs: the laptop installed, with first boot and the automatic guest setup complete; the backup
-disk unlocked and mounted; the browsers and Remmina closed (`sys remote close`); no guest setup,
-update or browser launch during the restore. There is no restore tool: run the steps as root.
+There is no backup tool. Copy to a LUKS-encrypted USB disk with `cryptsetup` and `rsync` from the
+image; the disk must be allowed in USBGuard ([USAGE, USB](USAGE.md#usb)). Browsers, Grafana history,
+Remmina's keyring and the system guests are not copied: setup creates them again.
 
-Generations from this release carry `projects/<owner>/profiles.json` and `grafana-secrets/`; older
-ones may lack either (the steps say what to do then) and may name the browser archives
-`browser-web-state.tar.gz` (`def`) and `browser-admin-state.tar.gz` (`int`).
+1. Once per disk, find it with `lsblk -o NAME,SIZE,MODEL,TRAN` (`usb`, never the laptop disk) and
+   format it; this erases it:
+   ```sh
+   sudo cryptsetup luksFormat /dev/sdX
+   sudo cryptsetup open /dev/sdX cv-copy
+   sudo mkfs.btrfs /dev/mapper/cv-copy
+   sudo cryptsetup close cv-copy
+   ```
+2. Open and mount it:
+   ```sh
+   sudo cryptsetup open /dev/sdX cv-copy
+   sudo mkdir -p -m 700 /run/copy
+   sudo mount /dev/mapper/cv-copy /run/copy
+   ```
+3. Copy your home, and each work VM stopped:
+   ```sh
+   sudo rsync -aHAX --delete /home/<owner>/ /run/copy/home/
+   sudo mkdir -p /run/copy/vms
+   sudo incus --force-local --project owner stop <vm>
+   sudo incus --force-local --project owner export <vm> /run/copy/vms/<vm>.tar.gz
+   ```
+4. Unmount and close it before unplugging:
+   ```sh
+   sync
+   sudo umount /run/copy
+   sudo cryptsetup close cv-copy
+   ```
 
-#### Verify the generation
+Restore is the reverse: open and mount the disk (step 2), then copy back and close it (step 4):
 
 ```sh
-set -e
-backup=/mnt/backup/convergent-backups/backup-YYYYmmddTHHMMSSZ
-(cd "$backup" && sha256sum -c SHA256SUMS)
+sudo rsync -aHAX /run/copy/home/ /home/<owner>/
+sudo incus --force-local --project owner import /run/copy/vms/<vm>.tar.gz
 ```
 
-Success: every line ends in `OK`.
-
-#### Home and /etc
-
-1. Unpack `home.tar`, preserving numeric ownership, ACLs and xattrs:
-   ```sh
-   tar --acls --xattrs --numeric-owner -C / -xpf "$backup/home.tar"
-   ```
-2. Unpack `etc.tar` into a temporary directory and copy only the writable files you need; after
-   Start over, `etc/machine-id` keeps the backup disk accepting this laptop:
-   ```sh
-   mkdir -p /run/restore-etc
-   tar --acls --xattrs --numeric-owner -C /run/restore-etc -xpf "$backup/etc.tar"
-   cp -a /run/restore-etc/etc/machine-id /etc/machine-id    # repeat for each file you need
-   rm -r /run/restore-etc
-   ```
-
-#### Project and profiles
-
-Recreate the pools and networks the owner's profiles reference, then restore the profiles in the
-recreated owner project before importing containers. Without `profiles.json`, recreate the profiles
-by hand.
-
-```sh
-project=owner                       # the original owner project name
-ic() { incus --force-local --project "$project" "$@"; }
-ic project create "$project"        # skip if it already exists
-# If the backed-up project used default-project volumes, set this before restoring profiles:
-# ic project set "$project" features.storage.volumes=false
-jq -r '.[].name' "$backup/projects/$project/profiles.json" > /run/restore-profiles
-while IFS= read -r name; do
-    ic profile show "$name" >/dev/null 2>&1 || ic profile create "$name"
-    jq --arg n "$name" '.[] | select(.name == $n) | {config,description,devices}' \
-        "$backup/projects/$project/profiles.json" | ic profile edit "$name"
-done < /run/restore-profiles
-rm /run/restore-profiles
-```
-
-#### Volumes
-
-Restore custom volumes before importing the owner's containers. Use the project and pool of each
-archive's `projects/<project>/<pool>/` directory. The browser, svc, `remmina-state` and `share`
-volumes use project `default`, pool `default`.
-
-1. Stop svc and every instance attached to `share` in any project:
-   ```sh
-   project=default
-   pool=default
-   ic stop svc --timeout 120
-   incus --force-local list --all-projects  # all volume consumers must be STOPPED
-   ```
-2. For each volume, take `volume`, `profile` and `device` from the table. Check the instance with
-   `ic config show <guest>` (`--expanded` shows inherited devices); if its local `devices`
-   override the profile, update that device too.
-
-| volume | profile | device | guest |
-|---|---|---|---|
-| browser-def-state | browser-def | state | def |
-| browser-int-state | browser-int | state | int |
-| svc-metrics | svc | metrics | svc |
-| svc-logs | svc | logs | svc |
-| svc-grafana | svc | grafana | svc |
-| remmina-state | remmina | state | remmina (if created) |
-| share | remmina | share | remmina; also reset every owner attachment separately |
-
-3. Import, swap and reattach:
-   ```sh
-   volume=svc-metrics; profile=svc; device=metrics
-   ic storage volume import "$pool" "$backup/projects/$project/$pool/$volume.tar.gz" \
-       "$volume-restored"
-   ic storage volume rename "$pool" "$volume" "$volume-before-restore"
-   ic storage volume rename "$pool" "$volume-restored" "$volume"
-   ic profile device set "$profile" "$device" source="$volume"
-   # Only when the instance has a local override of this device:
-   # ic config device set <guest> "$device" source="$volume"
-   ic storage volume show "$pool" "$volume"
-   ic storage volume show "$pool" "$volume-before-restore"
-   ```
-4. An ISO export (`.iso` instead of `.tar.gz`) needs this import instead; the rename and
-   reattachment steps are the same:
-   ```sh
-   ic storage volume import "$pool" "$backup/projects/$project/$pool/$volume.iso" \
-       "$volume-restored" --type=iso
-   ```
-5. Repeat for the owner's volumes with their own project, pool and consumers. For `share`, use
-   `--project owner` for owner devices and profiles; it keeps its default volume namespace
-   (`features.storage.volumes=false`, [USAGE, Remote desktops](USAGE.md#remote-desktops)).
-
-> [!NOTE]
-> The temporary names must be unused; if no old volume exists, skip its rename. Renaming the old
-> volume also redirects its attachments, so reset every consumer's profile or local device to the
-> restored name before restarting it. The old volume's `used_by` must be empty after that; keep it
-> until the data is verified.
-
-#### Grafana secrets
-
-Before Grafana starts against the restored `svc-grafana`, restore its matching secrets. For a
-generation with `grafana-secrets/`, run this after the volumes. An attached seed means setup has
-not finished: stop, finish setup, then retry. The unused cached seed is discarded, so the next
-guest rebuild uses the restored host secrets.
-
-```sh
-# Restore Grafana secrets.
-project=default
-state=/var/lib/convergent/guests
-devices=$(ic config device show svc)
-if printf '%s\n' "$devices" | grep -q '^seed:'; then
-    echo 'finish guest setup before restoring Grafana secrets' >&2
-    exit 1
-fi
-if [ -f "$state/seeds/svc.img" ]; then
-    loops=$(losetup -j "$state/seeds/svc.img")
-    [ -z "$loops" ]
-fi
-for secret in admin-password secret-key; do
-    [ -s "$backup/grafana-secrets/$secret" ]
-done
-rm -f "$state/seeds/svc.img" "$state/seeds/svc.sha256"
-ic start svc
-# Grafana is absent from boot runlevels; keep it stopped until both files are installed.
-ic exec svc -- rc-service grafana stop
-for secret in admin-password secret-key; do
-    install -m 600 "$backup/grafana-secrets/$secret" "$state/tls/$secret"
-    ic exec svc -- sh -eu -c '
-        umask 077
-        cat >"$1.new"
-        chown root:grafana "$1.new"
-        chmod 640 "$1.new"
-        mv "$1.new" "$1"
-    ' sh "/etc/grafana/$secret" <"$state/tls/$secret"
-done
-sync
-# Grafana secrets restored.
-```
-
-A generation without `grafana-secrets/`: start svc with `project=default; ic start svc`, keep
-Grafana stopped, and [reset the restored admin password](https://grafana.com/docs/grafana/latest/administration/cli/#reset-admin-password)
-to the newly generated host password:
-
-```sh
-ic exec svc -- rc-service grafana stop
-ic exec svc -- grafana-cli --homepath /usr/share/grafana --config /etc/grafana.ini \
-    admin reset-admin-password --password-from-stdin </var/lib/convergent/guests/tls/admin-password
-```
-
-Credentials or settings saved encrypted in Grafana must be entered again after login: the new
-`secret-key` cannot decrypt values saved with the lost one. Shipped data sources have no
-credentials. For either generation, a password changed in Grafana remains the database password
-unless reset.
-
-#### Containers
-
-Import the owner's containers, check their expanded devices, then start them:
-
-```sh
-project=owner                       # the original owner project name
-for archive in "$backup/projects/$project"/instance-*.tar.gz; do
-    [ -f "$archive" ] || continue
-    ic import "$archive"
-done
-```
-
-#### Check
-
-1. Open `def` and `int` normally and verify saved profiles, downloads, Grafana and its history.
-2. Open Remmina and check its keyring and `/share`; verify the owner's `share` attachments before
-   restarting those instances.
-3. Remove each old volume once its data is verified:
-   ```sh
-   ic storage volume delete "$pool" <volume-before-restore>
-   ```
-
-Success: the browsers, Grafana, Remmina and the owner's containers run with the restored data.
+Success: `rsync` and `incus export` end without an error, and `sudo cryptsetup status cv-copy`
+reports it inactive before you unplug the disk.
 
 ## 20. The state disk is lost or read-only
 
@@ -919,8 +768,8 @@ Success: the bar shows the alert counts instead of the message, and `StateReadOn
 mean a failing disk.
 
 If it repeats: boot [Rescue](#standalone-rescue-entry) and copy the logs to USB (option 5), save
-what you can from another Linux (recipe 9), then start over on a sound disk (recipe 11) and restore
-the backup (recipe 19).
+what you can from another Linux (recipe 9), then start over on a sound disk (recipe 11) and copy
+your data back (recipe 19).
 
 ## 21. A browser does not close
 

@@ -75,8 +75,8 @@ if [ "$recovery" = 1 ]; then
 	arm_watchdog
 fi
 
-# As in backup: reclaim snapshots left by power loss before copying /var.
-# Housekeeping only: one that stays (a symlink, a Btrfs error) is backup's to report, not a boot stop.
+# As in the removed backup tool (0.1.6 and older): reclaim its snapshots left by power loss before copying /var.
+# Housekeeping only: one that stays (a symlink, a Btrfs error) is warned about, not a boot stop.
 remove_snapshot() {
 	[ ! -L "$1" ] && [ ! -L "$1/home" ] || return 1
 	if [ -d "$1/home" ]; then
@@ -90,7 +90,7 @@ remove_snapshot() {
 }
 for old in "$state"/.backup.?????? "$state"/var-*/.backup.??????; do
 	[ -e "$old" ] || [ -L "$old" ] || continue
-	remove_snapshot "$old" || warn "state: cannot remove abandoned snapshot $old; backup reports it"
+	remove_snapshot "$old" || warn "state: cannot remove abandoned snapshot $old"
 done
 
 # Prepare this release's /var atomically; cached policy is rebuilt once per release.

@@ -2,7 +2,7 @@
 
 Tools live in `/usr/local/sbin`. `sys`, `browser` and the bar run as the owner; `sys` calls `sudo`
 when an action needs root. The other tools (`slot`, `fetch-release`, `guests`, `check`, `devices`,
-`backup`, `account`, …) need `sudo`: your password, then a 5-minute ticket.
+`account`, …) need `sudo`: your password, then a 5-minute ticket.
 
 [Install](#install) · [Keys](#keys) · [The sys tool](#the-sys-tool) ·
 [Updates](#releases-and-guests) · [Recovery](RECOVERY.md)
@@ -229,8 +229,8 @@ creating it if needed. Keep notes as plain `.md`: `:e name.md` opens one, `:w` s
 ## The sys tool
 
 The form is `sys AREA [ACTION] [ARGS]`. The first action in each row of the table is the default.
-An unknown second word becomes an argument to that default: `sys backup /mnt/x proj` works, but
-`sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
+An unknown second word becomes an argument to that default: `sys wifi foo` is a usage error,
+because `status` takes none. Missing arguments are prompted for; partial lists are usage
 errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No).
 A `sys` confirmation or DNS edit left unanswered for a minute counts as No; USB and wired prompts
 wait.
@@ -266,7 +266,6 @@ status and commands on the right. The dashboard refreshes on entry; narrow panes
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
 | `guests` | `status`, `setup`, `update` |
 | `power` | `status`, `ac`, `battery`, `charge off\|55-100`, `thermal quiet\|balanced\|performance`, `lock`, `logout` *, `reboot` *, `off` * |
-| `backup` | `run [MOUNTPOINT PROJECT]` |
 | `logs` | `host` (`/var/log/messages`), `debug` (beta only), `services` (`rc-status -a`) |
 | `selftest` | `run` |
 
@@ -408,7 +407,7 @@ For RDP file transfer, select `/share` as the shared folder. To share directly w
 
 The owner project needs `features.storage.volumes=false` to use default-project volumes; move
 existing private volumes before changing that option. The volume is created at 4 GiB; resize it in
-the Incus UI if needed. Stop every attached instance throughout a backup or restore.
+the Incus UI if needed.
 
 Repairs: [RECOVERY 16](RECOVERY.md#16-remmina-session-or-keyring-failure).
 
@@ -929,41 +928,8 @@ side: [BUILD, Diagnostics](BUILD.md#diagnostics).
 
 ## Backups
 
-Needs:
-
-- an unlocked LUKS USB disk mounted on a root-owned directory whose parents are all root-owned and
-  not writable by others (sticky ones such as `/tmp` excepted), not the laptop disk;
-- the owner project (`owner`, created by setup; never `default`).
-
-A backup writes one generation, `convergent-backups/backup-<UTC>`:
-
-| Item | Holds |
-|---|---|
-| `home.tar` | a snapshot of `/home` |
-| `etc.tar` | the writable `/etc` files |
-| `projects/<owner>/instance-<name>.tar.gz` | each owner container |
-| `projects/<owner>/profiles.json` | the owner's profiles |
-| `projects/<project>/<pool>/` | custom filesystem and ISO volumes of both projects, including `remmina-state` and `share`; `default` ones without their update snapshots |
-| `grafana-secrets/` | Grafana's matching `admin-password` and `secret-key` |
-| `machine-id`, `EXCLUDED`, `SHA256SUMS` | the laptop's identity, what was left out, checksums |
-
-VM instances, custom block volumes, system guest instances and the rest of `/var/lib/convergent`
-are excluded; `EXCLUDED` lists them.
-
-1. Close the browsers and Remmina.
-2. Stop every instance that uses `share`, and keep it stopped until the backup ends.
-3. Unlock and mount the USB disk.
-4. Run `sys backup <mountpoint> owner`. Without arguments it asks for `Mounted encrypted external
-   disk:` and `Owner Incus project:`. The root tool is `sudo backup [<mountpoint> <owner-project>]`.
-5. Wait for `readback verified`.
-6. Unmount and close the disk before unplugging it.
-
-The backup waits up to 120 s for a running guest operation, then refuses. It verifies the readback
-and keeps three generations. One disk serves one laptop: each generation records `machine-id`, and
-a disk holding another laptop's backups is refused. After Start over, restore `etc/machine-id` from
-`etc.tar` to keep using the disk.
-
-Restore: [RECOVERY 19](RECOVERY.md#19-restore-a-backup).
+There is no backup tool. Copy `/home` and your work VMs to an encrypted USB disk by hand:
+[RECOVERY 19](RECOVERY.md#19-copy-your-data-by-hand).
 
 ## Power and locking
 

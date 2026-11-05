@@ -667,9 +667,10 @@ rolls back. Planned: a menu warning or block; automatic `home` snapshots.
 ### 7.4 Recovery and backups
 
 Keep a second LUKS passphrase, a recovery key and a header backup offline on encrypted media.
-Planned: header-refresh reminders, a backup restore tool and Secure Boot key backups. Commands:
-[RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup); backup scope:
-[USAGE, Backups](USAGE.md#backups); repair and restore recipes: [RECOVERY](RECOVERY.md).
+Planned: header-refresh reminders and Secure Boot key backups. There is no backup tool: the owner
+copies `/home` and work VMs by hand ([RECOVERY 19](RECOVERY.md#19-copy-your-data-by-hand)).
+Commands: [RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup); repair recipes:
+[RECOVERY](RECOVERY.md).
 
 ## 8. Observability
 
@@ -900,7 +901,7 @@ host scripts and the bar target under 1 % of one core at idle; unmeasured.
 | `check`, `facts`, `observe`, `firewall-capture` | the checker, hardware and boot facts, monitoring, capture (section 8); the firewalls run `fw-facts` |
 | `sys`, `apps`, `notes`, `bar` | controls, launchers and status ([USAGE](USAGE.md)) |
 | `dns-push`, `portal`, `devices` | DNS activation, portal rules, device approval |
-| `account`, `power`, `backup` | accounts, hardware choices, backup export |
+| `account`, `power` | accounts, hardware choices |
 
 #### Locks
 
@@ -911,7 +912,7 @@ Root-owned lock files under `/run/convergent`; the holder serializes the work li
 | `guests.lock` | every guest operation; the checker's scan and a shutdown take it too |
 | `dns-push.lock` | a DNS push; a guest run waits for it, a self-heal restart is skipped while it is held; `sys firewall` waits for it |
 | `portal.lock` | portal mode changes and a whole guests run |
-| `browser-update.lock` | browser, Remmina and Incus UI sessions (shared) against a guest update or backup (exclusive) |
+| `browser-update.lock` | browser, Remmina and Incus UI sessions (shared) against a guest update (exclusive) |
 | `browser/<role>.lock` | one session per browser role, `tmp` slot or Remmina |
 | `incus-ui.lock` | one Incus UI setup, rotation, revoke or cleanup |
 | `check.lock` | one checker scan at a time |
@@ -922,8 +923,7 @@ Root-owned lock files under `/run/convergent`; the holder serializes the work li
 | `observe.lock` | one `observe` run |
 | `fetch-release.lock` | one release download |
 | `firewall-capture.lock` | one firewall capture |
-| `backup.lock` | one backup |
-| `/run/convergent-slot.lock` | one `slot` run (`bless`, `write`, `status`, `rescue-write`, `rescue-next`) or backup snapshot cleanup |
+| `/run/convergent-slot.lock` | one `slot` run (`bless`, `write`, `status`, `rescue-write`, `rescue-next`) |
 
 ## 13. Repository layout
 

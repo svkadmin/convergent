@@ -17,7 +17,7 @@ log() { logger -p user.warning -t slot "$*" 2>/dev/null || :; echo "slot: $*"; }
 usage() { echo "usage: slot bless | status | write <release-dir> | rescue-write <release-dir> [a|b|inactive] | rescue-next <a|b>" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
-# One run at a time. A 0600 lock: a world-readable one lets the owner flock it and stall bless and backup.
+# One run at a time. A 0600 lock: a world-readable one lets the owner flock it and stall bless.
 mask=$(umask)
 umask 077
 exec 9>/run/convergent-slot.lock

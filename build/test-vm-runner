@@ -106,9 +106,11 @@ for mode in guests guests-maint guests-update online; do
             *) if grep -q "\$release/$check" "$smoke"; then exit 1; fi ;;
             esac
         done
-        for check in browser-test browser-migration-test backup-restore-test selftest-test; do
+        for check in browser-test browser-migration-test selftest-test; do
             grep -q "\$release/$check" "$smoke"
         done
+        # The backup tool is gone; so is its restore test.
+        if grep -q backup-restore "$smoke"; then exit 1; fi
     )
 done
 echo 'test-vm-runner: guest budgets and smoke selection passed'
