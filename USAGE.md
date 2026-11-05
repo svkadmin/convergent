@@ -109,13 +109,7 @@ YAML has no runtime effect. Disk image sizing: [BUILD](BUILD.md).
 4. Wait until the orange `SETUP` disappears from the bar (10–30 min after a disk image). On a red
    `SETUP failed`, run `sys guests setup` to resume; the log is `/var/log/guests-setup.log`.
 5. Attach every trusted device, including the built-in camera, Bluetooth and fingerprint reader.
-   Then replace the USB class policy:
-
-   ```sh
-   sudo sh -c 'usbguard generate-policy > /etc/usbguard/rules.conf'
-   sudo rc-service usbguard restart
-   ```
-
+   Run `sys usb enrol`, answer `yes` for each device, then confirm.
    Success: `sudo devices list` shows no required device blocked. Later changes:
    [Devices](#devices).
 6. Connect to Wi-Fi: Super+m → Wi-Fi → Scan → Connect, or `sys wifi connect`.
@@ -167,7 +161,7 @@ Stock Sway bindings plus the Convergent additions below. Super is the Windows ke
 | Mic-mute key | toggle the default microphone; while locked, only mute |
 | Brightness keys | `sys display bright -5` / `+5` (5 % steps) |
 
-Super+a also runs `usb enrol`, `display save`, `power charge`, `power thermal` and `camera on/off`.
+Super+a offers every `sys` action by name.
 
 ## Desktop
 
@@ -179,8 +173,7 @@ an 11-point font). Override each in `~/.config/`.
 To change a screen's scale:
 
 1. Run `sys display set eDP-1 scale 1.3`.
-2. Type `yes`, then Enter, within 15 s to keep it. Any other answer, Escape then Enter, or the
-   timeout restores the previous layout.
+2. Type `yes` within 15 s to keep it; anything else, or the timeout, restores the previous layout.
 3. Run `sys display save`.
 
 Save the docked and the undocked layout separately. Docking and undocking need no key.
@@ -194,7 +187,8 @@ Save the docked and the undocked layout separately. Docking and undocking need n
   live layout.
 
 Profiles live in `~/.config/convergent/displays/` and override `display_scale`. An existing
-`~/.config/sway/config.d/outputs` overrides them until the first save, which retires it.
+`~/.config/sway/config.d/outputs` stands in for the defaults on unknown sets until the first save,
+which removes it.
 
 ### Touchpad
 
@@ -237,8 +231,9 @@ creating it if needed. Keep notes as plain `.md`: `:e name.md` opens one, `:w` s
 The form is `sys AREA [ACTION] [ARGS]`. The first action in each row of the table is the default.
 An unknown second word becomes an argument to that default: `sys backup /mnt/x proj` works, but
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
-errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No);
-a prompt left unanswered for a minute counts as No.
+errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No).
+A `sys` confirmation or DNS edit left unanswered for a minute counts as No; USB and wired prompts
+wait.
 
 `sys` without arguments (Super+m) opens an fzf menu: areas on the left; a dashboard, the selected
 status and commands on the right. The dashboard refreshes on entry; narrow panes hide the logo.
@@ -313,7 +308,8 @@ sum is missing or over three minutes old.
 
 The alert counters show grey `? ? ?` when `svc` cannot be read, including during SETUP until `svc`
 is up. When `/var` is lost or read-only, a red `state disk lost or read-only: reboot` replaces
-them. Alert history is in Grafana: `sys browser int`. `AC BAT` means the battery is full or at its
+them ([RECOVERY 20](RECOVERY.md#20-the-state-disk-is-lost-or-read-only)). Alert history is in
+Grafana: `sys browser int`. `AC BAT` means the battery is full or at its
 charge limit.
 
 Topology starts with the uplink: `WLAN:<network>` (green connected, red with no network, grey when
@@ -344,10 +340,9 @@ window title starts with `[role]`.
 | `tmp --portal` | captive portals; opens `http://<uplink-gateway>/` unless given a URL | container deleted on close; owns portal mode |
 | `int` | Grafana; Incus after a session unlock | Grafana profile kept in a 512 MiB volume |
 
-The Incus session in `int` uses its own profile in tmpfs, gone when `int` stops; the UI key lives
-only in session memory. A plain `int` browser starts Grafana in `svc` and stops it on close; the
-Incus session does not. Log in to Grafana as `owner`; the password is in
-`/var/lib/convergent/guests/tls/admin-password` (`sudo cat` it).
+The Incus session uses a tmpfs profile that vanishes when `int` stops; the UI key lives only in
+session memory. A plain `int` starts Grafana in `svc` and stops it on close. Log in to Grafana as
+`owner` with the password in `/var/lib/convergent/guests/tls/admin-password` (`sudo cat`).
 
 Success: a `[def] …` window and `BR:1` in the bar. The browser refuses:
 
@@ -360,7 +355,8 @@ sync, no password manager, no telemetry. `int` and both `tmp` modes allow no ext
 Chromium's default appearance is kept.
 
 Super+b and Super+Shift+t show the reason for a failure at the top of the screen. Full output:
-`$XDG_RUNTIME_DIR/browser-def.*.log` or `$XDG_RUNTIME_DIR/browser-tmp.*.log`, one file per launch.
+`$XDG_RUNTIME_DIR/browser-def.*.log` or `browser-tmp.*.log`, kept only while that browser runs or
+its failure message is on screen.
 `sys browser` launches log to `$XDG_RUNTIME_DIR/sys-browser-<role>.*`, replacing that role's older
 logs. A launch that fails within 3 s prints the reason and removes its log.
 
@@ -530,10 +526,9 @@ sudo devices allow tb <id>     # Thunderbolt tunnel until unplugged
 3. Run `sys wired attach 0bda:8153 <serial>` (or answer the prompts), and confirm the vendor,
    product and serial. Empty or ambiguous serials fail.
 
-Only that identity passes to `wan`, as `eth1`. `wan` prefers the wired uplink and retries DHCP on a
-replug within its minute check. A replug returns within about two minutes: the checker re-adds the
-role once `wan` has not held the NIC for two runs. It does so three times an hour, then alerts and
-retries once the hour has passed.
+Only that identity passes to `wan`, as `eth1`, and `wan` prefers it. After a replug the checker
+re-adds it within about two minutes, at most three times an hour; past that it alerts and retries
+after the hour.
 
 - `sys wired remove` removes the assignment and automatic attachment; the USBGuard approval stays.
 - Unplugging alone keeps the assignment.
@@ -660,7 +655,8 @@ After an interruption, repeat the same command to resume. How the pair is replac
 ## Releases and guests
 
 Channels and promotion: [BUILD, Channels](BUILD.md#channels). `sys update status` (`slot status`)
-shows each slot's version and release ID; the release ID orders releases, and reports carry both.
+shows the booted version, each slot's release ID and boot counter, and the `good` and `highest`
+releases; the release ID orders releases.
 
 | Phase | What runs | The bar shows | What you do |
 |---|---|---|---|
@@ -668,7 +664,7 @@ shows each slot's version and release ID; the release ID orders releases, and re
 | 2. Slot write | `slot write` fills the other slot | | accept the reboot offer |
 | 3. Boot | health checks, then the release is marked good | `rel … UNBLESSED`, then `good` | wait |
 | 4. Guests | `guests apply` after the bless | orange `GUESTS` | close browsers; on `GUESTS failed`, `sys guests update` |
-| 5. Baseline | the checker compares with the accepted baseline | `CheckerFailed` until accepted | [accept the new baseline](#accept-the-new-baseline) |
+| 5. Baseline | the checker compares with the accepted baseline | `CheckerFailed` | [accept the new baseline](#accept-the-new-baseline); needs Secure Boot on |
 
 The guest step waits up to 30 min for the release to become good. Only one guests operation runs
 at a time; another waits up to 10 min, then prints `another guests operation is running`. A release
@@ -756,8 +752,8 @@ bookmarks and logins.
 - A recording failure stays pending; the next install reuses valid staged data or downloads it.
 
 With no update pending, `sys guests update` also starts a `wan` or `svc` that Incus left stopped
-(after ten crashes in a minute) or paused (on a full disk), with a forced restart. If three tries
-fail, it names the manual rebuild.
+(after ten crashes in a minute) and force-restarts one left paused (on a full disk). After three
+failed tries it names the manual rebuild.
 
 Manual updates need a good host and closed browsers and Remmina. Keep the release layout: `$g` is
 `<release-dir>/guests`, with the unpacked images, and the signed `guests.manifest` (or
@@ -787,6 +783,10 @@ in `/var/lib/convergent/release-guests`, beside the installed firewall hashes.
    ```sh
    sudo check accept /var/lib/convergent/release-guests
    ```
+
+Acceptance needs Secure Boot on and out of Setup Mode. Secure Boot signing is not built yet
+([BUILD, Status](BUILD.md#status)): with it off, `check accept` reports `FAIL Secure Boot disabled
+or unverifiable`, keeps the old baseline, and `CheckerFailed` stays.
 
 Only the latest written release is kept: accept each release before writing the next. Updates
 written by 0.1.5 or older keep no manifest; accept with the release directory from the build host
@@ -919,8 +919,9 @@ the current `/var` history; rollback can permit a still-valid diagnostic again, 
 Limits: five minutes and 8 MiB of output. The script's failure status is kept; a timeout returns
 124 and a forced kill 137.
 
-Read the printed root-only `/var/lib/convergent/debug/<id>.txt` with `sudo less`. A second `yes`
-permits the encrypted, laptop-signed upload. `sudo debug key` prints the laptop public key. Builder
+Answer `y` at `Run as root? [y/N]`. Read the printed root-only `/var/lib/convergent/debug/<id>.txt`
+with `sudo less`; `y` at `Send it? [y/N]` permits the encrypted, laptop-signed upload.
+`sudo debug key` prints the laptop public key. Builder
 side: [BUILD, Diagnostics](BUILD.md#diagnostics).
 
 ## Backups

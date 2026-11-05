@@ -21,17 +21,18 @@ flowchart LR
   A["build/advisories-publish<br/>signed status per release"]
   E --> P --> I --> S
   G --> GM --> S
+  I --> GM
   S --> T
   T --> PU --> L
   T --> ST --> N
-  PU -. daily .-> A
+  PU -.->|"then daily, by hand"| A
 ```
 
 *From the pinned builder to the laptop: one release, signed once, delivered online or on USB.*
 
 The builder compiles packages and assembles the host image. Guest images are built separately and
 listed in their own signed manifests. A tested release is either published to a channel or written
-to a private disk image.
+to a private disk image. `build/stick` checks neither the signature nor a test result.
 
 ### Release checklist
 
@@ -65,7 +66,7 @@ to a private disk image.
 | Host | Gentoo with KVM, loop devices and network access |
 | User | root, from the repository root |
 | Gentoo key | `/usr/share/openpgp-keys/gentoo-release.asc` |
-| Guest builds | `qemu-img`, OVMF, `signify`, `python3`, `jq` and `curl` |
+| Guest builds | `qemu-system-x86_64`, `qemu-img`, OVMF, `signify`, `python3`, `jq`, `curl` and `zstd` |
 | Tests | VM RAM 4 GiB, or 8 GiB in guest modes; a sparse 16, 48 or 64 GiB disk |
 
 No build script checks free disk space. Leave room for the releases, the caches and the test disks.
@@ -77,7 +78,7 @@ file the built-in defaults apply. `config.example.yaml` lists every key and its 
 
 - `tools/config-get` validates each key; an unknown, duplicate or invalid key stops the build.
 - Image settings are baked into the release.
-- Owner, disk, state and swap inputs apply only to an install or a disk image.
+- Owner, disk, state, swap and image size inputs apply only to an install or a disk image.
 - Use the same config for the host, `fw`, `wan` and `svc` builds.
 
 Installer keys and value ranges: [USAGE, Install options](USAGE.md#install-options).
@@ -91,8 +92,8 @@ build/image
 ```
 
 - `build/buildenv` creates the builder chroot from a signed, pinned stage3 and Portage snapshot.
-- `build/packages` builds the image packages; `--pretend` previews them. Patched packages rebuild
-  when their patch changes.
+- `build/packages` builds the image packages; `--pretend` previews them. Patched packages never come
+  from binary packages; all rebuild when any patch changes.
 - `build/image` assembles the release. One UKI per slot carries the main and Recovery profiles.
 
 Bump `VERSION` in `build/build.conf` for each
@@ -128,10 +129,11 @@ that topology.
 boot runs `syspatch` and `pkg_add -u`; a smoke boot under the QEMU sandbox follows. Per-node
 `.syspatch` lists and `openbsd.version` enter the signed payload.
 
-**wan.** `WAN_COUNTRY` sets the regulatory country and overrides `wifi_country` in the config. The
-build stops when neither is set. `wan` has the fixed endpoint diagnostic.
+**wan.** `WAN_COUNTRY` sets the regulatory country. Set, even empty, it overrides `wifi_country`;
+the build stops unless the result is two capital letters.
 
-**svc.** Built from Alpine with pinned edge packages and the Grafana VictoriaLogs plugin.
+**svc.** Built from Alpine 3.24 plus pinned edge builds listed in `guests/svc/packages`, and the
+pinned Grafana VictoriaLogs plugin.
 
 **browser.** Takes any Alpine Chromium at or above 156.0.8078.79-r0, since Alpine deletes a build
 when it ships the next. `nss-tools` imports the Incus UI session certificates.
@@ -168,8 +170,7 @@ zstd -T0 <out.img>
 
 ### Builder caches
 
-Upstream prunes old stage3 tarballs and Alpine builds. The builder keeps verified copies, so they
-outlive a rebuilt builder.
+The builder keeps verified copies of files upstream later prunes; they survive a builder rebuild.
 
 | Cache | Path | Check on use |
 |---|---|---|
@@ -178,7 +179,8 @@ outlive a rebuilt builder.
 | Alpine downloads | `/var/cache/convergent/alpine` | pin; a mismatch is removed and fetched again |
 
 The distfiles cache is the builder's `DISTDIR`. The Alpine cache (`CACHE_DIR`) holds the
-minirootfs, the Remmina source and patch, the Grafana VictoriaLogs plugin and svc's edge apks.
+minirootfs, the Remmina source and Alpine's dsofix patch, the Grafana VictoriaLogs plugin and svc's
+edge apks.
 
 Keep the Alpine cache: edge serves only its newest build. Downloads get a 30 s connect timeout,
 an hour per try and two retries. `apk` network failures get three tries; a signature or integrity
@@ -200,8 +202,12 @@ signed pointer a laptop reads. The embedded URL and key prevent cross-channel re
 
 ### Keys
 
-Each published channel has an Ed25519 pair in `/etc/convergent/keys`. `build/image` embeds
-`<channel>.pub` and the update URL. Without the `.pub` the release accepts only unsigned writes.
+Each published channel has an Ed25519 pair. `/etc/convergent/keys` holds each `<channel>.pub` and
+`beta.key`; `stable.key` stays offline.
+
+`build/image` embeds `<channel>.pub` and the update URL from `R2_PUBLIC_URL` in
+`/etc/convergent/r2-<channel>.env` ([Publish](#publish)). Create that file first: without it the
+release cannot be signed or published. Without the `.pub` the release accepts only unsigned writes.
 
 1. Create the key directory:
 
@@ -244,8 +250,9 @@ key:
 CHANNEL=stable build/sign <release-dir> /media/offline/stable.key
 ```
 
-`build/sign` writes `manifest.sig`, `packages.sig`, the guest manifest signatures, `latest` and
-`latest.sig`. An encrypted key asks for its passphrase once per signed file.
+`build/sign` writes `manifest.sig`, `packages.sig`, `guests.manifest.sig` and
+`remmina.manifest.sig` when present, `latest` and `latest.sig`. An encrypted key asks for its
+passphrase once per signed file, up to five times.
 
 Signing and publication require the release's provenance to match the channel and key, except
 for the [bleeding-edge bridge](#the-bleeding-edge-bridge). The build-host-only `provenance` file
@@ -254,8 +261,8 @@ records:
 - `release-key`: the SHA-256 of the canonical public PEM with a final newline, or `none`;
 - `update-channel`: the channel the embedded URL names, or `none`.
 
-A release with missing or mismatched provenance needs a rebuild. Each slot and UKI needs exactly
-one hash and an accurate size.
+Missing or mismatched provenance, or an inventory that does not match the manifest, needs a
+rebuild. Each slot and UKI needs exactly one hash and an accurate size.
 
 ### Publish
 
@@ -271,8 +278,7 @@ one hash and an accurate size.
 - **What goes up.** The verified host, guest and Remmina payloads go to `<channel>/<release>/`.
   The signed `<channel>/latest` binds the release and the guest manifest hashes (`none` if
   absent). Download sizes are bounded.
-- **Order.** Signatures upload before their documents. An interrupted upload leaves a pair that
-  readers reject; rerunning the publisher repairs it.
+- **Order.** Signatures upload first; rerunning the publisher repairs an interrupted upload.
 - **Retention.** At most two releases per channel remain, under a 9 GiB bucket cap.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
   including `latest` and its signature, and writes nothing if they match. New content or a
@@ -280,7 +286,8 @@ one hash and an accurate size.
 - **Space.** Retry comparisons download one file at a time; reserve space for the largest payload.
 - **Replay.** A replayed signed pointer can withhold releases; the laptop reports its age.
 
-Publishing runs the advisory gate first ([Advisories](#advisories)).
+Publishing runs the advisory gate after the local checks and before any bucket access
+([Advisories](#advisories)).
 
 #### The bleeding-edge bridge
 
@@ -298,8 +305,8 @@ Laptops switch to the embedded beta URL after they boot the release. Then retire
 ### Promote to stable
 
 1. Check out the candidate tag's exact commit.
-2. Rebuild with `CHANNEL=stable` and `stable.pub` in `/etc/convergent/keys`. Stable omits the
-   debug tool.
+2. Rebuild with `CHANNEL=stable`, `stable.pub` in `/etc/convergent/keys` and `r2-stable.env` in
+   `/etc/convergent`. Stable omits the debug tool.
 3. Sign offline:
 
    ```sh
@@ -327,7 +334,7 @@ release embeds, so they refuse the new signatures until moved over by USB.
    sudo env CONVERGENT_UNSIGNED=1 slot write /run/usb/<release>
    ```
 
-5. Reboot, then run `sys update usb` again for the guests.
+5. Reboot, then run `sys update usb` with the same disk to deliver the guests.
 
 Rescue trusts the new key once that release is good.
 
@@ -346,9 +353,8 @@ checks the host and the shipped guests against:
 - OpenBSD errata, including gaps.
 
 Affected packages, missing patches or inventories, and fetch or parse failures block publication.
-An earlier successful scan does not authorize publishing. Kernel and pin freshness are left to the
-[weekly scan](#weekly-scan). Only the builder fetches feeds; Portage matching runs in its chroot.
-Signing stays offline-capable.
+Every publish rescans. Kernel and pin freshness are left to the [weekly scan](#weekly-scan). Only
+the builder fetches feeds; Portage matching runs in its chroot. Signing stays offline-capable.
 
 The gate needs `python3`, `git`, `curl`, Portage and coreutils `timeout`. The GLSA clone gets a
 120 s deadline per try, forced termination 10 s later and one retry from an empty tree after 5 s.
@@ -368,7 +374,7 @@ Each feed fetch is bounded to 60 s per try, with two retries.
 - **Missing.** A missing inventory needs a rebuild.
 
 Retained releases through signed version 0.1.4 still get scans and status without bindings or
-apk imports, with coverage notes; 0.1.5 builds require both. Accepted imports without advisory
+apk imports, with coverage notes; 0.1.5 and later require both. Accepted imports without advisory
 coverage, such as edge VictoriaLogs, are marked `UNKNOWN` per package in reports and signed
 status. They do not block publication or skip checks for covered packages.
 
@@ -398,8 +404,8 @@ CHANNEL=beta sh build/advisories-publish
 ```
 
 It needs the channel keys and R2 environment; stable needs the stable key. It signs and uploads
-`advisories.json` and its signature for each published release: ID, time, versions, advisories and
-exceptions.
+`advisories.json` and its signature for each published release: release ID, generation time,
+package versions, every finding including excepted ones, and coverage notes.
 
 - A failed or incomplete scan keeps the previous status and fails the run.
 - Scans verify the published manifests, not builder packages. Keep retained release directories,
@@ -418,15 +424,15 @@ build/advisories <release-dir> $g
 ```
 
 Pass both arguments: the default guest directory is not `$g`. It reads upstream fixes and names
-what to rebuild: `host`, `kernel`, `fw1`, `fw2`, `svc`, `browser`, `wan`, `remmina`, or `guests`
-for the pins. The kernel version comes from the release; Gentoo packages from its signed build-host
-inventory.
+what to rebuild: `host`, `kernel`, `fw1`, `fw2`, `svc`, `browser`, `wan` or `remmina`; `guests`
+for an old Alpine pin, `host` for an old Portage snapshot. The kernel version comes from the
+release; Gentoo packages from its signed build-host inventory.
 
 | Exit | Meaning |
 |---|---|
-| 0 | nothing to rebuild |
+| 0 | nothing to rebuild; `UNKNOWN` coverage notes may appear |
 | 1 | something to rebuild; `UNKNOWN` lines may appear too |
-| 2 | only `UNKNOWN`: a source was not read |
+| 2 | nothing to rebuild, but a source, inventory or check failed, or the scan could not start |
 
 Daily and weekly reports also compare the pinned Gentoo `www-apps/incus-ui` (upstream
 `incus-ui-canonical`) with Zabbly lts-7.0, verifying `InRelease` with
@@ -451,8 +457,9 @@ Diagnostics are beta-only and run as root on the builder.
    build/debug fetch [id]
    ```
 
-`fetch` verifies the laptop signature and the request binding, rejects replayed or corrupt output
-and decrypts it. It then deletes the output and, for the last request sent, the published script.
+`fetch` decrypts the output, then verifies the pinned laptop signature and the request ID; it
+rejects replaced, corrupt or other-request output. It then deletes the output and, for the last
+request sent, the published script.
 Owner consent, execution and output limits: [USAGE, Health and alerts](USAGE.md#health-and-alerts).
 
 The maintained field check, `build/diagnostics/field-check`, is builder-only:
@@ -461,31 +468,34 @@ The maintained field check, `build/diagnostics/field-check`, is builder-only:
 build/debug send build/diagnostics/field-check "<purpose>"
 ```
 
-It reads the release, services, check status lines (no diffs), guest logs, firewalls, `wan` and
-Incus state. It never reads keys, seeds or TLS state. `build/image` fails a non-beta image that
-carries the debug tool or a builder diagnostic file.
+It reads the release, time, slot and setup state, services, disk and memory, check status lines
+(no diffs), guest, kernel and host logs, Incus, the firewalls, `wan` and USBGuard devices. It
+never reads keys, seeds or TLS state. `build/image` fails a non-beta image that carries the debug
+tool or a builder diagnostic file.
 
 ## Test in QEMU
 
 Every mode below needs root. Each boots a throwaway disk in
 `/var/lib/convergent/builder/test/<release>-<mode>` and reports pass or fail. The disk, passphrase
-and console logs stay there, after a failure too, until the same test runs again. Different tests
-can run at the same time.
+and console logs stay there, even after a failure, until that test reruns. Different tests can run
+at the same time. Every mode first runs `build/test-topology`, `build/test-leases`,
+`build/test-work-gate`, `build/test-release-compat`, `build/test-slot-backup` and
+`build/test-seed`.
 
 | Command | Proves | Needs |
 |---|---|---|
 | `build/test <release>` | boots and marks itself good | |
 | `build/test --recovery <release>` | Recovery profile: unlock, continue and bless | |
 | `build/test --rescue <release>` | standalone Rescue UKI with both slots empty | |
-| `build/test --corrupt <release>` | one flipped block: refuses to boot | |
+| `build/test --corrupt <release>` | one flipped bit: verity refuses it, nothing is marked good | |
 | `build/test --desktop <release>` | Sway, bar and `sys`: session programs and config | |
 | `build/test --fallback <good> <newer>` | broken newer slot: the good one returns | two releases |
 | `build/test --interrupt <good> <newer>` | update cut off half-way: still boots | two releases |
-| `build/test --update <good> <newer>` | signed slot write and reboot | two releases |
+| `build/test --update <good> <newer>` | signed slot write and reboot | two signed releases |
 | `build/test --guests <release> $g` | plus guests init: firewalls, `wan`, `svc` | 8 GiB RAM |
 | `build/test --guests-maint <release> $g` | plus maintenance, DNS, handoff recovery | 8 GiB RAM |
 | `build/test --guests-update <release> $g <broken-dir>` | plus guest updates, a rollback | 8 GiB RAM |
-| `build/test --online <release> $g` | its guests from the channel | published release |
+| `build/test --online <release> $g` | its guests from the channel | published release, 8 GiB RAM |
 
 `<broken-dir>` must not exist: the test builds a broken svc image there and verifies the rollback.
 `build/test --install-options` needs no root; it is listed under [Checks](#offline-fixtures).
@@ -518,8 +528,6 @@ filtering.
   and the temporary container first, then svc, `wan` and both firewalls. It keeps autorestart
   overrides and ends in guest poweroff.
 
-Hardware-only limits and the full assertions are in the test scripts.
-
 ## Checks
 
 ### Image checks
@@ -527,9 +535,9 @@ Hardware-only limits and the full assertions are in the test scripts.
 `build/image` checks AppArmor profile syntax, refuses a release ID later than the builder's UTC
 clock, and fails if a USB network driver remains in the image.
 
-`build/test --guests-update` and `--guests-maint` check every metric panel query against real svc
-scrapes, allowing explicitly optional hardware and quiet alerts. They also run every LogsQL target
-and check that forged hostnames cannot move log records to another host.
+`build/test --guests-update` checks every metric panel query against real svc scrapes; only
+targets marked optional may be empty. It also runs every LogsQL target and checks that forged
+hostnames cannot move log records to another host.
 
 ### build/lint
 
@@ -539,6 +547,7 @@ Run `build/lint` before a push; it needs no root. On tracked files it checks:
 - leaked private keys, session and scratch paths;
 - CRLF line endings;
 - dashboard JSON drift;
+- `incus query` without `--project`, SSH timeout floors and firewall rc.d interpreters;
 - that each simple backticked repository path in README, USAGE, RECOVERY and ARCHITECTURE exists.
 
 ### Offline fixtures
@@ -564,7 +573,7 @@ Run separately, also offline:
 
 | Command | Coverage |
 |---|---|
-| `sh build/test-debug` | Diagnostic output authentication |
+| `sh build/test-debug` | Diagnostic output authentication; then `test-diag` |
 | `sh build/test-diag` | The `build/diag/` collector; severity of check, facts, power failures |
 
 The collector keeps system data only: personal log lines, serial numbers, MAC and most IP addresses
