@@ -112,6 +112,14 @@ healthy() {
 # The number in a state file, 0 when there is none.
 num() { n=$(cat "$stm/$1" 2>/dev/null || :); case $n in '' | *[!0-9]*) n=0 ;; esac; echo "$n"; }
 
+# The rollback floor: 0 only when absent; an unreadable or malformed file fails.
+num_strict() {
+	if [ ! -e "$stm/$1" ] && [ ! -L "$stm/$1" ]; then echo 0; return; fi
+	n=$(cat "$stm/$1") || return 1
+	case $n in '' | *[!0-9]*) return 1 ;; esac
+	echo "$n"
+}
+
 # Replace a state file whole.
 put() { printf '%s\n' "$2" >"$stm/$1.new" && mv "$stm/$1.new" "$stm/$1" && sync || die "could not write $1"; }
 
@@ -191,7 +199,8 @@ bless() {
 	fi
 	# Persist highest, remove boot counter, then persist good.
 	state_mount rw
-	if expr "$release" '>' "$(num highest)" >/dev/null; then put highest "$release"; fi
+	hi=$(num_strict highest) || die "cannot read the highest blessed release"
+	if expr "$release" '>' "$hi" >/dev/null; then put highest "$release"; fi
 	case ${uki##*/} in
 	*+*)
 		# Copy, then remove the counted name: a cut VFAT rename of it can leave two names on one chain.
@@ -269,7 +278,7 @@ write() {
 		state_mount rw
 		[ "$(cat "$stm/good" 2>/dev/null || :)" = "$release" ] ||
 			die "the booted release $release is not the one marked good; boot the good slot or let it bless first"
-		hi=$(num highest)
+		hi=$(num_strict highest) || die "cannot read the highest blessed release"
 		expr "$new" '>' "$hi" >/dev/null || die "release $new is not newer than $hi, the highest ever blessed"
 		[ "$slot" = a ] && inactive=b || inactive=a
 	fi

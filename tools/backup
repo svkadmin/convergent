@@ -28,6 +28,13 @@ fi
 [ $# = 2 ] || die 'usage: backup <LUKS-external-mountpoint> <owner-project>'
 dest=$(cd "$1" && pwd -P) || die 'no destination directory'
 [ "$(stat -c %u "$dest")" = 0 ] && [ -z "$(find "$dest" -maxdepth 0 -perm /022)" ] || die 'mountpoint must be root-owned and not writable by others'
+# Later writes use absolute paths: no other user may rename an ancestor under them.
+d=$dest
+while [ "$d" != / ]; do
+    d=$(dirname "$d")
+    [ "$(stat -c %u "$d")" = 0 ] && [ -z "$(find "$d" -maxdepth 0 -perm /022 ! -perm -1000)" ] ||
+        die "destination ancestor $d must be root-owned and not writable by others"
+done
 owner=$2
 case $owner in ''|default|*[!a-zA-Z0-9_-]*) die 'supply the separate owner project, not default' ;; esac
 dev=$(findmnt -nro SOURCE --mountpoint "$dest") || die 'destination must be a mountpoint'
@@ -43,12 +50,10 @@ done
 mkdir -p /run/convergent
 exec 9>/run/convergent/backup.lock
 flock -n 9 || die 'another backup is running'
-exec 8>/run/convergent/guests.lock
-# The minute check holds this lock shared for seconds (work gate, reaps, scan): wait as sys firewall does.
-flock -w 120 8 || die 'a guest operation is running'
-# Browser sessions hold this shared; state volumes are not exported live.
+# Browser sessions hold this shared; state volumes are not exported live. Probe before the long home tar.
 exec 6>/run/convergent/browser-update.lock
 flock -n 6 || die 'close the browsers first'
+exec 6>&-
 base=$dest/convergent-backups
 [ ! -L "$base" ] || die 'backup directory is a symlink'
 mkdir -p "$base"
@@ -104,6 +109,12 @@ tar --one-file-system --acls --xattrs --numeric-owner -C "$snapshot" -cpf "$payl
 grep -v '^#' /usr/lib/convergent/etc-state | sed '/^$/d;s|^|etc/|' >"$work/etc.list"
 tar --one-file-system --acls --xattrs --numeric-owner -C / -cpf "$payload/etc.tar" -T "$work/etc.list"
 rm "$work/etc.list"
+# Guest locks only for the exports: self-heal and the wired re-attach run during the home tar.
+exec 8>/run/convergent/guests.lock
+# The minute check holds this lock shared for seconds (work gate, reaps, scan): wait as sys firewall does.
+flock -w 120 8 || die 'a guest operation is running'
+exec 6>/run/convergent/browser-update.lock
+flock -n 6 || die 'close the browsers first'
 # Keep Grafana's database paired with its host-held secrets.
 mkdir "$payload/grafana-secrets"
 for secret in admin-password secret-key; do
@@ -115,7 +126,9 @@ for project in default "$owner"; do
     mkdir "$payload/projects/$project"
     if [ "$project" = "$owner" ]; then
         ic profile list --format json >"$payload/projects/$project/profiles.json"
-        ic list --format json >"$work/instances.json"
+        # No state fetch and a bound: a frozen work VM must not hang the backup under the lock.
+        timeout -k 1 30 incus --force-local query "/1.0/instances?recursion=1&project=$owner" >"$work/instances.json" ||
+            die 'Incus did not list the owner instances'
         jq -r '.[] | select(.type == "virtual-machine") | "instance " + .name' "$work/instances.json" >>"$payload/EXCLUDED"
         jq -r '.[] | select(.type == "container") | .name' "$work/instances.json" >"$work/instances"
         while IFS= read -r name; do
@@ -152,21 +165,27 @@ for project in default "$owner"; do
             esac
             # Shared storage is never exported while any attached instance can write.
             if [ "$pool:$volume" = default:share ]; then
-                incus --force-local list --all-projects --fast --format json >"$work/share-users"
+                timeout -k 1 30 incus --force-local list --all-projects --fast --format json >"$work/share-users" ||
+                    die 'Incus did not list the share users'
                 jq -e 'all(.[];
                     if any(.expanded_devices[]?; .type == "disk" and .pool == "default" and .source == "share")
                     then .status == "Stopped" else true end)' "$work/share-users" >/dev/null ||
                     die 'stop every instance attached to share before backup'
             fi
-            ic storage volume export "$pool" "$volume" "$payload/projects/$project/$pool/$volume.$suffix" --compression gzip
+            # Restore never uses the guest volumes' update snapshots; the owner's own are kept.
+            only=; [ "$project" != default ] || only=--volume-only
+            ic storage volume export "$pool" "$volume" "$payload/projects/$project/$pool/$volume.$suffix" --compression gzip ${only:+"$only"}
         done <"$work/volumes"
     done <"$work/pools"
     rm "$work/pools" "$work/volumes" "$work/volumes.json"
 done
+exec 8>&- 6>&-
 
 # Read every written byte back before publishing or pruning a generation.
 (cd "$payload" && find . -type f ! -name SHA256SUMS -exec sha256sum '{}' + >SHA256SUMS)
-sync
+# syncfs reports writeback errors; the readback then comes from the disk, not the page cache.
+sync -f "$payload" || die 'backup write failed'
+echo 1 >/proc/sys/vm/drop_caches
 (cd "$payload" && sha256sum -c SHA256SUMS) || die 'backup readback differs'
 find "$payload" -type f \( -name '*.tar' -o -name '*.tar.gz' \) >"$work/archives"
 while IFS= read -r archive; do tar -xOf "$archive" >/dev/null || die "unreadable archive: $archive"; done <"$work/archives"
@@ -174,7 +193,7 @@ rm "$work/archives"
 generation=$base/backup-$(date -u +%Y%m%dT%H%M%SZ)
 [ ! -e "$generation" ] || die 'generation already exists'
 mv "$payload" "$generation"
-sync
+sync -f "$base" || die 'backup write failed'
 # Three generations, following the existing guest-backup retention count in 7.2.
 find "$base" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' ! -name "${generation##*/}" | sort -r | sed '1,2d' >"$work/prune"
 while IFS= read -r old; do rm -rf "$old"; done <"$work/prune"

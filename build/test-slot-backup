@@ -10,7 +10,7 @@ die() { echo "test-slot-backup: $*" >&2; exit 1; }
 guid=4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
 export work guid
 # Rescue refresh is best-effort only after the blessing commits.
-for fn in ukis uki_release num put accept copy_rescue bless; do
+for fn in ukis uki_release num num_strict put accept copy_rescue bless; do
     case $fn in
     uki_release|num|put) sed -n "/^$fn() {/p" "$repo/tools/slot" >"$work/$fn" ;;
     *) sed -n "/^$fn() {/,/^}/p" "$repo/tools/slot" >"$work/$fn" ;;
@@ -56,11 +56,17 @@ bless
 BLESS
 sh -n "$work/bless-driver"
 # cut/differ: a power loss left both names of the booted release (a verified copy, or not).
-for fault in none health highest rename good loader copy cut differ cuthealth; do
+# absent/malformed/unreadable: only a missing rollback floor reads as 0.
+for fault in none health highest rename good loader copy cut differ cuthealth absent malformed unreadable; do
     rm -rf "$work/bless"
     esp=$work/bless/esp stm=$work/bless/state
     mkdir -p "$esp/EFI/Linux" "$esp/loader" "$stm"
-    echo 122 >"$stm/highest"
+    case $fault in
+    absent) ;;
+    malformed) echo 12x >"$stm/highest" ;;
+    unreadable) mkdir "$stm/highest" ;;
+    *) echo 122 >"$stm/highest" ;;
+    esac
     echo 122 >"$stm/good"
     echo host >"$esp/EFI/Linux/convergent-123-a+3.efi"
     case $fault in
@@ -74,10 +80,16 @@ for fault in none health highest rename good loader copy cut differ cuthealth; d
     echo new >"$work/rescue.efi"
     echo 'default convergent-*' >"$esp/loader/loader.conf"
     if sh "$work/bless-driver" "$fault" >"$work/bless-out" 2>&1; then
-        case $fault in none|loader|copy|cut) ;; *) die "blessed despite $fault failure" ;; esac
+        case $fault in none|loader|copy|cut|absent) ;; *) die "blessed despite $fault failure" ;; esac
     else
-        case $fault in none|loader|copy|cut) cat "$work/bless-out"; die "bless failed: $fault" ;; esac
+        case $fault in none|loader|copy|cut|absent) cat "$work/bless-out"; die "bless failed: $fault" ;; esac
         grep -qx 122 "$stm/good"
+        case $fault in
+        malformed|unreadable)
+            grep -q 'cannot read the highest blessed release' "$work/bless-out" || die "bless $fault: no floor refusal"
+            [ -f "$esp/EFI/Linux/convergent-123-a+3.efi" ] || die "bless $fault removed the counted UKI"
+            [ "$fault" != malformed ] || grep -qx 12x "$stm/highest" ;;
+        esac
         grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
         [ "$fault" != rename ] || [ -f "$esp/EFI/Linux/convergent-123-a+3.efi" ]
         [ "$fault" != differ ] || [ -f "$esp/EFI/Linux/convergent-123-a+2-1.efi" ]
@@ -93,7 +105,7 @@ for fault in none health highest rename good loader copy cut differ cuthealth; d
     [ -f "$work/bless/disarmed" ]
     [ ! -e "$esp/EFI/Linux/convergent-rescue.efi.new" ]
     [ ! -e "$esp/loader/loader.conf.new" ]
-    if [ "$fault" != none ] && [ "$fault" != cut ]; then
+    if [ "$fault" != none ] && [ "$fault" != cut ] && [ "$fault" != absent ]; then
         grep -qx old "$esp/EFI/Linux/convergent-rescue.efi"
         grep -q 'could not refresh rescue' "$work/bless-out"
         sh "$work/bless-driver" none >"$work/bless-out" 2>&1
@@ -468,7 +480,141 @@ for sample in shared held; do
     held) [ "$rc" = 1 ] && grep -qx 'a guest operation is running' "$work/lock-error" ;;
     esac || { cat "$work/lock-error"; die "backup guests lock: $sample (rc $rc after ${waited}s)"; }
 done
+# Only the exports hold it: self-heal and the wired re-attach run during the home tar and the readback.
+awk '/^exec 8>\/run\/convergent\/guests.lock$/ {lock = NR} /-cpf "\$payload\/home.tar" home$/ {tar = NR}
+    /^exec 8>&- 6>&-$/ {free = NR} /^# Read every written byte back/ {readback = NR}
+    END {exit !(tar && lock > tar && free > lock && readback > free)}' "$repo/tools/backup" ||
+    die 'backup holds the guests lock outside the exports'
 echo 'test-slot-backup: backup waits out the minute check'\''s guests lock passed'
+
+# Backup writes absolute paths: no ancestor of the destination may be renamable by another user.
+sed -n '/^# Later writes use absolute paths/,/^done$/p' "$repo/tools/backup" >"$work/backup-ancestors"
+grep -q '^while ' "$work/backup-ancestors" || die 'missing backup ancestor check'
+sh -n "$work/backup-ancestors"
+mkdir -p "$work/open/media" "$work/owned/media" "$work/sticky/media"
+chmod 0777 "$work/open"
+chmod 1777 "$work/sticky"
+samples='system open'
+if [ "$(id -u)" = 0 ]; then chown 1000 "$work/owned"; samples="$samples owned sticky"; fi
+for sample in $samples; do
+    case $sample in system) dest=/usr/share ;; *) dest=$work/$sample/media ;; esac
+    rc=0
+    (
+        die() { echo "$*" >&2; exit 1; }
+        . "$work/backup-ancestors"
+    ) 2>"$work/ancestor-error" || rc=$?
+    case $sample in
+    system|sticky) [ "$rc" = 0 ] ;;
+    *) [ "$rc" = 1 ] && grep -qxF "destination ancestor $work/$sample must be root-owned and not writable by others" "$work/ancestor-error" ;;
+    esac || { cat "$work/ancestor-error"; die "backup ancestor check: $sample (rc $rc)"; }
+done
+echo 'test-slot-backup: backup destination ancestors passed'
+
+# Exports: bounded listings without guest state; default-project volumes without update snapshots.
+sed -n '/^for project in default "\$owner"; do$/,/^done$/p' "$repo/tools/backup" >"$work/backup-exports"
+grep -q 'storage volume export' "$work/backup-exports" || die 'missing backup exports'
+sh -n "$work/backup-exports"
+cat >"$work/exports-driver" <<'EXPORTS'
+set -eu
+fault=$1 calls=$2 work=$3 source=$4
+owner=owner payload=$work/data
+mkdir -p "$payload/projects"
+: >"$payload/EXCLUDED"
+die() { echo "$*" >&2; exit 1; }
+ic() {
+    echo "$project: $*" >>"$calls"
+    case $* in
+    'profile list --format json') echo '[]' ;;
+    'storage list --format csv -c n') echo default ;;
+    'storage volume list default --format json')
+        if [ "$project" = default ]; then
+            for v in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state share; do
+                printf '{"type":"custom","name":"%s","content_type":"filesystem"}\n' "$v"
+            done | jq -s .
+        else echo '[{"type":"custom","name":"state","content_type":"filesystem"}]'; fi ;;
+    'storage volume export '*|'export '*) ;;
+    *) exit 97 ;;
+    esac
+}
+# timeout execs a binary: only this stand-in reaches the incus mock.
+timeout() {
+    echo "timeout $*" >>"$calls"
+    [ "$1 $2 $3 $4 $5" = '-k 1 30 incus --force-local' ] || exit 97
+    case "$fault:$6" in share:list|owner:query) return 124 ;; esac
+    shift 3
+    "$@"
+}
+incus() {
+    case $* in
+    '--force-local query /1.0/instances?recursion=1&project=owner')
+        echo '[{"name":"c1","type":"container"},{"name":"v1","type":"virtual-machine"}]' ;;
+    '--force-local list --all-projects --fast --format json')
+        echo '[{"status":"Stopped","expanded_devices":{"share":{"type":"disk","pool":"default","source":"share"}}}]' ;;
+    *) exit 97 ;;
+    esac
+}
+. "$source"
+EXPORTS
+sh -n "$work/exports-driver"
+for fault in none share owner; do
+    rm -rf "$work/exports"
+    mkdir "$work/exports"
+    p=$work/exports/data/projects
+    : >"$work/export-calls"
+    rc=0
+    sh "$work/exports-driver" "$fault" "$work/export-calls" "$work/exports" "$work/backup-exports" 2>"$work/export-error" || rc=$?
+    case $fault in
+    none)
+        {
+            echo 'default: storage list --format csv -c n'
+            echo 'default: storage volume list default --format json'
+            for v in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state; do
+                echo "default: storage volume export default $v $p/default/default/$v.tar.gz --compression gzip --volume-only"
+            done
+            echo 'timeout -k 1 30 incus --force-local list --all-projects --fast --format json'
+            echo "default: storage volume export default share $p/default/default/share.tar.gz --compression gzip --volume-only"
+            echo 'owner: profile list --format json'
+            echo 'timeout -k 1 30 incus --force-local query /1.0/instances?recursion=1&project=owner'
+            echo "owner: export c1 $p/owner/instance-c1.tar.gz --root-only --compression gzip"
+            echo 'owner: storage list --format csv -c n'
+            echo 'owner: storage volume list default --format json'
+            echo "owner: storage volume export default state $p/owner/default/state.tar.gz --compression gzip"
+        } >"$work/expected"
+        [ "$rc" = 0 ] && cmp "$work/expected" "$work/export-calls" && grep -qx 'instance v1' "$work/exports/data/EXCLUDED" ;;
+    share) [ "$rc" = 1 ] && grep -qx 'Incus did not list the share users' "$work/export-error" &&
+        if grep -q 'export default share ' "$work/export-calls"; then false; fi ;;
+    owner) [ "$rc" = 1 ] && grep -qx 'Incus did not list the owner instances' "$work/export-error" &&
+        if grep -q '^owner: export ' "$work/export-calls"; then false; fi ;;
+    esac || { cat "$work/export-error" "$work/export-calls"; die "backup exports: $fault (rc $rc)"; }
+done
+echo 'test-slot-backup: bounded backup listings and volume-only guest exports passed'
+
+# The readback follows a checked syncfs and a page-cache drop, so it reads the disk.
+sed -n '/^# Read every written byte back/,/^rm "\$work\/archives"$/p' "$repo/tools/backup" |
+    sed "s|/proc/sys/vm/drop_caches|$work/drop_caches|" >"$work/backup-readback"
+grep -q "$work/drop_caches" "$work/backup-readback" || die 'missing backup readback'
+sh -n "$work/backup-readback"
+grep -qxF 'sync -f "$base" || die '\''backup write failed'\''' "$repo/tools/backup" || die 'backup publishes without a checked sync'
+for fault in none sync; do
+    rm -rf "$work/readback" "$work/drop_caches"
+    mkdir -p "$work/readback/data"
+    echo data >"$work/readback/data/file"
+    : >"$work/sync-calls"
+    rc=0
+    (
+        payload=$work/readback/data calls=$work/sync-calls source=$work/backup-readback
+        work=$work/readback
+        die() { echo "$*" >&2; exit 1; }
+        sync() { echo "sync $*" >>"$calls"; [ "$fault" != sync ]; }
+        . "$source"
+    ) 2>"$work/readback-error" || rc=$?
+    echo "sync -f $work/readback/data" >"$work/expected"
+    case $fault in
+    none) [ "$rc" = 0 ] && grep -qx 1 "$work/drop_caches" && [ -s "$work/readback/data/SHA256SUMS" ] ;;
+    sync) [ "$rc" = 1 ] && grep -qx 'backup write failed' "$work/readback-error" && [ ! -e "$work/drop_caches" ] ;;
+    esac && cmp "$work/expected" "$work/sync-calls" || { cat "$work/readback-error"; die "backup readback: $fault (rc $rc)"; }
+done
+echo 'test-slot-backup: backup readback after syncfs and cache drop passed'
 
 # Rescue must authenticate even when the ordinary writer's bypass is set.
 sed -n '/^write() {/,/^}/p' "$repo/tools/slot" |
@@ -520,3 +666,38 @@ for fault in signed missing wrong-key tampered; do
     fi
 done
 echo 'test-slot-backup: rescue signature enforcement passed'
+
+# The ordinary write keeps its rollback floor: an absent highest is 0, an unreadable one refuses.
+sed -n '/^num_strict() {/,/^}/p' "$repo/tools/slot" >"$work/num-strict"
+[ -s "$work/num-strict" ] || die 'missing num_strict'
+sed -n '/^write() {/,/^}/p' "$repo/tools/slot" |
+    sed -e "s|/run/slot-write.XXXXXX|$work/write.XXXXXX|" -e "s|/dev/disk/by-partlabel/cv-slot-|$work/part-|" >"$work/write-floor"
+grep -q "$work/part-" "$work/write-floor" || die 'missing slot partition path'
+cp "$work/manifest" "$work/release/manifest"
+for sample in absent higher malformed unreadable; do
+    rm -rf "$work/floor"
+    mkdir "$work/floor"
+    echo 41 >"$work/floor/good"
+    case $sample in
+    higher) echo 50 >"$work/floor/highest" ;;
+    malformed) echo 4x >"$work/floor/highest" ;;
+    unreadable) mkdir "$work/floor/highest" ;;
+    esac
+    rc=0
+    (
+        . "$work/num-strict"
+        . "$work/write-floor"
+        stm=$work/floor CONVERGENT_UNSIGNED=1
+        booted() { release=41 slot=a; }
+        state_mount() { :; }
+        esp_mount() { exit 97; }
+        log() { :; }
+        write "$work/release"
+    ) >/dev/null 2>"$work/floor-error" || rc=$?
+    case $sample in
+    absent) grep -q "no partition $work/part-b" "$work/floor-error" ;;
+    higher) grep -q 'release 42 is not newer than 50' "$work/floor-error" ;;
+    *) grep -q 'cannot read the highest blessed release' "$work/floor-error" ;;
+    esac && [ "$rc" = 1 ] || { cat "$work/floor-error"; die "slot write floor: $sample (rc $rc)"; }
+done
+echo 'test-slot-backup: slot write rollback floor passed'
