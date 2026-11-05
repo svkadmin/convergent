@@ -477,6 +477,15 @@ if [ "${1:-}" = --install-options ]; then
 	done
 	printf '%s\n' "$good" >"$work/input"
 	(image_install=1 tty_mode=; secret 'LUKS passphrase' 3<"$work/input"; [ "$pass" = "$good" ])
+	# build/stick at a terminal asks twice: a hidden typo must not reach the image.
+	printf '%s\n' "$good" "$good." >"$work/input"
+	if (image_install=1 tty_mode=saved; secret 'LUKS passphrase' 3<"$work/input") 2>"$work/error"; then
+		die 'accepted two different typed entries'
+	fi
+	grep -q 'the two entries differ' "$work/error"
+	printf '%s\n' "$good" "$good" >"$work/input"
+	(image_install=1 tty_mode=saved; secret 'LUKS passphrase' 3<"$work/input" 2>/dev/null;
+		[ "$pass" = "$good" ] && [ -z "$again" ]) || die 'refused two equal typed entries'
 	# The desktop owner's password has no initramfs keymap restriction.
 	printf '%s\n' "$badpass" >"$work/input"
 	(image_install=1 tty_mode=; secret 'Owner password' 3<"$work/input"; [ "$pass" = "$badpass" ])
@@ -1909,6 +1918,8 @@ GUEST_GUARDS
         done
         grep -q 'no host key announcement' "$work/logged"
     )
+    # The graceful stop runs under its own bound: the mock keeps the real incus out of reach.
+    timeout() { [ "$*" = '-k 5 120 incus --force-local --project default stop wan --timeout 60' ] || exit 97; fail 'stop timed out'; }
     ic() { [ "${3:-}" = --force ] || fail 'stop timed out'; }
     stop_guest wan 2>"$work/err"
     if grep -q '^[0-9]' "$work/err"; then exit 1; fi

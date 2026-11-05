@@ -270,6 +270,34 @@ rmdir "$state/fw.topology"
     grep -qx 'guests: next: sys firewall rebuild fw2' "$work/retry.out"
     grep -qx console "$work/retry.out"
 )
+# A frozen QEMU holds even a graceful stop: it runs under its bound and the forced stop follows.
+(
+    eval "$(sed -n '/^stop_guest() {/,/^}/p' "$here/../tools/guests")"
+    command -v stop_guest >/dev/null
+    autorestart_hold() { :; }
+    force_stop() { echo "force $1" >>"$work/stops"; }
+    ic() { exit 97; }
+    incus() { exit 97; }
+    timeout() { echo "$*" >>"$work/stops"; return 124; }
+    stop_guest wan 2>/dev/null
+    printf '%s\n' '-k 5 120 incus --force-local --project default stop wan --timeout 60' 'force wan' >"$work/expected"
+    cmp "$work/expected" "$work/stops"
+)
+# A peer whose dhcpd is off fails its health check with a reason; a rebuild resumes a held peer before it.
+(
+    eval "$(sed -n '/^fw_check() {/,/^}/p' "$here/../tools/guests" | sed "s|/etc/convergent/topology.sha256|$work/topology|g")"
+    command -v fw_check >/dev/null
+    echo digest >"$work/topology"
+    guest_reply() { echo digest; }
+    rsh() { [ "$2" != 'rcctl check dhcpd' ]; }
+    fail() { echo "$*" >&2; return 1; }
+    if fw_check fw2 2>"$work/fw_check.err"; then exit 1; fi
+    grep -qx 'dhcpd is not running' "$work/fw_check.err"
+)
+sed -n '/^rebuild() {/,/^}/p' "$here/../tools/guests" |
+    awk -v resume_line='    [ ! -f "$state/leases/held" ] || leases_resume "$peer" || die "cannot resume work DHCP on $peer"' \
+        -v check_line='    fw_check "$peer" || die "$peer must be healthy before rebuilding $1"' \
+        '$0 == resume_line {resume=NR} $0 == check_line {check=NR} END {exit !(resume && check > resume)}'
 echo 'test-leases: held peer replay, fresh checkpoint, booting peer and failed safety gates passed'
 # fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.
 sed -n '/^services="unbound wan_watch sshd"$/,/^esac$/p' "$here/../guests/fw/site/usr/local/libexec/convergent/fw-seed" |

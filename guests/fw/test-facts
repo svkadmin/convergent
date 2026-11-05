@@ -170,4 +170,21 @@ grep -qx 'convergent_pf_limit_counter_total{name="max states per rule"} 7' "$wor
 if grep -q 'max-src-states' "$work/convergent_fw.prom"; then exit 1; fi
 limits= failed= calls=$work/calls sh "$work/run"
 grep -qx 'convergent_fw_facts_success 0' "$work/convergent_fw.prom"
+# An enabled daemon that died is started again; a disabled one and dhcpd are left alone.
+cat >"$work/rcctl" <<'SH'
+rcctl() {
+	echo "rcctl $*" >>"$rcctl_calls"
+	case $1:$2 in get:wan_watch|check:node_exporter) return 1 ;; esac
+}
+logger() { echo "logger $*" >>"$rcctl_calls"; }
+SH
+cat "$work/mocks" "$work/rcctl" "$work/publisher" >"$work/run-rcctl"
+sh -n "$work/run-rcctl"
+: >"$work/rcctl-calls"
+failed= calls=$work/calls rcctl_calls=$work/rcctl-calls sh "$work/run-rcctl"
+[ "$(grep -c '^rcctl start ' "$work/rcctl-calls")" = 1 ]
+grep -qx 'rcctl start node_exporter' "$work/rcctl-calls"
+grep -qx 'logger -t fw-facts node_exporter restarted' "$work/rcctl-calls"
+grep -qx 'rcctl get pflog_stream status' "$work/rcctl-calls"
+if grep -q dhcpd "$work/rcctl-calls"; then exit 1; fi
 echo 'fw-facts: bounded probes, publication and source-age fixtures passed'

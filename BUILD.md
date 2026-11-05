@@ -70,7 +70,8 @@ it: edge serves only its newest build. Alpine downloads get a 30-second connect 
 try and two retries; apk network failures get three tries. The browser image takes any Alpine Chromium
 at or above 156.0.8078.79-r0, since Alpine deletes a build when it ships the next.
 
-Stick asks for owner password then LUKS passphrase, 12–256 bytes each.
+Stick asks for owner password then LUKS passphrase, 12–256 bytes each; typed at a terminal, each
+twice, and refuses entries that differ.
 The LUKS passphrase must use printable ASCII (space through `~`). Owner selection:
 CONVERGENT_INSTALL_OWNER, owner_login, then prompt. It installs on a loop device and
 prints SHA-256. Images contain the owner's account: never publish them.

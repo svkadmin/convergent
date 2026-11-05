@@ -419,7 +419,8 @@ the one a new release is snapshotted from. **highest** is the highest release ID
 A counted boot keeps the 180 s watchdog armed; `convergent-watchdog` feeds it for 10 min from its
 start and then leaves it armed. A pass disarms it even after feeding stopped; an already-good
 release disarms it before the checks. On shutdown `convergent-setup` drains work VMs, browsers and
-Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before forcing.
+Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before forcing. Only shutdown
+drains: `rc-service convergent-setup restart` leaves the guests running and `stop` is refused.
 
 #### Recovery and Rescue entries
 
@@ -762,7 +763,8 @@ pflog_stream forwards sampled logged packet headers over TLS, capped at five per
 with suppression summaries. Local pflogd stays enabled; `convergent_pflogd_up` and
 `convergent_pflogd_suspended` report its running and suspended state. For an absent or suspended
 writer, or a pflog file at least 1 MiB, fw-facts stops pflogd, removes any existing `pflog.bad`,
-rotates through newsyslog and restarts pflogd. Ordinary rotation retains three compressed archives,
+rotates through newsyslog and restarts pflogd. It also starts an enabled node_exporter, wan_watch or
+pflog_stream that died; never dhcpd. Ordinary rotation retains three compressed archives,
 as enforced by install.site. Rankings count samples, not all drops. An on-demand capture holds a
 shared guest lock and bounds time, packets, snaplen and transfer; nothing uploads continuously.
 Commands: [USAGE, Release and network evidence](USAGE.md#release-and-network-evidence).
