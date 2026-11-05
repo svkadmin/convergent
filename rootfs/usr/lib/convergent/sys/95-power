@@ -20,7 +20,7 @@ power_status() {
 	printf 'Energy preference: %s\n' "$preference"
 	printf 'Thermal: %s\n' "$(cached /sys/firmware/acpi/platform_profile)"
 	printf 'Thermal choices: %s\n' "$(cached /sys/firmware/acpi/platform_profile_choices)"
-	limit=off
+	limit='none (firmware setting)'
 	[ ! -r /var/lib/convergent/power/charge ] || IFS= read -r limit </var/lib/convergent/power/charge
 	printf 'Charge limit choice: %s (off = full charge)\n' "$limit"
 	battery=0
