@@ -283,7 +283,8 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
     # A Grafana session may have changed int's root: Incus administration starts from the image.
-    [ -z "$incus_ui" ] || ic rebuild candidate-browser "$name" || die 'cannot reset the int browser for Incus administration'
+    [ -z "$incus_ui" ] || timeout -k 5 120 incus --force-local --project default rebuild candidate-browser "$name" 9>&- 8>&- 7>&- 6>&- ||
+        die 'cannot reset the int browser for Incus administration'
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then

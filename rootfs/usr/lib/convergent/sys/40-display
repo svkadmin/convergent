@@ -234,15 +234,17 @@ display_watch() (
 				# Connector changes trigger remapping too; layout changes do not.
 				stamp=$(printf '%s\n' "$json" | jq -c 'sort_by(.name) | map([.name,.make,.model,.serial])') || exit 1
 				if [ "$stamp" != "$previous" ]; then
-					if [ -f "$profiles/$key.json" ]; then display_restore "$profiles/$key.json"
+					# Defaults keep the screen usable, but a failed profile still retries.
+					if [ -f "$profiles/$key.json" ]; then display_apply "$profiles/$key.json" || { display_defaults; false; }
 					elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi ||
 						{ printf '%s\n' "$stamp"; exit 1; }
 				fi
 				printf '%s\n' "$stamp"
 			) && { previous=$next retries=0; continue; }
 			# A slow Sway call fails the apply and no hotplug may follow: a tick retries, three times per set.
+			# Each apply emits output events too: after three failures the set counts as handled until it changes.
 			[ "$next" = "$failed" ] || failed=$next retries=0
-			[ "$retries" -ge 3 ] && continue
+			[ "$retries" -ge 3 ] && { previous=$next; continue; }
 			retries=$((retries + 1))
 			(sleep 5; swaymsg -t send_tick >/dev/null 2>&1) 8>&- &
 		done
