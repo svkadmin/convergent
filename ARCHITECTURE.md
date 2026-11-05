@@ -192,7 +192,8 @@ persistent NSS locations are masked, even for a plain `int`. Import precedes tru
 stops the session and removes its trust and data. Boot and `check auto` clean orphans; an
 interrupted rotation restores a complete credential directory. An Incus session also gets its own
 Chromium profile on a tmpfs that ends with `int`, and a policy limited to the Incus origin;
-Grafana-only launches get neither, and no key. Commands:
+Grafana-only launches get neither, and no key. Each Incus session first rebuilds `int`'s root
+from the installed image, so nothing a Grafana session changed there sees the key. Commands:
 [USAGE, Incus management](USAGE.md#incus-management).
 
 #### Remmina

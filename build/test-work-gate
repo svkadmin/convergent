@@ -37,6 +37,7 @@ case $cmd in
     ;;
 esac
 if [ -f "$GATE_FIXTURE/$node.flood" ]; then head -c 65537 /dev/zero; fi
+if [ -f "$GATE_FIXTURE/$node.errflood" ]; then head -c 2097152 /dev/zero | tr '\0' x >&2; fi
 if [ -f "$GATE_FIXTURE/$node.short" ]; then exit 1; fi
 SSH
 # The exact transactions: an open gate is a flushed chain, a closed one a flush plus the drop rule.
@@ -70,6 +71,13 @@ for node in wan fw1 fw2; do
         sh "$work/gate"
     done
 done
+# Stderr is capped at 64 KiB and a valid reply still opens the gate.
+touch "$work/wan.errflood"
+rm -f "$work/verdict"
+sh "$work/gate" 2>"$work/errflood"
+[ "$(cat "$work/verdict")" = open ]
+[ "$(wc -c <"$work/errflood")" -le 65536 ] || { echo 'work-gate passed unbounded guest stderr' >&2; exit 1; }
+rm "$work/wan.errflood"
 for node in fw1 fw2; do
     touch "$work/$node.liveflood"
     if sh "$work/gate"; then exit 1; fi

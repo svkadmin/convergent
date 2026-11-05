@@ -123,6 +123,12 @@ EOF
 			print "pf states: " rules " capped rules, " sum " expanded, limit " limit
 			if (bad || rules != 18 || !limit || 2 * sum + headroom > limit) exit 1
 		}' "$fw/etc/pf.conf"
+	# Remmina draws on the same table; its one address makes each source cap rule-wide.
+	[ "$(grep -c '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf")" = 3 ]
+	if grep '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf" | grep -v 'source-track rule, max-src-states [0-9]'; then exit 1; fi
+	# A guest's DHCP reply is dropped by its client port too: udhcpc takes any source port.
+	grep -q '^		ibrname "work" iifname != { "fw1work", "fw2work" } udp dport 68 drop' "$work/$topology/host/etc/nftables.rules"
+	grep -q '^		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip udp dport 68 drop$' "$work/$topology/host/etc/nftables.rules"
 	grep -Fxq '	private-address: ::1/128' "$fw/var/unbound/etc/unbound.conf"
 	grep -Fxq '	private-address: ::/128' "$fw/var/unbound/etc/unbound.conf"
 done

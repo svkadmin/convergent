@@ -14,7 +14,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { IP, ARP, RARP, DHCP, CARP, IPV6, MAC, MAX_PEERS = 4094 };
+enum { IP, ARP, RARP, DHCP, ROGUE, CARP, IPV6, MAC, MAX_PEERS = 4094 };
 struct tag { unsigned tpid, vid; };
 struct peer { int vlan, pid, receiver; uint8_t source[4], mac[6]; };
 static struct peer peers[MAX_PEERS];
@@ -24,7 +24,7 @@ static int npeers, ninfra, current, sender, count, offline;
 static int timing;
 static double started;
 static uint64_t fixture_hash = UINT64_C(14695981039346656037);
-static const char *kinds[] = { "ip", "arp", "rarp", "dhcp", "carp", "ipv6", "mac" };
+static const char *kinds[] = { "ip", "arp", "rarp", "dhcp", "rogue-dhcp", "carp", "ipv6", "mac" };
 
 static void require(int ok, const char *message)
 {
@@ -124,10 +124,10 @@ static size_t frame(uint8_t *packet, const uint8_t *mac, const uint8_t *source,
             length = 56;
         } else {
             udp = p + 20;
-            put16(udp, kind == DHCP ? 67 : 46991);
-            put16(udp + 2, kind == DHCP ? 68 : 46991);
+            put16(udp, kind == DHCP ? 67 : kind == ROGUE ? 1067 : 46991);
+            put16(udp + 2, kind == DHCP || kind == ROGUE ? 68 : 46991);
             length = 28;
-            if (kind == DHCP) {
+            if (kind == DHCP || kind == ROGUE) {
                 uint8_t *bootp = udp + 8;
                 memcpy(bootp, "\x02\x01\x06\x00\x43\x56\x4c\x32", 8);
                 put16(bootp + 10, 0x8000);
@@ -342,9 +342,9 @@ int main(int argc, char **argv)
         inet_pton(AF_INET, "100.80.32.62", infra[0]);
         ninfra = 1;
         cases();
-        require(count == 35, "case count");
-        /* Original Python frames and labels, with the live spoofed MAC and the RARP cases. */
-        require(fixture_hash == UINT64_C(0x3e21f1fbcd06ba6e), "packet fixture bytes");
+        require(count == 37, "case count");
+        /* Original Python frames and labels, with the live spoofed MAC and the RARP and rogue DHCP port cases. */
+        require(fixture_hash == UINT64_C(0xc2a1b4415f5e4243), "packet fixture bytes");
         puts("CV-PF L2 packet fixtures passed");
         return 0;
     }

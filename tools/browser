@@ -164,11 +164,14 @@ if [ "$role" = remmina ] && [ ! -f /var/lib/convergent/release-guests/guests/rem
     die 'Remmina image is not installed; run sys update install'
 fi
 journal=/var/lib/convergent/guests
-if [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
-    [ -f "$journal/profiles.before/browser-base.yaml" ] || [ -f "$journal/profiles.before/remmina.yaml" ] ||
-    grep -qE '^(def|int|web|admin|remmina) ' "$journal/pending" 2>/dev/null; then
-    die 'interrupted browser update; rerun the guests update first'
-fi
+# Only the role's own journals: Remmina shares no image, profile or volume with the browsers.
+if [ "$role" = remmina ]; then
+    [ -f "$journal/profiles.before/remmina.yaml" ] || grep -q '^remmina ' "$journal/pending" 2>/dev/null
+else
+    [ -f "$journal/browser.ready" ] || [ -d "$journal/browser.rename" ] ||
+        [ -f "$journal/profiles.before/browser-base.yaml" ] ||
+        grep -qE '^(def|int|web|admin) ' "$journal/pending" 2>/dev/null
+fi && die 'interrupted browser update; rerun the guests update first'
 reap_tmp || echo "browser: stale temporary browser cleanup failed" >&2
 name=$role
 profile_base='browser-base'
@@ -279,6 +282,8 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         '.[] | select(.name == $n) | .type == "container" and .profiles == ([$b, $r] | map(select(. != "")))' \
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
+    # A Grafana session may have changed int's root: Incus administration starts from the image.
+    [ -z "$incus_ui" ] || ic rebuild candidate-browser "$name" || die 'cannot reset the int browser for Incus administration'
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then

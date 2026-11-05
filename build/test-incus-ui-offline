@@ -172,6 +172,56 @@ sh -n "$work/int-open"
 )
 awk '/^    stop_container$/ {stop = NR} /^    \/usr\/local\/sbin\/incus-ui --unlock / {unlock = NR}
     END {exit !(stop && unlock > stop)}' "$repo/tools/browser"
+# Incus administration rebuilds an existing int from the installed image before it starts; Grafana does not.
+sed -n '/^if printf .*"\$instances" | jq -e --arg n "\$name" .any/,/^fi$/p' "$repo/tools/browser" >"$work/existing"
+grep -q 'ic rebuild' "$work/existing"
+sh -n "$work/existing"
+for sample in ui grafana fail; do
+    rm -f "$work/existing-calls"
+    rc=0
+    (
+        die() { echo "die $*" >>"$work/existing-calls"; exit 1; }
+        ic() { echo "$*" >>"$work/existing-calls"; [ "$sample:$1" != fail:rebuild ]; }
+        stop_container() { echo stop >>"$work/existing-calls"; }
+        instances='[{"name":"int","status":"Running","type":"container","profiles":["browser-base","browser-int"]}]'
+        name=int profile_base=browser-base profile_role=browser-int incus_ui=1
+        [ "$sample" != grafana ] || incus_ui=
+        . "$work/existing"
+    ) || rc=$?
+    case $sample in
+    ui) [ "$rc" = 0 ]; printf 'stop\nrebuild candidate-browser int\n' >"$work/expected" ;;
+    grafana) [ "$rc" = 0 ]; printf 'stop\n' >"$work/expected" ;;
+    fail) [ "$rc" = 1 ]; printf 'stop\nrebuild candidate-browser int\ndie cannot reset the int browser for Incus administration\n' >"$work/expected" ;;
+    esac
+    cmp "$work/expected" "$work/existing-calls"
+done
+# Each role waits only for its own interrupted update.
+sed -n '/^journal=\/var\/lib\/convergent\/guests$/,/^fi && die /p' "$repo/tools/browser" |
+    sed "s|^journal=.*|journal=$work/journal|" >"$work/journal-gate"
+grep -q '^fi && die ' "$work/journal-gate"
+sh -n "$work/journal-gate"
+for sample in none remmina-pending remmina-profile int-pending browser-ready browser-rename browser-profile; do
+    rm -rf "$work/journal"
+    mkdir -p "$work/journal/profiles.before"
+    case $sample in
+    remmina-pending) echo 'remmina guests-1 abc' >"$work/journal/pending" ;;
+    remmina-profile) : >"$work/journal/profiles.before/remmina.yaml" ;;
+    int-pending) echo 'int guests-1 abc' >"$work/journal/pending" ;;
+    browser-ready) : >"$work/journal/browser.ready" ;;
+    browser-rename) mkdir "$work/journal/browser.rename" ;;
+    browser-profile) : >"$work/journal/profiles.before/browser-base.yaml" ;;
+    esac
+    for role in remmina def tmp; do
+        rc=0
+        # The launcher continues past a gate whose checks all fail.
+        ( die() { exit 1; }; . "$work/journal-gate"; : ) || rc=$?
+        case $sample:$role in
+        none:*|remmina-*:def|remmina-*:tmp|int-*:remmina|browser-*:remmina) want=0 ;;
+        *) want=1 ;;
+        esac
+        [ "$rc" = "$want" ] || { echo "journal gate: $sample $role returned $rc" >&2; exit 1; }
+    done
+done
 # A UI lock timeout (a passphrase prompt) is busy, not a trust mismatch: check retries instead of failing.
 sed -n '/^flock -w 30 7 /p' "$repo/tools/incus-ui" >"$work/ui-lock"
 [ "$(wc -l <"$work/ui-lock")" = 1 ]

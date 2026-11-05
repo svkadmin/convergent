@@ -49,9 +49,11 @@ table bridge host-l2 {
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type 0x8035 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ip protocol 112 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } udp sport 67 drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } udp dport 68 drop comment "a DHCP reply from any source port"
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip ip saddr @work_infra drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type arp arp saddr ip @work_infra drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip ip protocol 112 drop
 		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip udp sport 67 drop
+		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip udp dport 68 drop
 	}
 }

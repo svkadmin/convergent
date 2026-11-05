@@ -376,7 +376,8 @@ locked behind a passphrase.
 3. Open **Incus management** (Super+d), or run `sys browser incus` (`incus-ui open` in a host
    terminal).
 4. Enter the passphrase. `int` opens `https://100.80.1.10:8443/ui/`. Keep the launcher terminal
-   open for the session.
+   open for the session. Each session first resets `int` to its installed image (state and
+   bookmarks stay), so it starts a little slower than Grafana.
 5. To lock it again, close the entire `int` browser; closing only the Incus tab is not enough.
 
 A plain `browser int` opens Grafana without the administration key. Certificate administration
@@ -743,7 +744,8 @@ bookmarks and logins.
 
 - With a browser open, the update is deferred and the tool prints
   `a browser is open; close it, then sys guests update`.
-- An interrupted browser update blocks launches until retried.
+- An interrupted browser update blocks browser launches until retried; an interrupted Remmina
+  update blocks only Remmina.
 - A browser update advances future `tmp` and portal images. `def`/`int` normally replaces one
   instance; a migration updates both.
 - Unused old images are pruned only after the commit and the alias release.
