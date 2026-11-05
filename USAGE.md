@@ -923,7 +923,8 @@ side: [BUILD, Diagnostics](BUILD.md#diagnostics).
 
 Needs:
 
-- an unlocked LUKS USB disk mounted on a root-owned directory, not the laptop disk;
+- an unlocked LUKS USB disk mounted on a root-owned directory whose parents are all root-owned and
+  not writable by others (sticky ones such as `/tmp` excepted), not the laptop disk;
 - the owner project (`owner`, created by setup; never `default`).
 
 A backup writes one generation, `convergent-backups/backup-<UTC>`:
@@ -934,7 +935,7 @@ A backup writes one generation, `convergent-backups/backup-<UTC>`:
 | `etc.tar` | the writable `/etc` files |
 | `projects/<owner>/instance-<name>.tar.gz` | each owner container |
 | `projects/<owner>/profiles.json` | the owner's profiles |
-| `projects/<project>/<pool>/` | custom filesystem and ISO volumes of both projects, including `remmina-state` and `share` |
+| `projects/<project>/<pool>/` | custom filesystem and ISO volumes of both projects, including `remmina-state` and `share`; `default` ones without their update snapshots |
 | `grafana-secrets/` | Grafana's matching `admin-password` and `secret-key` |
 | `machine-id`, `EXCLUDED`, `SHA256SUMS` | the laptop's identity, what was left out, checksums |
 

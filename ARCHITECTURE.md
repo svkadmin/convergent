@@ -393,7 +393,8 @@ One boot: from the loader's choice to a release marked good, or to the next try.
 
 Three words carry the state. **good** is the release that last passed `slot bless`; its `/var` is
 the one a new release is snapshotted from. **highest** is the highest release ID ever marked good;
-`slot write` refuses anything at or below it. **exhausted** is a UKI at `+0`.
+`slot write` refuses anything at or below it; an unreadable or malformed `highest` makes `slot write`
+and `slot bless` refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
 
 1. The firmware starts systemd-boot. `default convergent-[0-9]*` selects the newest non-exhausted
    normal profile; entries sort by `IMAGE_VERSION`, the release ID.
