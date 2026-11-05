@@ -736,7 +736,7 @@ pair() { carp "$1" MASTER && carp "$2" BACKUP; }
 fw_check() {
     step="fw_check $1"
     [ "$(guest_reply 128 rsh "$1" 'cat /etc/convergent/topology.sha256')" = "$(cat /etc/convergent/topology.sha256)" ] || { fail 'firewall topology differs from host'; return 1; }
-    rsh "$1" 'rcctl check dhcpd' >/dev/null || return
+    rsh "$1" 'rcctl check dhcpd' >/dev/null || { fail 'dhcpd is not running'; return 1; }
     guest_reply 65536 rsh "$1" 'ifconfig pfsync0' >"$work/pfsync" || return
     grep -q RUNNING "$work/pfsync" && grep -q 'defer: on' "$work/pfsync" || { fail 'pfsync is not running with defer enabled'; return 1; }
     rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || { fail 'PF is not enabled'; return 1; }
@@ -890,7 +890,8 @@ seed_remove() {
 }
 stop_guest() {
     autorestart_hold "$1" || return
-    ic stop "$1" --timeout 60 && return
+    # A frozen QEMU holds even a graceful stop (Incus talks to its monitor first): bound it, then force.
+    timeout -k 5 120 incus --force-local --project default stop "$1" --timeout 60 9>&- 8>&- 7>&- 6>&- && return
     echo "guests: graceful stop failed; forcing $1 off; inspect with incus --force-local --project default console $1 --show-log" >&2
     force_stop "$1"
 }
@@ -1462,6 +1463,8 @@ rebuild() {
     [ -d "$image_dir" ] || die 'installed firewall images are missing'
     verify_image fw
     [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
+    # A retained lease hold left dhcpd off on the peer, as rollback does: resume it before judging it.
+    [ ! -f "$state/leases/held" ] || leases_resume "$peer" || die "cannot resume work DHCP on $peer"
     fw_check "$peer" || die "$peer must be healthy before rebuilding $1"
     actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'

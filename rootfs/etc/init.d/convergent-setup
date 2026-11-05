@@ -28,8 +28,16 @@ start() {
 		(umask 077; touch /run/convergent/guests-update-started)
 		echo running >"$st/guests-update"
 		nohup sh -c '
-			n=0
+			n=0 checked=
 			until [ -e /run/openrc/started/convergent-bless ]; do
+				# A failed bless on a release already good (apply checks it again): recover the guests now.
+				if [ -z "$checked" ] && [ -e /run/openrc/failed/convergent-bless ]; then
+					checked=1
+					/usr/local/sbin/slot status 2>/dev/null |
+						awk '\''$1 == "booted" {r=$2; s=$4} $1 == "good" {g=$2} $1 == "highest" {h=$2}
+							$1 == "slot" {release[$2]=$3; status[$2]=$4}
+							END {exit !(r ~ /^[0-9]+$/ && r == g && r <= h && release[s] == r && status[s] == "good")}'\'' && break
+				fi
 				[ $((n += 1)) -le 360 ] || { echo failed >"$1/guests-update"; exit 1; }
 				sleep 5
 			done
@@ -60,6 +68,12 @@ start() {
 }
 
 stop() {
+	# Only shutdown drains: a restart's start half would not bring wan and svc back.
+	if ! yesno "${RC_GOINGDOWN:-NO}"; then
+		if [ "${RC_CMD:-}" = restart ]; then ewarn 'guests keep running; they are drained only at shutdown'; return 0; fi
+		eerror 'guests are drained only at shutdown'
+		return 1
+	fi
 	ebegin "Stopping browsers, svc, wan and firewalls before Incus"
 	/bin/sh /usr/lib/convergent/incus/shutdown
 	eend $?

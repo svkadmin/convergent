@@ -92,7 +92,14 @@ secret() {
 		# Echo off before the prompt: a fast sender would otherwise be shown.
 		if [ -n "$tty_mode" ]; then run stty -echo <&3; printf '%s: ' "$1" >&2; fi
 		IFS= read -r pass <&3 || [ -n "$pass" ] || die "missing $1 on stdin"
-		if [ -n "$tty_mode" ]; then run stty "$tty_mode" <&3; printf '\n' >&2; fi
+		# Typed at a terminal: one hidden typo would lock the laptop, so ask twice. Piped stdin stays one line.
+		if [ -n "$tty_mode" ]; then
+			printf '\nRepeat %s: ' "$1" >&2
+			IFS= read -r again <&3 || :
+			run stty "$tty_mode" <&3; printf '\n' >&2
+			[ "$pass" = "$again" ] || die 'the two entries differ'
+			again=
+		fi
 		case $pass in *"$cr"*) die "the $1 has a carriage return (a Windows line ending)" ;; esac
 		[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
 		[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
