@@ -1909,6 +1909,8 @@ apply() {
     if ! flock -n 6; then
         echo 'guests: a browser is open; close it, then sys guests update'
         browser_pending=1
+        # Starting wan or svc touches no browser state; a due rollback restarts them itself.
+        [ -f "$state/pending" ] || [ -f "$state/preparing" ] || start_stopped
         return 0
     fi
     parallel_autostart

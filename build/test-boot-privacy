@@ -305,8 +305,80 @@ EOF
         [ "$(cat "$work/watchdog")" = V ]
         [ "$(cat "$work/daemon")" = "--stop --quiet --retry TERM/5 --pidfile $pidfile" ]
     done
+
+    # A start after bless (an owner's restart) must not arm a reset on a good release.
+    sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
+        sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' >"$work/start"
+    check_script "$work/start"
+    . "$work/start"
+    ebegin() { :; }; eend() { :; }; einfo() { :; }; ewarn() { exit 97; }; logger() { exit 97; }
+    nohup() { echo feeder >>"$work/fed"; }
+    pidfile=$work/feeder.pid
+    mkdir -p "$work/openrc/started"
+    for blessed in no yes; do
+        rm -f "$work/fed" "$work/openrc/started/convergent-bless"
+        [ "$blessed" = no ] || : >"$work/openrc/started/convergent-bless"
+        : >"$work/watchdog"
+        start
+        wait
+        if [ "$blessed" = yes ]; then [ ! -e "$work/fed" ] || die 'watchdog armed after bless'
+        else grep -qx feeder "$work/fed" || die 'watchdog not fed before bless'; fi
+    done
 )
 echo 'test-boot-privacy: watchdog passed'
+
+# Setup: Incus slow to answer is not a boot failure; a finished manual setup clears SETUP.
+sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-setup" |
+    sed -e "s|/var/lib/convergent|$work/setup/lib|g" -e "s|/run/convergent|$work/setup/run|g" \
+        -e "s|/run/openrc|$work/setup/openrc|g" -e "s|/var/log|$work/setup/log|g" -e "s|/proc/cmdline|$work/setup/cmdline|g" \
+        -e 's|/usr/local/sbin/incus-ui|mock_ui|g; s|/usr/local/sbin/guests|mock_guests|g; s|/usr/local/sbin/slot|mock_slot|g' >"$work/setup-start"
+check_script "$work/setup-start"
+if grep -q '/usr/local/sbin/\|/var/lib/convergent\|/run/openrc' "$work/setup-start"; then die 'setup start keeps a real path'; fi
+(
+    . "$work/setup-start"
+    ebegin() { :; }; eend() { :; }; ewarn() { echo "ewarn $*" >>"$work/setup/calls"; }
+    incus() { [ "$*" = '--force-local admin waitready --timeout=120' ] || exit 97; return "$ready"; }
+    mock_ui() { [ "$*" = cleanup ] || exit 97; echo cleanup >>"$work/setup/calls"; }
+    nohup() { [ "$1:$2" = sh:-c ] || return 97; printf '%s\n' "$3" >"$work/setup/job"; }
+    mkdir -p "$work/setup/lib/guests" "$work/setup/log"
+    : >"$work/setup/cmdline"
+    : >"$work/setup/lib/guests/initialized"
+    for ready in 0 1; do
+        : >"$work/setup/calls"
+        start || die "setup failed with waitready status $ready"
+        case $ready in
+        0) [ "$(cat "$work/setup/calls")" = cleanup ] || die 'no cleanup with Incus ready' ;;
+        *) grep -q '^ewarn Incus is not ready' "$work/setup/calls" || die 'no warning with Incus not ready'
+            if grep -qx cleanup "$work/setup/calls"; then die 'cleanup ran with Incus not ready'; fi ;;
+        esac
+    done
+    # First boot: the job, extracted as nohup gets it, run with a stand-in guests.
+    rm "$work/setup/lib/guests/initialized"
+    mkdir -p "$work/setup/lib/release-guests/guests" "$work/setup/openrc/started"
+    : >"$work/setup/openrc/started/convergent-bless"
+    start
+    wait
+    [ -s "$work/setup/job" ] || die 'no setup job'
+    for sample in manual late fail ok; do
+        rm -f "$work/setup/lib/guests/initialized"
+        : >"$work/setup/calls"
+        [ "$sample" != manual ] || : >"$work/setup/lib/guests/initialized"
+        {
+            printf 'calls=%s marker=%s sample=%s\n' "$work/setup/calls" "$work/setup/lib/guests/initialized" "$sample"
+            printf '%s\n' 'mock_guests() { echo init >>"$calls"; case $sample in late|ok) : >"$marker" ;; esac; [ "$sample" = ok ]; }'
+            cat "$work/setup/job"
+        } >"$work/setup/job.sh"
+        rc=0
+        sh "$work/setup/job.sh" "$work/setup/lib/release-guests" "$work/setup/run/status" || rc=$?
+        status=$(cat "$work/setup/run/status/setup")
+        case $sample in
+        manual) [ "$rc:$status" = 0:done ] && [ ! -s "$work/setup/calls" ] || die "manual setup: $rc $status" ;;
+        late|ok) [ "$rc:$status" = 0:done ] && [ "$(wc -l <"$work/setup/calls")" = 1 ] || die "$sample setup: $rc $status" ;;
+        fail) [ "$rc:$status" = 0:failed ] && [ "$(wc -l <"$work/setup/calls")" = 2 ] || die "failed setup: $rc $status" ;;
+        esac
+    done
+)
+echo 'test-boot-privacy: setup start passed'
 
 # Fixture sysfs and commands; never touch a partition or mapping.
 sed -n '/^grow_state() {/,/^}/p' "$repo/initramfs/90convergent/convergent-state.sh" |

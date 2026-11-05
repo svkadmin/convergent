@@ -12,9 +12,19 @@ send_url() {
     if [ "$#" = 1 ]; then printf '%s' "$1"; fi
 }
 
-ic() { incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-; }
+# Bounded: a stalled Incus must not keep the guest and session locks; a first init unpacks the image.
+ic() {
+    case $1 in init) limit=300 ;; *) limit=120 ;; esac
+    timeout -k 5 "$limit" incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-
+}
 # Name, status and type only: a full list waits on each VM for state agentless guests lack.
 instances_json() { incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
+# A client cut off by its timeout leaves the operation running in Incus; unanswered is not done.
+operations_done() {
+    timeout -k 1 30 incus --force-local query '/1.0/operations?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&- 2>/dev/null |
+        jq -e --arg i "/1.0/instances/$1" '[.[]?[]? | select(.status_code < 200) |
+            select(any(.resources[]?[]?; split("?")[0] | . == $i or startswith($i + "/")))] | length == 0' >/dev/null
+}
 owner() {
     set -- setpriv --reuid "$uid" --regid "$gid" "${owner_groups:---init-groups}" --pdeathsig TERM --no-new-privs env -i \
         PATH="$PATH" HOME=/nonexistent LANG=C.UTF-8 XDG_RUNTIME_DIR="$runtime" \
@@ -93,6 +103,25 @@ if [ "${1:-}" = --reap-tmp ] && [ "$(id -u)" = 0 ]; then
     [ $# = 1 ] || die 'usage: browser --reap-tmp'
     browser_locks
     reap_tmp
+    exit
+fi
+# A hung session: stop its guest under the launcher's locks; the launcher's cleanup follows its exit.
+if [ "${1:-}" = --close ] && [ "$(id -u)" = 0 ]; then
+    case $#:${2:-} in
+        2:def|2:int) pattern="^$2\$" ;;
+        2:tmp) pattern='^tmp-([2-9][0-9]|portal)$' ;;
+        *) die 'usage: browser --close def|tmp|int' ;;
+    esac
+    browser_locks
+    snapshot=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-) ||
+        die 'cannot list the browsers'
+    running=$(printf '%s\n' "$snapshot" | jq -r --arg p "$pattern" --arg r "browser-$2" '.[] | select((.name | test($p)) and
+        .type == "container" and .profiles == ["browser-base", $r] and .status != "Stopped") | .name') || die 'cannot list the browsers'
+    [ -n "$running" ] || { echo "browser: no $2 browser is running"; exit 0; }
+    for stale in $running; do
+        ic stop "$stale" --force || die "cannot stop $stale"
+        echo "browser: closed $stale"
+    done
     exit
 fi
 if [ "$(id -u)" != 0 ]; then
@@ -283,8 +312,12 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
         >/dev/null || die 'existing instance is not this browser role'
     stop_container
     # A Grafana session may have changed int's root: Incus administration starts from the image.
-    [ -z "$incus_ui" ] || timeout -k 5 120 incus --force-local --project default rebuild candidate-browser "$name" 9>&- 8>&- 7>&- 6>&- ||
+    if [ -n "$incus_ui" ] && ! ic rebuild candidate-browser "$name"; then
+        # Keep the locks until a timed-out rebuild ends (bounded), so no session starts on it.
+        attempts=0
+        until operations_done "$name" || [ $((attempts += 1)) -gt 60 ]; do sleep 5; done
         die 'cannot reset the int browser for Incus administration'
+    fi
 fi
 active=1
 if ! instances_json | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/dev/null; then
@@ -383,8 +416,12 @@ done
 if [ "$role" != remmina ]; then
     # Bounded: a hostile guest can make the probe block (e.g. a FIFO launcher) while we hold the locks.
     guest_stderr timeout -k 1 30 incus --force-local --project default exec "$name" -- \
-        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- >/dev/null ||
-        die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+        grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- >/dev/null || {
+        # With this release's browser image staged, only the guest update is left.
+        [ -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ] ||
+            die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
+        die 'browser guest needs updating: close the browsers, then sys guests update'
+    }
 fi
 # An Incus session: int's tmpfs profile and home and the Incus origin alone, never Grafana's.
 if [ -n "$incus_ui" ]; then

@@ -13,9 +13,12 @@ depend() {
 start() {
 	rm -f /run/convergent/guests-stopping
 	if [ -e /var/lib/convergent/guests/initialized ]; then
-		incus --force-local admin waitready --timeout=120 || return 1
-		# Not a boot failure: the minute checker retries the cleanup and logs each failure.
-		/usr/local/sbin/incus-ui cleanup || ewarn "Incus UI cleanup failed; the minute checker retries it"
+		# Not a boot failure: the minute checker retries the cleanup and logs each failure; bless checks Incus.
+		if incus --force-local admin waitready --timeout=120; then
+			/usr/local/sbin/incus-ui cleanup || ewarn "Incus UI cleanup failed; the minute checker retries it"
+		else
+			ewarn "Incus is not ready; the minute checker cleans up the Incus UI"
+		fi
 	fi
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
@@ -59,7 +62,10 @@ start() {
 			[ $((n += 1)) -le 360 ] || { echo failed >"$2/setup"; exit 1; }
 			sleep 5
 		done
-		for try in 1 2; do
+		for try in 1 2 3; do
+			# A manual sys guests setup may have finished meanwhile, or init failed after its marker.
+			if [ -e /var/lib/convergent/guests/initialized ]; then echo done >"$2/setup"; exit 0; fi
+			[ "$try" -le 2 ] || break
 			date -u "+== %Y-%m-%dT%H:%M:%SZ init" >>/var/log/guests-setup.log
 			/usr/local/sbin/guests init "$1" >>/var/log/guests-setup.log 2>&1 && { echo done >"$2/setup"; exit 0; }
 		done

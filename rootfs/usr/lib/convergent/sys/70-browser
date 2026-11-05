@@ -5,7 +5,8 @@ actions='status	Show running browsers	root
 def	Open the default browser
 tmp	Open a temporary browser
 int	Open the internal browser
-incus	Unlock Incus management	'
+incus	Unlock Incus management
+close	Force-close a frozen browser (def, tmp or int)	root'
 
 browser_state() { echo 'def / tmp / int'; }
 browser_start() (
@@ -38,6 +39,11 @@ browser_def() { noargs "$@"; browser_start def; }
 browser_tmp() { noargs "$@"; browser_start tmp; }
 browser_int() { noargs "$@"; browser_start int; }
 browser_incus() { noargs "$@"; run foot -T 'Incus management' -e /usr/local/sbin/incus-ui open; }
+browser_close() {
+	onearg 'Browser to close (def, tmp or int)' "$@"
+	case $answer in def|tmp|int) ;; *) die 'expected def, tmp or int' ;; esac
+	run sudo /usr/local/sbin/browser --close "$answer"
+}
 
 browser_status() {
 	noargs "$@"

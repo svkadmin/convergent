@@ -173,15 +173,24 @@ sh -n "$work/int-open"
 awk '/^    stop_container$/ {stop = NR} /^    \/usr\/local\/sbin\/incus-ui --unlock / {unlock = NR}
     END {exit !(stop && unlock > stop)}' "$repo/tools/browser"
 # Incus administration rebuilds an existing int from the installed image before it starts; Grafana does not.
+# A rebuild cut off by its timeout keeps the locks until Incus ends it (bounded), then dies.
 sed -n '/^if printf .*"\$instances" | jq -e --arg n "\$name" .any/,/^fi$/p' "$repo/tools/browser" >"$work/existing"
-grep -q 'timeout -k 5 120 incus --force-local --project default rebuild candidate-browser' "$work/existing"
+grep -qF 'if [ -n "$incus_ui" ] && ! ic rebuild candidate-browser "$name"; then' "$work/existing"
 sh -n "$work/existing"
-for sample in ui grafana fail; do
+for sample in ui grafana fail stuck; do
     rm -f "$work/existing-calls"
     rc=0
     (
         die() { echo "die $*" >>"$work/existing-calls"; exit 1; }
-        timeout() { [ "$1:$2:$3:$4" = -k:5:120:incus ] || exit 97; shift 7; echo "$*" >>"$work/existing-calls"; [ "$sample:$1" != fail:rebuild ]; }
+        timeout() { exit 97; }
+        incus() { exit 97; }
+        ic() { echo "$*" >>"$work/existing-calls"; case $sample:$1 in fail:rebuild|stuck:rebuild) return 124 ;; esac; }
+        operations_done() {
+            [ "$1" = int ] || exit 97
+            echo ops >>"$work/existing-calls"
+            [ "$sample" = fail ] && [ "$(grep -cx ops "$work/existing-calls")" -ge 3 ]
+        }
+        sleep() { [ "$*" = 5 ] || exit 97; echo sleep >>"$work/existing-calls"; }
         stop_container() { echo stop >>"$work/existing-calls"; }
         instances='[{"name":"int","status":"Running","type":"container","profiles":["browser-base","browser-int"]}]'
         name=int profile_base=browser-base profile_role=browser-int incus_ui=1
@@ -191,9 +200,103 @@ for sample in ui grafana fail; do
     case $sample in
     ui) [ "$rc" = 0 ]; printf 'stop\nrebuild candidate-browser int\n' >"$work/expected" ;;
     grafana) [ "$rc" = 0 ]; printf 'stop\n' >"$work/expected" ;;
-    fail) [ "$rc" = 1 ]; printf 'stop\nrebuild candidate-browser int\ndie cannot reset the int browser for Incus administration\n' >"$work/expected" ;;
+    fail) [ "$rc" = 1 ]; printf '%s\n' stop 'rebuild candidate-browser int' ops sleep ops sleep ops \
+        'die cannot reset the int browser for Incus administration' >"$work/expected" ;;
+    stuck) [ "$rc" = 1 ]
+        { printf '%s\n' stop 'rebuild candidate-browser int'
+            n=0; while [ "$n" -lt 60 ]; do printf '%s\n' ops sleep; n=$((n + 1)); done
+            printf '%s\n' ops 'die cannot reset the int browser for Incus administration'; } >"$work/expected" ;;
     esac
     cmp "$work/expected" "$work/existing-calls"
+done
+# Only a running operation on that instance (not a namesake prefix) holds the session; no answer is not done.
+sed -n '/^operations_done() {/,/^}/p' "$repo/tools/browser" >"$work/operations"
+[ -s "$work/operations" ]
+sh -n "$work/operations"
+(
+    . "$work/operations"
+    timeout() { [ "$1:$2:$3" = -k:1:30 ] || exit 97; shift 3; "$@"; }
+    incus() {
+        [ "$*" = '--force-local query /1.0/operations?recursion=1&project=default' ] || exit 97
+        [ "$ops" != unanswered ] || return 1
+        printf '%s\n' "$ops"
+    }
+    for sample in running project snapshot namesake success empty none unanswered; do
+        case $sample in
+        running) ops='{"running":[{"status_code":103,"resources":{"instances":["/1.0/instances/int"]}}]}' ;;
+        project) ops='{"running":[{"status_code":105,"resources":{"instances":["/1.0/instances/int?project=default"]}}]}' ;;
+        snapshot) ops='{"running":[{"status_code":103,"resources":{"instances":["/1.0/instances/int/snapshots/a"]}}]}' ;;
+        namesake) ops='{"running":[{"status_code":103,"resources":{"instances":["/1.0/instances/internal"]}}]}' ;;
+        success) ops='{"success":[{"status_code":200,"resources":{"instances":["/1.0/instances/int"]}}]}' ;;
+        empty) ops='{}' ;;
+        none) ops='{"running":[{"status_code":103,"resources":null}]}' ;;
+        unanswered) ops=unanswered ;;
+        esac
+        if operations_done int; then
+            case $sample in namesake|success|empty|none) ;; *) exit 97 ;; esac
+        else
+            case $sample in running|project|snapshot|unanswered) ;; *) exit 97 ;; esac
+        fi
+    done
+)
+# Every browser Incus call is bounded; a first init gets longer.
+sed -n '/^ic() {/,/^}/p' "$repo/tools/browser" >"$work/browser-ic"
+[ -s "$work/browser-ic" ]
+sh -n "$work/browser-ic"
+(
+    . "$work/browser-ic"
+    timeout() { echo "$*" >>"$work/ic-calls"; }
+    incus() { exit 97; }
+    : >"$work/ic-calls"
+    for call in 'init candidate-browser def' 'start def' 'stop def --force' 'rebuild candidate-browser int' 'config set def a=b'; do
+        ic $call
+    done
+    printf '%s\n' '-k 5 300 incus --force-local --project default init candidate-browser def' \
+        '-k 5 120 incus --force-local --project default start def' \
+        '-k 5 120 incus --force-local --project default stop def --force' \
+        '-k 5 120 incus --force-local --project default rebuild candidate-browser int' \
+        '-k 5 120 incus --force-local --project default config set def a=b' | cmp - "$work/ic-calls"
+)
+# Force-close stops only the role's shipped browsers, under the launcher's locks.
+sed -n '/^if \[ "\${1:-}" = --close \] && \[ "\$(id -u)" = 0 \]; then$/,/^fi$/p' "$repo/tools/browser" >"$work/close"
+[ -s "$work/close" ]
+sh -n "$work/close"
+cat >"$work/close-instances" <<'JSON'
+[
+  {"name":"def","status":"Running","type":"container","profiles":["browser-base","browser-def"]},
+  {"name":"int","status":"Stopped","type":"container","profiles":["browser-base","browser-int"]},
+  {"name":"tmp-20","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-21","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-portal","status":"Frozen","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-30","status":"Running","type":"container","profiles":["default"]},
+  {"name":"tmp-200","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"def2","status":"Running","type":"container","profiles":["browser-base","browser-def"]}
+]
+JSON
+for sample in def int tmp usage locked failed; do
+    : >"$work/close-calls"
+    rc=0
+    (
+        set -- --close "$sample"
+        case $sample in usage) set -- --close remmina ;; locked) set -- --close def ;; failed) set -- --close tmp ;; esac
+        id() { [ "$*" = -u ] || exit 97; echo 0; }
+        die() { echo "die $*" >>"$work/close-calls"; exit 1; }
+        browser_locks() { echo locks >>"$work/close-calls"; [ "$sample" != locked ] || die 'guest update in progress'; }
+        timeout() { [ "$1:$2:$3" = -k:1:30 ] || exit 97; shift 3; "$@"; }
+        incus() { [ "$*" = '--force-local query /1.0/instances?recursion=1&project=default' ] || exit 97; cat "$work/close-instances"; }
+        ic() { echo "ic $*" >>"$work/close-calls"; [ "$sample" != failed ]; }
+        . "$work/close"
+        exit 98
+    ) >"$work/close-out" 2>&1 || rc=$?
+    case $sample in
+    def) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop def --force' >"$work/expected"; grep -qx 'browser: closed def' "$work/close-out" ;;
+    int) [ "$rc" = 0 ]; printf '%s\n' locks >"$work/expected"; grep -qx 'browser: no int browser is running' "$work/close-out" ;;
+    tmp) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'ic stop tmp-portal --force' >"$work/expected" ;;
+    usage) [ "$rc" = 1 ]; printf '%s\n' 'die usage: browser --close def|tmp|int' >"$work/expected" ;;
+    locked) [ "$rc" = 1 ]; printf '%s\n' locks 'die guest update in progress' >"$work/expected" ;;
+    failed) [ "$rc" = 1 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'die cannot stop tmp-20' >"$work/expected" ;;
+    esac
+    cmp "$work/expected" "$work/close-calls"
 done
 # Each role waits only for its own interrupted update.
 sed -n '/^journal=\/var\/lib\/convergent\/guests$/,/^fi && die /p' "$repo/tools/browser" |

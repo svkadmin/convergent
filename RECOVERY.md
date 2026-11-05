@@ -930,9 +930,9 @@ Symptom: a browser window is frozen and closing it from the desktop does nothing
    ```sh
    sys browser status
    ```
-2. Stop the container:
+2. Stop it (`tmp` stops every temporary browser, the portal one too):
    ```sh
-   sudo incus --force-local --project default stop <role> --force
+   sys browser close <role>    # def, tmp or int
    ```
 3. Open it again as usual.
 

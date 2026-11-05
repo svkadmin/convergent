@@ -166,17 +166,23 @@ for sample in count scheme int oversized portal_default; do
 done
 # An argv-only installed guest must fail before portal, unlock/import or Grafana.
 sed -n '/^# Refuse argv-only guests /,/^\[ -z "\$portal_mode" \]/p' "$repo/tools/browser" |
-    sed 's|/usr/local/sbin/incus-ui|service_call|g; s|/usr/local/sbin/portal begin|service_call begin|' >"$work/services"
+    sed 's|/usr/local/sbin/incus-ui|service_call|g; s|/usr/local/sbin/portal begin|service_call begin|' |
+    sed "s|/var/lib/convergent/release-guests/guests/browser/incus/def.yaml|$work/staged/def.yaml|" >"$work/services"
 check_script "$work/services"
+grep -qF "$work/staged/def.yaml" "$work/services" || die 'staged image check not found'
+mkdir "$work/staged"
 guest=$repo/guests/browser/rootfs/usr/local/bin/browser-launch
 sed '/^url=\$(head -c /,/^esac$/d' "$guest" >"$work/argv-only"
 check_script "$work/argv-only"
 # A guest from before the Incus session home: it would hand Grafana's home and caches to the certificate.
 sed 's#^\(\[ .* || profile=/run/incus-ui/profile\) home=/run/incus-ui/home$#\1#' "$guest" >"$work/shared"
 if cmp -s "$guest" "$work/shared"; then die 'launcher lacks the Incus session home'; fi
-for version in current old missing shared; do
+# legacy: an old guest without this release's browser image staged.
+for version in current old missing shared legacy; do
     for mode in def tmp portal grafana incus remmina; do
         : >"$work/services-called"
+        rm -f "$work/staged/def.yaml"
+        [ "$version" = legacy ] || : >"$work/staged/def.yaml"
         rc=0
         (
             role=$mode name=$mode portal_mode= incus_ui=
@@ -186,7 +192,7 @@ for version in current old missing shared; do
                 incus) role=int incus_ui=1 ;;
             esac
             launcher=$guest
-            case $version in old) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; shared) launcher=$work/shared ;; esac
+            case $version in old|legacy) launcher=$work/argv-only ;; missing) launcher=$work/missing ;; shared) launcher=$work/shared ;; esac
             service_call() { printf '%s\n' "$*" >>"$work/services-called"; }
             portal_on() { return 0; }
             ic() {
@@ -215,9 +221,9 @@ for version in current old missing shared; do
             esac
         else
             [ "$rc" != 0 ] && [ ! -s "$work/services-called" ] || die "opened $version $mode"
-            # Only the Incus session line is missing: this release's guests are staged already.
-            if [ "$version" = shared ]; then grep -q 'close the browsers, then sys guests update' "$work/error"
-            else grep -q 'run sys update install' "$work/error"; fi
+            # Only the release fetch is left without this release's guests; with them, the guest update.
+            if [ "$version" = legacy ]; then grep -q 'run sys update install' "$work/error"
+            else grep -q 'close the browsers, then sys guests update' "$work/error"; fi
         fi
     done
 done
