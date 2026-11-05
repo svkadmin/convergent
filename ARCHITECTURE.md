@@ -749,8 +749,9 @@ The minute run of `check auto`: repairs first, then the baseline scan.
   an hour at most, then reports a failure. `sys usb revoke` and enrolment remove the role once no
   USBGuard rule allows the NIC.
 - Attempts are logged to syslog and printed as `SELF-HEAL` lines in the checker report. While a
-  firewall is being watched, the browser and Remmina orphan sweeps and the Incus UI cleanup wait:
-  while the heal can act on it, and for up to 30 minutes otherwise.
+  firewall is being watched, the browser and Remmina orphan sweeps wait: while the heal can act on it,
+  and for up to 30 minutes otherwise. The Incus UI cleanup, which revokes an orphaned session's trust,
+  never waits.
 
 #### Logs
 

@@ -1192,7 +1192,7 @@ release() {
 rm -rf "$work/run/firewall-heal"
 : >"$work/calls"; : >"$work/holders"; : >"$work/swept"
 sweeps
-[ "$(wc -l <"$work/swept")" = 3 ]
+[ "$(wc -l <"$work/swept")" = 2 ]
 release
 : >"$work/swept"
 for t in 1000 1060 1120; do tick "$t"; sweeps; done
@@ -1205,7 +1205,7 @@ sweeps
 [ ! -s "$work/swept" ]
 rm "$work/run/firewall-heal/pair"
 sweeps
-[ "$(wc -l <"$work/swept")" = 3 ]
+[ "$(wc -l <"$work/swept")" = 2 ]
 release
 # A firewall the heal cannot restart for two minutes (three an hour) stops no sweep for good.
 cp "$work/run/firewall-heal/attempts" "$work/attempts.saved"
@@ -1218,14 +1218,14 @@ sweeps
 [ ! -s "$work/swept" ]
 printf '%s\n' 1600 4000 4000 >"$work/run/firewall-heal/attempts"
 sweeps
-[ "$(wc -l <"$work/swept")" = 3 ]
+[ "$(wc -l <"$work/swept")" = 2 ]
 release
 # Nor does a window 30 minutes old (both firewalls down: no peer for the heal to act on).
 : >"$work/swept"
 : >"$work/run/firewall-heal/attempts"
 echo '3200 5000' >"$work/run/firewall-heal/fw2"
 sweeps
-[ "$(wc -l <"$work/swept")" = 3 ]
+[ "$(wc -l <"$work/swept")" = 2 ]
 release
 : >"$work/swept"
 echo '3300 5000' >"$work/run/firewall-heal/fw2"
@@ -1236,10 +1236,13 @@ echo '3000 5000 4900' >"$work/run/firewall-heal/fw2"
 sweeps
 [ ! -s "$work/swept" ]
 # A garbled record holds nothing and does not end the run.
-echo '08 5000' >"$work/run/firewall-heal/fw2"
-sweeps
-[ "$(wc -l <"$work/swept")" = 3 ]
-release
+for record in '08 5000' '5000 garbage 4900' '5000' '5000 5000 garbage'; do
+    : >"$work/swept"
+    echo "$record" >"$work/run/firewall-heal/fw2"
+    sweeps
+    [ "$(wc -l <"$work/swept")" = 2 ]
+    release
+done
 rm "$work/run/firewall-heal/fw2"
 mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
 mv "$work/uptime.saved" "$work/proc/uptime"
@@ -1332,6 +1335,13 @@ for scenario in busy dns journal running; do
     [ ! -s "$work/calls" ]
 done
 rm -f "$work/run/firewall-heal/pair"
+# A garbled pair record restarts its window instead of ending the heal.
+printf '%s\n' '820 08' >"$work/run/firewall-heal/pair"
+: >"$work/calls"
+tick 1000
+[ ! -s "$work/calls" ]
+grep -q '^SELF-HEAL fw1, fw2: stopped or paused for 0s' "$work/report"
+rm -f "$work/run/firewall-heal/pair" "$work/run/firewall-heal/fw1" "$work/run/firewall-heal/fw2"
 : >"$work/calls"; bounds=$work/pair-bounds; : >"$bounds"
 # A stop by hand stays for 180 s; two missed minutes restart that window (1060, 1240), one does not (1240, 1360).
 for t in 1000 1060 1240 1360; do tick "$t"; [ ! -s "$work/calls" ]; done
