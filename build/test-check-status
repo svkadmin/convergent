@@ -134,7 +134,9 @@ mtime=$(stat -c %y "$owner/.local/bin/tool")
 printf x | dd of="$owner/.local/bin/tool" bs=1 conv=notrunc 2>/dev/null
 touch -d "$mtime" "$owner/.local/bin/tool"
 scan "$work/autostart"
-if cmp -s "$work/scan/autostart.first" "$work/scan/autostart"; then exit 1; fi
+stamps() { sed -n 's/^size=[0-9]* mtime=\(.*\) ctime=\(.*\)  .*\/tool$/\1|\2/p' "$1"; }
+first=$(stamps "$work/scan/autostart.first") now=$(stamps "$work/scan/autostart")
+[ -n "$first" ] && [ "${now%|*}" = "${first%|*}" ] && [ "${now#*|}" != "${first#*|}" ] || exit 1
 rm -r "$owner/.local"
 # The sway include check reads the same capped copy.
 truncate -s 67108865 "$owner/.config/sway/config"

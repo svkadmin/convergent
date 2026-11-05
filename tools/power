@@ -176,7 +176,7 @@ case ${1:-} in
 ac|battery)
 	[ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); manual=$1
 	# The old choice ends now: an early exit must not leave it for the next supply event.
-	rm -f /run/convergent-power.manual || exit 1 ;;
+	rm -f /run/convergent-power.manual || die 'cannot clear the old power choice' ;;
 charge|thermal)
 	[ "$#" = 2 ] || die 'use power charge off|55-100 or power thermal quiet|balanced|performance'
 	"$1" "$2"
@@ -210,10 +210,11 @@ profile=unknown
 file=$(mktemp /run/.convergent-power.XXXXXX) || exit 1
 printf '%s\n' "$profile" >"$file" && chmod 0644 "$file" &&
 	mv -f "$file" /run/convergent-power.profile || die 'cannot publish profile'
-# A manual profile is kept only once applied; a failed one leaves the next supply event to the source.
+# A manual profile is kept only once applied; a kept one that fails on a later event is retried.
 if [ -n "$manual" ]; then
 	[ "$rc" = 0 ] && printf '%s\n' "$seen" >/run/convergent-power.source &&
-		printf '%s\n' "$manual" >/run/convergent-power.manual || { rm -f /run/convergent-power.manual; rc=1; }
+		printf '%s\n' "$manual" >/run/convergent-power.manual ||
+		{ [ -z "${1:-}" ] || rm -f /run/convergent-power.manual; rc=1; }
 fi
 
 set_file /sys/module/kvm/parameters/halt_poll_ns "$halt_poll"
