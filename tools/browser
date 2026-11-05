@@ -18,7 +18,7 @@ ic() {
     timeout -k 5 "$limit" incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&-
 }
 # Name, status and type only: a full list waits on each VM for state agentless guests lack.
-instances_json() { incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
+instances_json() { timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
 # A client cut off by its timeout leaves the operation running in Incus; unanswered is not done.
 operations_done() {
     timeout -k 1 30 incus --force-local query '/1.0/operations?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&- 2>/dev/null |
@@ -35,7 +35,7 @@ owner() {
 }
 device() {
     dev=$1; shift
-    settings=$(incus --force-local query "/1.0/instances/$name?project=default")
+    settings=$(timeout -k 1 30 incus --force-local query "/1.0/instances/$name?project=default" 9>&- 8>&- 7>&- 6>&-)
     if printf '%s\n' "$settings" | jq -e --arg d "$dev" '.devices[$d]' >/dev/null; then
         ic config device set "$name" "$dev" "$@"
     else
@@ -313,9 +313,14 @@ if printf '%s\n' "$instances" | jq -e --arg n "$name" 'any(.[]; .name == $n)' >/
     stop_container
     # A Grafana session may have changed int's root: Incus administration starts from the image.
     if [ -n "$incus_ui" ] && ! ic rebuild candidate-browser "$name"; then
-        # Keep the locks until a timed-out rebuild ends (bounded), so no session starts on it.
-        attempts=0
-        until operations_done "$name" || [ $((attempts += 1)) -gt 60 ]; do sleep 5; done
+        # Keep the locks until a timed-out rebuild ends (300 s), so no session starts on it.
+        read -r uptime idle </proc/uptime
+        deadline=$((${uptime%.*} + 300))
+        until operations_done "$name"; do
+            read -r uptime idle </proc/uptime
+            [ "${uptime%.*}" -lt "$deadline" ] || break
+            sleep 5
+        done
         die 'cannot reset the int browser for Incus administration'
     fi
 fi

@@ -79,6 +79,10 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
     listed='[{"name":"fw1"},{"name":"vm","project":"owner"}]'; due no
     listed='[{"name":"fw1","project":"default"},{"name":"vm","project":"default"}]'; due yes
     listed='[{"name":"vm","project":"owner"}]'; due yes
+    # Every guest deleted: an empty list is an answer; anything but a list is not.
+    listed='[]'; due yes
+    listed='{}'; due no
+    listed='"x"'; due no
     listed=none; due no
     listed='[{"name":'; due no
     listed=none
@@ -729,7 +733,7 @@ grep -q 'time() - convergent_dns_source_refreshed_seconds.* > 864000' "$work/blo
 grep -qF '(up{job="node",node=~"fw1|fw2"} == 1 unless on(node) convergent_dns_source_refreshed_seconds)' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* <= 0' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* > time()' "$work/blocklist-rule"
-# Kept journals and the lease hold publish their mtime; the lease hold alerts first.
+# Kept journals and the lease hold publish their mtime; the lease hold alerts first, after a slow pair update (4 h).
 sed -n '/^    set -- "\$out\/checker.prom"$/,/cv_collector_timestamp_seconds.*guest_updates/p' "$repo/tools/observe" |
     sed "s|/var/lib/convergent/guests|$work/journals|g" >"$work/journals.sh"
 [ -s "$work/journals.sh" ]; sh -n "$work/journals.sh"
@@ -753,7 +757,7 @@ mkdir -p "$work/journals/leases" "$work/journals-out"
     grep -qx 'cv_collector_success{collector="guest_updates"} 1' "$work/journals.prom"
 )
 sed -n '/- alert: GuestJournalRetained/{n;p;}' "$rules" |
-    grep -qxF '        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 7200) or (time() - cv_guest_journal_since_seconds > 43200)'
+    grep -qxF '        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 14400) or (time() - cv_guest_journal_since_seconds > 43200)'
 # A skipped WAN probe is a local fault; the transit alert reads probe_up only.
 sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up == 0'
 sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok == 0'
