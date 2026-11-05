@@ -286,7 +286,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 
 | Block | Shows | Look or fix with |
 |---|---|---|
-| `CPU` | busy percent, lowest-highest core clock (every 5 s), package/hottest temperature (every 20 s); `-` if missing | `sys power status` shows sensors and profile |
+| `CPU` | busy percent, lowest-highest core clock (every 5 s), package/hottest temperature (every 20 s); `-` if missing, `?/?` while a sensor read hangs | `sys power status` shows sensors and profile |
 | `RAM`, `SWP` | used/total GiB; RAM excludes reclaimable cache and what guests hold (below) | Grafana, Guests |
 | `NET` | transmit/receive Mb/s on the default-route interface (route refreshed every 10 s) | `sys wifi test` |
 | Topology | uplink, `wan`, both firewalls, `svc` and browsers (below) | `sys guests status`; RECOVERY 5, 6 |
@@ -300,7 +300,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 10 s), uptime, local date and time | `sys keyboard next` |
-| `BAT` | capacity; `+` charging, `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging; `AC` without a battery | `sys power status` |
+| `BAT` | capacity; `+` charging, `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging; `AC` without a battery; `BAT ?` while a battery read hangs (the clock keeps running) | `sys power status` |
 
 RAM is memory in use (`MemTotal - MemAvailable`) minus what the guests hold. `check status` sums
 the guests' cgroups, without file cache and VM processes, every minute. RAM shows `?` while that
@@ -977,16 +977,17 @@ menu ([RECOVERY](RECOVERY.md#recovery-boot-menu)).
 |---|---|
 | `sys power ac`, `sys power battery` | applies a CPU preference and cap now (`sudo power ac\|battery`) |
 | `sys power charge 80` | charge ends at 80 %, starts at 75 %, where supported; range 55–100 |
-| `sys power charge off` | default; restores 100/95 |
+| `sys power charge off` | restores 100/95 and Standard; with no choice the firmware's charge mode stays |
 | `sys power thermal quiet\|balanced\|performance` | selects a firmware profile; firmware controls the fans |
 | `sys power status` | the applied profile, sensors, unsupported thresholds and available choices |
 
 Boot and AC events also apply the power profile. AC uses `balance_performance`, battery uses
-`power`; both apply `cpu_cap_khz` (default none). A manual choice lasts until the next power-source
-event. Only changes and failures are logged.
+`power`; both apply `cpu_cap_khz` (default none). A manual choice lasts until the power source
+changes; other supply events (a USB-C dock) keep it. Only changes and failures are logged.
 
 Dell's `charge_types` selects Custom or Standard. A limit does not discharge a battery that is
-already fuller. There is no thermal override until you select one. Charge and thermal choices in
+already fuller. There is no charge or thermal override until you select one; an unreadable saved
+choice is logged and skipped. Charge and thermal choices in
 `/var/lib/convergent/power/` persist across boots and AC events and follow slot `/var` snapshots.
 Missing controls are skipped. Tuning constraints:
 [ARCHITECTURE 11.2](ARCHITECTURE.md#112-proposals-not-enabled).

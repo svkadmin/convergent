@@ -48,10 +48,10 @@ allow_usb() {
 	line=$(usbguard list-devices -b | grep "^$id: ") || die "device $id is not among the blocked devices"
 	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
 
-	case $line in *03:01:01*) echo "WARNING: it presents itself as a keyboard." ;; esac
-	case $line in *03:01:02*) echo "WARNING: it presents itself as a pointing device." ;; esac
+	# Any HID interface, not only boot keyboards and mice: a generic one can type too.
+	case $line in *" 03:"*) echo "WARNING: it has a HID interface: it can type, click or move the pointer." ;; esac
 	case $line in *" 08:"*) echo "NOTE: it presents itself as mass storage." ;; esac
-	case $line in *" 02:"* | *" 0a:"* | *" e0:"* | *"{ ff:"*) echo "NOTE: it has a network, wireless or vendor-specific interface." ;; esac
+	case $line in *" 02:"* | *" 0a:"* | *" e0:"* | *" ff:"*) echo "NOTE: it has a network, wireless or vendor-specific interface." ;; esac
 	ask "Allow device $id for good?"
 	usbguard allow-device -p "$id" || die "usbguard refused"
 	logger -t devices "USB device $id allowed permanently: $line"

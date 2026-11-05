@@ -909,3 +909,83 @@ awk '/^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns / {knob = NR}
     [ "$rc" = 1 ] || die 'refused halt polling write passed'
 )
 echo 'test-boot-privacy: KVM halt polling passed'
+
+# Power choices: none leaves the firmware alone, an invalid one skips only itself, a new one is synced.
+sed -n '/^save_choice() {/,/^}/p; /^bad_choice() {/,/^}/p' "$power" |
+    sed "s|/var/lib/convergent/power|$work/power-state|g" >"$work/power-choice-lib"
+sed -n '/^# No charge choice/,/^# Retry camera/p' "$power" | sed '$d' |
+    sed "s|/var/lib/convergent/power/|$work/power-state/|g" >"$work/power-choices"
+check_script "$work/power-choice-lib"
+check_script "$work/power-choices"
+grep -q "$work/power-state/thermal" "$work/power-choices" || die 'power choices extraction'
+mkdir "$work/power-state"
+(
+    logger() { :; }
+    sync() { printf '%s\n' "$1" >>"$work/power-synced"; }
+    charge() { echo "charge $1" >>"$work/power-calls"; }
+    thermal() { echo "thermal $1" >>"$work/power-calls"; }
+    . "$work/power-choice-lib"
+    choices() { rc=0; : >"$work/power-calls"; . "$work/power-choices" 2>/dev/null; }
+    choices
+    [ "$rc:$(cat "$work/power-calls")" = 0: ] || die 'no charge choice touched the firmware'
+    : >"$work/power-state/charge"; echo balanced >"$work/power-state/thermal"
+    choices
+    [ "$rc:$(cat "$work/power-calls")" = '1:thermal balanced' ] || die 'empty charge choice stopped the run'
+    echo 80 >"$work/power-state/charge"; echo hot >"$work/power-state/thermal"
+    choices
+    [ "$rc:$(cat "$work/power-calls")" = '1:charge 80' ] || die 'invalid thermal choice not skipped'
+    save_choice charge 75
+    [ "$(cat "$work/power-state/charge")" = 75 ] || die 'charge choice not saved'
+    grep -q "^$work/power-state/\.choice\.[A-Za-z0-9]\{6\}$" "$work/power-synced" || die 'choice not synced before the rename'
+)
+echo 'test-boot-privacy: power choices passed'
+
+# A manual profile survives supply events until the source changes.
+sed -n '/^case \${1:-} in$/,/convergent-power\.source || rc=1$/p' "$power" |
+    sed "s|/run/convergent-power\.|$work/power-run/convergent-power.|g" >"$work/power-source"
+check_script "$work/power-source"
+grep -q "$work/power-run/convergent-power.manual" "$work/power-source" || die 'power source extraction'
+mkdir "$work/power-run"
+(
+    source_now() { echo "$fake"; }
+    profile() {
+        rm -f "$work/power-applied"
+        (rc=0; . "$work/power-source"; [ "$rc" = 0 ] || exit 1; echo "$src" >"$work/power-applied")
+    }
+    manual=$work/power-run/convergent-power.manual
+    fake=ac; profile battery
+    [ "$(cat "$work/power-applied"):$(cat "$work/power-run/convergent-power.source")" = battery:ac ] && [ -e "$manual" ] ||
+        die 'manual profile not recorded'
+    profile
+    [ ! -e "$work/power-applied" ] || die 'a supply event undid a manual profile'
+    fake=battery; profile
+    [ "$(cat "$work/power-applied")" = battery ] && [ ! -e "$manual" ] || die 'a source change kept the manual profile'
+    fake=ac; profile
+    [ "$(cat "$work/power-applied"):$(cat "$work/power-run/convergent-power.source")" = ac:ac ] || die 'automatic profile'
+)
+echo 'test-boot-privacy: manual power profile passed'
+
+# devices allow warns for any HID interface, and names vendor-specific ones in any position.
+sed -n '/^allow_usb() {/,/^}/p' "$repo/tools/devices" >"$work/allow-usb"
+check_script "$work/allow-usb"
+(
+    . "$work/allow-usb"
+    ask() { :; }
+    logger() { :; }
+    usbguard() {
+        case $1 in
+        list-devices) printf '7: block id 1234:5678 serial "" name "x" via-port "1-1" with-interface %s with-connect-type "hotplug"\n' "$iface" ;;
+        allow-device) [ "$*" = 'allow-device -p 7' ] || exit 97 ;;
+        *) exit 97 ;;
+        esac
+    }
+    for iface in '{ 08:06:50 03:00:00 }' '03:01:01' '{ 08:06:50 ff:00:00 }' '08:06:50'; do
+        allow_usb 7 >"$work/allow-out"
+        case $iface in
+        *03:*) grep -q '^WARNING: it has a HID interface' "$work/allow-out" || die "no HID warning for $iface" ;;
+        *) if grep -q WARNING "$work/allow-out"; then die "HID warning for $iface"; fi ;;
+        esac
+        case $iface in *ff:*) grep -q 'vendor-specific' "$work/allow-out" || die "no vendor note for $iface" ;; esac
+    done
+)
+echo 'test-boot-privacy: USB allow warnings passed'

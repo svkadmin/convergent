@@ -97,8 +97,15 @@ set_limit() {
 save_choice() {
 	mkdir -p /var/lib/convergent/power || die 'cannot create power state'
 	file=$(mktemp /var/lib/convergent/power/.choice.XXXXXX) || exit 1
-	printf '%s\n' "$2" >"$file" && chmod 0644 "$file" &&
+	# Synced before the rename: a power cut must not leave an empty first choice.
+	printf '%s\n' "$2" >"$file" && chmod 0644 "$file" && sync "$file" &&
 		mv -f "$file" "/var/lib/convergent/power/$1" || die 'cannot save power choice'
+}
+# An unreadable saved choice skips only itself; the rest of the run still applies.
+bad_choice() {
+	logger -p user.err -t power "invalid saved $1 choice; set it again with sys power $1" 2>/dev/null || :
+	echo "power: invalid saved $1 choice" >&2
+	rc=1
 }
 charge() {
 	case $1 in off) end=100; start=95; charge_type=Standard ;;
@@ -151,8 +158,16 @@ exec 9>/run/convergent-power.lock
 umask 022
 flock -x -w 60 9 || exit 1
 case ${1:-} in
-'') [ "$#" = 0 ] || exit 2; src=$(source_now) ;;
-ac|battery) [ "$#" = 1 ] || exit 2; src=$1 ;;
+'')
+	[ "$#" = 0 ] || exit 2; src=$(source_now); seen=$src
+	# A manual profile lasts until the source changes; other supply events (USB-C) keep it.
+	if [ -e /run/convergent-power.manual ]; then
+		last=
+		read -r last 2>/dev/null </run/convergent-power.source || :
+		[ "$last" != "$seen" ] || exit 0
+		rm -f /run/convergent-power.manual || rc=1
+	fi ;;
+ac|battery) [ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); : >/run/convergent-power.manual || rc=1 ;;
 charge|thermal)
 	[ "$#" = 2 ] || die 'use power charge off|55-100 or power thermal quiet|balanced|performance'
 	"$1" "$2"
@@ -162,6 +177,7 @@ charge|thermal)
 	exit 0 ;;
 *) echo 'usage: power [ac|battery|charge off|55-100|thermal quiet|balanced|performance]' >&2; exit 2 ;;
 esac
+printf '%s\n' "$seen" >/run/convergent-power.source || rc=1
 if [ "$src" = ac ]; then epp=$ac_epp halt_poll=$ac_halt_poll; else epp=$bat_epp halt_poll=$bat_halt_poll; fi
 
 policies=0
@@ -188,11 +204,16 @@ printf '%s\n' "$profile" >"$file" && chmod 0644 "$file" &&
 	mv -f "$file" /run/convergent-power.profile || die 'cannot publish profile'
 
 set_file /sys/module/kvm/parameters/halt_poll_ns "$halt_poll"
-limit=off
-[ ! -r /var/lib/convergent/power/charge ] || read -r limit </var/lib/convergent/power/charge
-charge "$limit"
-if [ -r /var/lib/convergent/power/thermal ]; then
-	read -r mode </var/lib/convergent/power/thermal && thermal "$mode" || rc=1
+# No charge choice leaves the firmware's charge mode, as no thermal choice leaves its profile.
+if [ -e /var/lib/convergent/power/charge ]; then
+	limit=
+	read -r limit 2>/dev/null </var/lib/convergent/power/charge || :
+	case $limit in off|5[5-9]|[6-9][0-9]|100) charge "$limit" ;; *) bad_choice charge ;; esac
+fi
+if [ -e /var/lib/convergent/power/thermal ]; then
+	mode=
+	read -r mode 2>/dev/null </var/lib/convergent/power/thermal || :
+	case $mode in quiet|balanced|performance) thermal "$mode" ;; *) bad_choice thermal ;; esac
 fi
 # Retry camera probing once state is mounted, even if early udev denied a load.
 if [ ! -e /run/convergent-camera-restored ]; then

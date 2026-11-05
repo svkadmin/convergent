@@ -4922,6 +4922,13 @@ sed -n 5p "$work/out" | sed 's/^,//' | jq -er '.[0].full_text' | grep -q ' -/50C
 sed -n 3p "$work/out" | jq -er '.[-1].full_text' | grep -qx 'BAT 50% +'
 . /usr/lib/convergent/theme
 sed -n 4p "$work/out" | sed 's/^,//' | jq -er --arg red "$theme_crit" '.[-1] | select(.full_text == "BAT 10% -" and .color == $red)' >/dev/null
+# A battery read that never returns (a FIFO without a writer) does not stop the clock; the block reads ?.
+rm "$work/ps/BAT0/capacity"; mkfifo "$work/ps/BAT0/capacity"
+XDG_RUNTIME_DIR="$work" timeout 14 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
+[ "$(wc -l <"$work/out")" -ge 4 ]
+sed -n 3p "$work/out" | jq -er '.[-1].full_text' | grep -qx 'BAT ?'
+sed -n 4p "$work/out" | sed 's/^,//' | jq -er '.[-1].full_text' | grep -qx 'BAT ?'
+rm "$work/ps/BAT0/capacity"; echo 50 >"$work/ps/BAT0/capacity"
 # Any dell_ddv chip, with or without sensors, hides dell_smm's unnamed copies (sys power's rule).
 echo 50000 >"$work/hwmon0/temp1_input"
 mkdir "$work/hwmon1" "$work/hwmon2"
@@ -5035,7 +5042,7 @@ swayrun() {
 		: >"$work/first"
 		wait_file "$work/release" ;;
 	'input type:touchpad natural_scroll enabled') : >"$work/second" ;;
-	reload) : ;;
+	# A reload would drop the applied display profile.
 	*) exit 1 ;;
 	esac
 }

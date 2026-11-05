@@ -13,11 +13,11 @@ uid=$(id -u)
 # swayidle's timeout skips the lock while this file exists (sway config).
 hold=$XDG_RUNTIME_DIR/nolock
 work=$(mktemp -d "$XDG_RUNTIME_DIR/convergent-bar.XXXXXX") || exit 1
-reader= alerts_pid= inputs_pid=
+reader= alerts_pid= inputs_pid= power_pid= sensors_pid=
 cleanup() {
 	trap - 0
-	for child in $reader $alerts_pid $inputs_pid; do kill "$child" 2>/dev/null || :; done
-	for child in $reader $alerts_pid $inputs_pid; do wait "$child" 2>/dev/null || :; done
+	for child in $reader $alerts_pid $inputs_pid $power_pid $sensors_pid; do kill "$child" 2>/dev/null || :; done
+	for child in $reader $alerts_pid $inputs_pid $power_pid $sensors_pid; do wait "$child" 2>/dev/null || :; done
 	rm -rf "$work"
 }
 trap cleanup 0
@@ -102,13 +102,77 @@ poll_inputs() {
 	[ -z "$name" ] || printf '%s\n' "$name" >"$work/layout-name"
 }
 
+# Battery and supply reads go through the embedded controller and can block for seconds: AC, capacity, status.
+poll_power() {
+	ac=0 cap= bs=
+	for m in $mains; do read -r v 2>/dev/null <"$m" && [ "$v" = 1 ] && ac=1; done
+	if [ -n "$bat" ]; then
+		read -r cap 2>/dev/null <"$bat/capacity" || cap=
+		read -r bs 2>/dev/null <"$bat/status" || bs=
+	fi
+	printf '%s\n%s\n%s\n' "$ac" "$cap" "$bs" >"$work/.power" && mv "$work/.power" "$work/power"
+}
+
+# Temperature reads can wake idle cores and block like the battery: the package and the hottest sensor.
+poll_sensors() {
+	awk '
+	function get(path, value) {
+		if ((getline value < path) <= 0) value=""
+		close(path)
+		return value
+	}
+	BEGIN {
+		package="-"; hottest="-"
+		# The dell_smm chip repeats the labelled dell_ddv sensors without names; skipped as in sys power.
+		for (i=1;i<ARGC;i++) if (ARGV[i] ~ /\/name$/) {
+			dir=ARGV[i]; sub(/\/[^/]+$/, "", dir)
+			chip[dir]=get(ARGV[i]); if (chip[dir] == "dell_ddv") ddv=1
+		}
+		for (i=1;i<ARGC;i++) {
+			path=ARGV[i]
+			if (path ~ /\/name$/) continue
+			value=get(path)
+			if (value !~ /^[0-9]+$/) continue
+			dir=path; sub(/\/[^/]+$/, "", dir)
+			# Read a chip name once, even when it exposes many cores.
+			if (!(dir in chip)) chip[dir]=get(dir "/name")
+			if (ddv && chip[dir] == "dell_smm") continue
+			if (hottest == "-" || value+0>hottest) hottest=value+0
+			label=path; sub(/_input$/, "_label", label)
+			if (chip[dir] == "coretemp" && get(label) == "Package id 0") package=value+0
+		}
+		if (package != "-") package=sprintf("%.0f",package/1000)
+		if (hottest != "-") hottest=sprintf("%.0f",hottest/1000)
+		print package, hottest
+		exit
+	}' /sys/class/hwmon/hwmon*/temp*_input /sys/class/hwmon/hwmon*/name >"$work/.sensors" &&
+		mv "$work/.sensors" "$work/sensors"
+}
+
 printf '{"version":1,"click_events":true}\n[\n'
-next_alerts=0 next_inputs=0 comma=
+next_alerts=0 next_inputs=0 next_sensors=0 comma=
 while :; do
-	stamp=$(date '+%s %a %m/%d %H:%M:%S')
-	wall=${stamp%% *}
 	read -r uptime rest </proc/uptime
 	now=${uptime%.*}
+	# Power every frame, sensors every 20 s; a frame waits at most 1 s for them, a stuck read not at all.
+	started=
+	if [ -z "$power_pid" ] || ! kill -0 "$power_pid" 2>/dev/null; then
+		{ poll_power && echo "$now" >"$work/power-at"; } & power_pid=$!
+		started=$power_pid
+	fi
+	if [ "$now" -ge "$next_sensors" ]; then
+		if [ -z "$sensors_pid" ] || ! kill -0 "$sensors_pid" 2>/dev/null; then
+			{ poll_sensors && echo "$now" >"$work/sensors-at"; } & sensors_pid=$!
+			started="$started $sensors_pid"
+			next_sensors=$((now + 20))
+		fi
+	fi
+	waited=0
+	for job in $started; do
+		while [ "$waited" -lt 10 ] && kill -0 "$job" 2>/dev/null; do sleep 0.1; waited=$((waited + 1)); done
+	done
+	stamp=$(date '+%s %a %m/%d %H:%M:%S')
+	wall=${stamp%% *}
 	if [ "$now" -ge "$next_alerts" ]; then
 		if [ -z "$alerts_pid" ] || ! kill -0 "$alerts_pid" 2>/dev/null; then
 			{ poll_alerts && echo "$now" >"$work/alerts-at"; } & alerts_pid=$!
@@ -127,9 +191,9 @@ while :; do
 	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
 	memtime=$(stat -c %Y "$st/guestmem" 2>/dev/null) || memtime=0
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
-	# One formatter per frame; procfs/sysfs reads need no helpers. UTF-8: the network
+	# One formatter per frame; procfs/sysfs reads that cannot block need no helpers. UTF-8: the network
 	# name is cut by characters.
-	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v mains="$mains" -v now="$now" -v mtime="$mtime" \
+	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
 		-v memtime="$memtime" -v wall="$wall" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
 		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
@@ -149,9 +213,10 @@ while :; do
 		}
 		return out "\""
 	}
-	function cached(name, stamp, at) {
+	function cached(name, stamp, age, at) {
+		if (age == "") age=180
 		at=get(work "/" stamp "-at")
-		return at ~ /^[0-9]+$/ && now>=at && now-at<=180 ? get(work "/" name) : ""
+		return at ~ /^[0-9]+$/ && now>=at && now-at<=age ? get(work "/" name) : ""
 	}
 	function block(text, color, name, markup) {
 		printf "%s{\"full_text\":%s", sep, json(text)
@@ -181,40 +246,17 @@ while :; do
 		idle=cpu[5]+cpu[6]; busy="-"
 		if (prev[1] != "" && total>prev[1] && idle>=prev[2] && idle-prev[2]<=total-prev[1])
 			busy=sprintf("%.0f",100*(1-(idle-prev[2])/(total-prev[1])))
-		lo=""; hi=""; package=prev[8]; hottest=prev[9]
-		# Temperature reads can wake idle cores: every 20 s, not every 5 s frame.
-		refresh=prev[7] == "" || now<prev[7] || now-prev[7]>=20
-		if (refresh) {
-			package="-"; hottest="-"
-			# The dell_smm chip repeats the labelled dell_ddv sensors without names; skipped as in sys power.
-			for (i=1;i<ARGC;i++) if (ARGV[i] ~ /\/name$/) {
-				dir=ARGV[i]; sub(/\/[^/]+$/, "", dir)
-				chip[dir]=get(ARGV[i]); if (chip[dir] == "dell_ddv") ddv=1
-			}
-		}
+		lo=""; hi=""
 		for (i=1;i<ARGC;i++) {
-			path=ARGV[i]
-			if ((!refresh && path !~ /scaling_cur_freq$/) || path ~ /\/name$/) continue
-			value=get(path)
+			value=get(ARGV[i])
 			if (value !~ /^[0-9]+$/) continue
-			if (path ~ /scaling_cur_freq$/) {
-				if (lo == "" || value+0<lo) lo=value+0
-				if (hi == "" || value+0>hi) hi=value+0
-			} else {
-				dir=path; sub(/\/[^/]+$/, "", dir)
-				# Read a chip name once per frame, even when it exposes many cores.
-				if (!(dir in chip)) chip[dir]=get(dir "/name")
-				if (ddv && chip[dir] == "dell_smm") continue
-				if (hottest == "-" || value+0>hottest) hottest=value+0
-				label=path; sub(/_input$/, "_label", label)
-				if (chip[dir] == "coretemp" && get(label) == "Package id 0") package=value+0
-			}
+			if (lo == "" || value+0<lo) lo=value+0
+			if (hi == "" || value+0>hi) hi=value+0
 		}
 		freq=lo == "" ? "-" : sprintf("%.1f-%.1f",lo/1000000,hi/1000000)
-		if (refresh) {
-			if (package != "-") package=sprintf("%.0f",package/1000)
-			if (hottest != "-") hottest=sprintf("%.0f",hottest/1000)
-		}
+		# Refreshed every 20 s; ? once the last reading is over 45 s old (a stuck read).
+		if (split(cached("sensors", "sensors", 45), temp, " ") == 2) {package=temp[1]; hottest=temp[2]}
+		else {package="?"; hottest="?"}
 		printf "%s[", comma
 		block("CPU " busy "% " freq "GHz " package "/" hottest "C", "")
 		while ((getline line < "/proc/meminfo") > 0) {split(line,m," "); mem[m[1]]=m[2]}
@@ -236,8 +278,8 @@ while :; do
 			prev[5] ~ /^[0-9]+$/ && prev[6] ~ /^[0-9]+$/ && tx+0>=prev[5]+0 && rx+0>=prev[6]+0)
 			rate=sprintf("NET tx %.1f rx %.1f Mb/s",(tx-prev[5])*8/elapsed/1000000,(rx-prev[6])*8/elapsed/1000000)
 		block(rate, "")
-		printf "%.0f %.0f %.2f %s %s %s %.0f %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
-			tx == "" ? "-" : tx,rx == "" ? "-" : rx,refresh ? now : prev[7],package,hottest > (work "/previous")
+		printf "%.0f %.0f %.2f %s %s %s\n",total,idle,uptime[1],iface == "" ? "-" : iface,
+			tx == "" ? "-" : tx,rx == "" ? "-" : rx > (work "/previous")
 		close(work "/previous")
 		while ((getline line < "/proc/mounts") > 0) {
 			split(line,m," ")
@@ -287,23 +329,24 @@ while :; do
 		days=int(uptime[1]/86400)
 		block(sprintf("UP %s%02d:%02d",days ? days "d " : "",int(uptime[1]/3600)%24,int(uptime[1]/60)%60), "")
 		block(clock, "")
-		ac=0; n=split(mains, m, " "); for (i=1; i<=n; i++) if (get(m[i]) == "1") ac=1
+		# Read every frame by poll_power; ? once the last reading is over 15 s old (a stuck read).
+		ac=0; cap=""; bs=""; power=work "/power"; at=get(work "/power-at")
+		stale=!(at ~ /^[0-9]+$/ && now>=at && now-at<=15)
+		if (!stale) {getline ac < power; getline cap < power; getline bs < power; close(power)}
 		if (bat == "") block("AC", "")
+		else if (stale) block("BAT ?", grey)
 		else {
-			# Every frame: unplugging and low charge must not wait for the sensor refresh.
-			cap=get(bat "/capacity"); bs=get(bat "/status")
 			color=""; level=(cap == "" ? "-" : cap) "%"
 			if (bs == "Charging") text="BAT " level " +"
 			else if (bs == "Discharging") {
 				text="BAT " level " -"
 				if (cap ~ /^[0-9]+$/) color=cap+0<15 ? red : cap+0<30 ? orange : ""
-			} else text=(ac || bs == "Full" ? "AC " : "") "BAT " level
+			} else text=(ac == "1" || bs == "Full" ? "AC " : "") "BAT " level
 			block(text, color)
 		}
 		printf "]\n"
 		exit
-	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq /sys/class/hwmon/hwmon*/temp*_input \
-		/sys/class/hwmon/hwmon*/name || exit 1
+	}' /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq || exit 1
 	comma=,
 	sleep 5
 done
