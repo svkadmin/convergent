@@ -100,12 +100,15 @@ save_choice() {
 	# Synced before the rename: a power cut must not leave an empty first choice.
 	printf '%s\n' "$2" >"$file" && chmod 0644 "$file" && sync "$file" &&
 		mv -f "$file" "/var/lib/convergent/power/$1" || die 'cannot save power choice'
+	rm -f "/run/convergent-power.bad-$1"
 }
-# An unreadable saved choice skips only itself; the rest of the run still applies.
+# An unreadable saved choice skips only itself; the rest of the run still applies. Logged once a boot.
 bad_choice() {
-	logger -p user.err -t power "invalid saved $1 choice; set it again with sys power $1" 2>/dev/null || :
+	if [ ! -e "/run/convergent-power.bad-$1" ]; then
+		logger -p user.warning -t power "invalid saved $1 choice; set it again with sys power $1" 2>/dev/null || :
+		: >"/run/convergent-power.bad-$1" || :
+	fi
 	echo "power: invalid saved $1 choice" >&2
-	rc=1
 }
 charge() {
 	case $1 in off) end=100; start=95; charge_type=Standard ;;
@@ -159,15 +162,18 @@ umask 022
 flock -x -w 60 9 || exit 1
 case ${1:-} in
 '')
-	[ "$#" = 0 ] || exit 2; src=$(source_now); seen=$src
-	# A manual profile lasts until the source changes; other supply events (USB-C) keep it.
+	[ "$#" = 0 ] || exit 2; src=$(source_now); seen=$src manual=
+	# A manual profile lasts until the source changes; other supply events (USB-C) apply it again.
 	if [ -e /run/convergent-power.manual ]; then
 		last=
 		read -r last 2>/dev/null </run/convergent-power.source || :
-		[ "$last" != "$seen" ] || exit 0
-		rm -f /run/convergent-power.manual || rc=1
+		read -r manual 2>/dev/null </run/convergent-power.manual || :
+		case $last:$manual in
+		"$seen":ac|"$seen":battery) src=$manual ;;
+		*) manual=; rm -f /run/convergent-power.manual || rc=1 ;;
+		esac
 	fi ;;
-ac|battery) [ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); : >/run/convergent-power.manual || rc=1 ;;
+ac|battery) [ "$#" = 1 ] || exit 2; src=$1; seen=$(source_now); manual=$1 ;;
 charge|thermal)
 	[ "$#" = 2 ] || die 'use power charge off|55-100 or power thermal quiet|balanced|performance'
 	"$1" "$2"
@@ -177,7 +183,6 @@ charge|thermal)
 	exit 0 ;;
 *) echo 'usage: power [ac|battery|charge off|55-100|thermal quiet|balanced|performance]' >&2; exit 2 ;;
 esac
-printf '%s\n' "$seen" >/run/convergent-power.source || rc=1
 if [ "$src" = ac ]; then epp=$ac_epp halt_poll=$ac_halt_poll; else epp=$bat_epp halt_poll=$bat_halt_poll; fi
 
 policies=0
@@ -202,6 +207,11 @@ profile=unknown
 file=$(mktemp /run/.convergent-power.XXXXXX) || exit 1
 printf '%s\n' "$profile" >"$file" && chmod 0644 "$file" &&
 	mv -f "$file" /run/convergent-power.profile || die 'cannot publish profile'
+# A manual profile is kept only once applied; a failed one leaves the next supply event to the source.
+if [ -n "$manual" ]; then
+	[ "$rc" = 0 ] && printf '%s\n' "$seen" >/run/convergent-power.source &&
+		printf '%s\n' "$manual" >/run/convergent-power.manual || { rm -f /run/convergent-power.manual; rc=1; }
+fi
 
 set_file /sys/module/kvm/parameters/halt_poll_ns "$halt_poll"
 # No charge choice leaves the firmware's charge mode, as no thermal choice leaves its profile.

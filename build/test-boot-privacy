@@ -920,15 +920,16 @@ echo 'test-boot-privacy: KVM halt polling passed'
 
 # Power choices: none leaves the firmware alone, an invalid one skips only itself, a new one is synced.
 sed -n '/^save_choice() {/,/^}/p; /^bad_choice() {/,/^}/p' "$power" |
-    sed "s|/var/lib/convergent/power|$work/power-state|g" >"$work/power-choice-lib"
+    sed -e "s|/var/lib/convergent/power|$work/power-state|g" -e "s|/run/|$work/power-run/|g" >"$work/power-choice-lib"
 sed -n '/^# No charge choice/,/^# Retry camera/p' "$power" | sed '$d' |
     sed "s|/var/lib/convergent/power/|$work/power-state/|g" >"$work/power-choices"
 check_script "$work/power-choice-lib"
 check_script "$work/power-choices"
 grep -q "$work/power-state/thermal" "$work/power-choices" || die 'power choices extraction'
-mkdir "$work/power-state"
+grep -q "$work/power-run/convergent-power.bad-" "$work/power-choice-lib" || die 'power choice marker extraction'
+mkdir "$work/power-state" "$work/power-run"
 (
-    logger() { :; }
+    logger() { echo "$*" >>"$work/power-logged"; }
     sync() { printf '%s\n' "$1" >>"$work/power-synced"; }
     charge() { echo "charge $1" >>"$work/power-calls"; }
     thermal() { echo "thermal $1" >>"$work/power-calls"; }
@@ -938,40 +939,93 @@ mkdir "$work/power-state"
     [ "$rc:$(cat "$work/power-calls")" = 0: ] || die 'no charge choice touched the firmware'
     : >"$work/power-state/charge"; echo balanced >"$work/power-state/thermal"
     choices
-    [ "$rc:$(cat "$work/power-calls")" = '1:thermal balanced' ] || die 'empty charge choice stopped the run'
+    [ "$rc:$(cat "$work/power-calls")" = '0:thermal balanced' ] || die 'empty charge choice stopped the run'
     echo 80 >"$work/power-state/charge"; echo hot >"$work/power-state/thermal"
     choices
-    [ "$rc:$(cat "$work/power-calls")" = '1:charge 80' ] || die 'invalid thermal choice not skipped'
+    [ "$rc:$(cat "$work/power-calls")" = '0:charge 80' ] || die 'invalid thermal choice not skipped'
+    # One warning a boot per invalid choice, not one per supply event; saving a new choice ends it.
+    choices; choices
+    printf -- '-p user.warning -t power invalid saved %s choice; set it again with sys power %s\n' charge charge thermal thermal |
+        cmp -s - "$work/power-logged" || die 'invalid choice warnings'
+    save_choice thermal balanced
+    echo hot >"$work/power-state/thermal"
+    choices
+    [ "$(grep -c 'saved thermal choice' "$work/power-logged")" = 2 ] || die 'a saved choice kept the warning marker'
     save_choice charge 75
     [ "$(cat "$work/power-state/charge")" = 75 ] || die 'charge choice not saved'
     grep -q "^$work/power-state/\.choice\.[A-Za-z0-9]\{6\}$" "$work/power-synced" || die 'choice not synced before the rename'
 )
 echo 'test-boot-privacy: power choices passed'
 
-# A manual profile survives supply events until the source changes.
-sed -n '/^case \${1:-} in$/,/convergent-power\.source || rc=1$/p' "$power" |
-    sed "s|/run/convergent-power\.|$work/power-run/convergent-power.|g" >"$work/power-source"
+# A manual profile survives supply events until the source changes, and is kept only once applied.
+awk '/^case \$\{1:-\} in$/ {copy = 1} copy {print} /^# A manual profile is kept only once applied/ {last = 1}
+    last && /^fi$/ {exit}' "$power" | sed "s|/run/|$work/power-run/|g" >"$work/power-source"
+sed -n '/^set_limit() {/,/^}/p' "$power" >"$work/power-limit"
 check_script "$work/power-source"
-grep -q "$work/power-run/convergent-power.manual" "$work/power-source" || die 'power source extraction'
-mkdir "$work/power-run"
+check_script "$work/power-limit"
+grep -q "$work/power-run/convergent-power.manual" "$work/power-source" && [ "$(tail -n 1 "$work/power-source")" = 'fi' ] ||
+    die 'power source extraction'
 (
+    . "$work/power-lib"
+    . "$work/power-limit"
+    logger() { :; }
     source_now() { echo "$fake"; }
+    cpu=$work/power-cpu cap=0 run=$work/power-run p=$work/power-cpu/policy0
+    mkdir -p "$p"
+    echo 0 >"$p/affected_cpus"; echo powersave >"$p/scaling_governor"
+    echo 4000000 >"$p/cpuinfo_max_freq"; echo 4000000 >"$p/scaling_max_freq"
+    echo balance_performance >"$p/energy_performance_preference"
+    # The run goes on past the profile (to the saved choices and the camera): its status is recorded after it.
     profile() {
-        rm -f "$work/power-applied"
-        (rc=0; . "$work/power-source"; [ "$rc" = 0 ] || exit 1; echo "$src" >"$work/power-applied")
+        rm -f "$work/power-status"
+        (rc=0 changed=0; set +e; . "$work/power-source"; echo "$rc" >"$work/power-status") 2>/dev/null
     }
-    manual=$work/power-run/convergent-power.manual
+    state() { echo "$(cat "$work/power-status") $(cat "$p/energy_performance_preference") $(cat "$run/convergent-power.profile")"; }
     fake=ac; profile battery
-    [ "$(cat "$work/power-applied"):$(cat "$work/power-run/convergent-power.source")" = battery:ac ] && [ -e "$manual" ] ||
+    [ "$(state):$(cat "$run/convergent-power.source"):$(cat "$run/convergent-power.manual")" = '0 power battery:ac:battery' ] ||
         die 'manual profile not recorded'
+    # A supply event on the same source applies it again.
+    echo balance_performance >"$p/energy_performance_preference"
     profile
-    [ ! -e "$work/power-applied" ] || die 'a supply event undid a manual profile'
+    [ "$(state)" = '0 power battery' ] && [ -e "$run/convergent-power.manual" ] || die 'a supply event undid a manual profile'
     fake=battery; profile
-    [ "$(cat "$work/power-applied")" = battery ] && [ ! -e "$manual" ] || die 'a source change kept the manual profile'
+    [ "$(state)" = '0 power battery' ] && [ ! -e "$run/convergent-power.manual" ] || die 'a source change kept the manual profile'
     fake=ac; profile
-    [ "$(cat "$work/power-applied"):$(cat "$work/power-run/convergent-power.source")" = ac:ac ] || die 'automatic profile'
+    [ "$(state)" = '0 balance_performance ac' ] || die 'automatic profile'
+    # A manual profile the hardware refuses is not kept, nor the manual one before it.
+    profile battery
+    rm "$p/energy_performance_preference"; mkdir "$p/energy_performance_preference"
+    profile ac
+    [ "$(cat "$work/power-status"):$(cat "$run/convergent-power.profile")" = 1:unknown ] &&
+        [ ! -e "$run/convergent-power.manual" ] || die 'a failed manual profile was kept'
+    rmdir "$p/energy_performance_preference"; echo power >"$p/energy_performance_preference"
+    profile
+    [ "$(state)" = '0 balance_performance ac' ] || die 'the source profile after a failed manual one'
 )
 echo 'test-boot-privacy: manual power profile passed'
+
+# The bar's exit ends the sensor worker's awk and waits a bounded time for a worker stuck in a read.
+sed -n '/^cleanup() {/,/^}/p' "$repo/tools/bar" >"$work/bar-cleanup"
+check_script "$work/bar-cleanup"
+(
+    . "$work/bar-cleanup"
+    work=$work/bar-work reader= alerts_pid= inputs_pid=
+    mkdir "$work"
+    # A read the kernel does not interrupt: TERM changes nothing.
+    (trap '' TERM; exec sleep 30) >/dev/null 2>&1 & power_pid=$!
+    { sleep 30 && :; } >/dev/null 2>&1 & sensors_pid=$!
+    i=0
+    until awk_pid=$(pgrep -P "$sensors_pid"); do [ "$i" -lt 50 ] || die 'sensor worker child'; sleep 0.1; i=$((i + 1)); done
+    start=$(date +%s)
+    cleanup
+    [ "$(($(date +%s) - start))" -le 4 ] || die 'bar exit waited for a stuck worker'
+    [ ! -e "$work" ] || die 'bar work directory kept'
+    i=0
+    while kill -0 "$awk_pid" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+    if kill -0 "$awk_pid" 2>/dev/null; then die 'sensor worker child outlived the bar'; fi
+    kill -KILL "$power_pid" 2>/dev/null || :
+)
+echo 'test-boot-privacy: bar exit passed'
 
 # devices allow warns for any HID interface, and names vendor-specific ones in any position.
 sed -n '/^allow_usb() {/,/^}/p' "$repo/tools/devices" >"$work/allow-usb"

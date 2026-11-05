@@ -241,7 +241,7 @@ daily() {
 # from this host, and ntpd keeps the residual. Once a boot, after this host first synchronizes; each node
 # until its step succeeds, bounded, while check reports it running. A DNS push waits on that clock: never during one.
 # The restart ends ntpd's back-off from an unsynced host (about 55 minutes). Ten failed tries a boot per node: each
-# holds the push lock.
+# holds the push lock. The heal's restart and a rebuild of a node clear its step and tries (firewall-heal, guests).
 fw_ntpd() {
 	[ -e "$sdir/guests/initialized" ] || return 0
 	[ ! -e "$run/fw-ntpd.fw1" ] || [ ! -e "$run/fw-ntpd.fw2" ] || return 0
@@ -255,7 +255,9 @@ fw_ntpd() {
 		if grep -Fq " $node=down " "$run/status/topology" 2>/dev/null; then continue; fi
 		# Nor one the heal observes: its restart takes this lock without waiting.
 		[ ! -e "$run/firewall-heal/$node" ] && [ ! -e "$run/firewall-heal/pair" ] || continue
-		tries=$(cat "$run/fw-ntpd.$node.tries" 2>/dev/null || echo 0)
+		tries=$(cat "$run/fw-ntpd.$node.tries" 2>/dev/null) || tries=0
+		# A garbled counter counts as none, not as spent.
+		case $tries in ''|*[!0-9]*|0?*) tries=0 ;; esac
 		[ "$tries" -lt 10 ] 2>/dev/null || continue
 		if ! timeout -k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 \
 			"$node" 'rdate -n 100.80.1.10 && rcctl restart ntpd' </dev/null >/dev/null 2>&1 9>&- 7>&-; then

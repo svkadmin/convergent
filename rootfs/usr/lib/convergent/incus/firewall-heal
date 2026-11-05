@@ -151,6 +151,8 @@ firewall_heal() (
                 printf '%s\n' "${uptime%.*}" >>"$heal/attempts" || exit 1
                 attempts=$((attempts + 1))
                 printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
+                # Under the DNS push lock: facts steps the restarted node's clock again.
+                rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries"
                 heal_note "$node $action requested; fw1 and fw2 both stopped or paused ($attempts/3)"
                 (
                     trap '' HUP INT TERM
@@ -220,6 +222,7 @@ firewall_heal() (
         attempts=$((attempts + 1))
         rm -f "$heal/$node"
         printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
+        rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries"
         heal_note "$node restart requested; $peer healthy MASTER on all registered segments ($attempts/3)"
         # Keep the lock until bounded mutators finish, including after a checker termination.
         (

@@ -122,9 +122,12 @@ echo 'test-topology: rollback/replay and commit fixtures passed'
 
 # Exercise the real snapshot loop: EOF used to erase the caller's rollback fingerprint.
 (
-    awk '/^rebuild_root\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/rebuild"
+    awk '/^rebuild_root\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" |
+        sed "s|/run/convergent/|$scratch/run/|g" >"$scratch/rebuild"
     [ -s "$scratch/rebuild" ]
     sh -n "$scratch/rebuild"
+    grep -q "$scratch/run/fw-ntpd" "$scratch/rebuild"
+    mkdir "$scratch/run"
     . "$scratch/rebuild"
     ic() {
         echo "$*" >>"$log"
@@ -150,9 +153,15 @@ echo 'test-topology: rollback/replay and commit fixtures passed'
         # A completed DNS push removed the marker before rollback.
         rm -f "$state/dns.stale"
         synced=no
+        touch "$scratch/run/fw-ntpd.$node" "$scratch/run/fw-ntpd.$node.tries"
         rebuild_root "$node" "$old"
         [ "$old" = fingerprint ]
         grep -qx "rebuild fingerprint $node" "$log"
+        # A rebuilt firewall's clock is stepped again (facts).
+        case $node in
+        fw1|fw2) [ ! -e "$scratch/run/fw-ntpd.$node" ] && [ ! -e "$scratch/run/fw-ntpd.$node.tries" ] || exit 1 ;;
+        *) [ -e "$scratch/run/fw-ntpd.$node" ] || exit 1 ;;
+        esac
     done
     # Cleanup disables errexit: neither marker failure may reach Incus.
     for node in fw1 fw2; do

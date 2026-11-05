@@ -16,8 +16,14 @@ work=$(mktemp -d "$XDG_RUNTIME_DIR/convergent-bar.XXXXXX") || exit 1
 reader= alerts_pid= inputs_pid= power_pid= sensors_pid=
 cleanup() {
 	trap - 0
+	# The sensor worker's awk goes too; a sysfs read stuck in the kernel holds the exit 2 s at most.
+	for child in $power_pid $sensors_pid; do pkill -P "$child" 2>/dev/null || :; done
 	for child in $reader $alerts_pid $inputs_pid $power_pid $sensors_pid; do kill "$child" 2>/dev/null || :; done
-	for child in $reader $alerts_pid $inputs_pid $power_pid $sensors_pid; do wait "$child" 2>/dev/null || :; done
+	for child in $reader $alerts_pid $inputs_pid; do wait "$child" 2>/dev/null || :; done
+	waited=0
+	for child in $power_pid $sensors_pid; do
+		while [ "$waited" -lt 20 ] && kill -0 "$child" 2>/dev/null; do sleep 0.1; waited=$((waited + 1)); done
+	done
 	rm -rf "$work"
 }
 trap cleanup 0

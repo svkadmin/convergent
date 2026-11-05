@@ -1343,6 +1343,8 @@ replace() {
 # In place, from an image: devices, MACs and seeds stay. An interrupted rebuild is redone whole.
 rebuild_root() {
     case $1 in fw1|fw2) touch "$state/dns.stale" && sync || return ;; esac
+    # Under the DNS push lock: facts steps the rebuilt firewall's clock again.
+    case $1 in fw1|fw2) rm -f "/run/convergent/fw-ntpd.$1" "/run/convergent/fw-ntpd.$1.tries" || return ;; esac
     ic query "/1.0/instances/$1/snapshots?recursion=1" >"$work/snapshots" || return
     jq -r '.[].name | split("/")[-1] | select(startswith("guests-"))' "$work/snapshots" >"$work/old-snapshots" || return
     while read -r old_snapshot; do ic snapshot delete "$1" "$old_snapshot" || return; done <"$work/old-snapshots"

@@ -345,7 +345,13 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     down=fw2 i=0
     while [ "$i" -lt 12 ]; do fw_ntpd; i=$((i + 1)); done
     { echo fw1; i=0; while [ "$i" -lt 10 ]; do echo fw2; i=$((i + 1)); done; } | cmp - "$work/ntpd-calls"
-    [ "$(cat "$run/fw-ntpd.fw2.tries")" = 10 ] && [ ! -e "$run/fw-ntpd.fw2" ]
+    [ "$(cat "$run/fw-ntpd.fw2.tries")" = 10 ] && [ ! -e "$run/fw-ntpd.fw2" ] || exit 1
+    # A garbled counter counts as none: the node is still stepped.
+    rm "$run"/fw-ntpd.*; : >"$work/ntpd-calls"
+    echo x >"$run/fw-ntpd.fw1.tries"; echo 08 >"$run/fw-ntpd.fw2.tries"
+    fw_ntpd
+    printf '%s\n' fw1 fw2 | cmp - "$work/ntpd-calls"
+    [ -e "$run/fw-ntpd.fw1" ] && [ "$(cat "$run/fw-ntpd.fw2.tries")" = 1 ] || exit 1
 )
 # Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
 sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |
