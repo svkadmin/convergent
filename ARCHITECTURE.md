@@ -134,7 +134,8 @@ sync link (`vio1`). Separate kernels keep a firewall failure away from the host 
 - DHCP on the work VLANs only. `dhcpd` syncs leases to the peer over the sync link; a replacement
   checkpoints and reseeds them.
 - Management: host-only SSH, NTP from the host, an exporter and TLS syslog to `svc`, default route
-  via `wan`. ntpd only slews, so the host steps each firewall's clock once per boot with rdate.
+  via `wan`. ntpd only slews, so the host steps each firewall's clock once per boot with rdate,
+  and again after the self-heal restarts or a rebuild replaces that firewall.
 
 #### Locks
 

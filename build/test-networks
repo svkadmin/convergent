@@ -39,6 +39,19 @@ done
 if CONVERGENT_CONFIG=$work/missing sh "$here/networks" registry "$work/missing-root" 2>"$work/error"; then exit 1; fi
 grep -q 'does not exist' "$work/error"
 [ ! -e "$work/missing-root" ]
+# tmp browsers share one range rule: each source's cap is below the rule's, so one cannot fill it. A flag, as
+# awk's exit runs END, which sets the status again.
+tmp_cap='/^pass in on \$if_web .* from \$a_tmp to ! <nonpublic> / {
+		n++; if (!match($0, /max-src-states [0-9]+, max [0-9]+\)/)) { bad = 1; next }
+		split(substr($0, RSTART, RLENGTH), v, /[ ,)]+/); if (v[2] + 0 >= v[4] + 0) bad = 1
+	}
+	END { exit bad || n != 1 }'
+for cap in '1000, max 2000:0' '3000, max 2000:1' '2000, max 2000:1' 'x, max 2000:1'; do
+	printf 'pass in on $if_web inet proto tcp from $a_tmp to ! <nonpublic> port 443 keep state (source-track rule, max-src-states %s)\n' \
+		"${cap%:*}" >"$work/tmp-cap"
+	status=0; awk "$tmp_cap" "$work/tmp-cap" || status=$?
+	[ "$status" = "${cap##*:}" ] || { echo "tmp cap check: max-src-states ${cap%:*} gave $status" >&2; exit 1; }
+done
 for topology in default changed; do
 	if [ "$topology" = changed ]; then
 		cat >"$CONVERGENT_CONFIG" <<'EOF'
@@ -123,12 +136,7 @@ EOF
 			print "pf states: " rules " capped rules, " sum " expanded, limit " limit
 			if (bad || rules != 19 || !limit || 2 * sum + headroom > limit) exit 1
 		}' "$fw/etc/pf.conf"
-	# tmp browsers share one range rule: each source's cap is below the rule's, so one cannot fill it.
-	awk '/^pass in on \$if_web .* from \$a_tmp to ! <nonpublic> / {
-			n++; if (!match($0, /max-src-states [0-9]+, max [0-9]+\)/)) exit 1
-			split(substr($0, RSTART, RLENGTH), v, /[ ,)]+/); if (v[2] + 0 >= v[4] + 0) exit 1
-		}
-		END { exit n != 1 }' "$fw/etc/pf.conf"
+	awk "$tmp_cap" "$fw/etc/pf.conf"
 	grep -Eq '^a_tmp += "[^{}]* - [^{}]*"$' "$fw/etc/pf.conf"
 	# Remmina draws on the same table; its one address makes each source cap rule-wide.
 	[ "$(grep -c '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf")" = 3 ]
