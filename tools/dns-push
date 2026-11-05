@@ -277,13 +277,15 @@ fi
 if [ "$mode" = auto ] && [ -f /var/lib/convergent/guests/dns.stale ]; then
 	if [ -f "$state/list.rpz" ]; then mode=local; else mode=full; fi
 fi
+. "$conf"
+# A release that changes BLOCKLIST_URL makes the refresh due; a legacy cache names no source.
 if [ "$mode" = auto ]; then
 	last=$(cat "$state/stamp" 2>/dev/null || :)
 	case $last in '' | *[!0-9]*) last=0 ;; esac
 	elapsed=$(( $(date +%s) - last ))
-	if [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ]; then exit 0; fi
+	if [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ] && { [ ! -f "$state/list.source" ] ||
+		[ "$(cat "$state/list.source")" = "${BLOCKLIST_URL:-}" ]; }; then exit 0; fi
 fi
-. "$conf"
 case ${BLOCKLIST_MAX_BYTES:-} in '' | *[!0-9]*) die "invalid size cap" ;; esac
 case ${BLOCKLIST_MIN_DOMAINS:-} in '' | *[!0-9]*) die "invalid entry minimum" ;; esac
 [ "$BLOCKLIST_MAX_BYTES" -gt 0 ] && [ "$BLOCKLIST_MIN_DOMAINS" -gt 0 ] || die "limits must be positive"

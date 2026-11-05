@@ -344,7 +344,8 @@ forwarding keep the host from routing.
   and IPv6 loopback and unspecified answers.
 - Built-in names and reverse records come from `local-names.conf` at build time. Owner records and
   the RPZ blocklist are validated and pushed together over SSH. A failed weekly download keeps the
-  last good list; owner exceptions exempt subdomains.
+  last good list; owner exceptions exempt subdomains. A release with a new `blocklist_url` downloads
+  from it within the hour.
 - `dns-push` holds its lock through validation, diff, confirmation and activation. Journals on
   the state partition restore the previous inputs on both firewalls; a commit marker keeps a
   completed push from being undone. Recovery stays pending until both firewalls answer.

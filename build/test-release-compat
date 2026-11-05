@@ -265,9 +265,11 @@ echo 'test-release-compat: sys update usb mounts only named FAT, exFAT, ext4 or 
 rsh() { fw=$1; (eval "$2"); }
 pfctl() {
     printf '%s %s\n' "$fw" "$*" >>"$work/pf-calls"
+    # Quiet: table and kill counts never reach the owner's terminal.
     case $* in
-    '-t update_src -T flush') op=flush ;;
-    '-k label -k update') op='kill' ;;
+    '-q -t update_src -T flush') op=flush ;;
+    '-q -k label -k update') op='kill' ;;
+    '-q -t update_src -T add 203.0.113.7 198.51.100.9') op=add ;;
     '-q -t update_src -T zero') op=zero ;;
     *) exit 97 ;;
     esac
@@ -283,7 +285,7 @@ for failed_fw in fw2 fw1; do
         : >"$work/pf-want"
         for fw in $fws; do
             touch "$work/$fw.flush" "$work/$fw.kill"
-            printf '%s\n' "$fw -t update_src -T flush" "$fw -k label -k update" >>"$work/pf-want"
+            printf '%s\n' "$fw -q -t update_src -T flush" "$fw -q -k label -k update" >>"$work/pf-want"
         done
         src_open=1
         if close_src 2>"$work/pf-error"; then
@@ -308,16 +310,26 @@ for failed_fw in fw2 fw1; do
         for fw in $fws; do [ ! -e "$work/$fw.flush" ] && [ ! -e "$work/$fw.kill" ]; done
     done
 done
-# A refresh clears the expiry stamp on both firewalls; a failed one stops the download.
+# A refresh re-adds the opening a restarted firewall lost, then clears the expiry stamp, on both firewalls.
+# A firewall mid-heal is named and skipped: the download still runs through the other.
+ips=' 203.0.113.7 198.51.100.9'
 for failed_fw in none fw2 fw1; do
-    : >"$work/pf-calls"
-    if (fault=zero; refresh_src) 2>"$work/pf-error"; then
-        [ "$failed_fw" = none ] || die "accepted a failed refresh on $failed_fw"
-        printf '%s\n' 'fw2 -q -t update_src -T zero' 'fw1 -q -t update_src -T zero' | cmp - "$work/pf-calls"
-    else
-        [ "$failed_fw" != none ] || { cat "$work/pf-error"; exit 1; }
-        grep -q "could not refresh the update source on $failed_fw" "$work/pf-error"
-    fi
+    for fault in add zero; do
+        : >"$work/pf-calls"
+        (refresh_src) 2>"$work/pf-error"
+        : >"$work/pf-want"
+        for fw in $fws; do
+            printf '%s\n' "$fw -q -t update_src -T add$ips" >>"$work/pf-want"
+            [ "$fw" = "$failed_fw" ] && [ "$fault" = add ] || printf '%s\n' "$fw -q -t update_src -T zero" >>"$work/pf-want"
+        done
+        cmp "$work/pf-want" "$work/pf-calls"
+        grep '^warning: ' "$work/pf-error" >"$work/pf-warned" || :
+        if [ "$failed_fw" = none ]; then
+            [ ! -s "$work/pf-error" ]
+        else
+            echo "warning: could not refresh the update source on $failed_fw" | cmp - "$work/pf-warned"
+        fi
+    done
 done
 # A manual pfctl -f reloads a file-backed table empty: the opening lives only in the kernel.
 grep -Eqx 'table <update_src>[[:space:]]+persist' "$repo/guests/fw/site/etc/pf.conf" || die 'update_src is not a plain persist table'
