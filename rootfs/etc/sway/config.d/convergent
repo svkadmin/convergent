@@ -41,10 +41,13 @@ bindsym --locked XF86MonBrightnessUp exec sys display bright +5
 bindsym Mod4+Escape exec swaylock -f
 # A minute after locking the screen goes dark; any input wakes it (NL keeps it on too).
 exec swayidle -w timeout 600 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaylock -f' timeout 660 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaymsg "output * power off"' resume 'swaymsg "output * power on"'
-bindswitch --locked lid:on exec swaylock -f
+# Nothing else acts on the lid: it turns the internal panel off and on; an external monitor stays.
+bindswitch --locked lid:on exec sh -c 'swaylock -f; for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power off ;; esac; done'
+bindswitch --locked lid:off exec sh -c 'for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power on ;; esac; done'
 mode "resize" {
     bindsym Mod4+Escape exec swaylock -f
-    bindswitch --locked lid:on exec swaylock -f
+    bindswitch --locked lid:on exec sh -c 'swaylock -f; for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power off ;; esac; done'
+    bindswitch --locked lid:off exec sh -c 'for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power on ;; esac; done'
 }
 
 # Screenshots saved and copied: an area, or the focused output.

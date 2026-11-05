@@ -225,7 +225,7 @@ display_watch() (
 	flock -n 8 || exit 0
 	# Sway's initial tick, sent after subscribing, closes the login/hotplug race.
 	swaymsg -m -r -t subscribe '["output","tick"]' | (
-		previous=
+		previous= failed= retries=0
 		while IFS= read -r event; do
 			next=$(
 				display_lock
@@ -235,11 +235,16 @@ display_watch() (
 				stamp=$(printf '%s\n' "$json" | jq -c 'sort_by(.name) | map([.name,.make,.model,.serial])') || exit 1
 				if [ "$stamp" != "$previous" ]; then
 					if [ -f "$profiles/$key.json" ]; then display_restore "$profiles/$key.json"
-					elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi || exit 1
+					elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi ||
+						{ printf '%s\n' "$stamp"; exit 1; }
 				fi
 				printf '%s\n' "$stamp"
-			) || continue
-			previous=$next
+			) && { previous=$next retries=0; continue; }
+			# A slow Sway call fails the apply and no hotplug may follow: a tick retries, three times per set.
+			[ "$next" = "$failed" ] || failed=$next retries=0
+			[ "$retries" -ge 3 ] && continue
+			retries=$((retries + 1))
+			(sleep 5; swaymsg -t send_tick >/dev/null 2>&1) 8>&- &
 		done
 	)
 )

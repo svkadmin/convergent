@@ -484,7 +484,8 @@ Symptom: none; do this once the laptop is in daily use.
 > A lost passphrase with no second one, or a damaged LUKS header without a backup, means the data
 > is gone. Keep the header backup on offline encrypted media.
 
-1. Add the passphrase and save the header:
+1. Add the passphrase and save the header. The boot prompt types only the US layout: first run
+   `sys keyboard next` until the bar shows `us`, and use printable ASCII only.
    ```sh
    sudo cryptsetup luksAddKey /dev/disk/by-partlabel/cv-state
    sudo cryptsetup luksHeaderBackup /dev/disk/by-partlabel/cv-state --header-backup-file <file>
@@ -494,8 +495,9 @@ Symptom: none; do this once the laptop is in daily use.
    sudo rm /var/lib/convergent/luks-header.sha256 && sudo facts boot
    sudo cryptsetup luksDump /dev/disk/by-partlabel/cv-state
    ```
+3. Reboot once and unlock with the new passphrase.
 
-Success: `luksDump` lists two keyslots.
+Success: `luksDump` lists two keyslots, and the new passphrase unlocks at boot.
 
 ## 11. Start over
 

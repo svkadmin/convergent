@@ -237,7 +237,8 @@ creating it if needed. Keep notes as plain `.md`: `:e name.md` opens one, `:w` s
 The form is `sys AREA [ACTION] [ARGS]`. The first action in each row of the table is the default.
 An unknown second word becomes an argument to that default: `sys backup /mnt/x proj` works, but
 `sys wifi foo` is a usage error. Missing arguments are prompted for; partial lists are usage
-errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No).
+errors. `sys help` lists actions and aliases. `*` marks actions that ask for `yes` (default No);
+a prompt left unanswered for a minute counts as No.
 
 `sys` without arguments (Super+m) opens an fzf menu: areas on the left; a dashboard, the selected
 status and commands on the right. The dashboard refreshes on entry; narrow panes hide the logo.
@@ -531,7 +532,8 @@ sudo devices allow tb <id>     # Thunderbolt tunnel until unplugged
 
 Only that identity passes to `wan`, as `eth1`. `wan` prefers the wired uplink and retries DHCP on a
 replug within its minute check. A replug returns within about two minutes: the checker re-adds the
-role once `wan` has not held the NIC for two runs. It does so three times an hour, then alerts.
+role once `wan` has not held the NIC for two runs. It does so three times an hour, then alerts and
+retries once the hour has passed.
 
 - `sys wired remove` removes the assignment and automatic attachment; the USBGuard approval stays.
 - Unplugging alone keeps the assignment.
@@ -598,7 +600,7 @@ also need USB approval. Not built: meeting compartments and screen sharing.
 | `sys dns allow example.org` | exempts a domain and its subdomains from the blocklist |
 | `sys dns unallow example.org` | removes the exception |
 
-Each edit shows a diff and asks `yes`. Names are lowercase; duplicate, invalid and built-in
+Each edit shows a diff and asks `yes`; no answer within a minute is No. Names are lowercase; duplicate, invalid and built-in
 conflicting names are refused. Non-A records, including their removal, need manual editing.
 Records grant no firewall access.
 
@@ -962,7 +964,8 @@ Restore: [RECOVERY 19](RECOVERY.md#19-restore-a-backup).
 ## Power and locking
 
 The screen locks after `idle_lock_minutes` idle (default 10) and turns off one minute later. `NL`
-in the bar pauses these idle actions; the lid and manual locking still work. `sys power lock`
+in the bar pauses these idle actions; the lid and manual locking still work. Closing the lid also
+turns the internal panel off until it opens; an external monitor stays on. `sys power lock`
 locks now. Privileged Sway idle inhibition stops browsers from suppressing the lock.
 
 The lock screen takes the owner's login password. A forgotten password is reset from the Recovery
