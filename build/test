@@ -2486,6 +2486,9 @@ maintenance_clean() {
     done
 }
 maintenance_clean || bad $LINENO
+# A due push (a rebuild's dns.stale) waits for the hourly dns-push auto, which holds off the restart and
+# starts the Unbound this block stops: in cv16c3 it ran at 18:42 and healed fw2 before the checker could.
+dns-push auto || bad $LINENO
 cv_time firewall-self-heal
 # A firewall that stops serving while its QEMU still answers: only the minute checker recovers it.
 (
@@ -2858,8 +2861,12 @@ fw_dns_both() {
 (
     set -e
     PS4='+CV-DNS '; set -x
-    trap 'ip link set cvuplink up' 0
+    inhibited=
+    trap 'ip link set cvuplink up; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping' 0
     trap 'exit 1' HUP INT TERM
+    # The heal's window outlives a DNS push (only its restart waits for the lock): the last block's reload
+    # and these restarts made one 180 s window, and the checker restarted fw2 mid-step (cv16c3).
+    [ -e /run/convergent/guests-stopping ] || { touch /run/convergent/guests-stopping; inhibited=1; }
     ip link set cvuplink down
     # A restart is a stop and a start, and the start alone may take Unbound's 120 s.
     for f in fw1 fw2; do fwssh "$f" 'rcctl stop unbound'; unbound_up "$f"; done
