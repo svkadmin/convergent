@@ -117,11 +117,14 @@ scan "$work/autostart"
 [ "$rc" = 0 ]
 # Same lines as sha256sum on the file: accepted baselines stay valid.
 sha256sum "$owner/.bashrc" "$owner/.config/sway/config" | LC_ALL=C sort | cmp - "$work/scan/autostart"
-truncate -s 1T "$owner/.bashrc"
+# An owner file over the cap is inventoried by size and times, at once.
+mkdir -p "$owner/.local/bin"
+truncate -s 1T "$owner/.local/bin/tool"
 scan "$work/autostart"
-[ "$rc" = 1 ] && [ "$elapsed" -lt 30 ] || exit 1
-grep -qx "autostart file over 67108864 bytes: $owner/.bashrc" "$work/scan.err"
-printf 'echo hi\n' >"$owner/.bashrc"
+[ "$rc" = 0 ] && [ "$elapsed" -lt 30 ] || exit 1
+grep -qxF "$(stat -c 'size=1099511627776 mtime=%Y ctime=%Z  %n' "$owner/.local/bin/tool")" "$work/scan/autostart"
+[ "$(wc -l <"$work/scan/autostart")" = 3 ]
+rm -r "$owner/.local"
 # The sway include check reads the same capped copy.
 truncate -s 67108865 "$owner/.config/sway/config"
 scan "$work/autostart"
@@ -139,4 +142,34 @@ printf 'include /etc/sway/config\n' >"$owner/.config/sway/config"
     scan "$work/autostart-fast"
     [ "$rc" != 0 ] && [ "$elapsed" -lt 15 ] || exit 1
 )
-echo 'check: the autostart scan fails oversized files at once and a hang at its deadline'
+echo 'check: the autostart scan inventories oversized files, fails oversized includes at once and a hang at its deadline'
+# Account diffs keep the user and the change, never a hash; other entries stay verbatim.
+sed -n '/^# Keep diffs private/,/^done <"\$list"$/p' "$repo/tools/check" | sed "s|\"/etc/|\"$work/etc/|g" >"$work/etc-diff"
+[ -s "$work/etc-diff" ]; sh -n "$work/etc-diff"
+if grep -q '"/etc/' "$work/etc-diff"; then exit 1; fi
+mkdir -p "$work/etc" "$work/accepted/etc" "$work/diff-run"
+printf 'shadow\npasswd\n' >"$work/etc-list"
+printf 'root:*:19000:0:::::\nowner:$y$j9T$oldsalt$oldhash:19000:0:99999:7:::\nlocked:!$y$j9T$ls$lh:19000::::::\nbin:!:19000::::::\n' >"$work/accepted/etc/shadow"
+sed 's/^owner:[^:]*:19000:/owner:$y$j9T$newsalt$newhash:19001:/' "$work/accepted/etc/shadow" >"$work/etc/shadow"
+printf 'owner:x:1000:1000::/home/owner:/bin/sh\n' >"$work/accepted/etc/passwd"
+printf 'owner:x:1000:1000::/home/owner:/bin/zsh\n' >"$work/etc/passwd"
+chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow"
+(
+    fixture=$work
+    work=$fixture/diff-run baseline=$fixture/accepted list=$fixture/etc-list ok=1
+    bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+    . "$fixture/etc-diff"
+    [ "$ok" = 0 ]
+    report=$work/report
+    if grep -qF '$y$' "$report"; then exit 1; fi
+    grep -qxF -- '-owner:<hash>:19000:0:99999:7:::' "$report"
+    grep -qxF -- '+owner:<hash>:19001:0:99999:7:::' "$report"
+    grep -qxF -- ' locked:!<hash>:19000::::::' "$report"
+    grep -qxF -- ' root:*:19000:0:::::' "$report"
+    grep -qxF -- ' bin:!:19000::::::' "$report"
+    grep -qxF -- '+owner:x:1000:1000::/home/owner:/bin/zsh' "$report"
+    grep -qx "FAIL $fixture/etc/shadow differs from last acceptance" "$report"
+    grep -qx "FAIL $fixture/etc/passwd differs from last acceptance" "$report"
+)
+echo 'check: account diffs mask password hashes and keep the user and the change'
+

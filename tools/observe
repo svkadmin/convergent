@@ -81,6 +81,14 @@ now=$(date +%s)
         }
         END {for(n in state) printf "cv_guest_update_phase{project=\"default\",name=\"%s\"} %d\n",n,state[n]}
     ' "$@" || ok=0
+    # The journals that hold self-heal (as firewall-heal reads them) and the work DHCP hold, since their mtime.
+    for journal in preparing pending committed fw.handoff fw.topology leases/held; do
+        file=/var/lib/convergent/guests/$journal
+        [ -e "$file" ] || continue
+        if since=$(stat -c %Y -- "$file"); then
+            echo "cv_guest_journal_since_seconds{journal=\"$journal\"} $since"
+        else ok=0; fi
+    done
     echo "cv_collector_success{collector=\"guest_updates\"} $ok"
     echo "cv_collector_timestamp_seconds{collector=\"guest_updates\"} $now"
 } >"$tmp"

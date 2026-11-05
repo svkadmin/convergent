@@ -698,7 +698,7 @@ unknown.
 |---|---|
 | Path | `FirewallDown`, `WanWatchDown`, `WanWatchProbeFailed`, `WanWatchLocalFailed`, `CarpSplit` (both masters or none), `CarpFlapping`, `CarpMixedRoles`, `PfsyncNotReady`, `NoDefaultRoute`, `FirewallRulesetDrift`, `StateTableHigh`, `PfRuleStatesFull`, `WanConntrackHigh`, `UpstreamOverlap` |
 | DNS | `ResolverDown`, `ResolverStale`, `BlocklistStale`, `InternetProbeFailed` |
-| Compartments | `GuestStopped`, `ServiceDown`, `GuestOOM` |
+| Compartments | `GuestStopped`, `ServiceDown`, `GuestOOM`, `GuestJournalRetained` (a self-heal journal kept 12 h, the lease hold 2 h) |
 | Hardware and capacity | `NvmeSpareLow`, `NvmeErrors`, `BatteryLow`, `StateVolumeHigh`, `StateReadOnly`, `BtrfsDeviceErrors`, `VolumeQuotaHigh`, `ScrubNeedsAttention` |
 | Security and time | `SecureBootNotVerified`, `LockdownOff`, `KernelTainted`, `LuksHeaderChanged`, `AuditEvent`, `AuditRecordsLost`, `CertExpiry`, `ClockOffsetHigh`, `NtsUnauthenticated`, `CrashRecorded` |
 | Monitoring itself | `CollectorStale`, `CollectorBroken`, `CheckerFailed`, `CheckerStale`, `RuleEvaluationUnhealthy`, `ObservationStale`, `MonitoringWriteErrors`, `MonitoringReadOnly`, `MonitoringSignalsMissing`, `LogHeartbeatMissingHost`, `LogHeartbeatMissingFw1`, `LogHeartbeatMissingFw2`, `LogHeartbeatMissingWan` |
@@ -783,7 +783,9 @@ The baseline scan compares verity, the firewall ruleset hashes, the Incus, `tmp`
 profiles, the writable `etc` files, the autostart and SUID inventories, VFIO and device ownership
 and CARP against an accepted release; upstream connectivity is out of scope. Results feed
 `CheckerFailed` and `CheckerStale`. The autostart scan gives up after 120 s and reads at most 64 MiB
-of each owner file. Accepting a baseline:
+of each owner file; a larger file is inventoried by size and times, except Sway and i3 configs, which
+fail the scan. Account diffs in the report mask password hashes. A deleted or renamed autostart
+guest gets a scan within minutes. Accepting a baseline:
 [USAGE, Accept the new baseline](USAGE.md#accept-the-new-baseline). Generators in
 `guests/svc/dashboards` write the shipped JSON to `guests/svc/rootfs/usr/share/grafana/dashboards`;
 their README describes the checks and collection boundaries.

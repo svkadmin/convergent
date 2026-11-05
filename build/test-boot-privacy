@@ -297,13 +297,19 @@ EOF
             -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
     check_script "$work/stop"
     . "$work/stop"
-    mock_daemon() { printf '%s\n' "$*" >"$work/daemon"; return "$daemon_status"; }
+    mock_daemon() {
+        printf '%s\n' "$*" >"$work/daemon"
+        [ "$daemon_status" = 0 ] || echo 'start-stop-daemon: no matching processes found' >&2
+        return "$daemon_status"
+    }
     pidfile=$work/exited.pid
     for daemon_status in 0 1; do
         : >"$work/watchdog"
-        stop
+        stop 2>"$work/stop.err"
         [ "$(cat "$work/watchdog")" = V ]
         [ "$(cat "$work/daemon")" = "--stop --quiet --retry TERM/5 --pidfile $pidfile" ]
+        # bless disarms an exited feeder without a message on the owner's terminal.
+        [ ! -s "$work/stop.err" ]
     done
 
     # A start after bless (an owner's restart) must not arm a reset on a good release.
@@ -379,6 +385,62 @@ if grep -q '/usr/local/sbin/\|/var/lib/convergent\|/run/openrc' "$work/setup-sta
     done
 )
 echo 'test-boot-privacy: setup start passed'
+# convergent-setup: only shutdown drains the guests; a restart keeps them, a plain stop is refused.
+sed -n '/^stop() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-setup" |
+    sed 's|/bin/sh /usr/lib/convergent/incus/shutdown|mock_shutdown|' >"$work/setup-stop"
+check_script "$work/setup-stop"
+grep -q mock_shutdown "$work/setup-stop" || die 'setup stop: drain call not found'
+(
+    . "$work/setup-stop"
+    yesno() { case $1 in [Yy][Ee][Ss]|[Tt][Rr][Uu][Ee]|[Oo][Nn]|1) return 0 ;; *) return 1 ;; esac; }
+    ewarn() { echo "ewarn $*" >>"$work/setup-log"; }
+    eerror() { echo "eerror $*" >>"$work/setup-log"; }
+    ebegin() { echo "ebegin $*" >>"$work/setup-log"; }
+    eend() { echo "eend $1" >>"$work/setup-log"; return "$1"; }
+    mock_shutdown() { echo drain >>"$work/setup-log"; return "$drain_status"; }
+    drain_status=0
+    for scenario in restart stop no-cmd going-down going-down-failed; do
+        : >"$work/setup-log"
+        unset RC_CMD RC_GOINGDOWN
+        case $scenario in
+        restart) RC_CMD=restart ;;
+        stop) RC_CMD=stop ;;
+        no-cmd) RC_GOINGDOWN=NO ;;
+        going-down) RC_CMD=stop RC_GOINGDOWN=YES drain_status=0 ;;
+        going-down-failed) RC_CMD=stop RC_GOINGDOWN=YES drain_status=1 ;;
+        esac
+        rc=0; stop || rc=$?
+        case $scenario in
+        restart) [ "$rc" = 0 ] && grep -q '^ewarn guests keep running' "$work/setup-log" ;;
+        stop|no-cmd) [ "$rc" = 1 ] && grep -qx 'eerror guests are drained only at shutdown' "$work/setup-log" ;;
+        going-down) [ "$rc" = 0 ] && grep -qx drain "$work/setup-log" && grep -qx 'eend 0' "$work/setup-log" ;;
+        going-down-failed) [ "$rc" = 1 ] && grep -qx drain "$work/setup-log" && grep -qx 'eend 1' "$work/setup-log" ;;
+        esac || die "setup stop: $scenario"
+        case $scenario in going-down*) ;; *) if grep -qx drain "$work/setup-log"; then die "setup stop drained on $scenario"; fi ;; esac
+    done
+)
+# The failed-bless waiter recovers the guests only on a release slot already marks good.
+awk '/\/usr\/local\/sbin\/slot status/ {on = 1; next} on {print} on && /&& break$/ {exit}' \
+    "$repo/rootfs/etc/init.d/convergent-setup" |
+    sed -e "1s/^[[:space:]]*awk '\\\\''//" -e "\$s/'\\\\'' && break\$//" >"$work/waiter.awk"
+[ -s "$work/waiter.awk" ] && grep -q '^\$1 == "booted"' "$work/waiter.awk" && grep -q 'status\[s\] == "good")}$' "$work/waiter.awk" ||
+    die 'setup waiter: awk program not found'
+for scenario in good tries other-good low-highest unreadable-highest other-slot no-release; do
+    booted=202611032220 slot=a status=good good=202611032220 highest=202611032220 b=202610010000
+    case $scenario in
+    tries) status=2 ;;
+    other-good) good=202610010000 ;;
+    low-highest) highest=202610010000 ;;
+    unreadable-highest) highest=0 ;;
+    other-slot) slot=b ;;
+    no-release) booted=none ;;
+    esac
+    printf 'version 0.1.6\nbooted  %s  slot %s\nslot a  202611032220  %s\nslot b  %s  good\ngood    %s\nhighest %s\n' \
+        "$booted" "$slot" "$status" "$b" "$good" "$highest" >"$work/slot-status"
+    rc=0; awk -f "$work/waiter.awk" "$work/slot-status" || rc=$?
+    case $scenario in good) [ "$rc" = 0 ] ;; *) [ "$rc" = 1 ] ;; esac || die "setup waiter: $scenario"
+done
+echo 'test-boot-privacy: convergent-setup stop guard and failed-bless waiter passed'
 
 # Fixture sysfs and commands; never touch a partition or mapping.
 sed -n '/^grow_state() {/,/^}/p' "$repo/initramfs/90convergent/convergent-state.sh" |
