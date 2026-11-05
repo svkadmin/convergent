@@ -985,9 +985,9 @@ menu ([RECOVERY](RECOVERY.md#recovery-boot-menu)).
 
 Boot and AC events also apply the power profile. AC uses `balance_performance`, battery uses
 `power`; both apply `cpu_cap_khz` (default none). A manual choice lasts until the power source
-changes; other supply events (a USB-C dock) keep it. A manual choice that failed to apply is not
-kept. Only changes and failures are logged; an invalid saved charge or thermal choice is skipped
-with one warning a boot.
+changes; other supply events (a USB-C dock) keep it. A new manual choice that failed to apply is not
+kept; a kept one that fails on a later event is retried. Only changes and failures are logged; an
+invalid saved charge or thermal choice is skipped with one warning a boot.
 
 Dell's `charge_types` selects Custom or Standard. A limit does not discharge a battery that is
 already fuller. There is no charge or thermal override until you select one; an unreadable saved
