@@ -194,7 +194,10 @@ firewall_heal() (
         fi
         first=$now previous=$now peer_since=0
         [ ! -f "$heal/$node" ] || read -r first previous peer_since <"$heal/$node"
-        case $first:$previous:${peer_since:-0} in *[!0-9:]* | :* | *::*) first=$now previous=$now peer_since=0 ;; esac
+        # A garbled record restarts the window: arithmetic on it would end the heal.
+        for field in "$first" "$previous" "${peer_since:-0}"; do
+            case $field in '' | *[!0-9]* | 0?*) first=$now previous=$now peer_since=0; break ;; esac
+        done
         # Two missed minutes or a clock discontinuity break the window; one is a run that held the heal lock.
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now peer_since=0; fi
         # Since when the peer answers MASTER (0: not now): acting needs it in two runs in a row, as before the

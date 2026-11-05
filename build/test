@@ -1102,6 +1102,14 @@ test_peer=MASTER; tick 7600
 [ "$(attempts)" = "$before" ]
 tick 7660
 [ "$(attempts)" = "$((before + 1))" ]
+# A garbled window record restarts the window instead of ending the heal.
+# A recent previous field keeps the window: the garbled first or peer field is what gets read.
+for record in '1000:1 7700 0' '08 7700 0' '7500 7700 08' '7700' '1000 garbage 0'; do
+    rm -f "$work/run/firewall-heal/"*
+    printf '%s\n' "$record" >"$work/run/firewall-heal/fw2"
+    tick 7720
+    grep -q '^SELF-HEAL fw2: unhealthy for 0s;' "$work/report"
+done
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
     rm -f "$work/run/firewall-heal/"*
@@ -1228,7 +1236,7 @@ echo '3000 5000 4900' >"$work/run/firewall-heal/fw2"
 sweeps
 [ ! -s "$work/swept" ]
 # A garbled record holds nothing and does not end the run.
-echo '12x 5000' >"$work/run/firewall-heal/fw2"
+echo '08 5000' >"$work/run/firewall-heal/fw2"
 sweeps
 [ "$(wc -l <"$work/swept")" = 3 ]
 release

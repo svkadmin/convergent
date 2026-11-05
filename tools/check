@@ -280,8 +280,8 @@ heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n
     for observed in fw1 fw2 pair; do
         read -r heal_first heal_previous heal_peer 2>/dev/null </run/convergent/firewall-heal/$observed || continue
         # A garbled record holds nothing: arithmetic on it would end the whole run.
-        case $heal_first in '' | *[!0-9]*) continue ;; esac
-        case ${heal_peer:-0} in *[!0-9]*) heal_peer=0 ;; esac
+        case $heal_first in '' | *[!0-9]* | 0?*) continue ;; esac
+        case ${heal_peer:-0} in *[!0-9]* | 0?*) heal_peer=0 ;; esac
         if [ "${heal_peer:-0}" -gt 0 ] || [ "$((${heal_uptime%.*} - heal_first))" -lt 1800 ]; then sweep=0; fi
     done
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
