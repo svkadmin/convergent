@@ -492,6 +492,9 @@ if [ -n "${w1_stopped:-}" ]; then
 fi
 while read -r iface vhid parent label prefix gateway family <&3; do
 	source=pf-work-${parent#vlan}
+	# A fresh DISCOVER from a client still answering its old address makes a server's pre-offer ping abandon
+	# it, and that server then rejects the peer's sync for it: drop it first, as a client that lost its lease.
+	ic exec "$source" -- ip -4 addr flush dev eth0
 	ic exec "$source" -- udhcpc -i eth0 -s /run/w1-udhcpc -n -q -t 5 -T 3 || {
 		nft list chain bridge host-l2 work_gate | sed 's/^/CV-PF gate: /'
 		for f in fw1 fw2; do

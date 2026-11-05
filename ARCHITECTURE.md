@@ -739,8 +739,9 @@ flowchart TD
 The minute run of `check auto`: repairs first, then the baseline scan.
 
 - A firewall is restarted after 180 s of failed probes, and only while its peer is healthy and
-  MASTER on every registered segment. One missed minute does not restart the count; two do.
-- The heal rechecks the peer right before it acts.
+  MASTER on every registered segment in two runs in a row. One missed minute does not restart the
+  count; two do. A failed probe of the peer does not restart it either.
+- The heal rechecks both firewalls right before it acts: a node that now answers is left alone.
 - A QEMU Incus can no longer read is killed by the pid in its pid file, after the command line is
   checked to name the instance, and then started. `wan` and an inhibited QEMU are ended by hand
   ([RECOVERY 4](RECOVERY.md#a-frozen-guest-qemu)).
@@ -751,7 +752,9 @@ The minute run of `check auto`: repairs first, then the baseline scan.
   an hour at most, then reports a failure. `sys usb revoke` and enrolment remove the role once no
   USBGuard rule allows the NIC.
 - Attempts are logged to syslog and printed as `SELF-HEAL` lines in the checker report. While a
-  firewall is being watched, the browser and Remmina orphan sweeps wait.
+  firewall is being watched, the browser and Remmina orphan sweeps wait: while the heal can act on it,
+  and for up to 30 minutes otherwise. The Incus UI cleanup, which revokes an orphaned session's trust,
+  never waits.
 
 #### Logs
 

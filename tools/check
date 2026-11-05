@@ -269,19 +269,29 @@ if [ "${1:-}" = auto ]; then (
             }
     fi
 ); fi
-# Run before the daily scan throttle; cleanup takes the int session lock.
+# Run before the daily scan throttle; cleanup takes the int session lock. Never held back: it revokes the trust
+# of an orphaned Incus UI session.
 if [ "${1:-}" = auto ]; then
     /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
 fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
 # first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock. After
-# it they still overlapped the next minute's restart: both wait while the heal observes a firewall, unless it
-# has no restart left for two minutes (three an hour), or a firewall that stays broken stops them for good.
+# it they still overlapped the next minute's restart: they wait while the heal can act on a firewall (its peer
+# MASTER), else for 30 minutes of watching, unless it has no restart left for two minutes (three an hour).
 sweep=1
 read -r heal_uptime heal_rest </proc/uptime
 heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n + 0}' /run/convergent/firewall-heal/attempts 2>/dev/null) || heal_capped=0
 [ "$heal_capped" -ge 3 ] 2>/dev/null ||
-    for observed in fw1 fw2 pair; do [ ! -e "/run/convergent/firewall-heal/$observed" ] || sweep=0; done
+    for observed in fw1 fw2 pair; do
+        read -r heal_first heal_previous heal_peer 2>/dev/null </run/convergent/firewall-heal/$observed || continue
+        # A garbled record holds nothing: arithmetic on it would end the whole run.
+        heal_valid=1
+        for heal_field in "$heal_first" "$heal_previous" "${heal_peer:-0}"; do
+            case $heal_field in '' | *[!0-9]* | 0?*) heal_valid=0 ;; esac
+        done
+        [ "$heal_valid" = 1 ] || continue
+        if [ "${heal_peer:-0}" -gt 0 ] || [ "$((${heal_uptime%.*} - heal_first))" -lt 1800 ]; then sweep=0; fi
+    done
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
 fi
