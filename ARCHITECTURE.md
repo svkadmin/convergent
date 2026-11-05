@@ -699,7 +699,7 @@ unknown.
 |---|---|
 | Path | `FirewallDown`, `WanWatchDown`, `WanWatchProbeFailed`, `WanWatchLocalFailed`, `CarpSplit` (both masters or none), `CarpFlapping`, `CarpMixedRoles`, `PfsyncNotReady`, `NoDefaultRoute`, `FirewallRulesetDrift`, `StateTableHigh`, `PfRuleStatesFull`, `WanConntrackHigh`, `UpstreamOverlap` |
 | DNS | `ResolverDown`, `ResolverStale`, `BlocklistStale`, `InternetProbeFailed` |
-| Compartments | `GuestStopped`, `ServiceDown`, `GuestOOM`, `GuestJournalRetained` (a self-heal journal kept 12 h, the lease hold 2 h) |
+| Compartments | `GuestStopped`, `ServiceDown`, `GuestOOM`, `GuestJournalRetained` (a self-heal journal kept 12 h, the lease hold 4 h) |
 | Hardware and capacity | `NvmeSpareLow`, `NvmeErrors`, `BatteryLow`, `StateVolumeHigh`, `StateReadOnly`, `BtrfsDeviceErrors`, `VolumeQuotaHigh`, `ScrubNeedsAttention` |
 | Security and time | `SecureBootNotVerified`, `LockdownOff`, `KernelTainted`, `LuksHeaderChanged`, `AuditEvent`, `AuditRecordsLost`, `CertExpiry`, `ClockOffsetHigh`, `NtsUnauthenticated`, `CrashRecorded` |
 | Monitoring itself | `CollectorStale`, `CollectorBroken`, `CheckerFailed`, `CheckerStale`, `RuleEvaluationUnhealthy`, `ObservationStale`, `MonitoringWriteErrors`, `MonitoringReadOnly`, `MonitoringSignalsMissing`, `LogHeartbeatMissingHost`, `LogHeartbeatMissingFw1`, `LogHeartbeatMissingFw2`, `LogHeartbeatMissingWan` |

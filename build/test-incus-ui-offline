@@ -173,12 +173,17 @@ sh -n "$work/int-open"
 awk '/^    stop_container$/ {stop = NR} /^    \/usr\/local\/sbin\/incus-ui --unlock / {unlock = NR}
     END {exit !(stop && unlock > stop)}' "$repo/tools/browser"
 # Incus administration rebuilds an existing int from the installed image before it starts; Grafana does not.
-# A rebuild cut off by its timeout keeps the locks until Incus ends it (bounded), then dies.
-sed -n '/^if printf .*"\$instances" | jq -e --arg n "\$name" .any/,/^fi$/p' "$repo/tools/browser" >"$work/existing"
+# A rebuild cut off by its timeout keeps the locks until Incus ends it (300 s, not a poll count), then dies.
+sed -n '/^if printf .*"\$instances" | jq -e --arg n "\$name" .any/,/^fi$/p' "$repo/tools/browser" |
+    sed "s|/proc/uptime|$work/uptime|g" >"$work/existing"
 grep -qF 'if [ -n "$incus_ui" ] && ! ic rebuild candidate-browser "$name"; then' "$work/existing"
+grep -qF "$work/uptime" "$work/existing"
 sh -n "$work/existing"
+# Moves the fixture clock: an unanswered operations query takes its 30 s timeout.
+tick() { read -r now rest <"$work/uptime"; printf '%s.50 0.00\n' "$((${now%.*} + $1))" >"$work/uptime"; }
 for sample in ui grafana fail stuck; do
     rm -f "$work/existing-calls"
+    printf '1000.50 0.00\n' >"$work/uptime"
     rc=0
     (
         die() { echo "die $*" >>"$work/existing-calls"; exit 1; }
@@ -188,9 +193,10 @@ for sample in ui grafana fail stuck; do
         operations_done() {
             [ "$1" = int ] || exit 97
             echo ops >>"$work/existing-calls"
+            tick 30
             [ "$sample" = fail ] && [ "$(grep -cx ops "$work/existing-calls")" -ge 3 ]
         }
-        sleep() { [ "$*" = 5 ] || exit 97; echo sleep >>"$work/existing-calls"; }
+        sleep() { [ "$*" = 5 ] || exit 97; echo sleep >>"$work/existing-calls"; tick 5; }
         stop_container() { echo stop >>"$work/existing-calls"; }
         instances='[{"name":"int","status":"Running","type":"container","profiles":["browser-base","browser-int"]}]'
         name=int profile_base=browser-base profile_role=browser-int incus_ui=1
@@ -204,7 +210,8 @@ for sample in ui grafana fail stuck; do
         'die cannot reset the int browser for Incus administration' >"$work/expected" ;;
     stuck) [ "$rc" = 1 ]
         { printf '%s\n' stop 'rebuild candidate-browser int'
-            n=0; while [ "$n" -lt 60 ]; do printf '%s\n' ops sleep; n=$((n + 1)); done
+            # 1000 + 9 * 30 + 8 * 5 = 1310 passes the 1300 deadline.
+            n=0; while [ "$n" -lt 8 ]; do printf '%s\n' ops sleep; n=$((n + 1)); done
             printf '%s\n' ops 'die cannot reset the int browser for Incus administration'; } >"$work/expected" ;;
     esac
     cmp "$work/expected" "$work/existing-calls"
@@ -257,6 +264,49 @@ sh -n "$work/browser-ic"
         '-k 5 120 incus --force-local --project default rebuild candidate-browser int' \
         '-k 5 120 incus --force-local --project default config set def a=b' | cmp - "$work/ic-calls"
 )
+# Its queries too: the instance list and a device's settings.
+sed -n '/^instances_json() {/p; /^device() {/,/^}/p' "$repo/tools/browser" >"$work/browser-query"
+[ "$(grep -c '^instances_json() {\|^device() {' "$work/browser-query")" = 2 ]
+sh -n "$work/browser-query"
+(
+    . "$work/browser-query"
+    timeout() { [ "$1:$2:$3" = -k:1:30 ] || exit 97; shift 3; echo "timeout $*" >>"$work/query-calls"; "$@"; }
+    incus() { echo '{"devices":{"eth0":{}}}'; }
+    ic() { echo "ic $*" >>"$work/query-calls"; }
+    : >"$work/query-calls"
+    name=tmp-20
+    instances_json >/dev/null
+    device eth0 ipv4.address=100.80.3.20
+    device wayland source=/x
+    printf '%s\n' 'timeout incus --force-local query /1.0/instances?recursion=1&project=default' \
+        'timeout incus --force-local query /1.0/instances/tmp-20?project=default' 'ic config device set tmp-20 eth0 ipv4.address=100.80.3.20' \
+        'timeout incus --force-local query /1.0/instances/tmp-20?project=default' 'ic config device override tmp-20 wayland source=/x' |
+        cmp - "$work/query-calls"
+)
+# A stalled query ends with the timeout's status, before any device change (the launcher runs under -e).
+: >"$work/query-calls"
+if sh -eu -c '. "$1"; timeout() { return 124; }; incus() { exit 97; }; ic() { echo "ic $*" >>"$2"; }
+    name=tmp-20; device eth0 a=b' sh "$work/browser-query" "$work/query-calls"; then exit 1; fi
+[ ! -s "$work/query-calls" ]
+# Cleanup revokes the Incus UI trust even when listing or stopping int fails or times out.
+sed -n '/^cleanup() {/,/^}/p' "$repo/tools/browser" | sed 's|/usr/local/sbin/incus-ui|incus_ui_call|' >"$work/cleanup"
+grep -q '^    if \[ "\$role" = int \]; then$' "$work/cleanup"
+sh -n "$work/cleanup"
+for sample in failed timeout; do
+    : >"$work/cleanup-calls"
+    rc=0
+    (
+        . "$work/cleanup"
+        stop_container() { echo stop >>"$work/cleanup-calls"; case $sample in failed) return 1 ;; *) return 124 ;; esac; }
+        incus_ui_call() { echo "incus-ui $*" >>"$work/cleanup-calls"; }
+        guest_text() { cat >/dev/null; }
+        role=int active=1 run=$work/cleanup-run children= grafana= portal= browser= capture= cage= cage_capture=
+        true
+        cleanup
+    ) 2>/dev/null || rc=$?
+    [ "$rc" = 1 ]
+    printf '%s\n' stop 'incus-ui --close' | cmp - "$work/cleanup-calls"
+done
 # Force-close stops only the role's shipped browsers, under the launcher's locks.
 sed -n '/^if \[ "\${1:-}" = --close \] && \[ "\$(id -u)" = 0 \]; then$/,/^fi$/p' "$repo/tools/browser" >"$work/close"
 [ -s "$work/close" ]
@@ -267,6 +317,8 @@ cat >"$work/close-instances" <<'JSON'
   {"name":"int","status":"Stopped","type":"container","profiles":["browser-base","browser-int"]},
   {"name":"tmp-20","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-21","status":"Stopped","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-22","status":"Stopping","type":"container","profiles":["browser-base","browser-tmp"]},
+  {"name":"tmp-23","status":"Error","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-portal","status":"Frozen","type":"container","profiles":["browser-base","browser-tmp"]},
   {"name":"tmp-30","status":"Running","type":"container","profiles":["default"]},
   {"name":"tmp-200","status":"Running","type":"container","profiles":["browser-base","browser-tmp"]},
@@ -291,7 +343,9 @@ for sample in def int tmp usage locked failed; do
     case $sample in
     def) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop def --force' >"$work/expected"; grep -qx 'browser: closed def' "$work/close-out" ;;
     int) [ "$rc" = 0 ]; printf '%s\n' locks >"$work/expected"; grep -qx 'browser: no int browser is running' "$work/close-out" ;;
-    tmp) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'ic stop tmp-portal --force' >"$work/expected" ;;
+    # A browser stuck Stopping or in Error is still closed.
+    tmp) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'ic stop tmp-22 --force' 'ic stop tmp-23 --force' \
+        'ic stop tmp-portal --force' >"$work/expected" ;;
     usage) [ "$rc" = 1 ]; printf '%s\n' 'die usage: browser --close def|tmp|int' >"$work/expected" ;;
     locked) [ "$rc" = 1 ]; printf '%s\n' locks 'die guest update in progress' >"$work/expected" ;;
     failed) [ "$rc" = 1 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'die cannot stop tmp-20' >"$work/expected" ;;

@@ -868,8 +868,10 @@ sudo check accept-fw <guest-dir>/fw   # updated firewall hashes, same Secure Boo
 - Acceptance does not verify manifest signatures: verify the release yourself first.
 
 Check and accept wait up to 120 s for a minute run's locks. The autostart scan gives up after
-120 s and reads at most 64 MiB of each owner file; a larger file fails the check, and the report
-names it. Checks and timings: [ARCHITECTURE 8](ARCHITECTURE.md#8-observability).
+120 s and reads at most 64 MiB of each owner file; a larger Sway include fails the check, and the
+report names it. Any other larger file is inventoried by size and times: a restore, chmod or rename
+of it shows as changed until `check accept`. Checks and timings:
+[ARCHITECTURE 8](ARCHITECTURE.md#8-observability).
 
 ### Self-test and events
 

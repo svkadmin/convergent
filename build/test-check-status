@@ -122,8 +122,13 @@ mkdir -p "$owner/.local/bin"
 truncate -s 1T "$owner/.local/bin/tool"
 scan "$work/autostart"
 [ "$rc" = 0 ] && [ "$elapsed" -lt 30 ] || exit 1
-grep -qxF "$(stat -c 'size=1099511627776 mtime=%Y ctime=%Z  %n' "$owner/.local/bin/tool")" "$work/scan/autostart"
+grep -qxF "$(TZ=UTC0 stat -c 'size=1099511627776 mtime=%y ctime=%z  %n' "$owner/.local/bin/tool")" "$work/scan/autostart"
 [ "$(wc -l <"$work/scan/autostart")" = 3 ]
+# Times to the nanosecond in UTC: a same-second rewrite shows, a time zone change does not.
+grep -Eq '^size=1099511627776 mtime=[0-9-]+ [0-9:]+\.[0-9]{9} \+0000 ctime=[0-9-]+ [0-9:]+\.[0-9]{9} \+0000  ' "$work/scan/autostart"
+cp "$work/scan/autostart" "$work/scan/autostart.first"
+(TZ=IST-5:30; export TZ; scan "$work/autostart"; [ "$rc" = 0 ])
+cmp "$work/scan/autostart.first" "$work/scan/autostart"
 rm -r "$owner/.local"
 # The sway include check reads the same capped copy.
 truncate -s 67108865 "$owner/.config/sway/config"
@@ -148,12 +153,15 @@ sed -n '/^# Keep diffs private/,/^done <"\$list"$/p' "$repo/tools/check" | sed "
 [ -s "$work/etc-diff" ]; sh -n "$work/etc-diff"
 if grep -q '"/etc/' "$work/etc-diff"; then exit 1; fi
 mkdir -p "$work/etc" "$work/accepted/etc" "$work/diff-run"
-printf 'shadow\npasswd\n' >"$work/etc-list"
-printf 'root:*:19000:0:::::\nowner:$y$j9T$oldsalt$oldhash:19000:0:99999:7:::\nlocked:!$y$j9T$ls$lh:19000::::::\nbin:!:19000::::::\n' >"$work/accepted/etc/shadow"
+printf 'shadow\npasswd\ngshadow\n' >"$work/etc-list"
+printf 'root:*:19000:0:::::\nowner:$y$j9T$oldsalt$oldhash:19000:0:99999:7:::\nlocked:!$y$j9T$ls$lh:19000::::::\nstarred:*$y$j9T$ss$sh:19000::::::\nbin:!:19000::::::\n' >"$work/accepted/etc/shadow"
 sed 's/^owner:[^:]*:19000:/owner:$y$j9T$newsalt$newhash:19001:/' "$work/accepted/etc/shadow" >"$work/etc/shadow"
 printf 'owner:x:1000:1000::/home/owner:/bin/sh\n' >"$work/accepted/etc/passwd"
 printf 'owner:x:1000:1000::/home/owner:/bin/zsh\n' >"$work/etc/passwd"
-chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow"
+# The changed last line has no newline: diff adds a marker line after it.
+printf 'adm:*::\nwheel:!$y$j9T$gs$gh::owner\n' >"$work/accepted/etc/gshadow"
+printf 'adm:*::\nwheel:!$y$j9T$ng$nh::owner' >"$work/etc/gshadow"
+chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow" "$work/etc/gshadow" "$work/accepted/etc/gshadow"
 (
     fixture=$work
     work=$fixture/diff-run baseline=$fixture/accepted list=$fixture/etc-list ok=1
@@ -165,6 +173,12 @@ chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow"
     grep -qxF -- '-owner:<hash>:19000:0:99999:7:::' "$report"
     grep -qxF -- '+owner:<hash>:19001:0:99999:7:::' "$report"
     grep -qxF -- ' locked:!<hash>:19000::::::' "$report"
+    grep -qxF -- ' starred:*<hash>:19000::::::' "$report"
+    grep -qxF -- ' adm:*::' "$report"
+    grep -qxF -- '-wheel:!<hash>::owner' "$report"
+    grep -qxF -- '+wheel:!<hash>::owner' "$report"
+    grep -qxF -- '\ No newline at end of file' "$report"
+    grep -qx "FAIL $fixture/etc/gshadow differs from last acceptance" "$report"
     grep -qxF -- ' root:*:19000:0:::::' "$report"
     grep -qxF -- ' bin:!:19000::::::' "$report"
     grep -qxF -- '+owner:x:1000:1000::/home/owner:/bin/zsh' "$report"

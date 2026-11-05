@@ -117,9 +117,9 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'Guest cgroup OOM kill: {{ $labels.name }}', dashboard: '/d/cv-compartments'}
       # A kept journal holds self-heal; leases/held also work DHCP. An open browser defers the next guests
-      # run for a working day, but never the lease resume.
+      # run for a working day, but never the lease resume; a slow pair update holds the lease for hours.
       - alert: GuestJournalRetained
-        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 7200) or (time() - cv_guest_journal_since_seconds > 43200)
+        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 14400) or (time() - cv_guest_journal_since_seconds > 43200)
         labels: {severity: warning}
         annotations: {summary: 'Guest journal {{ $labels.journal }} kept for hours: self-heal (and work DHCP for leases/held) held; close the browsers, then sys guests update', dashboard: '/d/cv-compartments'}
   - name: hardware-capacity
