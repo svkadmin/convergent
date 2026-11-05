@@ -2528,8 +2528,22 @@ cv_time firewall-self-heal
     broken= inhibited= frozen= leased= dhcpd=
     # fw-leases' resume: rcctl disable dropped the flags.
     dhcpd_on='rcctl enable dhcpd && rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags) && { rcctl check dhcpd >/dev/null || rcctl start dhcpd; }'
-    trap ': CV-TRAP; for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$dhcpd" ] || for f in fw1 fw2; do fwssh "$f" "$dhcpd_on" >/dev/null 2>&1 || :; done; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
+    trap ': CV-TRAP; [ -z "${watch_pid:-}" ] || kill "$watch_pid" 2>/dev/null || :; for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$dhcpd" ] || for f in fw1 fw2; do fwssh "$f" "$dhcpd_on" >/dev/null 2>&1 || :; done; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
     trap 'exit 1' HUP INT TERM
+    # Diagnostics: the heal's report, its windows and the running minute checks every 15 s, dumped on failure.
+    (
+        set +e; exec 2>/dev/null
+        while :; do
+            read -r up rest </proc/uptime
+            printf '== %s up %s checks %s\n' "$(date -u +%T)" "${up%.*}" "$(pgrep -fc 'check auto')"
+            sed 's/^/R /' /run/convergent/.firewall-heal
+            for w in fw1 fw2 pair fw1.restarted fw2.restarted; do
+                [ ! -f "/run/convergent/firewall-heal/$w" ] || printf 'W %s %s\n' "$w" "$(cat "/run/convergent/firewall-heal/$w")"
+            done
+            sleep 15
+        done
+    ) >/var/log/heal-watch.log &
+    watch_pid=$!
     # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
     # One 10 s probe each, beside the minute checker's and the diagnostics' SSH on a one-vCPU firewall,
@@ -2679,6 +2693,7 @@ cv_time firewall-self-heal
     done
 )
 [ "$?" = 0 ] || { trace_tail /var/log/firewall-self-heal-test.log
+    tail -n 400 /var/log/heal-watch.log 2>/dev/null | sed 's/^/CV-HW /' | cut -c1-220
     sed 's/^/CV-HEAL state /' /var/lib/convergent/check/firewall-heal 2>/dev/null | tail -n 10 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
