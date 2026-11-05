@@ -308,6 +308,15 @@ if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     scan=$(sed -n 's/^Scan: //p' "$state/last")
     [ -n "$scan" ] && grep -qxF "# scan $scan" "$out/checker.prom" 2>/dev/null &&
         grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
+    # A deleted or renamed autostart guest keeps GuestStopped firing until the next scan: scan now.
+    # No answer keeps the interval (and the alert).
+    if [ "$interval" = 86400 ] &&
+        instances=$(timeout -k 1 10 incus --force-local list --all-projects --fast --format json 9>&- 8>&- 7>&- 2>/dev/null) &&
+        instances=$(printf '%s\n' "$instances" | jq -er '.[] | "\(.project // "default"),\(.name)"' 2>/dev/null); then
+        for guest in $(sed -n 's/^cv_guest_expected_running{project="\([A-Za-z0-9_.-]*\)",name="\([A-Za-z0-9_.-]*\)"} 1$/\1,\2/p' "$out/checker.prom"); do
+            printf '%s\n' "$instances" | grep -qxF -- "$guest" || interval=0
+        done
+    fi
     boot=$(awk '$1 == "btime" {print $2}' /proc/stat)
     elapsed=$(($(date +%s) - last))
     if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$interval" ] &&
@@ -388,8 +397,15 @@ autostart() {
                 [ ! -L "$file" ] || { echo "autostart symlink: $file" >&2; exit 1; }
                 case $file in *[[:cntrl:]\\]*) echo "autostart name with a control byte or backslash" >&2; exit 1 ;; esac
                 head -c "$((cap + 1))" -- "$file" >"$copy" || exit 1
-                [ "$(stat -c %s -- "$copy")" -le "$cap" ] || { echo "autostart file over $cap bytes: $file" >&2; exit 1; }
                 relative=${file#/home/}; relative=${relative#*/}
+                if [ "$(stat -c %s -- "$copy")" -gt "$cap" ]; then
+                    # Includes need the content. A larger binary: its size and times; no owner sets ctime back.
+                    case $relative in .sway/*|.i3/*|.config/sway/*|.config/i3/*)
+                        echo "autostart file over $cap bytes: $file" >&2; exit 1 ;;
+                    esac
+                    stat -c "size=%s mtime=%Y ctime=%Z  %n" -- "$file" || exit 1
+                    continue
+                fi
                 case $relative in
                 .sway/*|.i3/*|.config/sway/*|.config/i3/*)
                     # Includes must stay in scanned trees or the verified system config.
@@ -490,10 +506,16 @@ if [ "${1:-}" = accept-fw ]; then
     done
 fi
 
-# Keep diffs private: account databases can contain password hashes.
+# Keep diffs private: account databases can contain password hashes. The report masks them and keeps
+# the user, the lock prefix and that the line changed.
 while IFS= read -r entry; do
     case $entry in ''|'#'*) continue ;; esac
-    diff -ruN -- "$baseline/etc/$entry" "/etc/$entry" >>"$work/report" 2>&1 || bad "/etc/$entry differs from last acceptance"
+    case $entry in
+    shadow|gshadow) mask='/^(--- |\+\+\+ )/!s/^([-+ ][^:]*):(!*)[^:!*][^:]*/\1:\2<hash>/' ;;
+    *) mask= ;;
+    esac
+    diff -ruN -- "$baseline/etc/$entry" "/etc/$entry" >"$work/diff" 2>&1 || bad "/etc/$entry differs from last acceptance"
+    sed -E "$mask" "$work/diff" >>"$work/report" || bad "/etc/$entry diff unreadable"
     [ ! -L "/etc/$entry" ] || bad "/etc/$entry is a symlink"
     [ -e "$baseline/etc/$entry" ] && [ -e "/etc/$entry" ] || bad "missing /etc/$entry or accepted copy"
     [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"

@@ -37,7 +37,8 @@ start() {
 }
 
 stop() {
-	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile" || :
+	# Quiet: after ten minutes the feeder has exited, and --quiet still prints "no matching processes".
+	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile" 2>/dev/null || :
 	# An already-exited feeder can still leave the watchdog armed.
 	[ -c /dev/watchdog ] && printf V >/dev/watchdog
 }

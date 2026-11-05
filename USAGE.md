@@ -835,6 +835,7 @@ severity, name, summary and active-since time. Read alert names, not counts.
 | `PfRuleStatesFull` | a forwarding rule hit its state cap; its new flows drop unlogged | Grafana, Network |
 | `WanConntrackHigh` | `wan`'s NAT table is over 80 %; new NAT flows drop when it fills | Grafana, Network |
 | `CrashRecorded` | an unacknowledged kernel crash record | [RECOVERY 13](RECOVERY.md#13-a-kernel-panic-or-crashrecorded-alert) |
+| `GuestJournalRetained` | a cut guest run left a journal or the work DHCP hold; self-heal waits | close the browsers, then `sys guests update` ([RECOVERY 4](RECOVERY.md#4-guests-init-or-guests-update-stopped)) |
 
 Secure Boot off also raises `CheckerFailed`. No accepted baseline also produces `CollectorBroken`.
 `FirewallRulesetDrift` needs an expected hash and reports mismatches. Invalid or unavailable

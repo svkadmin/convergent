@@ -278,7 +278,9 @@ printf '%s\n' "$VERSION" >"$root/usr/lib/convergent/version"
 mkdir -p "$root/dev" "$root/proc" "$root/sys" "$root/run" "$root/home" "$root/tmp" "$root/var" "$root/srv"
 # The audit watches need their directories before the first guests init, check or dns-push.
 install -d -m 0700 "$root/var/lib/convergent/ssh" "$root/var/lib/convergent/check" "$root/var/lib/convergent/dns"
-# Every writable /etc entry must exist in the image: the initramfs binds over it.
+# Every writable /etc entry must exist in the image: the initramfs binds over it. machine-id stays empty,
+# so the initramfs makes one per install and no copy of this image shares one.
+rm -f "$root/etc/machine-id"
 grep -v '^#' "$root/usr/lib/convergent/etc-state" | while read -r entry; do
 	[ -n "$entry" ] && [ ! -e "$root/etc/$entry" ] || continue
 	mkdir -p "$(dirname "$root/etc/$entry")"

@@ -43,6 +43,9 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
         (set +e; set -- auto; net_ok=1; . "$fixture/throttle"; echo run) >"$fixture/due"
         if [ "$1" = yes ]; then grep -qx run "$fixture/due"; else [ ! -s "$fixture/due" ]; fi
     }
+    timeout() { [ "$1 $2 $3" = '-k 1 10' ] || exit 97; shift 3; "$@"; }
+    incus() { [ "$*" = '--force-local list --all-projects --fast --format json' ] || exit 97; [ "$listed" != none ] && echo "$listed"; }
+    listed=none
     for fault in none mktemp cat chmod mv; do
         for success in 0 1; do
             printf '# scan old-scan\ncv_checker_success 1\ncv_checker_last_run_seconds 100000\n' >"$out/checker.prom"
@@ -67,6 +70,18 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
             clock=99999; due yes
         done
     done
+    # A deleted or renamed autostart guest gets its scan now; no answer keeps the daily interval.
+    echo 'Scan: s1' >"$state/last"
+    printf '# scan s1\ncv_checker_success 1\n%s\n%s\n%s\n' 'cv_guest_expected_running{project="default",name="fw1"} 1' \
+        'cv_guest_expected_running{project="owner",name="vm"} 1' 'cv_guest_expected_running{project="default",name="old"} 0' >"$out/checker.prom"
+    clock=100300
+    listed='[{"name":"fw1","project":"default"},{"name":"vm","project":"owner"}]'; due no
+    listed='[{"name":"fw1"},{"name":"vm","project":"owner"}]'; due no
+    listed='[{"name":"fw1","project":"default"},{"name":"vm","project":"default"}]'; due yes
+    listed='[{"name":"vm","project":"owner"}]'; due yes
+    listed=none; due no
+    listed='[{"name":'; due no
+    listed=none
     # A pre-upgrade report has no identity; success still gets only five minutes.
     echo old-report >"$state/last"
     echo 'cv_checker_success 1' >"$out/checker.prom"
@@ -703,9 +718,35 @@ grep -q 'cv_btrfs_scrub_missing_since_seconds > time() - 86400' "$work/scrub-rul
 if grep -q node_boot_time_seconds "$work/scrub-rule"; then exit 1; fi
 sed -n '/- alert: BlocklistStale/{n;p;}' "$rules" >"$work/blocklist-rule"
 grep -q 'time() - convergent_dns_source_refreshed_seconds.* > 864000' "$work/blocklist-rule"
-grep -q 'unless on(node) convergent_dns_source_refreshed_seconds' "$work/blocklist-rule"
+# A firewall exporter outage is FirewallDown's, not a missing refresh.
+grep -qF '(up{job="node",node=~"fw1|fw2"} == 1 unless on(node) convergent_dns_source_refreshed_seconds)' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* <= 0' "$work/blocklist-rule"
 grep -q 'convergent_dns_source_refreshed_seconds.* > time()' "$work/blocklist-rule"
+# Kept journals and the lease hold publish their mtime; the lease hold alerts first.
+sed -n '/^    set -- "\$out\/checker.prom"$/,/cv_collector_timestamp_seconds.*guest_updates/p' "$repo/tools/observe" |
+    sed "s|/var/lib/convergent/guests|$work/journals|g" >"$work/journals.sh"
+[ -s "$work/journals.sh" ]; sh -n "$work/journals.sh"
+grep -q 'leases/held' "$work/journals.sh"
+mkdir -p "$work/journals/leases" "$work/journals-out"
+(
+    out=$work/journals-out now=100
+    : >"$out/checker.prom"
+    echo 'svc snap image' >"$work/journals/pending"
+    mkdir "$work/journals/fw.topology"
+    : >"$work/journals/leases/held"
+    touch -d @1000 "$work/journals/pending"
+    touch -d @2000 "$work/journals/fw.topology"
+    touch -d @3000 "$work/journals/leases/held"
+    . "$work/journals.sh" >"$work/journals.prom"
+    grep -qx 'cv_guest_journal_since_seconds{journal="pending"} 1000' "$work/journals.prom"
+    grep -qx 'cv_guest_journal_since_seconds{journal="fw.topology"} 2000' "$work/journals.prom"
+    grep -qx 'cv_guest_journal_since_seconds{journal="leases/held"} 3000' "$work/journals.prom"
+    [ "$(grep -c '^cv_guest_journal_since_seconds' "$work/journals.prom")" = 3 ]
+    grep -qx 'cv_guest_update_phase{project="default",name="svc"} 2' "$work/journals.prom"
+    grep -qx 'cv_collector_success{collector="guest_updates"} 1' "$work/journals.prom"
+)
+sed -n '/- alert: GuestJournalRetained/{n;p;}' "$rules" |
+    grep -qxF '        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 7200) or (time() - cv_guest_journal_since_seconds > 43200)'
 # A skipped WAN probe is a local fault; the transit alert reads probe_up only.
 sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up == 0'
 sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok == 0'

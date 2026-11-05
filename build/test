@@ -579,6 +579,23 @@ aaaa-0002'
 	if (. "$work/stable-check") 2>"$work/error"; then die 'stable image accepted the debug tool'; fi
 	grep -q 'carries the debug tool' "$work/error"
 	)
+	(
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	# The image ships every writable /etc entry, machine-id empty: the initramfs makes one per install.
+	sed -n '/^# Every writable \/etc entry/,/^done$/p' "$here/image" >"$work/etc-state"
+	grep -q 'install -m 0644 /dev/null' "$work/etc-state" || die 'etc-state seeding not found'
+	sh -n "$work/etc-state"
+	root=$work/root
+	mkdir -p "$root/etc" "$root/usr/lib/convergent"
+	cp "${here%/build}/rootfs/usr/lib/convergent/etc-state" "$root/usr/lib/convergent/etc-state"
+	echo 0123456789abcdef0123456789abcdef >"$root/etc/machine-id"
+	echo 'owner:x:1000:1000::/home/owner:/bin/sh' >"$root/etc/passwd"
+	. "$work/etc-state"
+	[ -f "$root/etc/machine-id" ] && [ ! -s "$root/etc/machine-id" ] || die 'image ships a machine-id'
+	grep -qx 'owner:x:1000:1000::/home/owner:/bin/sh' "$root/etc/passwd" || die 'image etc-state seeding changed passwd'
+	[ -f "$root/etc/usbguard/rules.conf" ] || die 'image lacks a writable /etc entry'
+	)
 	echo 'test: install options passed'
 	exit 0
 fi

@@ -90,7 +90,7 @@ groups:
         labels: {severity: warning}
         annotations: {summary: 'Resolver facts missing or older than three minutes on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: BlocklistStale
-        expr: (time() - convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > 864000) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} <= 0) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > time()) or (up{job="node",node=~"fw1|fw2"} unless on(node) convergent_dns_source_refreshed_seconds)
+        expr: (time() - convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > 864000) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} <= 0) or (convergent_dns_source_refreshed_seconds{node=~"fw1|fw2"} > time()) or (up{job="node",node=~"fw1|fw2"} == 1 unless on(node) convergent_dns_source_refreshed_seconds)
         labels: {severity: warning}
         annotations: {summary: 'RPZ source refresh missing, invalid or over 10 days old on {{ $labels.node }}', dashboard: '/d/cv-network-path'}
       - alert: InternetProbeFailed
@@ -116,6 +116,12 @@ groups:
         expr: increase(cv_guest_memory_events_total{event="oom_kill"}[5m]) > 0
         labels: {severity: critical}
         annotations: {summary: 'Guest cgroup OOM kill: {{ $labels.name }}', dashboard: '/d/cv-compartments'}
+      # A kept journal holds self-heal; leases/held also work DHCP. An open browser defers the next guests
+      # run for a working day, but never the lease resume.
+      - alert: GuestJournalRetained
+        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 7200) or (time() - cv_guest_journal_since_seconds > 43200)
+        labels: {severity: warning}
+        annotations: {summary: 'Guest journal {{ $labels.journal }} kept for hours: self-heal (and work DHCP for leases/held) held; close the browsers, then sys guests update', dashboard: '/d/cv-compartments'}
   - name: hardware-capacity
     interval: 1m
     concurrency: 1
