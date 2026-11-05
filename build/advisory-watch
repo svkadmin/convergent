@@ -1,0 +1,341 @@
+#!/bin/sh
+# CVE early warning: rescans the release, reads upstream feeds and queues what is new.
+#   build/advisory-watch [release-dir [guests-dir]]
+#   exit 0 nothing new, 1 new items queued, 2 the run failed
+# Tests: WATCH_FIXTURES=<dir> reads <dir>/<source> instead of fetching, WATCH_SKIP_SCAN=1 skips
+# build/advisories, WATCH_STATE=<dir> moves the state and WATCH_NOW=<epoch> (fixtures only) sets the clock.
+set -eu
+umask 077
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=${here%/build}
+. "$here/build.conf"
+die() { echo "advisory-watch: $*" >&2; exit 2; }
+[ "$#" -le 2 ] || die 'usage: build/advisory-watch [release-dir [guests-dir]]'
+[ "$(id -u)" = 0 ] || die 'run as root'
+for tool in python3 curl timeout; do
+	command -v "$tool" >/dev/null || die "$tool is required"
+done
+
+release=${1:-}
+if [ -z "$release" ]; then
+	# Release names are UTC timestamps; files in releases/ do not count.
+	for directory in "$BUILDER"/releases/*; do
+		[ ! -d "$directory" ] || release=$directory
+	done
+fi
+guests=${2:-$BUILDER/stick/guests}
+
+exec python3 -I - "$here" "$repo" "$release" "$guests" "${WATCH_STATE:-$BUILDER/advisory-watch}" <<'PY'
+import datetime as dt
+import fcntl
+import html.parser
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import unicodedata
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+here, repo, release, guests, state = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], Path(sys.argv[4]), Path(sys.argv[5])
+fixtures = os.environ.get('WATCH_FIXTURES', '')
+LIMIT = 5 * 1024 * 1024
+ATOM = '{http://www.w3.org/2005/Atom}'
+# The feed host redirects to plain HTTP unless asked not to.
+CHROME = 'https://chromereleases.googleblog.com/feeds/posts/default?redirect=false'
+TARGETS = 'host|kernel|guests|fw1|fw2|wan|svc|browser|remmina'
+now = dt.datetime.now(dt.timezone.utc)
+holding = False
+
+
+def require(condition, why):
+    if not condition:
+        raise ValueError(why)
+
+
+def clean(text):
+    # Untrusted text: no control or format characters, one line, at most 200 characters.
+    text = ''.join(c for c in str(text) if c.isspace() or unicodedata.category(c) not in ('Cc', 'Cf'))
+    return ' '.join(text.split())[:200]
+
+
+def https(url):
+    url = clean(url)
+    return url if re.fullmatch(r'https://[!-~]+', url) else ''
+
+
+def replace(path, text):
+    fd, temporary = tempfile.mkstemp(dir=state, prefix='.' + path.name + '.')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as file:
+            file.write(text)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        os.unlink(temporary)
+        raise
+
+
+def fetch(name, url, work):
+    if fixtures:
+        path = Path(fixtures) / name
+        require(path.is_file(), f'no fixture {name}')
+    else:
+        path = work / name
+        result = subprocess.run(['curl', '-q', '-fsSL', '--proto', '=https', '--proto-redir', '=https',
+                                 '--max-time', '60', '--retry', '2', '--max-filesize', str(LIMIT),
+                                 '-o', str(path), url], stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=300)
+        require(result.returncode == 0, f'curl exit {result.returncode}: {result.stderr.decode(errors="replace")}')
+    require(path.stat().st_size <= LIMIT, 'larger than 5 MiB')
+    return path.read_bytes()
+
+
+class Collect(html.parser.HTMLParser):
+    # Text and attributes of each <tag> element, and of the links inside it.
+    def __init__(self, tag, text):
+        super().__init__(convert_charrefs=True)
+        self.tag, self.items, self.current = tag, [], None
+        self.feed(text)
+        self.close()
+
+    def handle_starttag(self, tag, attrs):
+        attrs = {key: value or '' for key, value in attrs}
+        if tag == self.tag:
+            self.current = dict(attrs=attrs, links=[], text=[])
+            self.items.append(self.current)
+        elif tag == 'a' and self.current is not None:
+            self.current['links'].append(attrs)
+
+    def handle_endtag(self, tag):
+        # Errata are unclosed <li>: the list end closes them too.
+        if tag in (self.tag, 'ul', 'ol', 'body'):
+            self.current = None
+
+    def handle_data(self, data):
+        if self.current is not None:
+            self.current['text'].append(data)
+
+
+def atom(data):
+    require(not re.search(rb'<!(DOCTYPE|ENTITY)', data, re.I), 'DTD in feed')
+    root = ET.fromstring(data)
+    require(root.tag == ATOM + 'feed', 'not an Atom feed')
+    entries = []
+    for entry in root.findall(ATOM + 'entry'):
+        link = next((node.get('href', '') for node in entry.findall(ATOM + 'link')
+                     if node.get('rel', 'alternate') == 'alternate'), '')
+        entries.append((clean(entry.findtext(ATOM + 'id') or ''), clean(entry.findtext(ATOM + 'title') or ''), https(link)))
+    require(all(entry[0] for entry in entries), 'entry without id')
+    return entries
+
+
+def openssh(work):
+    page = 'https://www.openssh.com/releasenotes.html'
+    items = []
+    for heading in Collect('h3', fetch('openssh', page, work).decode('utf-8', 'replace')).items:
+        title = clean(''.join(heading['text']))
+        if not title.startswith('OpenSSH '):
+            continue
+        anchor = clean(next((link['id'] for link in heading['links'] if link.get('id')), title.split()[1]))
+        items.append((f'openssh:{anchor}', title, https(f'{page}#{anchor}')))
+    require(items, 'no release headings')
+    return items, len(items)
+
+
+def openbsd_version():
+    path = guests / 'fw/openbsd.version'
+    if path.is_file():
+        version = path.read_text().strip()
+    else:
+        versions = re.findall(r'^OPENBSD_VERSION=(\S+)$', (repo / 'guests/fw/pins').read_text(), re.M)
+        require(len(versions) == 1, 'missing/ambiguous OpenBSD version')
+        version = versions[0]
+    require(re.fullmatch(r'[0-9]+\.[0-9]+', version), 'invalid OpenBSD version')
+    return version
+
+
+def openbsd(work):
+    version = openbsd_version()
+    page = f'https://www.openbsd.org/errata{version.replace(".", "")}.html'
+    text = fetch('openbsd', page, work).decode('utf-8', 'replace')
+    require(re.search(r'<title>\s*OpenBSD\s+' + re.escape(version) + r'\s+Errata\s*</title>', text, re.I),
+            f'not the OpenBSD {version} errata page')
+    items = []
+    for entry in Collect('li', text).items:
+        match = re.fullmatch(r'p([0-9]{3}_[A-Za-z0-9_]+)', entry['attrs'].get('id', ''))
+        if match:
+            title = re.sub(r'\s*A source code patch exists.*', '', clean(''.join(entry['text'])))
+            items.append((f'openbsd:{version}:{match[1]}', title, f'{page}#p{match[1]}'))
+    # A new release may have none yet; build/advisories accepts the same marker.
+    require(items or re.search(r'no errata', text, re.I), 'no errata entries')
+    return items, len(items)
+
+
+def chrome(work):
+    entries = atom(fetch('chrome', CHROME, work))
+    items = [(f'chrome:{re.sub(r"^.*[.]post-", "", key)}', title, url) for key, title, url in entries
+             if 'Stable Channel Update for Desktop' in title]
+    require(items, 'no Stable Channel Update for Desktop entries')
+    return items, len(entries)
+
+
+def alpine(work):
+    items = [(f'alpine:{key}', title, url) for key, title, url in atom(fetch('alpine', 'https://alpinelinux.org/atom.xml', work))]
+    require(items, 'no entries')
+    return items, len(items)
+
+
+def oss_security(work, keywords):
+    month = now.strftime('%Y/%m')
+    index = f'https://www.openwall.com/lists/oss-security/{month}/'
+    text = fetch('oss-security', index, work).decode('utf-8', 'replace')
+    require(re.search(r'oss-security mailing list - ' + re.escape(month) + r'\b', text), f'not the {month} index')
+    messages = []
+    for link in Collect('a', text).items:
+        match = re.fullmatch(r'([0-9]{2})/([0-9]{1,5})', link['attrs'].get('href', ''))
+        if match:
+            messages.append((f'oss-security:{month}/{match[1]}/{match[2]}', clean(''.join(link['text'])),
+                             f'{index}{match[1]}/{match[2]}'))
+    # A month's first day may have no posts yet.
+    require(messages or now.day == 1, 'no messages')
+    return [message for message in messages if keywords.search(message[1])], len(messages)
+
+
+def scan():
+    require(release, 'no release under the builder')
+    report = state / 'scan.report'
+    fd = os.open(report, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        status = subprocess.run(['timeout', '-k', '30', '3600', 'sh', str(here / 'advisories'), release, str(guests)],
+                                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT).returncode
+    lines = report.read_text(errors='replace').splitlines()
+    # Item lines name the target and, last, the advisory; ACTION lines only sum them up.
+    items = []
+    for line in lines:
+        match = re.fullmatch(r'  (' + TARGETS + r'): (.+)', line)
+        if match:
+            detail = clean(match[2])
+            key = re.sub(r'\b[0-9]+ days old\b', 'N days old', detail)
+            items.append((f'scan:{match[1]}:{key}', f'{match[1]}: {detail}', ''))
+    unknown = [clean(line) for line in lines if 'UNKNOWN:' in line and 'no advisory coverage' not in line]
+    failure = None
+    if status not in (0, 1) or (status == 1 and not items):
+        failure = f'build/advisories exit {status}' + (f'; {unknown[0]}' if unknown else '')
+    return items, failure
+
+
+def keyword_pattern():
+    words = [line.strip() for line in (here / 'advisory-watch.keywords').read_text().splitlines() if line.strip()]
+    require(words and all(re.fullmatch(r'[a-z0-9][a-z0-9._+-]*( [a-z0-9][a-z0-9._+-]*)*', word) for word in words),
+            'advisory-watch.keywords: one lowercase word per line')
+    # Whole words, any case; a capital may end one: "victoria" matches VictoriaMetrics, "unbound" not "unbounded".
+    return re.compile('|'.join(r'(?<![A-Za-z0-9])(?i:' + re.escape(word) + r')(?![a-z0-9])' for word in words))
+
+
+def main():
+    global holding, now
+    os.umask(0o077)
+    sys.stdout.reconfigure(errors='replace')
+    if fixtures and os.environ.get('WATCH_NOW'):
+        require(re.fullmatch(r'[0-9]{1,11}', os.environ['WATCH_NOW']), 'invalid WATCH_NOW')
+        now = dt.datetime.fromtimestamp(int(os.environ['WATCH_NOW']), dt.timezone.utc)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = os.lstat(state)
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid(), f'{state}: not a directory owned by root')
+    os.chmod(state, 0o700)
+    lock = os.open(state / 'lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise ValueError('another run holds the lock') from None
+    holding = True
+    keywords = keyword_pattern()
+    stamp, day = now.strftime('%Y-%m-%dT%H:%M:%SZ'), now.strftime('%Y-%m-%d')
+    seen_path, queue_path = state / 'seen', state / 'queue'
+    seen = set(seen_path.read_text(encoding='utf-8').splitlines()) if seen_path.exists() else set()
+
+    found, rows, failures = [], [], []
+    if os.environ.get('WATCH_SKIP_SCAN') == '1':
+        print('advisory-watch: scan: skipped')
+    else:
+        try:
+            items, failure = scan()
+        except Exception as error:
+            items, failure = [], str(error)
+        found += [('scan', *item) for item in items]
+        rows.append(('scan', len(items), None, failure))
+        if failure:
+            failures.append(('scan', failure))
+    sources = [('openssh', openssh), ('openbsd', openbsd), ('chrome', chrome), ('alpine', alpine),
+               ('oss-security', lambda work: oss_security(work, keywords))]
+    with tempfile.TemporaryDirectory(dir=state, prefix='.fetch.') as work:
+        for name, read in sources:
+            try:
+                items, total = read(Path(work))
+            except Exception as error:
+                rows.append((name, 0, None, clean(error) or type(error).__name__))
+                failures.append((name, rows[-1][3]))
+                continue
+            found += [(name, *item) for item in items]
+            rows.append((name, len(items), total, None))
+    # Silence is not safety: a failing source is an item, once a day.
+    found += [(name, f'feed-failure:{name}:{day}', f'feed-failure {name}: {why}', '') for name, why in failures]
+
+    # WATCH_BASELINE=1 on a first install: feed history is marked seen, not queued; scan and failures still are.
+    baseline = os.environ.get('WATCH_BASELINE') == '1'
+    new, ids = [], set()
+    for source, key, title, url in found:
+        key = clean(key)
+        if key and key not in seen and key not in ids:
+            ids.add(key)
+            if baseline and source != 'scan' and not key.startswith('feed-failure:'):
+                continue
+            new.append((source, key, clean(title), https(url)))
+    fd = os.open(queue_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'a', encoding='utf-8') as queue:
+        queue.writelines(f'{stamp}\t{source}\t{key}\t{title}\t{url}\n' for source, key, title, url in new)
+        queue.flush()
+        os.fsync(queue.fileno())
+    # Queue first: a crash in between repeats items rather than losing them.
+    if new or not seen_path.exists():
+        replace(seen_path, ''.join(key + '\n' for key in sorted(seen | ids)))
+    status = 1 if new else 0
+    replace(state / 'last', f'{stamp} status={status} new={len(new)} failed={",".join(n for n, _ in failures) or "none"}\n')
+    for name in ('seen', 'queue', 'last', 'lock', 'scan.report'):
+        if (state / name).exists():
+            os.chmod(state / name, 0o600)
+
+    fresh = {}
+    for source, *_ in new:
+        fresh[source] = fresh.get(source, 0) + 1
+    for name, count, total, failure in rows:
+        if failure:
+            queued = 'queued' if f'feed-failure:{name}:{day}' in ids else 'already queued today'
+            print(f'advisory-watch: {name}: FAILED ({failure}); {queued}')
+        else:
+            counted = f'{count} of {total}' if total is not None and total != count else str(count)
+            print(f'advisory-watch: {name}: {counted} items, {fresh.get(name, 0)} new')
+    for source, key, title, url in new[:50]:
+        print(f'  new {source}: {title} {url}'.rstrip())
+    if len(new) > 50:
+        print(f'  ... {len(new) - 50} more')
+    print(f'advisory-watch: {len(new)} new items in {queue_path}' if new else 'advisory-watch: nothing new')
+    return status
+
+
+try:
+    sys.exit(main())
+except Exception as error:
+    print(f'advisory-watch: {clean(error) or type(error).__name__}', file=sys.stderr)
+    if holding:
+        try:
+            replace(state / 'last', f'{now.strftime("%Y-%m-%dT%H:%M:%SZ")} status=2 error={clean(error)}\n')
+        except Exception:
+            pass
+    sys.exit(2)
+PY

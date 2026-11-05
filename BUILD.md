@@ -438,6 +438,28 @@ Daily and weekly reports also compare the pinned Gentoo `www-apps/incus-ui` (ups
 `incus-ui-canonical`) with Zabbly lts-7.0, verifying `InRelease` with
 4EFC590696CB15B87C73A3AD82CC8797C838DCFD. The publish gate skips this freshness check.
 
+### Watch
+
+`build/advisory-watch [release-dir [guests-dir]]` gives early warning between scans. It runs as
+root, scans like the [weekly scan](#weekly-scan) and then reads:
+
+- OpenSSH release notes and OpenBSD errata for the shipped release;
+- Chrome stable desktop updates and Alpine news;
+- this month's oss-security subjects that match `build/advisory-watch.keywords`.
+
+It appends each new item to `/var/lib/convergent/builder/advisory-watch/queue` as one TSV line:
+time, source, ID, title and URL. A source that fails or yields nothing queues
+`feed-failure <source>` once a day. Exit 0 means nothing new, 1 new items and 2 a failed run. On
+the first run, `WATCH_BASELINE=1` marks the feeds' existing history as seen instead of queueing it.
+
+To run it every 4 hours, add `/etc/cron.d/advisory-watch`:
+
+```sh
+0 */4 * * * root sh <repo>/build/advisory-watch >/dev/null
+```
+
+Cron mails only errors. Offline fixtures: `sh build/test-advisory-watch`.
+
 ## Diagnostics
 
 Diagnostics are beta-only and run as root on the builder.
