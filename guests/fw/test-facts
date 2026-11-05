@@ -184,6 +184,8 @@ sh -n "$work/run-rcctl"
 failed= calls=$work/calls rcctl_calls=$work/rcctl-calls sh "$work/run-rcctl"
 [ "$(grep -c '^rcctl start ' "$work/rcctl-calls")" = 1 ]
 grep -qx 'rcctl start node_exporter' "$work/rcctl-calls"
+# Bounded: a wedged daemon must not stall the minute's facts.
+grep -qx 'rcctl start node_exporter' "$work/calls"
 grep -qx 'logger -t fw-facts node_exporter restarted' "$work/rcctl-calls"
 grep -qx 'rcctl get pflog_stream status' "$work/rcctl-calls"
 if grep -q dhcpd "$work/rcctl-calls"; then exit 1; fi

@@ -702,5 +702,7 @@ for sample in absent higher malformed unreadable; do
 done
 # A lookup error is not absence: a state directory that cannot be listed refuses.
 (. "$work/num-strict"; stm=$work/floor/good; num_strict highest) >/dev/null 2>&1 && die 'slot write floor: unlistable state read as 0'
+# EIO: the name is listed but the lookup fails.
+(. "$work/num-strict"; stm=$work/floor-eio; ls() { echo highest; }; num_strict highest) >/dev/null 2>&1 && die 'slot write floor: failed lookup read as 0'
 (. "$work/num-strict"; stm=$work/floor; [ "$(num_strict missing)" = 0 ]) || die 'slot write floor: absent file not 0'
 echo 'test-slot-backup: slot write rollback floor passed'

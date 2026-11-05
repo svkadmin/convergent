@@ -444,13 +444,14 @@ grep -q "password=\$(timeout --foreground -k 1 120 sh -c 'IFS= read -r p <" "$wo
 grep -qxF "        prompt 'New Incus UI passphrase: ' 12" "$repo/tools/incus-ui"
 grep -qxF "        prompt 'Incus UI passphrase: '" "$repo/tools/incus-ui"
 mkdir "$work/prompt-scratch"
-for sample in short exact bytes unlock empty; do
+for sample in short exact bytes unlock spaces empty; do
     min=12
     case $sample in
     short) pass='eleven byte' ;;
     exact) pass='twelve bytes' ;;
     bytes) pass=$(printf '\303\251\303\251\303\251345678') ;; # 9 characters, 12 bytes
     unlock) pass=x min= ;;
+    spaces) pass=' back\slash  ' min= ;;
     empty) pass= min= ;;
     esac
     printf '%s\n' "$pass" >"$work/tty-in"
