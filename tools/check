@@ -276,12 +276,17 @@ fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
 # first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock. After
 # it they still overlapped the next minute's restart: both wait while the heal observes a firewall, unless it
-# has no restart left for two minutes (three an hour), or a firewall that stays broken stops them for good.
+# has no restart left for two minutes (three an hour) or has watched for 30 minutes (no peer to act on).
 sweep=1
 read -r heal_uptime heal_rest </proc/uptime
 heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n + 0}' /run/convergent/firewall-heal/attempts 2>/dev/null) || heal_capped=0
 [ "$heal_capped" -ge 3 ] 2>/dev/null ||
-    for observed in fw1 fw2 pair; do [ ! -e "/run/convergent/firewall-heal/$observed" ] || sweep=0; done
+    for observed in fw1 fw2 pair; do
+        read -r heal_first heal_rest 2>/dev/null </run/convergent/firewall-heal/$observed || continue
+        # A garbled record holds nothing: arithmetic on it would end the whole run.
+        case $heal_first in '' | *[!0-9]*) continue ;; esac
+        [ "$((${heal_uptime%.*} - heal_first))" -ge 1800 ] || sweep=0
+    done
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
 fi

@@ -1082,6 +1082,15 @@ busy=0 failed=0 test_status=STOPPED
 )
 tick 6480
 grep -q 'default start fw2$' "$work/calls"
+# A peer probe that fails once (a loaded firewall) keeps the node's own window: the restart comes on time.
+rm -f "$work/run/firewall-heal/"*
+test_status=RUNNING test_target=down test_peer=MASTER failed=0
+before=$(attempts)
+tick 7000; test_peer=down; tick 7060
+[ -e "$work/run/firewall-heal/fw2" ] && [ "$(attempts)" = "$before" ]
+grep -qx 'SELF-HEAL fw2: unhealthy for 60s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
+test_peer=MASTER; tick 7120; [ "$(attempts)" = "$before" ]
+tick 7180; [ "$(attempts)" = "$((before + 1))" ]
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
     rm -f "$work/run/firewall-heal/"*
@@ -1189,6 +1198,22 @@ printf '%s\n' 1500 4000 4000 >"$work/run/firewall-heal/attempts"
 sweeps
 [ ! -s "$work/swept" ]
 printf '%s\n' 1600 4000 4000 >"$work/run/firewall-heal/attempts"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
+# Nor does a window 30 minutes old (both firewalls down: no peer for the heal to act on).
+: >"$work/swept"
+: >"$work/run/firewall-heal/attempts"
+echo '3200 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
+: >"$work/swept"
+echo '3300 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ ! -s "$work/swept" ]
+# A garbled record holds nothing and does not end the run.
+echo 'garbage 5000' >"$work/run/firewall-heal/fw2"
 sweeps
 [ "$(wc -l <"$work/swept")" = 2 ]
 release
@@ -2528,8 +2553,22 @@ cv_time firewall-self-heal
     broken= inhibited= frozen= leased= dhcpd=
     # fw-leases' resume: rcctl disable dropped the flags.
     dhcpd_on='rcctl enable dhcpd && rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags) && { rcctl check dhcpd >/dev/null || rcctl start dhcpd; }'
-    trap ': CV-TRAP; for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$dhcpd" ] || for f in fw1 fw2; do fwssh "$f" "$dhcpd_on" >/dev/null 2>&1 || :; done; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
+    trap ': CV-TRAP; [ -z "${watch_pid:-}" ] || kill "$watch_pid" 2>/dev/null || :; for f in $broken; do unbound_up "$f" >/dev/null 2>&1 || :; done; [ -z "$frozen" ] || kill -CONT "$frozen" 2>/dev/null || :; [ -z "$inhibited" ] || rm -f /run/convergent/guests-stopping; [ -z "$dhcpd" ] || for f in fw1 fw2; do fwssh "$f" "$dhcpd_on" >/dev/null 2>&1 || :; done; [ -z "$leased" ] || rm -f /var/lib/convergent/guests/leases/held' 0
     trap 'exit 1' HUP INT TERM
+    # Diagnostics: the heal's report, its windows and the running minute checks every 15 s, dumped on failure.
+    (
+        set +e; exec 2>/dev/null
+        while :; do
+            read -r up rest </proc/uptime
+            printf '== %s up %s checks %s\n' "$(date -u +%T)" "${up%.*}" "$(pgrep -fc 'check auto')"
+            sed 's/^/R /' /run/convergent/.firewall-heal
+            for w in fw1 fw2 pair fw1.restarted fw2.restarted; do
+                [ ! -f "/run/convergent/firewall-heal/$w" ] || printf 'W %s %s\n' "$w" "$(cat "/run/convergent/firewall-heal/$w")"
+            done
+            sleep 15
+        done
+    ) >/var/log/heal-watch.log &
+    watch_pid=$!
     # Traced to a file.
     PS4='+CV-HEAL ${SECONDS}s '; exec 2>/var/log/firewall-self-heal-test.log; set -x
     # One 10 s probe each, beside the minute checker's and the diagnostics' SSH on a one-vCPU firewall,
@@ -2679,6 +2718,7 @@ cv_time firewall-self-heal
     done
 )
 [ "$?" = 0 ] || { trace_tail /var/log/firewall-self-heal-test.log
+    tail -n 400 /var/log/heal-watch.log 2>/dev/null | sed 's/^/CV-HW /' | cut -c1-220
     sed 's/^/CV-HEAL state /' /var/lib/convergent/check/firewall-heal 2>/dev/null | tail -n 10 | cut -c1-200; bad $LINENO; }
 cv_time maintenance-exclusion
 # Remote exclusion must survive host death and recover after remote death.
@@ -3244,8 +3284,11 @@ cv_time wan-forced-stop
 # under the hold and the update must go through. The first `start` of the rebuilt wan is refused,
 # as while the old QEMU still holds the radio.
 cat >"$release/guests-wan-exit" <<'FAULT'
+# stop_guest bounds both stops with timeout(1), which cannot run the incus() fault below: hand them to it.
 timeout() {
-    case "$*" in '-k 5 60 incus --force-local --project default stop wan --force') shift 4; incus "$@" ;;
+    case "$*" in
+    '-k 5 120 incus --force-local --project default stop wan --timeout 60' | \
+        '-k 5 60 incus --force-local --project default stop wan --force') shift 4; incus "$@" ;;
     *) command timeout "$@" ;; esac
 }
 incus() {
@@ -3287,6 +3330,10 @@ cv_time wan-late-stop
 # The guest halts after Incus's wait ran out (a slow exit): the force meets a wan that is already
 # stopped and the update still goes through without a rollback.
 cat >"$release/guests-wan-slow" <<'FAULT'
+timeout() {
+    case "$*" in '-k 5 120 incus --force-local --project default stop wan --timeout 60') shift 4; incus "$@" ;;
+    *) command timeout "$@" ;; esac
+}
 incus() {
     case "$*" in *' stop wan --timeout 60')
         command incus --force-local --project default stop wan --timeout 1
