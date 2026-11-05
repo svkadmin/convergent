@@ -1087,10 +1087,21 @@ rm -f "$work/run/firewall-heal/"*
 test_status=RUNNING test_target=down test_peer=MASTER failed=0
 before=$(attempts)
 tick 7000; test_peer=down; tick 7060
-[ -e "$work/run/firewall-heal/fw2" ] && [ "$(attempts)" = "$before" ]
+[ -e "$work/run/firewall-heal/fw2" ]
+[ "$(attempts)" = "$before" ]
 grep -qx 'SELF-HEAL fw2: unhealthy for 60s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
 test_peer=MASTER; tick 7120; [ "$(attempts)" = "$before" ]
 tick 7180; [ "$(attempts)" = "$((before + 1))" ]
+# A stale window (both firewalls unreachable for minutes) acts on the peer's second MASTER answer, not its first.
+rm -f "$work/run/firewall-heal/"*
+test_peer=down
+before=$(attempts)
+for t in 7300 7360 7420 7480 7540; do tick "$t"; done
+[ "$(attempts)" = "$before" ]
+test_peer=MASTER; tick 7600
+[ "$(attempts)" = "$before" ]
+tick 7660
+[ "$(attempts)" = "$((before + 1))" ]
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
     rm -f "$work/run/firewall-heal/"*
@@ -1173,7 +1184,7 @@ release() {
 rm -rf "$work/run/firewall-heal"
 : >"$work/calls"; : >"$work/holders"; : >"$work/swept"
 sweeps
-[ "$(wc -l <"$work/swept")" = 2 ]
+[ "$(wc -l <"$work/swept")" = 3 ]
 release
 : >"$work/swept"
 for t in 1000 1060 1120; do tick "$t"; sweeps; done
@@ -1186,7 +1197,7 @@ sweeps
 [ ! -s "$work/swept" ]
 rm "$work/run/firewall-heal/pair"
 sweeps
-[ "$(wc -l <"$work/swept")" = 2 ]
+[ "$(wc -l <"$work/swept")" = 3 ]
 release
 # A firewall the heal cannot restart for two minutes (three an hour) stops no sweep for good.
 cp "$work/run/firewall-heal/attempts" "$work/attempts.saved"
@@ -1199,23 +1210,27 @@ sweeps
 [ ! -s "$work/swept" ]
 printf '%s\n' 1600 4000 4000 >"$work/run/firewall-heal/attempts"
 sweeps
-[ "$(wc -l <"$work/swept")" = 2 ]
+[ "$(wc -l <"$work/swept")" = 3 ]
 release
 # Nor does a window 30 minutes old (both firewalls down: no peer for the heal to act on).
 : >"$work/swept"
 : >"$work/run/firewall-heal/attempts"
 echo '3200 5000' >"$work/run/firewall-heal/fw2"
 sweeps
-[ "$(wc -l <"$work/swept")" = 2 ]
+[ "$(wc -l <"$work/swept")" = 3 ]
 release
 : >"$work/swept"
 echo '3300 5000' >"$work/run/firewall-heal/fw2"
 sweeps
 [ ! -s "$work/swept" ]
-# A garbled record holds nothing and does not end the run.
-echo 'garbage 5000' >"$work/run/firewall-heal/fw2"
+# While the heal can act (its peer MASTER) the window holds them at any age.
+echo '3000 5000 4900' >"$work/run/firewall-heal/fw2"
 sweeps
-[ "$(wc -l <"$work/swept")" = 2 ]
+[ ! -s "$work/swept" ]
+# A garbled record holds nothing and does not end the run.
+echo '12x 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ "$(wc -l <"$work/swept")" = 3 ]
 release
 rm "$work/run/firewall-heal/fw2"
 mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
@@ -2593,14 +2608,14 @@ cv_time firewall-self-heal
         done
         exec 7>/run/convergent/firewall-heal.lock
         flock -w 120 7
-        if ! read -r first0 prev0 <"$window"; then exec 7>&-; continue; fi
+        if ! read -r first0 prev0 peer0 <"$window"; then exec 7>&-; continue; fi
         sleep "$((($(date +%s) / 60 + 1) * 60 + 45 - $(date +%s)))" 7>&-
         exec 7>&-
         deadline=$(($(date +%s) + 300))
         while :; do
             [ "$(date +%s)" -lt "$deadline" ]; sleep 2
             [ -f "$window" ] || break
-            read -r first1 prev1 <"$window" || continue
+            read -r first1 prev1 peer1 <"$window" || continue
             [ "$prev1" = "$prev0" ] || break
         done
         if [ -f "$window" ]; then

@@ -269,23 +269,20 @@ if [ "${1:-}" = auto ]; then (
             }
     fi
 ); fi
-# Run before the daily scan throttle; cleanup takes the int session lock.
-if [ "${1:-}" = auto ]; then
-    /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
-fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
 # first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock. After
-# it they still overlapped the next minute's restart: both wait while the heal observes a firewall, unless it
-# has no restart left for two minutes (three an hour) or has watched for 30 minutes (no peer to act on).
+# it they still overlapped the next minute's restart: they wait while the heal can act on a firewall (its peer
+# MASTER), else for 30 minutes of watching, unless it has no restart left for two minutes (three an hour).
 sweep=1
 read -r heal_uptime heal_rest </proc/uptime
 heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n + 0}' /run/convergent/firewall-heal/attempts 2>/dev/null) || heal_capped=0
 [ "$heal_capped" -ge 3 ] 2>/dev/null ||
     for observed in fw1 fw2 pair; do
-        read -r heal_first heal_rest 2>/dev/null </run/convergent/firewall-heal/$observed || continue
+        read -r heal_first heal_previous heal_peer 2>/dev/null </run/convergent/firewall-heal/$observed || continue
         # A garbled record holds nothing: arithmetic on it would end the whole run.
         case $heal_first in '' | *[!0-9]*) continue ;; esac
-        [ "$((${heal_uptime%.*} - heal_first))" -ge 1800 ] || sweep=0
+        case ${heal_peer:-0} in *[!0-9]*) heal_peer=0 ;; esac
+        if [ "${heal_peer:-0}" -gt 0 ] || [ "$((${heal_uptime%.*} - heal_first))" -lt 1800 ]; then sweep=0; fi
     done
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
@@ -293,6 +290,10 @@ fi
 # Remmina: a killed supervisor must not leave an unlocked orphan running.
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
     timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
+fi
+# Before the daily scan throttle; it takes the int session lock and stalls the same way, so it waits with them.
+if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
+    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
 fi
 # End Remmina.
 exec 9>/run/convergent/check.lock
