@@ -137,7 +137,10 @@ firewall_heal() (
     # As for one node, 180 s in a row first: a stop by hand is not undone within a minute.
     if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then
         first=$now previous=$now
-        [ ! -f "$heal/pair" ] || read -r first previous <"$heal/pair"
+        [ ! -f "$heal/pair" ] || read -r first previous pair_rest <"$heal/pair"
+        for field in "$first" "$previous"; do
+            case $field in '' | *[!0-9]* | 0?*) first=$now previous=$now; break ;; esac
+        done
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now; fi
         printf '%s %s\n' "$first" "$now" >"$heal/pair" || exit 1
         exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
