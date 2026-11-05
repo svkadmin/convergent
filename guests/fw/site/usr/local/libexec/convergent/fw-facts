@@ -31,7 +31,7 @@ capture() {
 	# rc supervises nothing: restart an enabled daemon that died. Never dhcpd, which a lease hold disables.
 	for d in node_exporter wan_watch pflog_stream; do
 		if rcctl get "$d" status >/dev/null 2>&1 && ! rcctl check "$d" >/dev/null 2>&1; then
-			if rcctl start "$d" >/dev/null 2>&1; then logger -t fw-facts "$d restarted"; fi
+			if timeout -k 1 20 rcctl start "$d" >/dev/null 2>&1; then logger -t fw-facts "$d restarted"; fi
 		fi
 	done
 	if rcctl check wan_watch >/dev/null 2>&1; then up=1; else up=0; fi

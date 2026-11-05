@@ -114,7 +114,12 @@ num() { n=$(cat "$stm/$1" 2>/dev/null || :); case $n in '' | *[!0-9]*) n=0 ;; es
 
 # The rollback floor: 0 only when absent; an unreadable or malformed file fails.
 num_strict() {
-	if [ ! -e "$stm/$1" ] && [ ! -L "$stm/$1" ]; then echo 0; return; fi
+	if [ ! -e "$stm/$1" ] && [ ! -L "$stm/$1" ]; then
+		# A lookup error (EIO) also fails -e: absent only when the listing lacks it.
+		names=$(ls -A -- "$stm/") || return 1
+		! printf '%s\n' "$names" | grep -Fqx -- "$1" || return 1
+		echo 0; return
+	fi
 	n=$(cat "$stm/$1") || return 1
 	case $n in '' | *[!0-9]*) return 1 ;; esac
 	echo "$n"

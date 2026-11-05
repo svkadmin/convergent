@@ -174,14 +174,14 @@ awk '/^    stop_container$/ {stop = NR} /^    \/usr\/local\/sbin\/incus-ui --unl
     END {exit !(stop && unlock > stop)}' "$repo/tools/browser"
 # Incus administration rebuilds an existing int from the installed image before it starts; Grafana does not.
 sed -n '/^if printf .*"\$instances" | jq -e --arg n "\$name" .any/,/^fi$/p' "$repo/tools/browser" >"$work/existing"
-grep -q 'ic rebuild' "$work/existing"
+grep -q 'timeout -k 5 120 incus --force-local --project default rebuild candidate-browser' "$work/existing"
 sh -n "$work/existing"
 for sample in ui grafana fail; do
     rm -f "$work/existing-calls"
     rc=0
     (
         die() { echo "die $*" >>"$work/existing-calls"; exit 1; }
-        ic() { echo "$*" >>"$work/existing-calls"; [ "$sample:$1" != fail:rebuild ]; }
+        timeout() { [ "$1:$2:$3:$4" = -k:5:120:incus ] || exit 97; shift 7; echo "$*" >>"$work/existing-calls"; [ "$sample:$1" != fail:rebuild ]; }
         stop_container() { echo stop >>"$work/existing-calls"; }
         instances='[{"name":"int","status":"Running","type":"container","profiles":["browser-base","browser-int"]}]'
         name=int profile_base=browser-base profile_role=browser-int incus_ui=1
@@ -439,6 +439,8 @@ sed -n '/^prompt() {/,/^}/p' "$repo/tools/incus-ui" |
 [ -s "$work/prompt" ]
 sh -n "$work/prompt"
 if grep -q /dev/tty "$work/prompt"; then exit 1; fi
+# Bounded: the browser holds the guest locks during the unlock prompt.
+grep -q "password=\$(timeout --foreground -k 1 120 sh -c 'IFS= read -r p <" "$work/prompt"
 grep -qxF "        prompt 'New Incus UI passphrase: ' 12" "$repo/tools/incus-ui"
 grep -qxF "        prompt 'Incus UI passphrase: '" "$repo/tools/incus-ui"
 mkdir "$work/prompt-scratch"

@@ -104,7 +104,9 @@ prompt() {
     tty_state=$(stty -g </dev/tty) || die 'a host terminal is required'
     printf '%s' "$1" >/dev/tty
     stty -echo </dev/tty
-    IFS= read -r password </dev/tty || die 'passphrase cancelled'
+    # Bounded: tools/browser holds the guest locks while it waits.
+    password=$(timeout --foreground -k 1 120 sh -c 'IFS= read -r p </dev/tty && printf "%s" "$p"') ||
+        die 'passphrase cancelled or timed out'
     stty "$tty_state" </dev/tty
     tty_state=
     printf '\n' >/dev/tty
