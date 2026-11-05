@@ -1212,6 +1212,11 @@ release
 echo '3300 5000' >"$work/run/firewall-heal/fw2"
 sweeps
 [ ! -s "$work/swept" ]
+# A garbled record holds nothing and does not end the run.
+echo 'garbage 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
 rm "$work/run/firewall-heal/fw2"
 mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
 mv "$work/uptime.saved" "$work/proc/uptime"

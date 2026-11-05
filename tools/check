@@ -283,7 +283,9 @@ heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n
 [ "$heal_capped" -ge 3 ] 2>/dev/null ||
     for observed in fw1 fw2 pair; do
         read -r heal_first heal_rest 2>/dev/null </run/convergent/firewall-heal/$observed || continue
-        [ "$((${heal_uptime%.*} - heal_first))" -ge 1800 ] 2>/dev/null || sweep=0
+        # A garbled record holds nothing: arithmetic on it would end the whole run.
+        case $heal_first in '' | *[!0-9]*) continue ;; esac
+        [ "$((${heal_uptime%.*} - heal_first))" -ge 1800 ] || sweep=0
     done
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
     timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
