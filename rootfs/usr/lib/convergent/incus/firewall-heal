@@ -176,9 +176,11 @@ firewall_heal() (
     fi
     for node in fw1 fw2; do
         case $node in fw1) health=$fw1 peer=fw2 peer_health=$fw2 ;; fw2) health=$fw2 peer=fw1 peer_health=$fw1 ;; esac
-        if [ "$health:$peer_health" != unhealthy:master ]; then
+        # The window is the node's own: a peer probe that misses its 10 s on a loaded firewall must not reset
+        # it (it did, every few minutes, under a frozen peer's 30 s Incus stalls). The peer is checked to act.
+        if [ "$health" != unhealthy ]; then
             rm -f "$heal/$node"
-            [ ! -f "$heal/$node.hold" ] || [ "$health" = unhealthy ] || heal_unhold "$node" >/dev/null 2>&1 || :
+            [ ! -f "$heal/$node.hold" ] || heal_unhold "$node" >/dev/null 2>&1 || :
             echo "SELF-HEAL $node: $health; peer $peer: $peer_health; no restart"
             continue
         fi
@@ -195,8 +197,8 @@ firewall_heal() (
         # Two missed minutes or a clock discontinuity break the window; one is a run that held the heal lock.
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now; fi
         printf '%s %s\n' "$first" "$now" >"$heal/$node" || exit 1
-        echo "SELF-HEAL $node: unhealthy for $((now - first))s; peer $peer: master; attempts $attempts/3 in the last hour"
-        [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] || continue
+        echo "SELF-HEAL $node: unhealthy for $((now - first))s; peer $peer: $peer_health; attempts $attempts/3 in the last hour"
+        [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] && [ "$peer_health" = master ] || continue
         exec 8>/run/convergent/guests.lock
         if ! flock -n 8; then
             echo "SELF-HEAL $node: restart inhibited by guests lock"

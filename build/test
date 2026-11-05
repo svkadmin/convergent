@@ -1082,6 +1082,15 @@ busy=0 failed=0 test_status=STOPPED
 )
 tick 6480
 grep -q 'default start fw2$' "$work/calls"
+# A peer probe that fails once (a loaded firewall) keeps the node's own window: the restart comes on time.
+rm -f "$work/run/firewall-heal/"*
+test_status=RUNNING test_target=down test_peer=MASTER failed=0
+before=$(attempts)
+tick 7000; test_peer=down; tick 7060
+[ -e "$work/run/firewall-heal/fw2" ] && [ "$(attempts)" = "$before" ]
+grep -qx 'SELF-HEAL fw2: unhealthy for 60s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
+test_peer=MASTER; tick 7120; [ "$(attempts)" = "$before" ]
+tick 7180; [ "$(attempts)" = "$((before + 1))" ]
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
     rm -f "$work/run/firewall-heal/"*
@@ -1192,6 +1201,17 @@ printf '%s\n' 1600 4000 4000 >"$work/run/firewall-heal/attempts"
 sweeps
 [ "$(wc -l <"$work/swept")" = 2 ]
 release
+# Nor does a window 30 minutes old (both firewalls down: no peer for the heal to act on).
+: >"$work/swept"
+: >"$work/run/firewall-heal/attempts"
+echo '3200 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
+: >"$work/swept"
+echo '3300 5000' >"$work/run/firewall-heal/fw2"
+sweeps
+[ ! -s "$work/swept" ]
 rm "$work/run/firewall-heal/fw2"
 mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
 mv "$work/uptime.saved" "$work/proc/uptime"
