@@ -17,7 +17,7 @@ Hardware requirements: [README](README.md).
 ### Disk image
 
 The default image is 30 GiB (32,212,254,720 bytes); some nominal 32 GB sticks are too small. It
-holds the owner account, the encrypted state and the guests; slot B is empty. Its state grows to
+holds the owner account, the state partition and the guests; slot B is empty. Its state grows to
 fill the disk at unlock.
 
 1. Identify the USB disk:
@@ -136,7 +136,7 @@ Updates come only as whole signed releases; there is no runtime package manager
 | Logs | `sys logs`; [log locations](RECOVERY.md#8-where-the-logs-are) |
 | Edit `/etc` | only the [writable exceptions](ARCHITECTURE.md#53-what-is-writable); other changes need a release |
 | Password | `sys security password` (`sudo account password [user]`) |
-| Home files | on the encrypted state, kept across updates |
+| Home files | on the state partition, kept across updates |
 | Shutdown | `sys power off`; the guests stop first, in order |
 
 Plain `passwd` cannot replace the bind-mounted shadow file. At shutdown, work VMs stop first, then

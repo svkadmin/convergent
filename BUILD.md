@@ -49,7 +49,7 @@ to a private disk image.
 | State | Coverage |
 |---|---|
 | Proven in QEMU | Boot, unlock, bless, fallback, corrupt image refusal, interrupted update |
-| Proven in QEMU | Infrastructure setup, guest failover and rollback, USB image boot |
+| Proven in QEMU | Infrastructure setup, guest failover and rollback, disk image boot |
 | Proven on laptop | Boot, unlock, autogrow, setup, Sway and bar |
 | Proven on laptop | Wi-Fi, online host update, `def`, `int` |
 | Laptop testing incomplete | `tmp` and portal, audio, Bluetooth, power, online guests |
