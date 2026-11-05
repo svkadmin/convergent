@@ -261,7 +261,7 @@ status and commands on the right. The dashboard refreshes on entry; narrow panes
 | `audio` | `status`, `out ID`, `vol N` (0–150), `mute`, `mic on\|off`, `micmute` |
 | `camera` | `status`, `on`, `off` |
 | `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]` (15 s preview), `save`, `reset` *, `watch` (session hook) |
-| `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,hu`), `next` |
+| `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,sk(qwerty),ru`), `next` |
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to the clipboard) |
 | `browser` (`br`) | `status`, `def`, `tmp`, `int`, `incus` |
@@ -284,7 +284,7 @@ blocks:
 
 ```
 CPU 7% 1.2-4.5GHz 61/74C | RAM 3.2/15G SWP 0.0/8G | NET tx 0.8 rx 12.4 Mb/s
-WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 RDP:off | rel 0.1.0 good | NL | 0 1 0 | PORTAL
+WLAN:home--WAN--[FW1 FW2]--laptop--SVC--BR:2 RM:off | rel 0.1.0 good | NL | 0 1 0 | PORTAL
 US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 ```
 
@@ -298,7 +298,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `NL` | click to pause or resume the idle lock (orange while paused); `NL!` (red): swayidle missing | `sys power lock` |
 | `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 10 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts: critical (red), warning (orange), info (white); every 30 s | click for the list, or `sys alerts` |
-| `RDP:on/off/?` | Remmina running, stopped or unknown; stale status is unknown | `sys remote status`, `sys remote close` |
+| `RM:on/off/?` | Remmina running, stopped or unknown; stale status is unknown | `sys remote status`, `sys remote close` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
