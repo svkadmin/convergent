@@ -565,6 +565,14 @@ awk '/^[[:space:]]*(#|$)/ {next} {n++; if ($6 != "root" || $7 != "-nsq") bad=1}
 (. "$repo/guests/wan/rootfs/etc/conf.d/crond"; [ "$CRON_OPTS" = '-c /etc/crontabs -l 9' ]) || die 'wan crond logs job starts'
 grep -qF "grep -q 'CRON_OPTS' \"\$target/etc/init.d/crond\" || die" "$repo/guests/wan/build" || die 'wan build ignores CRON_OPTS'
 echo 'test-boot-privacy: firewall and wan cron logging passed'
+# wan repairs its root unattended, as the firewalls do: preen stops the boot, and no console login can fix it.
+(. "$repo/guests/wan/rootfs/etc/conf.d/fsck"; [ "$fsck_args" = '-A -y' ]) || die 'wan fsck is not unattended'
+grep -qF "grep -q 'fsck_args' \"\$target/etc/init.d/fsck\" || die" "$repo/guests/wan/build" || die 'wan build ignores fsck_args'
+# Management SSH admits only the host: no per-source penalty may lock it out.
+for config in "$repo/guests/wan/rootfs/etc/ssh/sshd_config" "$fw/etc/ssh/sshd_config"; do
+    grep -qx 'PerSourcePenalties no' "$config" || die "$config penalizes the host"
+done
+echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
 
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.
 (

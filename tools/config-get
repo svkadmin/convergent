@@ -57,6 +57,7 @@ EOF
 		'hostname: [host]' '- hostname: host' 'hostname: ho\tst' 'hostname: Bad' \
 		'blocklist_url: http://example.org/list' 'state_max_gib: 2G' \
 		'hostname: "host' 'hostname: host"' 'nts_servers: a.example,a.example' \
+		'nts_servers: 1.1.1.1,9.9.9.9' 'nts_servers: a,b' 'nts_servers: a.example,9.9.9.9' \
 		'esp_mib: 1024' 'slot_mib: 8192' 'owner_password_hash: ""' \
 		'state_max_gib: 0' 'install: auto' 'install:\ninstall:' \
 		'install:\n  disk: auto\n  disk: auto' 'install:\n  unknown: x' \
@@ -92,11 +93,12 @@ function fail(message) {
 	bad=1; exit 1
 }
 function hn(s) { return length(s) <= 63 && s ~ /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/ }
+# NTS-KE checks a certificate name: no IP literal or single label.
 function dns(s, a,n,i) {
 	if (length(s) > 253) return 0
 	n=split(s,a,".")
 	for (i=1;i<=n;i++) if (!hn(a[i])) return 0
-	return n > 0
+	return n >= 2 && a[n] !~ /^[0-9]+$/
 }
 function cidr(s, a,n,i,b,size,ip) {
 	n=split(s,a,/[.\/]/)

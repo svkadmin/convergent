@@ -103,7 +103,7 @@ EOF
 	awk -v headroom=10000 '
 		$1 == "set" && $2 == "limit" { for (i = 3; i < NF; i++) if ($i == "states") limit = $(i + 1) + 0 }
 		$2 == "=" && $3 ~ /^"/ { v = $0; sub(/^[^"]*"/, "", v); sub(/"[^"]*$/, "", v); macro["$" $1] = v }
-		/^pass in quick on vlan[0-9]+ / || /^pass in on \$if_web .* from \$a_webbr to ! <nonpublic> / ||
+		/^pass in quick on vlan[0-9]+ / || /^pass in on \$if_web .* from \$a_(webbr|def|tmp) to ! <nonpublic> / ||
 		/^pass in on \$if_guests .* to ! <nonpublic> / {
 			rules++
 			if (!match($0, /[(, ]max [0-9]+[,)]/)) { print "uncapped: " $0; bad = 1; next }
@@ -121,8 +121,15 @@ EOF
 		}
 		END {
 			print "pf states: " rules " capped rules, " sum " expanded, limit " limit
-			if (bad || rules != 18 || !limit || 2 * sum + headroom > limit) exit 1
+			if (bad || rules != 19 || !limit || 2 * sum + headroom > limit) exit 1
 		}' "$fw/etc/pf.conf"
+	# tmp browsers share one range rule: each source's cap is below the rule's, so one cannot fill it.
+	awk '/^pass in on \$if_web .* from \$a_tmp to ! <nonpublic> / {
+			n++; if (!match($0, /max-src-states [0-9]+, max [0-9]+\)/)) exit 1
+			split(substr($0, RSTART, RLENGTH), v, /[ ,)]+/); if (v[2] + 0 >= v[4] + 0) exit 1
+		}
+		END { exit n != 1 }' "$fw/etc/pf.conf"
+	grep -Eq '^a_tmp += "[^{}]* - [^{}]*"$' "$fw/etc/pf.conf"
 	# Remmina draws on the same table; its one address makes each source cap rule-wide.
 	[ "$(grep -c '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf")" = 3 ]
 	if grep '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf" | grep -v 'source-track rule, max-src-states [0-9]'; then exit 1; fi
@@ -226,20 +233,31 @@ echo 'test-networks: offline clock recovery ordering and failures passed'
     sh -n "$state/auto"
     date() { echo "$now"; }
     echo 2000000 >"$state/stamp"
-    for mode in auto local full; do
-        for elapsed in -2592000 -1 0 604799 604800 604801; do
-            now=$((2000000 + elapsed))
-            rm -f "$state/due"
-            (. "$state/auto"; : >"$state/due")
-            if [ "$mode" = auto ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ]; then
-                [ ! -e "$state/due" ]
-            else
-                [ -e "$state/due" ]
-            fi
+    BLOCKLIST_URL=https://fixture.invalid/list
+    # A cache from the release's own URL, or a legacy one naming none, waits; a changed URL is due at once.
+    for source in legacy same changed; do
+        case $source in
+        legacy) rm -f "$state/list.source" ;;
+        same) echo "$BLOCKLIST_URL" >"$state/list.source" ;;
+        changed) echo https://old.invalid/list >"$state/list.source" ;;
+        esac
+        for mode in auto local full; do
+            for elapsed in -2592000 -1 0 604799 604800 604801; do
+                now=$((2000000 + elapsed))
+                rm -f "$state/due"
+                (. "$state/auto"; : >"$state/due")
+                if [ "$mode" = auto ] && [ "$source" != changed ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt 604800 ]; then
+                    [ ! -e "$state/due" ]
+                else
+                    [ -e "$state/due" ]
+                fi
+            done
         done
     done
+    # The URL is the release's: read before the auto check.
+    awk '$0 == ". \"$conf\"" {conf = NR} $0 == "if [ \"$mode\" = auto ]; then" {auto = NR} END {exit !(conf && auto && conf < auto)}' "$repo/tools/dns-push"
 )
-echo 'test-networks: DNS automatic refresh clock boundaries passed'
+echo 'test-networks: DNS automatic refresh clock boundaries and source changes passed'
 # Guest durability must precede journal progress, including recovery.
 (
     rdir=$dns/durable-remote state=$dns/durable-state

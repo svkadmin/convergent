@@ -16,7 +16,7 @@ lock_src() {
 close_src() {
 	_r=0
 	for _f in $fws; do
-		rsh "$_f" 'rc=0; pfctl -t update_src -T flush || rc=1; pfctl -k label -k update || rc=1; exit "$rc"' >/dev/null || _r=1
+		rsh "$_f" 'rc=0; pfctl -q -t update_src -T flush || rc=1; pfctl -q -k label -k update || rc=1; exit "$rc"' >/dev/null || _r=1
 	done
 	[ "$_r" = 1 ] || src_open=
 	return "$_r"
@@ -52,10 +52,12 @@ open_src() {
 	done
 	res=$(echo $ips | tr ' ' ',')
 }
-# The firewalls expire an opening 4 hours after its stats were cleared: a long download clears them per file.
+# The firewalls expire an opening 4 hours after its stats were cleared: a long download clears them per file,
+# and re-adds what a restarted firewall lost. A firewall mid-heal only narrows access: the download says so.
 refresh_src() {
 	for _f in $fws; do
-		rsh "$_f" 'pfctl -q -t update_src -T zero' >/dev/null || die "could not refresh the update source on $_f"
+		rsh "$_f" "pfctl -q -t update_src -T add$ips && pfctl -q -t update_src -T zero" >/dev/null ||
+			echo "warning: could not refresh the update source on $_f" >&2
 	done
 }
 get() {

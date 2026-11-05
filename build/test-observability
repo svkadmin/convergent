@@ -299,7 +299,8 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     chronyc() { [ "$*" = '-n tracking' ] || exit 97; printf 'Stratum         : 3\nLeap status     : %s\n' "$leap"; }
     timeout() {
         target=${13}
-        [ "$#" = 14 ] && [ "$*" = "-k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 $target rdate -n 100.80.1.10" ] || exit 97
+        # The restart ends ntpd's back-off from the unsynced host.
+        [ "$#" = 14 ] && [ "$*" = "-k 1 20 ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=10 $target rdate -n 100.80.1.10 && rcctl restart ntpd" ] || exit 97
         # The DNS push lock is held shared through the step.
         if command flock -n "$run/dns-push.lock" true; then exit 97; fi
         echo "$target" >>"$work/ntpd-calls"
@@ -335,6 +336,12 @@ sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
     printf '%s\n' fw1 | cmp - "$work/ntpd-calls"
     rm "$run"/fw-ntpd.* "$run/firewall-heal/fw2"; : >"$work/ntpd-calls"; : >"$run/firewall-heal/pair"; fw_ntpd
     [ ! -s "$work/ntpd-calls" ]
+    # A node whose step keeps failing stops taking the push lock after ten tries; the other still steps.
+    rm "$run/firewall-heal/pair"; : >"$work/ntpd-calls"
+    down=fw2 i=0
+    while [ "$i" -lt 12 ]; do fw_ntpd; i=$((i + 1)); done
+    { echo fw1; i=0; while [ "$i" -lt 10 ]; do echo fw2; i=$((i + 1)); done; } | cmp - "$work/ntpd-calls"
+    [ "$(cat "$run/fw-ntpd.fw2.tries")" = 10 ] && [ ! -e "$run/fw-ntpd.fw2" ]
 )
 # Boot facts wait on bless's OpenRC marker, bounded at 3 minutes, and read the slots once.
 sed -n '/^fact_release() {/,/^}/p' "$repo/tools/facts" |
