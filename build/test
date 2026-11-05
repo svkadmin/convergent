@@ -3259,8 +3259,11 @@ cv_time wan-forced-stop
 # under the hold and the update must go through. The first `start` of the rebuilt wan is refused,
 # as while the old QEMU still holds the radio.
 cat >"$release/guests-wan-exit" <<'FAULT'
+# stop_guest bounds both stops with timeout(1), which cannot run the incus() fault below: hand them to it.
 timeout() {
-    case "$*" in '-k 5 60 incus --force-local --project default stop wan --force') shift 4; incus "$@" ;;
+    case "$*" in
+    '-k 5 120 incus --force-local --project default stop wan --timeout 60' | \
+        '-k 5 60 incus --force-local --project default stop wan --force') shift 4; incus "$@" ;;
     *) command timeout "$@" ;; esac
 }
 incus() {
@@ -3302,6 +3305,10 @@ cv_time wan-late-stop
 # The guest halts after Incus's wait ran out (a slow exit): the force meets a wan that is already
 # stopped and the update still goes through without a rollback.
 cat >"$release/guests-wan-slow" <<'FAULT'
+timeout() {
+    case "$*" in '-k 5 120 incus --force-local --project default stop wan --timeout 60') shift 4; incus "$@" ;;
+    *) command timeout "$@" ;; esac
+}
 incus() {
     case "$*" in *' stop wan --timeout 60')
         command incus --force-local --project default stop wan --timeout 1
