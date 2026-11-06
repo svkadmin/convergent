@@ -72,7 +72,7 @@ sh -n "$fixture/driver-check"
 sed -n '/^[[:space:]]*cat >"\$var\/lib\/convergent\/test-release\/smoke-test"/,/^[[:space:]]*# Gentoo configures/p' "$here/test" | sed '$d' >"$fixture/smoke"
 [ -s "$fixture/smoke" ]
 for mode in guests guests-maint guests-update online; do
-    case $mode in guests) want=12600 ;; guests-maint) want=16200 ;; guests-update) want=39600 ;; *) want=14400 ;; esac
+    case $mode in guests) want=12600 ;; guests-maint) want=19800 ;; guests-update) want=39600 ;; *) want=14400 ;; esac
     (
         . "$fixture/run-vm"
         BUILDER= work=$fixture/budget-$mode
