@@ -572,6 +572,23 @@ grep -qF "grep -q 'fsck_args' \"\$target/etc/init.d/fsck\" || die" "$repo/guests
 for config in "$repo/guests/wan/rootfs/etc/ssh/sshd_config" "$fw/etc/ssh/sshd_config"; do
     grep -qx 'PerSourcePenalties no' "$config" || die "$config penalizes the host"
 done
+# wan's build refuses an sshd_config that could let a password through (OpenSSH on musl has no PAM).
+sed -n '/^awk .BEGIN {want\["passwordauthentication"\]/,/"\$target\/etc\/ssh\/sshd_config" ||$/p' "$repo/guests/wan/build" |
+    sed 's#"\$target/etc/ssh/sshd_config" ||$#"$1"#' >"$work/sshd-check"
+[ "$(wc -l <"$work/sshd-check")" = 6 ] || die 'wan build sshd_config check not found'
+check_script "$work/sshd-check"
+wan_sshd=$repo/guests/wan/rootfs/etc/ssh/sshd_config
+sh "$work/sshd-check" "$wan_sshd" || die 'wan build refuses the shipped sshd_config'
+for edit in '/^PasswordAuthentication no$/d' '/^KbdInteractiveAuthentication no$/d' '/^AuthenticationMethods publickey$/d' \
+    's/^AuthenticationMethods publickey$/AuthenticationMethods publickey,password/' \
+    's/^AuthenticationMethods publickey$/AuthenticationMethods publickey password/' \
+    '1i PasswordAuthentication=yes' '1i passwordauthentication yes' \
+    's/^KbdInteractiveAuthentication no$/  KbdInteractiveAuthentication = yes/' \
+    '$a Match User root' '$a Include /etc/ssh/sshd_config.d/*.conf'; do
+    sed "$edit" "$wan_sshd" >"$work/sshd_config"
+    if cmp -s "$wan_sshd" "$work/sshd_config"; then die "sshd_config fixture edit changed nothing: $edit"; fi
+    if sh "$work/sshd-check" "$work/sshd_config"; then die "wan build accepts sshd_config after: $edit"; fi
+done
 echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
 
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.

@@ -121,6 +121,15 @@ chmod 644 "$target/usr/local/lib/wan-lib.sh" "$target/etc/udhcpc/udhcpc.conf" "$
 chmod 700 "$target/root"
 chmod 600 "$target/etc/crontabs/root"
 chmod 644 "$target/etc/ssh/sshd_config" "$target/etc/syslog-ng/syslog-ng.conf"
+# OpenSSH on musl has no PAM: passwords stay off. sshd keeps a keyword's first value; Match and Include
+# could set one later.
+awk 'BEGIN {want["passwordauthentication"] = "no"; want["kbdinteractiveauthentication"] = "no"
+        want["authenticationmethods"] = "publickey"}
+    {line = $0; sub(/^[ \t]+/, "", line); split(line, f, /[ \t]*[ \t=][ \t]*/); k = tolower(f[1])}
+    k == "match" || k == "include" {exit 1}
+    (k in want) && !(k in seen) {seen[k] = 1; if (f[2] != want[k] || f[3] != "") exit 1}
+    END {for (k in want) if (!(k in seen)) exit 1}' "$target/etc/ssh/sshd_config" ||
+	die 'sshd_config must keep PasswordAuthentication no, KbdInteractiveAuthentication no and AuthenticationMethods publickey, with no Match or Include'
 # The CA comes from the seed at first boot; a stand-in for the check only.
 touch "$target/etc/syslog-ng/svc-ca.pem"
 inchroot syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"
