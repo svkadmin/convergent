@@ -446,7 +446,9 @@ root, scans like the [weekly scan](#weekly-scan) and then reads:
 - OpenSSH release notes and OpenBSD errata for the shipped release;
 - Chrome stable desktop updates and Alpine news;
 - this month's oss-security subjects that match `build/advisory-watch.keywords`; after a month
-  change, the month last read once more (its last days).
+  change, every month since the one last read (its last days), the latest 12 at most, and on the 1st
+  last month again the next day. Kernel posts titled "Linux: ..." or "CVE-...: net: ..." without the
+  word "kernel" are not matched ("linux" alone matched most of oss-security).
 
 It appends each new item to `/var/lib/convergent/builder/advisory-watch/queue` as one TSV line:
 time, source, ID, title and URL. A source that fails or yields nothing queues

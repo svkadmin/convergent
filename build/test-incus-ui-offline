@@ -585,20 +585,33 @@ done
 grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
 # check bounds the UI cleanup: the trust goes first, so the bound can cut only the slower instance calls.
 # A failed revocation still stops int, and fails.
-grep -Fq 'timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || case $? in 75) ;; *) logger' "$repo/tools/check"
-# A held UI lock (75, the owner at the unlock prompt) is retried next minute, not logged as a failure.
-grep '^    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup ||' "$repo/tools/check" >"$work/ui-cleanup"
-[ "$(wc -l <"$work/ui-cleanup")" = 1 ]
-for rc in 0 75 1 124; do
+grep -Fqx '    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || ui_rc=$?' "$repo/tools/check"
+# A held UI lock (75, the owner at the unlock prompt) is retried next minute, not logged as a failure, for 6 h
+# from its first minute; any other result forgets that start.
+sed -n '/^    ui_rc=0$/,/^    fi$/p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/|g; s|/proc/uptime|$work/uptime|" >"$work/ui-cleanup"
+[ "$(grep -c 'incus-ui cleanup' "$work/ui-cleanup")" = 1 ]
+grep -q "$work/incus-ui-busy" "$work/ui-cleanup"
+echo '100000.25 5.00' >"$work/uptime"
+for sample in 0:set:none 1:set:failed 124:none:failed 75:none:none 75:garbled:none 75:78400:none 75:78399:busy; do
+    rc=${sample%%:*} before=${sample#*:}
+    logged=${before#*:} before=${before%:*}
     : >"$work/ui-logged"
+    case $before in none) rm -f "$work/incus-ui-busy" ;; set) echo 99000 >"$work/incus-ui-busy" ;; *) echo "$before" >"$work/incus-ui-busy" ;; esac
     (
         timeout() { [ "$1 $2 $3" = '-k 5 120' ] || exit 97; shift 3; [ "$*" = '/usr/local/sbin/incus-ui cleanup' ] || exit 97; return "$rc"; }
         logger() { echo "$*" >>"$work/ui-logged"; }
         . "$work/ui-cleanup"
     )
-    case $rc in
-    0|75) [ ! -s "$work/ui-logged" ] ;;
-    *) [ "$(cat "$work/ui-logged")" = '-p user.err -t check Incus UI orphan cleanup failed' ] ;;
+    case $logged in
+    none) [ ! -s "$work/ui-logged" ] ;;
+    failed) [ "$(cat "$work/ui-logged")" = '-p user.err -t check Incus UI orphan cleanup failed' ] ;;
+    busy) [ "$(cat "$work/ui-logged")" = '-p user.err -t check Incus UI orphan cleanup busy for over 6 hours' ] ;;
+    esac || exit 1
+    case $rc:$before in
+    75:none | 75:garbled) [ "$(cat "$work/incus-ui-busy")" = 100000 ] ;;
+    75:*) [ "$(cat "$work/incus-ui-busy")" = "$before" ] ;;
+    *) [ ! -e "$work/incus-ui-busy" ] ;;
     esac || exit 1
 done
 sed -n '/^close_session() {/,/^}/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/close/|g" >"$work/close-session"

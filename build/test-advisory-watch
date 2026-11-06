@@ -174,7 +174,7 @@ echo 'test-advisory-watch: baseline passed'
 state=$scratch/earlier queue=$scratch/earlier/queue
 mkdir -m 700 "$state"
 echo 2026/10 >"$state/oss-security.month"
-mv "$feeds/oss-security-previous" "$scratch/previous"
+mv "$feeds/oss-security-2026-10" "$scratch/previous"
 run 1 WATCH_SKIP_SCAN=1
 for id in oss-security:2026/11/02/2 oss-security:2026/11/02/6 feed-failure:oss-security:2026-11-05; do
 	has "$id" || die "missing $id"
@@ -182,8 +182,62 @@ done
 if has oss-security:2026/10/31/1; then die 'earlier month item without its index'; fi
 [ "$(cat "$state/oss-security.month")" = 2026/10 ] || die 'month record moved on after a failed read'
 grep -q ' failed=oss-security$' "$state/last" || die "last: $(cat "$state/last")"
-mv "$scratch/previous" "$feeds/oss-security-previous"
+mv "$scratch/previous" "$feeds/oss-security-2026-10"
 run 1 WATCH_SKIP_SCAN=1
 has oss-security:2026/10/31/1 || die 'earlier month not read again'
 [ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on'
 echo 'test-advisory-watch: earlier month failure passed'
+
+# An outage over two month ends: every month from the one last read is read, then the record moves on.
+for month in 2025/11 2025/12 2026/01 2026/02 2026/03 2026/04 2026/05 2026/06 2026/07 2026/08 2026/09; do
+	sed "s|2026/10|$month|" "$feeds/oss-security-2026-10" >"$feeds/oss-security-$(echo "$month" | tr / -)"
+done
+state=$scratch/months queue=$scratch/months/queue
+mkdir -m 700 "$state"
+echo 2026/08 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1
+for id in oss-security:2026/08/31/1 oss-security:2026/09/31/1 oss-security:2026/10/31/1 oss-security:2026/11/02/2; do
+	has "$id" || die "missing $id"
+done
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on'
+# Over 12 earlier months: the latest 12 are read, the rest named once in the failure, and the record moves on.
+state=$scratch/cap queue=$scratch/cap/queue
+mkdir -m 700 "$state"
+echo 2025/10 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1
+has oss-security:2025/11/31/1 || die 'missing the 12th earlier month'
+grep -Fq 'oss-security: FAILED (2025/10 to 2025/10 not read (12 earlier months at most)); queued' "$scratch/out" ||
+	die 'skipped months not named'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on past the cap'
+run 0 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
+if grep -q 'oss-security: FAILED' "$scratch/out"; then die 'skipped months failed again'; fi
+echo 'test-advisory-watch: months since the record passed'
+
+# A future or malformed record is reported once and replaced by this month, as on a first run.
+for bad in 2027/01 2026/13 garbage; do
+	state=$scratch/bad-$(echo "$bad" | tr / -)
+	queue=$state/queue
+	mkdir -m 700 "$state"
+	echo "$bad" >"$state/oss-security.month"
+	run 1 WATCH_SKIP_SCAN=1
+	has feed-failure:oss-security:2026-11-05 || die "$bad: missing failure"
+	if has oss-security:2026/10/31/1; then die "$bad: read an earlier month"; fi
+	[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die "$bad: record not replaced"
+	run 0 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
+	if grep -q 'oss-security: FAILED' "$scratch/out"; then die "$bad: failed again"; fi
+done
+echo 'test-advisory-watch: bad month record passed'
+
+# On the 1st the record stays on last month, so the next day reads its index once more.
+state=$scratch/first queue=$scratch/first/queue
+mkdir -m 700 "$state"
+echo 2026/10 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$(date -u -d 2026-11-01T12:00:00Z +%s)"
+has oss-security:2026/10/31/1 || die 'missing last month on the 1st'
+[ "$(cat "$state/oss-security.month")" = 2026/10 ] || die 'record moved on on the 1st'
+sed 's|<li><a href="31/4">|<li><a href="31/5">OpenSSH late post</a>\n&|' "$feeds/oss-security-2026-10" >"$scratch/late"
+mv "$scratch/late" "$feeds/oss-security-2026-10"
+run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$(date -u -d 2026-11-02T12:00:00Z +%s)"
+has oss-security:2026/10/31/5 || die 'last month not read again the next day'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on after the 1st'
+echo 'test-advisory-watch: first of the month passed'

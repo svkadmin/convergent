@@ -204,22 +204,41 @@ def oss_month(name, month, work):
     return listed
 
 
+def month_after(month):
+    year, number = int(month[:4]), int(month[5:])
+    return f'{year + number // 12:04d}/{number % 12 + 1:02d}'
+
+
 def oss_security(work, keywords, done):
-    # This month; after a month change also the month last read (posts of its last days are listed only there).
-    # oss-security.month moves on, after the queue, only when both reads succeeded; a first run reads no
-    # earlier month. A failed earlier read is the source's failure but keeps this month's items.
-    month, record, failure = now.strftime('%Y/%m'), state / 'oss-security.month', None
+    # This month; after a month change also every month from the one last read (posts of its last days are
+    # listed only there), the latest 12 at most. oss-security.month moves on, after the queue, only when every
+    # read succeeded; on the 1st only to last month, so the next day reads its index once more (the archive
+    # lags). A first run reads no earlier month; a malformed or future record is reported once and replaced as
+    # on a first run. A failed earlier read is the source's failure but keeps this month's items.
+    month, record, failures = now.strftime('%Y/%m'), state / 'oss-security.month', []
     messages = oss_month('oss-security', month, work)
     last = record.read_text(errors='replace').strip() if record.exists() else month
-    if last != month:
+    if not re.fullmatch(r'[0-9]{4}/(0[1-9]|1[0-2])', last) or last > month:
+        failures.append(f'oss-security.month: invalid {clean(last)!r}, replaced by {month}')
+        last = month
+    earlier = []
+    while last < month:
+        earlier.append(last)
+        last = month_after(last)
+    if len(earlier) > 12:
+        failures.append(f'{earlier[0]} to {earlier[-13]} not read (12 earlier months at most)')
+        earlier = earlier[-12:]
+    older, complete = [], True
+    for name in earlier:
         try:
-            require(re.fullmatch(r'[0-9]{4}/[0-9]{2}', last) and last < month, f'oss-security.month: invalid {last!r}')
-            messages = oss_month('oss-security-previous', last, work) + messages
+            older += oss_month(f'oss-security-{name.replace("/", "-")}', name, work)
         except Exception as error:
-            failure = clean(error) or type(error).__name__
-    if not failure:
-        done.append(month)
-    return [message for message in messages if keywords.search(message[1])], len(messages), failure
+            failures.append(clean(error) or type(error).__name__)
+            complete = False
+    if complete:
+        done.append(earlier[-1] if earlier and now.day == 1 else month)
+    messages = older + messages
+    return [message for message in messages if keywords.search(message[1])], len(messages), '; '.join(failures) or None
 
 
 def scan():
