@@ -38,7 +38,12 @@ browser_start() (
 browser_def() { noargs "$@"; browser_start def; }
 browser_tmp() { noargs "$@"; browser_start tmp; }
 browser_int() { noargs "$@"; browser_start int; }
-browser_incus() { noargs "$@"; run foot -T 'Incus management' -e /usr/local/sbin/incus-ui open; }
+# The window stays open on a failure: it holds the reason (incus-ui, the unlock prompt or the browser).
+browser_incus() {
+	noargs "$@"
+	run foot -T 'Incus management' -e sh -c '"$@" || { result=$?; printf "\nFailed (exit %s). Press Enter to close " "$result"; IFS= read -r answer; exit "$result"; }' \
+		incus-ui /usr/local/sbin/incus-ui open
+}
 browser_close() {
 	onearg 'Browser to close (def, tmp or int)' "$@"
 	case $answer in def|tmp|int) ;; *) die 'expected def, tmp or int' ;; esac

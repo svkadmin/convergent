@@ -142,12 +142,14 @@ firewall_heal() (
             case $field in '' | *[!0-9]* | 0?*) first=$now previous=$now; break ;; esac
         done
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now; fi
-        printf '%s %s\n' "$first" "$now" >"$heal/pair" || exit 1
+        # Replaced whole: check reads the records without the heal lock.
+        printf '%s %s\n' "$first" "$now" >"$heal/pair.new" && mv "$heal/pair.new" "$heal/pair" || exit 1
         exec 8>/run/convergent/guests.lock 6>/run/convergent/dns-push.lock
         if [ "$((now - first))" -lt 180 ]; then
             echo "SELF-HEAL fw1, fw2: stopped or paused for $((now - first))s; both start after 180s"
         elif flock -n 8 && flock -n 6 && heal_allowed && heal_pair_stopped; then
             for node in fw1 fw2; do
+                [ "$attempts" -lt 3 ] || continue
                 # Only a stopped VM starts; a paused one is ended and started again.
                 case $(heal_state "$node") in STOPPED) action=start ;; ERROR|FROZEN) action=restart ;; *) continue ;; esac
                 read -r uptime rest </proc/uptime
@@ -197,6 +199,8 @@ firewall_heal() (
             echo "SELF-HEAL $node: restarted $((now - restarted))s ago; waiting for its boot"
             continue
         fi
+        # A loaded but healthy peer misses the 10 s probe: asked again with the pre-kill bound.
+        [ "$peer_health" != unhealthy ] || peer_health=$(heal_probe "$peer" 30) || peer_health=unhealthy
         first=$now previous=$now peer_since=0
         [ ! -f "$heal/$node" ] || read -r first previous peer_since <"$heal/$node"
         # A garbled record restarts the window: arithmetic on it would end the heal.
@@ -208,7 +212,7 @@ firewall_heal() (
         # Since when the peer answers MASTER (0: not now): acting needs it in two runs in a row, as before the
         # window was the node's own, so a stale window never acts on one answer (a host bridge just back).
         if [ "$peer_health" != master ]; then peer_since=0; elif [ "${peer_since:-0}" = 0 ]; then peer_since=$now; fi
-        printf '%s %s %s\n' "$first" "$now" "$peer_since" >"$heal/$node" || exit 1
+        printf '%s %s %s\n' "$first" "$now" "$peer_since" >"$heal/$node.new" && mv "$heal/$node.new" "$heal/$node" || exit 1
         echo "SELF-HEAL $node: unhealthy for $((now - first))s; peer $peer: $peer_health; attempts $attempts/3 in the last hour"
         [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] && [ "$peer_since" -gt 0 ] &&
             [ "$((now - peer_since))" -ge 50 ] || continue

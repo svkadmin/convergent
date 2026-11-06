@@ -983,7 +983,7 @@ sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" 
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
 flock() { [ "$busy" = 0 ] && command flock "$@"; }
-timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; shift 3; "$@"; }
+timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; [ -z "${slow:-}" ] || [ "$3:${11:-}" != "10:$slow" ] || return 124; shift 3; "$@"; }
 sleep() { :; }
 # A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
 kill() {
@@ -1113,6 +1113,29 @@ tick 7000; test_peer=down; tick 7060
 grep -qx 'SELF-HEAL fw2: unhealthy for 60s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
 test_peer=MASTER; tick 7120; [ "$(attempts)" = "$before" ]
 tick 7180; [ "$(attempts)" = "$((before + 1))" ]
+# A loaded peer that misses its 10 s probe but answers within 30 s still lets the restart come on time.
+rm -f "$work/run/firewall-heal/"*
+before=$(attempts) slow=fw1
+for t in 7000 7060 7120; do tick "$t"; [ "$(attempts)" = "$before" ]; done
+grep -qx 'SELF-HEAL fw2: unhealthy for 120s; peer fw1: master; attempts 0/3 in the last hour' "$work/report"
+tick 7180; [ "$(attempts)" = "$((before + 1))" ]
+slow=
+# Window records are replaced whole: check reads them without the heal lock.
+(
+    printf() {
+        for record in fw1 fw2 pair; do
+            [ ! -e "$work/run/firewall-heal/$record" ] || [ -s "$work/run/firewall-heal/$record" ] || exit 97
+        done
+        command printf "$@"
+    }
+    rm -f "$work/run/firewall-heal/"*
+    tick 7000; tick 7060
+    [ -s "$work/run/firewall-heal/fw2" ]
+    test_status=STOPPED test_peer=down
+    tick 7120
+    [ -s "$work/run/firewall-heal/pair" ] && [ -s "$work/run/firewall-heal/fw1" ] || exit 1
+    if ls "$work/run/firewall-heal/"*.new 2>/dev/null; then exit 1; fi
+)
 # A stale window (both firewalls unreachable for minutes) acts on the peer's second MASTER answer, not its first.
 rm -f "$work/run/firewall-heal/"*
 test_peer=down
@@ -1265,6 +1288,16 @@ for record in '08 5000' '5000 garbage 4900' '5000' '5000 5000 garbage'; do
     release
 done
 rm "$work/run/firewall-heal/fw2"
+# Only a regular file is a record: anything else is never opened (a FIFO's reader would block the run).
+mkfifo "$work/run/firewall-heal/fw2"
+exec 3<>"$work/run/firewall-heal/fw2"
+echo '3000 5000 4900' >&3
+: >"$work/swept"
+sweeps
+[ "$(wc -l <"$work/swept")" = 2 ]
+release
+exec 3>&-
+rm "$work/run/firewall-heal/fw2"
 mv "$work/attempts.saved" "$work/run/firewall-heal/attempts"
 mv "$work/uptime.saved" "$work/proc/uptime"
 # Prefix neighbours must not change the exact instance state.
@@ -1377,13 +1410,14 @@ cmp "$work/calls" "$work/expected"
 [ "$(cat "$work/run/firewall-heal/fw1.restarted")" = 1420 ] && [ "$(cat "$work/run/firewall-heal/fw2.restarted")" = 1420 ]
 command flock -n "$work/run/guests.lock" true
 command flock -n "$work/run/dns-push.lock" true
-# The boot grace and 180 s more, then one more pair start within the hourly limit.
+# The boot grace and 180 s more, then one more start within the hourly limit: the cap holds inside the pair.
 for t in 1480 1960 2020 2080 2140; do tick "$t"; done
 [ "$(wc -l <"$work/calls")" = 2 ]
 tick 2200
-[ "$(wc -l <"$work/calls")" = 4 ]
+[ "$(wc -l <"$work/calls")" = 3 ] && [ "$(wc -l <"$work/run/firewall-heal/attempts")" = 3 ] || exit 1
+[ "$(tail -n 1 "$work/calls")" = '--force-local --project default start fw1' ]
 tick 2800
-[ "$(wc -l <"$work/calls")" = 4 ]
+[ "$(wc -l <"$work/calls")" = 3 ]
 # An ENOSPC pause leaves both QEMUs in io-error (Incus: ERROR), a pause FROZEN: forced restarts, same window.
 for test_status in ERROR FROZEN; do
     rm -rf "$work/run/firewall-heal"

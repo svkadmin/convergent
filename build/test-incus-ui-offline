@@ -567,6 +567,41 @@ for gate in open guests update stopping nonroot arguments; do
     esac
 done
 grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
+# check bounds the UI cleanup: the trust goes first, so the bound can cut only the slower instance calls.
+# A failed revocation still stops int, and fails.
+grep -Fq 'timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || logger' "$repo/tools/check"
+sed -n '/^close_session() {/,/^}/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/close/|g" >"$work/close-session"
+[ -s "$work/close-session" ]
+sh -n "$work/close-session"
+for sample in ok remove-fail stop-fail; do
+    rm -rf "$work/close"
+    mkdir -p "$work/close/incus-ui"
+    : >"$work/close-calls"
+    rc=0
+    (
+        state=$work/close/state run=$work/close/incus-ui
+        logger() { :; }
+        fingerprint() { exit 97; }
+        ic() {
+            echo "$*" >>"$work/close-calls"
+            case $* in
+            'config trust list --format json') echo '[{"name":"browser-int-ui","fingerprint":"aa"},{"name":"metrics","fingerprint":"bb"}]' ;;
+            'config trust remove aa') [ "$sample" != remove-fail ] ;;
+            'query /1.0/instances?recursion=1&project=default') echo '[{"name":"int","status":"Running"}]' ;;
+            'stop int --force') [ "$sample" != stop-fail ] ;;
+            *) exit 97 ;;
+            esac
+        }
+        . "$work/close-session"
+        close_session
+    ) || rc=$?
+    printf '%s\n' 'config trust list --format json' 'config trust remove aa' \
+        'query /1.0/instances?recursion=1&project=default' 'stop int --force' | cmp - "$work/close-calls"
+    case $sample in
+    ok) [ "$rc" = 0 ] && [ ! -e "$work/close/incus-ui" ] ;;
+    *) [ "$rc" = 1 ] && [ -d "$work/close/incus-ui" ] ;;
+    esac || exit 1
+done
 # No sweep before self-heal (a frozen QEMU holds each for its full bound); UI cleanup after it.
 awk '/^    firewall_heal >/ {heal = NR} /browser --reap-tmp \|\|/ {sweep = NR} /remote reap \|\|/ {reap = NR}
     /incus-ui cleanup \|\|/ {ui = NR}

@@ -270,9 +270,9 @@ if [ "${1:-}" = auto ]; then (
     fi
 ); fi
 # Run before the daily scan throttle; cleanup takes the int session lock. Never held back: it revokes the trust
-# of an orphaned Incus UI session.
+# of an orphaned Incus UI session, first, so the bound only cuts the slower instance stop.
 if [ "${1:-}" = auto ]; then
-    /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
+    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
 fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
 # first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock. After
@@ -283,7 +283,8 @@ read -r heal_uptime heal_rest </proc/uptime
 heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n + 0}' /run/convergent/firewall-heal/attempts 2>/dev/null) || heal_capped=0
 [ "$heal_capped" -ge 3 ] 2>/dev/null ||
     for observed in fw1 fw2 pair; do
-        read -r heal_first heal_previous heal_peer 2>/dev/null </run/convergent/firewall-heal/$observed || continue
+        [ -f "/run/convergent/firewall-heal/$observed" ] || continue
+        read -r heal_first heal_previous heal_peer 2>/dev/null <"/run/convergent/firewall-heal/$observed" || continue
         # A garbled record holds nothing: arithmetic on it would end the whole run.
         heal_valid=1
         for heal_field in "$heal_first" "$heal_previous" "${heal_peer:-0}"; do

@@ -500,6 +500,25 @@ sh -n "$scratch/browser-module"
     mkdir "$XDG_RUNTIME_DIR"
     if browser_start def 2>"$scratch/error"; then exit 1; fi
     grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'sys browser'
+    # sys browser incus: a failed open keeps its window, and the reason, until Enter.
+    noargs() { [ "$#" = 0 ] || exit 97; }
+    run() { "$@"; }
+    foot() {
+        [ "$1:$2:$3:$4:$5" = '-T:Incus management:-e:sh:-c' ] || exit 97
+        [ "$7:$8:$9:$#" = 'incus-ui:/usr/local/sbin/incus-ui:open:9' ] || exit 97
+        printf '%s' "$6" >"$scratch/incus-window"
+    }
+    browser_incus
+    for rc in 0 3; do
+        code=0
+        printf '\n' | sh -c "$(cat "$scratch/incus-window")" incus-ui sh -c "echo 'incus-ui: reason' >&2; exit $rc" \
+            >"$scratch/output" 2>&1 || code=$?
+        [ "$code" = "$rc" ] && grep -qx 'incus-ui: reason' "$scratch/output" || exit 1
+        case $rc in
+        0) if grep -q 'Failed' "$scratch/output"; then exit 1; fi ;;
+        3) grep -qx 'Failed (exit 3). Press Enter to close ' "$scratch/output" ;;
+        esac
+    done
 )
 {
     sed -n '/^int_exec() {/p; /^int_exec_raw() {/p' "$repo/tools/incus-ui"

@@ -61,22 +61,23 @@ fingerprint() {
     printf '%s\n' "$digest" | cut -d= -f2 | tr -d ':' | tr A-F a-f
 }
 close_session() {
-    stopped=1
+    closed=1
     trust=$(ic config trust list --format json) || return
     expected=
     if [ -s "$state/client.crt" ]; then expected=$(fingerprint "$state/client.crt") || return; fi
     fps=$(printf '%s\n' "$trust" | jq -r --arg fp "$expected" \
         '.[] | select(.name == "browser-int-ui" or .fingerprint == $fp) | .fingerprint') || return
+    # Revoked before the slow instance calls: check's bound may cut those, never this.
+    for fp in $fps; do ic config trust remove "$fp" || closed=0; done
     if [ -d "$run" ] || [ -n "$fps" ]; then
         mkdir -p "$run"
         if instances=$(ic query '/1.0/instances?recursion=1&project=default'); then
             if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "int" and .status != "Stopped")' >/dev/null; then
-                ic stop int --force || stopped=0
+                ic stop int --force || closed=0
             fi
-        else stopped=0; fi
+        else closed=0; fi
     fi
-    for fp in $fps; do ic config trust remove "$fp" || return; done
-    [ "$stopped" = 1 ] || return 1
+    [ "$closed" = 1 ] || return 1
     rm -rf -- "$run" || return
     # A killed unlock/setup can leave secrets in /run; the UI action lock excludes live writers.
     for stale in /run/convergent/incus-ui-unlock.?????? /run/convergent/incus-ui-setup.??????; do
