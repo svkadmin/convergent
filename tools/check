@@ -334,7 +334,8 @@ if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     if [ "$net_ok" = 1 ] && [ "$last" -ge "$boot" ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$interval" ] &&
         [ ! /var/lib/convergent/guests/updates -nt "$state/last" ] &&
         [ ! /var/lib/convergent/guests/initialized -nt "$state/last" ] &&
-        [ ! /run/convergent/wired-heal -nt "$state/last" ]; then exit 0; fi
+        [ ! /run/convergent/wired-heal -nt "$state/last" ] &&
+        [ ! /run/convergent/firewall-heal/resume.stuck -nt "$state/last" ]; then exit 0; fi
 fi
 work=$(mktemp -d "$state/.run.XXXXXX") || die 'cannot create scratch directory'
 trap 'rm -rf "$work"' 0
@@ -553,6 +554,12 @@ pending=$(find /run/convergent/wired-strike -mmin -3 -exec cut -d ' ' -f 1 {} + 
 if serial=$(wired_lost) && [ "$serial" != "$pending" ] || grep -qs '^failed ' /run/convergent/wired-heal; then
     bad 'wan wired uplink: the allowed NIC is not passed through; recovery: sys wired remove, then sys wired attach (reboot if Incus refuses it)'
 fi
+# What the heal's work DHCP resume could not do five runs in a row (firewall-heal): dhcpd does not start there.
+for node in fw1 fw2; do
+    if grep -qsE '^([5-9]|[1-9][0-9]+)$' "/run/convergent/firewall-heal/resume.failed.$node"; then
+        bad "work DHCP resume keeps failing on $node (five in a row): dhcpd does not start there; inspect its log, the resume is retried each minute"
+    fi
+done
 
 # facts boot also exports these; do not duplicate its metric series.
 efi=/sys/firmware/efi/efivars

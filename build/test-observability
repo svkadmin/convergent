@@ -64,6 +64,11 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
             command touch -d "@$(($(command stat -c %Y "$state/last") + 60))" "$fixture/run/wired-heal"
             due yes
             rm "$fixture/run/wired-heal"
+            # So does a work DHCP resume the heal could not do five runs in a row.
+            mkdir -p "$fixture/run/firewall-heal"
+            command touch -d "@$(($(command stat -c %Y "$state/last") + 60))" "$fixture/run/firewall-heal/resume.stuck"
+            due yes
+            rm "$fixture/run/firewall-heal/resume.stuck"
             clock=100300
             if [ "$fault:$success" = none:1 ]; then due no; else due yes; fi
             clock=186400; due yes
@@ -219,6 +224,27 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     run 5080; is "$strike" 'S1 5080'; echo 'failed S1' >"$outcome"
     guard=down; run 5140; is "$strike" 'S1 5080'; is "$outcome" 'failed S1'
     reported
+)
+# The scan reports a work DHCP resume the heal could not do five runs in a row, per firewall; a garbled or
+# lower count is nothing.
+sed -n '/^# What the heal.s work DHCP resume could not do/,/^done$/p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/run/|g" >"$work/resume-scan"
+[ -s "$work/resume-scan" ]; sh -n "$work/resume-scan"
+grep -q 'firewall-heal/resume.failed' "$work/resume-scan"
+(
+    bad() { echo "$*" >>"$work/resume-bad"; }
+    mkdir -p "$work/run/firewall-heal"
+    for count in '' 4 08 5x '5 x' 'x 5'; do
+        rm -f "$work/resume-bad"; printf '%s\n' "$count" >"$work/run/firewall-heal/resume.failed.fw2"
+        . "$work/resume-scan"; [ ! -e "$work/resume-bad" ]
+    done
+    for count in 5 12; do
+        rm -f "$work/resume-bad"; echo "$count" >"$work/run/firewall-heal/resume.failed.fw2"
+        . "$work/resume-scan"
+        grep -q '^work DHCP resume keeps failing on fw2 (five in a row)' "$work/resume-bad"
+        [ "$(wc -l <"$work/resume-bad")" = 1 ]
+    done
+    rm "$work/run/firewall-heal/resume.failed.fw2"
 )
 # The scan reports a USBGuard that does not answer.
 sed -n '/^timeout -k 1 10 usbguard list-rules /p' "$repo/tools/check" >"$work/guard-scan"

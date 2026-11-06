@@ -749,12 +749,13 @@ The minute run of `check auto`: repairs first, then the baseline scan.
 - A lease hold left by a run that could not reach a firewall does not inhibit the heal: once both
   firewalls answer their probe, work DHCP resumes and the hold is released. While it is set, the
   probe does not check dhcpd (disabled, or enabled but not started by a failed resume: the resume is
-  retried each run, on every firewall). After five failed resumes in a row the probe checks dhcpd
-  again, so a dhcpd that never starts shows as unhealthy and its firewall is restarted.
+  retried each run, on every firewall). After five failed resumes in a row on a firewall the checker
+  reports it (`CheckerFailed`); the resume is still retried each run, and a restart of that firewall
+  or the hold's release resets its count.
 - A firewall that comes back under a new QEMU (a restart by the heal or by hand, a crash, a host
   reboot) may have abandoned an address its peer bound meanwhile, and dhcpd refuses every later sync
-  of it; so may a running one whose client answered its pre-offer ping (its count of abandoned
-  records, read with the probe, rises). The heal queues one lease reconcile (`leases/reconcile`):
+  of it; so may a running one whose client answered its pre-offer ping (an abandoned record new to
+  it, read with the probe; once an hour at most). The heal queues one lease reconcile (`leases/reconcile`):
   once both firewalls answer, and under no journal or guests run, it holds both allocators, merges
   their leases (each file's last declaration per address; a current binding beats an abandoned one;
   one MAC keeps its current, else its newest, address per VLAN) and writes the merge back, as a guest

@@ -985,7 +985,17 @@ sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" 
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
 flock() { [ "$busy" = 0 ] && command flock "$@"; }
-timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; [ -z "${slow:-}" ] || [ "$3:${11:-}" != "10:$slow" ] || return 124; shift 3; "$@"; }
+timeout() {
+    [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"
+    [ -z "${slow:-}" ] || [ "$3:${11:-}" != "10:$slow" ] || return 124
+    mock_bound=$3; shift 3
+    "$@" || {
+        mock_rc=$?
+        # elapsed: a failed call used its whole bound, as the heal reads it from /proc/uptime.
+        [ -z "${elapsed:-}" ] || { read -r mock_up mock_rest <"$fixture/proc/uptime"; echo "$((${mock_up%.*} + mock_bound)).00 0" >"$fixture/proc/uptime"; }
+        return "$mock_rc"
+    }
+}
 sleep() { :; }
 # A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
 kill() {
@@ -995,7 +1005,7 @@ kill() {
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
     case ${12:-} in
-    *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$fixture/calls"; [ "${resume_fail:-}" != "${11}" ] || return 1; return ;;
+    *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$fixture/calls"; case " ${resume_fail:-} " in *" ${11} "*) return 1 ;; esac; return ;;
     # fw-leases' checkpoint and seed, on a leases file per node.
     *'rcctl disable dhcpd'*) echo "hold ${11}" >>"$fixture/calls"; [ "${hold_fail:-0}" = 0 ] || return 1; cat "$fixture/leases.${11}"; return ;;
     *'cat >/var/db/dhcpd.leases.new'*) echo "seed ${11}" >>"$fixture/calls"; cat >"$fixture/leases.${11}"; return ;;
@@ -1013,20 +1023,29 @@ ssh() {
     echo 'Status: Enabled'
     echo 'pfsync0: flags=41<UP,RUNNING>'
     echo ' defer: on'
-    # The node's count of abandoned lease records.
-    eval "echo abandoned \${abandoned_$7:-0}"
+    # The node's abandoned declarations, by the probe's own awk over the node's leases file.
+    eval "$(printf '%s\n' "${8:-}" | grep '^ *awk ' | sed "s|/var/db/dhcpd.leases|$fixture/leases.$7|")"
+}
+# A marker unknown.<node> makes that node's state read (list and query) fail once, after as many reads as it
+# holds (empty: the next).
+unknown() {
+    [ -f "$fixture/unknown.$1" ] || return 1
+    read -r skip <"$fixture/unknown.$1" || skip=
+    case $skip in '' | 0) [ "$2" != query ] || rm "$fixture/unknown.$1"; return 0 ;; esac
+    [ "$2" != list ] || echo "$((skip - 1))" >"$fixture/unknown.$1"
+    return 1
 }
 incus() {
-    # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does. A marker
-    # unknown.<node> makes that node's next state read (list and query) fail once.
+    # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does.
     case $2:${4:-} in
     query:*)
         unknown_node=${3#/1.0/instances/}; unknown_node=${unknown_node%%/*}
         [ "$test_status" != unknown ] || return 1
-        [ ! -f "$fixture/unknown.$unknown_node" ] || { rm "$fixture/unknown.$unknown_node"; return 1; }
+        if unknown "$unknown_node" query; then return 1; fi
         printf '{"status":"%s"}\n' "$test_status"; return ;;
     *:list)
-        [ "$test_status" != unknown ] && [ "${list_slow:-0}" = 0 ] && [ ! -f "$fixture/unknown.$5" ] || return 1
+        [ "$test_status" != unknown ] && [ "${list_slow:-0}" = 0 ] || return 1
+        if unknown "$5" list; then return 1; fi
         case $* in *'-c ns') printf '%s,%s\n%s-old,RUNNING\n' "$5" "$test_status" "$5" ;; *) printf '%s\nRUNNING\n' "$test_status" ;; esac
         return ;;
     esac
@@ -1146,6 +1165,17 @@ printf '%s\n' 7000 7000 7000 >"$work/run/firewall-heal/attempts"
 for t in 7240 7300 7360 7420; do : >"$bounds"; tick "$t"; if grep -qx '30 fw1' "$bounds"; then exit 1; fi; done
 [ "$(attempts)" = "$((before + 1))" ]
 slow= bounds=
+# Two failed 30 s re-probes behind a frozen peer's 30 s Incus stalls overran the minute, and the next heal
+# came at +180 s, past the window's gap: once a run has used 60 s no re-probe starts (the mock charges a
+# failed call its bound: 10 + 10 for the probes, 30 for the stalled list, 30 for fw1's re-probe of fw2).
+rm -f "$work/run/firewall-heal/"*
+test_peer=down test_target=down list_slow=1 elapsed=1 bounds=$work/probe-bounds
+tick 7000; tick 7060
+: >"$bounds"; tick 7120
+grep -qx '30 fw2' "$bounds"
+if grep -qx '30 fw1' "$bounds"; then exit 1; fi
+grep -qx 'SELF-HEAL fw2: unhealthy for 120s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
+test_peer=MASTER list_slow=0 elapsed= bounds=
 # Window records are replaced whole: check reads them without the heal lock.
 (
     printf() {
@@ -1480,70 +1510,123 @@ grep -q 'lease reconcile failed (1/3)' "$work/run/firewall-heal/event"
 tick 2200
 reconciled
 [ ! -f "$leases/reconcile" ]
+# A node Incus read at the checkpoint but not at the seed (its state query timed out) keeps its own leases:
+# no reconcile is done with half its write-back; the try fails, resumes and is retried.
+qemu 4848 fw2 "$work/incus/fw2/qemu.pid"
+echo 1 >"$fixture/unknown.fw2"
+: >"$work/calls"
+tick 2260
+printf '%s\n' 'hold fw1' 'hold fw2' 'seed fw1' 'resume fw1' 'resume fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+[ "$(cat "$leases/reconcile")" = 1 ] && [ ! -e "$leases/held" ] && [ ! -e "$fixture/unknown.fw2" ] || exit 1
+grep -q 'lease reconcile failed (1/3)' "$work/run/firewall-heal/event"
+: >"$work/calls"
+tick 2320
+reconciled
+[ ! -f "$leases/reconcile" ]
 # A QEMU record /var/lib cannot take is logged, not fatal: the probes still run, and the next run that can
 # write it queues the reconcile.
 sync() { return 1; }
-qemu 4848 fw2 "$work/incus/fw2/qemu.pid"
+qemu 4949 fw2 "$work/incus/fw2/qemu.pid"
 : >"$work/calls"
-tick 2260
+tick 2380
 grep -q 'QEMU record not written' "$work/run/firewall-heal/event"
 grep -q '^SELF-HEAL fw2: ' "$work/report"
 [ ! -s "$work/calls" ]
 unset -f sync
 : >"$work/calls"
-tick 2320
+tick 2440
 reconciled
 [ ! -f "$leases/reconcile" ]
 # dhcpd abandons an address its peer bound meanwhile when the client answers the pre-offer ping, under no
-# restart: a node's rising count of abandoned records queues the reconcile; an unchanged or fallen count does
-# not, and a rise while one is queued is counted, not queued again.
-abandoned_fw2=1
+# restart: an abandoned declaration (address and start) new to a node queues the reconcile; the record the
+# seed carried to its peer, the same set, a compaction or a fall does not; a second rise waits an hour; a
+# rise while one is queued is stored, not queued again.
+abandon() { printf 'lease %s {\n  starts 1 2026/10/26 %s;\n  ends 1 2026/10/26 13:00:00;\n  abandoned;\n}\n' "$2" "$3" >>"$work/leases.$1"; }
+abandon fw2 100.80.32.53 11:00:00
 : >"$work/calls"
-busy=1; tick 2380; busy=0
+busy=1; tick 2500; busy=0
 [ "$(cat "$leases/reconcile")" = 0 ] && [ ! -s "$work/calls" ]
 grep -q 'fw2 abandoned 1 more work DHCP address' "$work/run/firewall-heal/event"
-tick 2440
-reconciled
-[ ! -f "$leases/reconcile" ] && [ "$(cat "$leases/abandoned.fw2")" = 1 ]
-: >"$work/calls"
-tick 2500
-[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
-abandoned_fw2=0
 tick 2560
-[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ] && [ "$(cat "$leases/abandoned.fw2")" = 0 ]
+reconciled
+[ ! -f "$leases/reconcile" ]
+grep -q '^lease 100.80.32.53 ' "$work/leases.fw1"
+grep -qx 'abandoned 100.80.32.53 2026/10/26/11:00:00' "$leases/abandoned.fw1"
+cmp "$leases/abandoned.fw1" "$leases/abandoned.fw2"
+: >"$work/calls"
+tick 2620
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
+# fw2 binds the address again (history keeps the abandon), then dhcpd compacts its file and abandons another
+# address before the next probe: a count stays at one; the new declaration is a rise, held back by the hour.
+printf 'lease 100.80.32.53 {\n  starts 1 2026/10/26 11:30:00;\n  ends 1 2026/10/26 13:30:00;\n  hardware ethernet 00:16:3e:00:00:03;\n}\n' >"$work/bound"
+cat "$work/bound" >>"$work/leases.fw2"
+tick 2680
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
+sed '/^lease 100.80.32.53 {$/,/^}$/d' "$work/leases.fw2" >"$work/compact"
+cat "$work/compact" "$work/bound" >"$work/leases.fw2"
+abandon fw2 100.80.32.54 12:00:00
+tick 2740
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
+grep -q '100.80.32.53' "$leases/abandoned.fw2"
+busy=1; tick 6100; busy=0
+[ "$(cat "$leases/reconcile")" = 0 ] && [ ! -s "$work/calls" ]
+grep -q 'fw2 abandoned 1 more work DHCP address' "$work/run/firewall-heal/event"
+echo 'abandoned 100.80.32.54 2026/10/26/12:00:00' >"$work/expected"
+cmp "$leases/abandoned.fw2" "$work/expected"
 echo 2 >"$leases/reconcile"
-abandoned_fw2=3
-busy=1; tick 2620; busy=0
-[ "$(cat "$leases/reconcile")" = 2 ] && [ "$(cat "$leases/abandoned.fw2")" = 3 ] && [ ! -s "$work/calls" ]
+abandon fw2 100.80.32.55 12:30:00
+busy=1; tick 6160; busy=0
+[ "$(cat "$leases/reconcile")" = 2 ] && [ ! -s "$work/calls" ]
+grep -q '100.80.32.55' "$leases/abandoned.fw2"
 rm "$leases/reconcile"
-# A resume that keeps failing (dhcpd never starts on fw2): five in a row end the probe's dhcpd mask, so fw2
-# shows unhealthy and is restarted, which resets the count; the retried resume then succeeds.
+# A resume that keeps failing (dhcpd never starts on fw2) is retried each run: dhcpd is never probed under
+# the hold, so no node is restarted for it; the count is the node's own, five in a row mark the checker's
+# scan due (resume.stuck) for its alert, a hold gone clears the counts, and a later hold counts afresh.
 rm -rf "$work/run/firewall-heal"
 touch "$leases/held"
 dhcpd_off=fw2 resume_fail=fw2
 : >"$work/calls"
-for n in 1 2 3 4 5; do
+for n in 1 2 3 4 5 6; do
     tick "$((2620 + n * 60))"
-    grep -q "work DHCP resume failed ($n in a row; on fw2); lease hold retained" "$work/run/firewall-heal/event"
+    grep -q "work DHCP resume failed on fw2 ($n in a row); lease hold retained" "$work/run/firewall-heal/event"
     grep -q '^SELF-HEAL fw2: backup' "$work/report"
+    [ "$n" -ge 5 ] || [ ! -e "$work/run/firewall-heal/resume.stuck" ] || exit 1
 done
-[ "$(grep -c '^resume fw1$' "$work/calls")" = 5 ] && [ "$(grep -c '^resume fw2$' "$work/calls")" = 5 ] || exit 1
-[ -e "$leases/held" ] && [ "$(cat "$work/run/firewall-heal/resume.failed")" = 5 ]
+[ "$(grep -c '^resume fw1$' "$work/calls")" = 6 ] && [ "$(grep -c '^resume fw2$' "$work/calls")" = 6 ] || exit 1
+[ -e "$leases/held" ] && [ -e "$work/run/firewall-heal/resume.stuck" ] && [ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] || exit 1
+[ "$(cat "$work/run/firewall-heal/resume.failed.fw2")" = 6 ]
+dhcpd_off='fw1 fw2' resume_fail='fw1 fw2'
 : >"$work/calls"
-tick 2980
-grep -q '^SELF-HEAL fw2: unhealthy' "$work/report"
-[ ! -s "$work/calls" ] && [ -e "$leases/held" ]
-for t in 3040 3100 3160; do tick "$t"; done
-grep -q 'default restart fw2 --force' "$work/calls"
-[ ! -f "$work/run/firewall-heal/resume.failed" ] && [ -e "$leases/held" ]
-resume_fail=
-: >"$work/calls"
-tick 3820
+tick 3040
+grep -q 'work DHCP resume failed on fw1 (1 in a row), fw2 (7 in a row); lease hold retained' "$work/run/firewall-heal/event"
+grep -q '^SELF-HEAL fw1: master' "$work/report"
 printf '%s\n' 'resume fw1' 'resume fw2' >"$work/expected"
 cmp "$work/calls" "$work/expected"
-[ ! -e "$leases/held" ]
-dhcpd_off=
+dhcpd_off= resume_fail=
+rm "$leases/held"
+tick 3100
+[ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] && [ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] && [ ! -e "$work/run/firewall-heal/resume.stuck" ] || exit 1
+touch "$leases/held"
+resume_fail=fw1
+tick 3160
+grep -q 'work DHCP resume failed on fw1 (1 in a row); lease hold retained' "$work/run/firewall-heal/event"
+resume_fail=
+: >"$work/calls"
+tick 3220
+cmp "$work/calls" "$work/expected"
+[ ! -e "$leases/held" ] && [ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] || exit 1
+grep -q 'work DHCP resumed' "$work/run/firewall-heal/event"
+# A restart resets the restarted node's count only.
+rm -rf "$work/run/firewall-heal"; mkdir -p "$work/run/firewall-heal"
+echo 3 >"$work/run/firewall-heal/resume.failed.fw1"; echo 3 >"$work/run/firewall-heal/resume.failed.fw2"
+touch "$leases/held"
 test_target=down
+: >"$work/calls"
+for t in 1000 1060 1120 1180; do tick "$t"; done
+grep -q 'default restart fw2 --force' "$work/calls"
+[ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = 3 ] || exit 1
+rm "$leases/held"
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
 rm -rf "$work/run/firewall-heal"

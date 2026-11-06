@@ -608,11 +608,14 @@ sh "$work/sshd-opts-check" "$wan_opts" || die 'wan build refuses the shipped con
 for edit in '$a command_args="-o PasswordAuthentication=yes"' '$a SSHD_OPTS="-o Include=/etc/ssh/extra"' \
     '$a cfgfile=/etc/ssh/sshd_config.other' '$a   SSHD_CONFDIR=/etc/ssh2' \
     '$a export command_args="-o PasswordAuthentication=yes"' '$a : ${command_args:=-o PasswordAuthentication=yes}' \
-    '$a SSHD_BINARY=/tmp/sshd' '$a . /etc/sshd.extra'; do
+    '$a SSHD_BINARY=/tmp/sshd' '$a . /etc/sshd.extra' \
+    '$a rc_need="net"; command_args="-o PasswordAuthentication=yes"' '$a rc_need=x command_args="-o PasswordAuthentication=yes"' \
+    '$a rc_need="net" command_args="-o PasswordAuthentication=yes"' '$a rc_need="$(sshd -o PasswordAuthentication=yes)"' \
+    '$a rc_need=net' '$a rc_need="net" # command_args="-o PasswordAuthentication=yes"'; do
     sed "$edit" "$wan_opts" >"$work/conf.d-sshd"
     if sh "$work/sshd-opts-check" "$work/conf.d-sshd"; then die "wan build accepts conf.d/sshd after: $edit"; fi
 done
-for edit in '$a # command_args="-o PasswordAuthentication=yes"' '$s/$/\n/' '$a rc_use="net"'; do
+for edit in '$a # command_args="-o PasswordAuthentication=yes"' '$s/$/\n/' '$a rc_use="net"' '$a   rc_after="net dns_1 wan-firewall"  '; do
     sed "$edit" "$wan_opts" >"$work/conf.d-sshd"
     sh "$work/sshd-opts-check" "$work/conf.d-sshd" || die "wan build refuses conf.d/sshd after: $edit"
 done

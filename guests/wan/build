@@ -133,9 +133,10 @@ awk 'BEGIN {want["passwordauthentication"] = "no"; want["kbdinteractiveauthentic
     (k in want) && !(k in seen) {seen[k] = 1; if (f[2] != want[k] || f[3] != "") exit 1}
     END {for (k in want) if (!(k in seen)) exit 1}' "$target/etc/ssh/sshd_config" ||
 	die 'sshd_config must keep PasswordAuthentication no, KbdInteractiveAuthentication no and AuthenticationMethods publickey, with no Match or Include'
-# Only comments, blank lines and the shipped rc_ dependencies: any other line (an option, another config, a
-# binary, however spelled: export, default, ...) could set a keyword first.
-if [ ! -f "$target/etc/conf.d/sshd" ] || grep -Ev '^[[:space:]]*(#|$|rc_[a-z_]+=)' "$target/etc/conf.d/sshd"; then
+# Only comments, blank lines and the shipped rc_ dependencies, whole lines (a second assignment after the
+# quote or a space passed once): any other line (an option, another config, a binary, however spelled:
+# export, default, ...) could set a keyword first.
+if [ ! -f "$target/etc/conf.d/sshd" ] || grep -Ev '^[[:space:]]*(#|$|rc_[a-z_]+="[A-Za-z0-9 _-]*"[[:space:]]*$)' "$target/etc/conf.d/sshd"; then
 	die 'conf.d/sshd must hold only comments and rc_ lines: an option or another config would set a keyword first'
 fi
 # The CA comes from the seed at first boot; a stand-in for the check only.
