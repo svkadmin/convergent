@@ -2,7 +2,7 @@
 # Across files a current binding (bound, unexpired at now, "YYYY/MM/DD HH:MM:SS" UTC) beats the rest: a node
 # that pinged the client its peer had just bound abandons the address, and every later sync of it is refused.
 # Otherwise the latest assignment wins (a released address may have moved on), among equal starts the longest.
-# One MAC keeps one address per VLAN subnet (its first three octets), its newest bound record.
+# One MAC keeps one address per VLAN subnet (its first three octets): its current binding, else its newest.
 BEGIN {if (now == "") {bad=1; exit}}
 function merge(   a, live) {
     for (a in cur) {
@@ -14,8 +14,9 @@ function merge(   a, live) {
     }
     split("", cur); split("", cstarts); split("", cexpiry); split("", cbound); split("", cmac)
 }
-FNR == 1 {merge()}
-/^lease [0-9.]+ \{$/ {address=$2; record=$0 "\n"; starts=""; expires=""; mac=""; bound=1; next}
+# A record still open at a file's end or at the next declaration is a torn checkpoint, never dropped silently.
+FNR == 1 {if (address != "") {bad=1; exit}; merge()}
+/^lease [0-9.]+ \{$/ {if (address != "") {bad=1; exit}; address=$2; record=$0 "\n"; starts=""; expires=""; mac=""; bound=1; next}
 address != "" {
     record=record $0 "\n"
     # A lease record is a few hundred bytes; never accumulate an unterminated one.
@@ -37,7 +38,8 @@ END {
     for (address in leases) {
         if (owner[address] == "") continue
         key=address; sub(/\.[0-9]+$/, "", key); key=owner[address] " " key
-        if (!(key in newest) || began[address] > began[newest[key]] || (began[address] == began[newest[key]] && (expiry[address] > expiry[newest[key]] || (expiry[address] == expiry[newest[key]] && address > newest[key])))) newest[key]=address
+        # Its current binding first: an expired later address must not erase a live reservation.
+        if (!(key in newest) || held[address] > held[newest[key]] || (held[address] == held[newest[key]] && (began[address] > began[newest[key]] || (began[address] == began[newest[key]] && (expiry[address] > expiry[newest[key]] || (expiry[address] == expiry[newest[key]] && address > newest[key])))))) newest[key]=address
     }
     for (address in leases) {
         if (owner[address] != "") {key=address; sub(/\.[0-9]+$/, "", key); key=owner[address] " " key}

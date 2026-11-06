@@ -5,8 +5,11 @@
 heal_probe() {
     # fw-leases disables a held allocator on purpose, and a resume that enabled it but could not start it is
     # retried (heal_resume) only while the node probes healthy: under a hold dhcpd is not probed at all.
+    # Five failed resumes in a row end that: a dhcpd that never starts shows as unhealthy (a restart resets the
+    # count), rather than waiting out the hold's alert.
     heal_dhcpd='rcctl check dhcpd >/dev/null'
-    [ ! -e /var/lib/convergent/guests/leases/held ] || heal_dhcpd=:
+    if [ -e /var/lib/convergent/guests/leases/held ] && [ "$(heal_count "${heal:-}/resume.failed")" -lt 5 ]; then heal_dhcpd=:; fi
+    [ -z "${heal:-}" ] || rm -f "$heal/abandoned.$1"
     reply=$(guest_reply 65536 timeout -k 1 "${2:-10}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
         set -e
         ifconfig carp
@@ -14,8 +17,18 @@ heal_probe() {
         ifconfig pfsync0
         '"$heal_dhcpd"'
         rcctl check unbound >/dev/null
-        unbound-control status >/dev/null' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) || return 1
+        unbound-control status >/dev/null
+        echo abandoned $(grep -c "abandoned;" /var/db/dhcpd.leases 2>/dev/null || :)' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) || return 1
+    # The node's count of abandoned records, data for heal_abandoned; the rest of the reply is carp.awk's.
+    [ -z "${heal:-}" ] || printf '%s\n' "$reply" | awk '$1 == "abandoned" && $2 ~ /^(0|[1-9][0-9]*)$/ {print $2; exit}' >"$heal/abandoned.$1" || :
     printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
+}
+# A counter record: 0 when absent or garbled.
+heal_count() {
+    count=0
+    [ ! -f "$1" ] || read -r count rest <"$1" || count=0
+    case $count in '' | *[!0-9]* | 0?*) count=0 ;; esac
+    echo "$count"
 }
 heal_allowed() {
     [ ! -e /run/convergent/guests-stopping ] || return 1
@@ -106,10 +119,16 @@ heal_leases() {
 heal_resume() (
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
-    [ -f /var/lib/convergent/guests/leases/held ] && heal_allowed || exit 0
+    [ -f /var/lib/convergent/guests/leases/held ] || { rm -f "$heal/resume.failed"; exit 0; }
+    heal_allowed || exit 0
     trap '' HUP INT TERM
     heal_leases
-    leases_resume || { heal_note "work DHCP resume failed; lease hold retained"; exit 1; }
+    # Failures in a row, for heal_probe; the node that failed is named.
+    leases_resume || {
+        failed=$(($(heal_count "$heal/resume.failed") + 1))
+        echo "$failed" >"$heal/resume.failed" || :
+        heal_note "work DHCP resume failed ($failed in a row${lease_failed:+; on$lease_failed}); lease hold retained"; exit 1; }
+    rm -f "$heal/resume.failed"
     [ ! -f "$state/leases/held" ] || exit 1
     heal_note "work DHCP resumed; lease hold released"
 )
@@ -131,6 +150,23 @@ heal_booted() {
         fi
         echo "$boot:$pid" >"/var/lib/convergent/guests/leases/qemu.$boot_node" && sync || return 1
     done
+}
+# dhcpd also abandons an address its peer bound meanwhile when the client answers its pre-offer ping, with no
+# restart anywhere (investigate-dhcp1): a node's count of abandoned records (from its probe) rising queues the
+# reconcile too, unless one is queued. The count is stored as last seen, risen or fallen.
+heal_abandoned() {
+    [ -s "$heal/abandoned.$1" ] || return 0
+    count=$(heal_count "$heal/abandoned.$1")
+    seen=
+    [ ! -f "/var/lib/convergent/guests/leases/abandoned.$1" ] || read -r seen rest <"/var/lib/convergent/guests/leases/abandoned.$1" || seen=
+    case $seen in *[!0-9]* | 0?*) seen= ;; esac
+    [ "$count" != "$seen" ] || return 0
+    mkdir -p /var/lib/convergent/guests/leases || return 1
+    if [ -n "$seen" ] && [ "$count" -gt "$seen" ] && [ ! -f /var/lib/convergent/guests/leases/reconcile ]; then
+        echo 0 >/var/lib/convergent/guests/leases/reconcile && sync || return 1
+        heal_note "$1 abandoned $((count - seen)) more work DHCP address(es); leases reconcile once both nodes answer"
+    fi
+    echo "$count" >"/var/lib/convergent/guests/leases/abandoned.$1" && sync || return 1
 }
 # The queued reconcile, once both nodes answer: as a guest update, both allocators are held, their leases
 # checkpointed and merged, and the merge written back, under the guests lock and never under a journal.
@@ -192,6 +228,7 @@ firewall_heal() (
     heal_booted || heal_note 'QEMU record not written; retried next run'
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
+    for node in fw1 fw2; do heal_abandoned "$node" || heal_note "$node abandoned count not written; retried next run"; done
     # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
     # As for one node, 180 s in a row first: a stop by hand is not undone within a minute.
     if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then
@@ -216,7 +253,7 @@ firewall_heal() (
                 attempts=$((attempts + 1))
                 printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
                 # Under the DNS push lock: facts steps the restarted node's clock again.
-                rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries"
+                rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries" "$heal/resume.failed"
                 heal_note "$node $action requested; fw1 and fw2 both stopped or paused ($attempts/3)"
                 (
                     trap '' HUP INT TERM
@@ -305,7 +342,7 @@ firewall_heal() (
         attempts=$((attempts + 1))
         rm -f "$heal/$node"
         printf '%s\n' "${uptime%.*}" >"$heal/$node.restarted" || exit 1
-        rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries"
+        rm -f "/run/convergent/fw-ntpd.$node" "/run/convergent/fw-ntpd.$node.tries" "$heal/resume.failed"
         heal_note "$node restart requested; $peer healthy MASTER on all registered segments ($attempts/3)"
         # Keep the lock until bounded mutators finish, including after a checker termination.
         (

@@ -995,7 +995,7 @@ kill() {
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
     case ${12:-} in
-    *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$fixture/calls"; return ;;
+    *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$fixture/calls"; [ "${resume_fail:-}" != "${11}" ] || return 1; return ;;
     # fw-leases' checkpoint and seed, on a leases file per node.
     *'rcctl disable dhcpd'*) echo "hold ${11}" >>"$fixture/calls"; [ "${hold_fail:-0}" = 0 ] || return 1; cat "$fixture/leases.${11}"; return ;;
     *'cat >/var/db/dhcpd.leases.new'*) echo "seed ${11}" >>"$fixture/calls"; cat >"$fixture/leases.${11}"; return ;;
@@ -1004,7 +1004,7 @@ ssh() {
     [ "$role" != down ] || return 1
     # dhcpd_off: nodes fw-leases disabled dhcpd on (dhcpd_enabled: enabled again but not started); the probe's
     # own dhcpd line decides.
-    case " ${dhcpd_off:-} " in *" $7 "*) (rcctl() { [ "${dhcpd_enabled:-0}" = 1 ] && [ "$1" = get ]; }; eval "$(printf '%s\n' "$8" | grep dhcpd)") || return 1 ;; esac
+    case " ${dhcpd_off:-} " in *" $7 "*) (rcctl() { [ "${dhcpd_enabled:-0}" = 1 ] && [ "$1" = get ]; }; eval "$(printf '%s\n' "$8" | grep 'rcctl.*dhcpd')") || return 1 ;; esac
     while read -r iface vhid parent segment prefix gateway family; do
         case $iface in \#*|'') continue ;; esac
         echo "$iface: flags=41<UP,RUNNING>"
@@ -1013,6 +1013,8 @@ ssh() {
     echo 'Status: Enabled'
     echo 'pfsync0: flags=41<UP,RUNNING>'
     echo ' defer: on'
+    # The node's count of abandoned lease records.
+    eval "echo abandoned \${abandoned_$7:-0}"
 }
 incus() {
     # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does. A marker
@@ -1492,6 +1494,55 @@ unset -f sync
 tick 2320
 reconciled
 [ ! -f "$leases/reconcile" ]
+# dhcpd abandons an address its peer bound meanwhile when the client answers the pre-offer ping, under no
+# restart: a node's rising count of abandoned records queues the reconcile; an unchanged or fallen count does
+# not, and a rise while one is queued is counted, not queued again.
+abandoned_fw2=1
+: >"$work/calls"
+busy=1; tick 2380; busy=0
+[ "$(cat "$leases/reconcile")" = 0 ] && [ ! -s "$work/calls" ]
+grep -q 'fw2 abandoned 1 more work DHCP address' "$work/run/firewall-heal/event"
+tick 2440
+reconciled
+[ ! -f "$leases/reconcile" ] && [ "$(cat "$leases/abandoned.fw2")" = 1 ]
+: >"$work/calls"
+tick 2500
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
+abandoned_fw2=0
+tick 2560
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ] && [ "$(cat "$leases/abandoned.fw2")" = 0 ]
+echo 2 >"$leases/reconcile"
+abandoned_fw2=3
+busy=1; tick 2620; busy=0
+[ "$(cat "$leases/reconcile")" = 2 ] && [ "$(cat "$leases/abandoned.fw2")" = 3 ] && [ ! -s "$work/calls" ]
+rm "$leases/reconcile"
+# A resume that keeps failing (dhcpd never starts on fw2): five in a row end the probe's dhcpd mask, so fw2
+# shows unhealthy and is restarted, which resets the count; the retried resume then succeeds.
+rm -rf "$work/run/firewall-heal"
+touch "$leases/held"
+dhcpd_off=fw2 resume_fail=fw2
+: >"$work/calls"
+for n in 1 2 3 4 5; do
+    tick "$((2620 + n * 60))"
+    grep -q "work DHCP resume failed ($n in a row; on fw2); lease hold retained" "$work/run/firewall-heal/event"
+    grep -q '^SELF-HEAL fw2: backup' "$work/report"
+done
+[ "$(grep -c '^resume fw1$' "$work/calls")" = 5 ] && [ "$(grep -c '^resume fw2$' "$work/calls")" = 5 ] || exit 1
+[ -e "$leases/held" ] && [ "$(cat "$work/run/firewall-heal/resume.failed")" = 5 ]
+: >"$work/calls"
+tick 2980
+grep -q '^SELF-HEAL fw2: unhealthy' "$work/report"
+[ ! -s "$work/calls" ] && [ -e "$leases/held" ]
+for t in 3040 3100 3160; do tick "$t"; done
+grep -q 'default restart fw2 --force' "$work/calls"
+[ ! -f "$work/run/firewall-heal/resume.failed" ] && [ -e "$leases/held" ]
+resume_fail=
+: >"$work/calls"
+tick 3820
+printf '%s\n' 'resume fw1' 'resume fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+[ ! -e "$leases/held" ]
+dhcpd_off=
 test_target=down
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
