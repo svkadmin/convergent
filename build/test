@@ -1666,15 +1666,19 @@ cmp "$work/calls" "$work/expected"
 [ ! -e "$leases/held" ] && [ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] || exit 1
 grep -q 'work DHCP resumed' "$work/run/firewall-heal/event"
 # A failure every other run, fw1 not RUNNING per a stalled Incus read in between: the hold stays and so do the
-# counts, so the fifth failure still marks the scan due.
+# counts, so the fifth failure still marks the scan due. In odd runs fw2 fails meanwhile: its own count, and
+# the waiting fw1's stays.
 rm -rf "$work/run/firewall-heal"
 touch "$leases/held"
 for n in 1 2 3 4 5; do
     resume_fail=fw1; tick "$((3220 + n * 120))"
-    resume_fail=; : >"$work/unknown.fw1"; tick "$((3280 + n * 120))"
+    case $n in 1|3|5) resume_fail=fw2 ;; *) resume_fail= ;; esac
+    : >"$work/unknown.fw1"; tick "$((3280 + n * 120))"
     [ -e "$leases/held" ] && [ ! -e "$work/unknown.fw1" ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = "$n" ] || exit 1
+    case $resume_fail in fw2) [ "$(cat "$work/run/firewall-heal/resume.failed.fw2")" = 1 ] ;; *) [ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] ;; esac || exit 1
     [ "$n" -ge 5 ] || [ ! -e "$work/run/firewall-heal/resume.stuck" ] || exit 1
 done
+resume_fail=
 [ -e "$work/run/firewall-heal/resume.stuck" ] || exit 1
 rm "$leases/held"
 # A resume that fails before its node loop (the quiesced marker not cleared) counts both nodes: an empty

@@ -387,6 +387,22 @@ for held in 0 1; do
     ( flock() { [ "$held" = 0 ]; }; . "$work/ui-lock" ) 2>"$work/error" || rc=$?
     case $held in 0) [ "$rc" = 0 ] ;; 1) [ "$rc" = 75 ]; grep -q 'another UI operation' "$work/error" ;; esac
 done
+# A guest or browser update holding its lock makes cleanup busy (75), not failed; setup still dies.
+sed -n '/^busy() {/,/^esac$/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/|g" >"$work/update-lock"
+grep -q "^        flock -s -n 6 || busy 'browser update in progress' ;;$" "$work/update-lock"
+sh -n "$work/update-lock"
+for action in cleanup setup; do
+    for held in none 9 6; do
+        rc=0
+        ( die() { echo "incus-ui: $*" >&2; exit 1; }; flock() { [ "$3" != "$held" ]; }; . "$work/update-lock" ) 2>"$work/error" || rc=$?
+        case $action:$held in
+        *:none) [ "$rc" = 0 ] ;;
+        cleanup:*) [ "$rc" = 75 ] ;;
+        *) [ "$rc" = 1 ] ;;
+        esac || exit 1
+        case $held in 9) grep -qx 'incus-ui: guest operation in progress' "$work/error" ;; 6) grep -qx 'incus-ui: browser update in progress' "$work/error" ;; esac || exit 1
+    done
+done
 sed -n '/^# A UI lock timeout is not a trust mismatch/,/^esac$/p' "$repo/tools/check" |
     sed 's|/usr/local/sbin/incus-ui|incus_ui_call|' >"$work/audit-call"
 [ -s "$work/audit-call" ]

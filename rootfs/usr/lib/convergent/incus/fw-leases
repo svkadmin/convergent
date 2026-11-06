@@ -84,7 +84,7 @@ leases_resume() {
     rm -f "$state/leases/quiesced" && sync || return
     lease_waiting= lease_failed=
     for lease_node in ${1:-fw1 fw2}; do
-        running "$lease_node" || { lease_waiting=1; continue; }
+        running "$lease_node" || { lease_waiting="$lease_waiting $lease_node"; continue; }
         # Every node is tried: one that fails must not leave its healthy peer's allocator off until it recovers.
         probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then

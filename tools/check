@@ -270,8 +270,8 @@ if [ "${1:-}" = auto ]; then (
     fi
 ); fi
 # Run before the daily scan throttle; cleanup takes the int session lock. Never held back: it revokes the trust
-# of an orphaned Incus UI session, first, so the bound only cuts the slower instance stop. 75 is a UI lock held
-# (the owner at the unlock prompt), retried next minute: not a failure.
+# of an orphaned Incus UI session, first, so the bound only cuts the slower instance stop. 75 is a lock held (the
+# owner at the unlock prompt, a guest or browser update), retried next minute: not a failure.
 if [ "${1:-}" = auto ]; then
     timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || case $? in 75) ;; *) logger -p user.err -t check 'Incus UI orphan cleanup failed' ;; esac
 fi

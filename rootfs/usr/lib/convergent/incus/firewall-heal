@@ -135,9 +135,11 @@ heal_resume() (
     else
         # Failed before its node loop (the quiesced marker not cleared): both nodes count, or the counts
         # reset and the alert never came.
-        [ -n "${lease_failed:-}" ] || lease_failed='fw1 fw2'
+        [ -n "${lease_failed:-}" ] || lease_failed='fw1 fw2' lease_waiting=
         resume_failures=
         for resume_node in fw1 fw2; do
+            # A node waiting (not RUNNING) while its peer failed keeps its count.
+            case " ${lease_waiting:-} " in *" $resume_node "*) continue ;; esac
             case " ${lease_failed:-} " in *" $resume_node "*) ;; *) rm -f "$heal/resume.failed.$resume_node"; continue ;; esac
             resume_failed=$(($(heal_count "$heal/resume.failed.$resume_node") + 1))
             echo "$resume_failed" >"$heal/resume.failed.$resume_node" || :
