@@ -26,8 +26,9 @@ UseDNS no
 LoginGraceTime 20
 MaxAuthTries 3
 MaxStartups 3:50:10
-# Only the host reaches port 22 (nftables): a penalty could only lock it out under load.
-PerSourcePenalties no
+# Only the host reaches port 22 (nftables), and a penalty could lock it out under load: exempt it alone, so
+# the penalties still throttle a flood if the ruleset ever admits one.
+PerSourcePenaltyExemptList 100.80.1.10
 ClientAliveInterval 30
 ClientAliveCountMax 3
 LogLevel VERBOSE

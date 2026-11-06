@@ -325,7 +325,7 @@ cat >"$work/close-instances" <<'JSON'
   {"name":"def2","status":"Running","type":"container","profiles":["browser-base","browser-def"]}
 ]
 JSON
-for sample in def int tmp usage locked failed; do
+for sample in def int tmp portal usage locked failed; do
     : >"$work/close-calls"
     rc=0
     (
@@ -343,10 +343,10 @@ for sample in def int tmp usage locked failed; do
     case $sample in
     def) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop def --force' >"$work/expected"; grep -qx 'browser: closed def' "$work/close-out" ;;
     int) [ "$rc" = 0 ]; printf '%s\n' locks >"$work/expected"; grep -qx 'browser: no int browser is running' "$work/close-out" ;;
-    # A browser stuck Stopping or in Error is still closed.
-    tmp) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'ic stop tmp-22 --force' 'ic stop tmp-23 --force' \
-        'ic stop tmp-portal --force' >"$work/expected" ;;
-    usage) [ "$rc" = 1 ]; printf '%s\n' 'die usage: browser --close def|tmp|int' >"$work/expected" ;;
+    # A browser stuck Stopping or in Error is still closed; the portal browser (a login under way) only by name.
+    tmp) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'ic stop tmp-22 --force' 'ic stop tmp-23 --force' >"$work/expected" ;;
+    portal) [ "$rc" = 0 ]; printf '%s\n' locks 'ic stop tmp-portal --force' >"$work/expected"; grep -qx 'browser: closed tmp-portal' "$work/close-out" ;;
+    usage) [ "$rc" = 1 ]; printf '%s\n' 'die usage: browser --close def|tmp|int|portal' >"$work/expected" ;;
     locked) [ "$rc" = 1 ]; printf '%s\n' locks 'die guest update in progress' >"$work/expected" ;;
     failed) [ "$rc" = 1 ]; printf '%s\n' locks 'ic stop tmp-20 --force' 'die cannot stop tmp-20' >"$work/expected" ;;
     esac
@@ -386,6 +386,22 @@ for held in 0 1; do
     rc=0
     ( flock() { [ "$held" = 0 ]; }; . "$work/ui-lock" ) 2>"$work/error" || rc=$?
     case $held in 0) [ "$rc" = 0 ] ;; 1) [ "$rc" = 75 ]; grep -q 'another UI operation' "$work/error" ;; esac
+done
+# A guest or browser update holding its lock makes cleanup busy (75), not failed; setup still dies.
+sed -n '/^busy() {/,/^esac$/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/|g" >"$work/update-lock"
+grep -q "^        flock -s -n 6 || busy 'browser update in progress' ;;$" "$work/update-lock"
+sh -n "$work/update-lock"
+for action in cleanup setup; do
+    for held in none 9 6; do
+        rc=0
+        ( die() { echo "incus-ui: $*" >&2; exit 1; }; flock() { [ "$3" != "$held" ]; }; . "$work/update-lock" ) 2>"$work/error" || rc=$?
+        case $action:$held in
+        *:none) [ "$rc" = 0 ] ;;
+        cleanup:*) [ "$rc" = 75 ] ;;
+        *) [ "$rc" = 1 ] ;;
+        esac || exit 1
+        case $held in 9) grep -qx 'incus-ui: guest operation in progress' "$work/error" ;; 6) grep -qx 'incus-ui: browser update in progress' "$work/error" ;; esac || exit 1
+    done
 done
 sed -n '/^# A UI lock timeout is not a trust mismatch/,/^esac$/p' "$repo/tools/check" |
     sed 's|/usr/local/sbin/incus-ui|incus_ui_call|' >"$work/audit-call"
@@ -569,7 +585,35 @@ done
 grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
 # check bounds the UI cleanup: the trust goes first, so the bound can cut only the slower instance calls.
 # A failed revocation still stops int, and fails.
-grep -Fq 'timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || logger' "$repo/tools/check"
+grep -Fqx '    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || ui_rc=$?' "$repo/tools/check"
+# A held UI lock (75, the owner at the unlock prompt) is retried next minute, not logged as a failure, for 6 h
+# from its first minute; any other result forgets that start.
+sed -n '/^    ui_rc=0$/,/^    fi$/p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/|g; s|/proc/uptime|$work/uptime|" >"$work/ui-cleanup"
+[ "$(grep -c 'incus-ui cleanup' "$work/ui-cleanup")" = 1 ]
+grep -q "$work/incus-ui-busy" "$work/ui-cleanup"
+echo '100000.25 5.00' >"$work/uptime"
+for sample in 0:set:none 1:set:failed 124:none:failed 75:none:none 75:garbled:none 75:78400:none 75:78399:busy; do
+    rc=${sample%%:*} before=${sample#*:}
+    logged=${before#*:} before=${before%:*}
+    : >"$work/ui-logged"
+    case $before in none) rm -f "$work/incus-ui-busy" ;; set) echo 99000 >"$work/incus-ui-busy" ;; *) echo "$before" >"$work/incus-ui-busy" ;; esac
+    (
+        timeout() { [ "$1 $2 $3" = '-k 5 120' ] || exit 97; shift 3; [ "$*" = '/usr/local/sbin/incus-ui cleanup' ] || exit 97; return "$rc"; }
+        logger() { echo "$*" >>"$work/ui-logged"; }
+        . "$work/ui-cleanup"
+    )
+    case $logged in
+    none) [ ! -s "$work/ui-logged" ] ;;
+    failed) [ "$(cat "$work/ui-logged")" = '-p user.err -t check Incus UI orphan cleanup failed' ] ;;
+    busy) [ "$(cat "$work/ui-logged")" = '-p user.err -t check Incus UI orphan cleanup busy for over 6 hours' ] ;;
+    esac || exit 1
+    case $rc:$before in
+    75:none | 75:garbled) [ "$(cat "$work/incus-ui-busy")" = 100000 ] ;;
+    75:*) [ "$(cat "$work/incus-ui-busy")" = "$before" ] ;;
+    *) [ ! -e "$work/incus-ui-busy" ] ;;
+    esac || exit 1
+done
 sed -n '/^close_session() {/,/^}/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/close/|g" >"$work/close-session"
 [ -s "$work/close-session" ]
 sh -n "$work/close-session"

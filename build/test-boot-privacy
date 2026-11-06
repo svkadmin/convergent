@@ -568,9 +568,12 @@ echo 'test-boot-privacy: firewall and wan cron logging passed'
 # wan repairs its root unattended, as the firewalls do: preen stops the boot, and no console login can fix it.
 (. "$repo/guests/wan/rootfs/etc/conf.d/fsck"; [ "$fsck_args" = '-A -y' ]) || die 'wan fsck is not unattended'
 grep -qF "grep -q 'fsck_args' \"\$target/etc/init.d/fsck\" || die" "$repo/guests/wan/build" || die 'wan build ignores fsck_args'
-# Management SSH admits only the host: no per-source penalty may lock it out.
-for config in "$repo/guests/wan/rootfs/etc/ssh/sshd_config" "$fw/etc/ssh/sshd_config"; do
-    grep -qx 'PerSourcePenalties no' "$config" || die "$config penalizes the host"
+# Management SSH admits only the host: its address alone is exempt from the per-source penalties, which stay on.
+host_addr=$(awk '$1 == "define" && $2 == "host_addr" && $3 == "=" {print $4}' "$repo/guests/wan/rootfs/etc/nftables.nft")
+[ -n "$host_addr" ] || die 'wan nftables has no host_addr'
+for config in "$repo/guests/wan/rootfs/etc/ssh/sshd_config:$host_addr" "$fw/etc/ssh/sshd_config:@NET@.1.10"; do
+    [ "$(grep -ic '^[[:space:]]*PerSourcePenalt' "${config%:*}")" = 1 ] && grep -qx "PerSourcePenaltyExemptList ${config##*:}" "${config%:*}" ||
+        die "${config%:*} penalizes the host or exempts more"
 done
 # wan's build refuses an sshd_config that could let a password through (OpenSSH on musl has no PAM).
 sed -n '/^awk .BEGIN {want\["passwordauthentication"\]/,/"\$target\/etc\/ssh\/sshd_config" ||$/p' "$repo/guests/wan/build" |

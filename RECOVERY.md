@@ -605,7 +605,9 @@ is refused.
    ```sh
    sudo incus-ui cleanup
    ```
-   The checker retries it every minute, and boot cleanup runs before the greeter.
+   The checker retries it every minute, and boot cleanup runs before the greeter. While a guest or
+   browser update holds its lock the retries stay quiet; after 6 hours syslog shows `Incus UI orphan
+   cleanup busy for over 6 hours`: an update is stuck.
 2. A launcher still holds the session lock: close its terminal, or stop the unlocked session,
    delete its credential and set up a new one with a new passphrase:
    ```sh
@@ -798,9 +800,9 @@ Symptom: a browser window is frozen and closing it from the desktop does nothing
    ```sh
    sys browser status
    ```
-2. Stop it (`tmp` stops every temporary browser, the portal one too):
+2. Stop it (`tmp` stops every temporary browser but `tmp-portal`, which is `portal`):
    ```sh
-   sys browser close <role>    # def, tmp or int
+   sys browser close <role>    # def, tmp, int or portal
    ```
 3. Open it again as usual.
 

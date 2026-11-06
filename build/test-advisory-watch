@@ -23,6 +23,7 @@ cat >"$tree/build/advisories" <<'FAKE'
 #!/bin/sh
 [ "$1" = "$FAKE_RELEASE" ] && [ "$2" = "$FAKE_GUESTS" ] || exit 97
 : >"$FAKE_MARK"
+[ -z "${FAKE_STDERR:-}" ] || printf '%s\n' "$FAKE_STDERR" >&2
 sed "s/35 days old/${FAKE_DAYS:-35} days old/" "$FAKE_REPORT"
 exit "${FAKE_EXIT:-1}"
 FAKE
@@ -47,7 +48,7 @@ run() {
 has() { awk -F '\t' -v id="$1" '$3 == id {found = 1} END {exit !found}' "$queue"; }
 lines() { wc -l <"$queue" | tr -d ' '; }
 
-# New items from every source, then no repeats.
+# New items from every source, then no repeats. A first run reads no earlier oss-security month.
 run 1
 [ -f "$scratch/scanned" ] || die 'scan did not run'
 for id in openssh:10.6p2 openssh:10.6 openbsd:7.9:001_xserver openbsd:7.9:002_smtpd chrome:1001 \
@@ -56,19 +57,22 @@ for id in openssh:10.6p2 openssh:10.6 openbsd:7.9:001_xserver openbsd:7.9:002_sm
 	oss-security:2026/11/02/2 oss-security:2026/11/02/3 oss-security:2026/11/02/5 oss-security:2026/11/02/6 \
 	'scan:fw1:OpenBSD 7.9; missing fix 044_unbound; OPENBSD-7.9-044_unbound' \
 	'scan:wan:openssh-server installed 10.2_p1-r0; fixed 10.2_p1-r1; CVE-2099-0001' \
+	'scan:vpn:wireguard-tools installed 1.0.20250521-r0; fixed 1.0.20250521-r1; CVE-2099-0002' \
 	'scan:host:Portage snapshot 20261016, N days old (limit 30); refresh pin'; do
 	has "$id" || die "missing $id"
 done
-[ "$(lines)" = 14 ] || die "first run queued $(lines) items, expected 14"
+[ "$(lines)" = 15 ] || die "first run queued $(lines) items, expected 15"
+if has oss-security:2026/10/31/1; then die 'first run read an earlier month'; fi
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'first run did not record its month'
 awk -F '\t' '$1 != "2026-11-05T12:00:00Z" || $2 == "" {exit 1}' "$queue" || die 'bad time or source column'
 awk -F '\t' '$3 == "openbsd:7.9:001_xserver" && $4 == "001: SECURITY FIX: June 2, 2026 All architectures Multiple vulnerabilities in the X server." &&
 	$5 == "https://www.openbsd.org/errata79.html#p001_xserver" {found = 1} END {exit !found}' "$queue" || die 'erratum title or URL'
 awk -F '\t' '$3 ~ /alpine-3.24.4/ && $5 != "" {exit 1}' "$queue" || die 'plain HTTP URL queued'
 if has chrome:1002 || has chrome:1003; then die 'Chrome entry outside stable desktop queued'; fi
 grep -q 'chrome: 1 of 3 items, 1 new' "$scratch/out" || die 'missing Chrome count'
-grep -q 'advisory-watch: 14 new items in' "$scratch/out" || die 'missing summary'
+grep -q 'advisory-watch: 15 new items in' "$scratch/out" || die 'missing summary'
 run 0
-[ "$(lines)" = 14 ] || die 'second run repeated items'
+[ "$(lines)" = 15 ] || die 'second run repeated items'
 grep -q 'advisory-watch: nothing new' "$scratch/out" || die 'missing nothing-new summary'
 # A day older snapshot is the same item.
 run 0 WATCH_NOW="$day2" FAKE_DAYS=36
@@ -91,11 +95,26 @@ echo 'test-advisory-watch: control bytes and caps passed'
 
 # State modes.
 [ "$(stat -c %a "$state")" = 700 ] || die 'state directory mode'
-for file in seen queue last scan.report lock; do
+for file in seen queue last scan.report scan.errors oss-security.month lock; do
 	[ "$(stat -c %a "$state/$file")" = 600 ] || die "$file mode"
 done
 [ "$(cat "$state/last")" = '2026-11-06T12:00:00Z status=0 new=0 failed=none' ] || die "last: $(cat "$state/last")"
 echo 'test-advisory-watch: state modes passed'
+
+# A month change: the month last read is read once more (a post of its last day), then the record moves on.
+# The wan guest's packages, D-Bus and "Linux kernel" match; "linux" alone (util-linux, Alpine Linux) does not.
+echo 2026/10 >"$state/oss-security.month"
+run 1
+for id in oss-security:2026/10/31/1 oss-security:2026/10/31/2 oss-security:2026/10/31/4; do
+	has "$id" || die "missing $id"
+done
+if has oss-security:2026/10/31/3; then die 'unmatched subject queued'; fi
+[ "$(lines)" = 18 ] || die "month change queued $(lines) items, expected 18"
+grep -q 'oss-security: 7 of 10 items, 3 new' "$scratch/out" || die 'missing month change count'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on'
+run 0
+grep -q 'oss-security: 4 of 6 items, 0 new' "$scratch/out" || die 'earlier month read again'
+echo 'test-advisory-watch: month change passed'
 
 # Skipped scan, then feed failures once a day.
 rm "$scratch/scanned"
@@ -104,10 +123,10 @@ run 0 WATCH_SKIP_SCAN=1
 rm "$feeds/alpine"
 run 1 WATCH_SKIP_SCAN=1
 has feed-failure:alpine:2026-11-05 || die 'missing fetch failure item'
-[ "$(lines)" = 15 ] || die 'fetch failure queued more than one item'
+[ "$(lines)" = 19 ] || die 'fetch failure queued more than one item'
 grep -q '^2026-11-05T12:00:00Z status=1 new=1 failed=alpine$' "$state/last" || die "last: $(cat "$state/last")"
 run 0 WATCH_SKIP_SCAN=1
-[ "$(lines)" = 15 ] || die 'failure repeated the same day'
+[ "$(lines)" = 19 ] || die 'failure repeated the same day'
 grep -q 'alpine: FAILED (no fixture alpine); already queued today' "$scratch/out" || die 'failure hidden on repeat'
 run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
 has feed-failure:alpine:2026-11-06 || die 'failure not repeated the next day'
@@ -120,6 +139,13 @@ has feed-failure:openbsd:2026-11-05 || die 'missing parse failure'
 # A scan that could not read a source.
 run 1 FAKE_EXIT=2
 has feed-failure:scan:2026-11-05 || die 'missing scan failure'
+# A scan that found nothing and failed, with a stray "  word: text" line on stderr: no item, still the failure,
+# and stderr's last line in its text.
+printf '%s\n' 'host:' '  ok' >"$scratch/empty-report"
+run 0 FAKE_EXIT=1 FAKE_REPORT="$scratch/empty-report" FAKE_STDERR='  curl: (6) Could not resolve host'
+if awk -F '\t' '$3 ~ /^scan:curl:/ {found = 1} END {exit !found}' "$queue"; then die 'stderr line queued as an item'; fi
+grep -Fq 'scan: FAILED (build/advisories exit 1; curl: (6) Could not resolve host); already queued today' "$scratch/out" ||
+	die 'scan failure hidden or without stderr'
 echo 'test-advisory-watch: feed failures passed'
 
 # Run failure: exit 2, nothing queued.
@@ -137,8 +163,81 @@ state=$scratch/baseline queue=$scratch/baseline/queue
 mkdir -m 700 "$state"
 for feed in openssh openbsd chrome alpine; do cp "$here/fixtures/advisory-watch/$feed" "$feeds/$feed"; done
 run 1 WATCH_BASELINE=1
-[ "$(lines)" = 3 ] || { cut -f 2,3 "$queue" >&2; die "baseline queued $(lines) items, expected the 3 scan items"; }
+[ "$(lines)" = 4 ] || { cut -f 2,3 "$queue" >&2; die "baseline queued $(lines) items, expected the 4 scan items"; }
 awk -F '\t' '$2 != "scan" {exit 1}' "$queue" || die 'baseline queued feed history'
 grep -qx 'openssh:10.6p2' "$state/seen" || die 'baseline did not mark the feeds seen'
 run 0
 echo 'test-advisory-watch: baseline passed'
+
+# A failed read of the earlier month is the source's failure; this month's items still queue, the record stays
+# and the next run reads the earlier month again.
+state=$scratch/earlier queue=$scratch/earlier/queue
+mkdir -m 700 "$state"
+echo 2026/10 >"$state/oss-security.month"
+mv "$feeds/oss-security-2026-10" "$scratch/previous"
+run 1 WATCH_SKIP_SCAN=1
+for id in oss-security:2026/11/02/2 oss-security:2026/11/02/6 feed-failure:oss-security:2026-11-05; do
+	has "$id" || die "missing $id"
+done
+if has oss-security:2026/10/31/1; then die 'earlier month item without its index'; fi
+[ "$(cat "$state/oss-security.month")" = 2026/10 ] || die 'month record moved on after a failed read'
+grep -q ' failed=oss-security$' "$state/last" || die "last: $(cat "$state/last")"
+mv "$scratch/previous" "$feeds/oss-security-2026-10"
+run 1 WATCH_SKIP_SCAN=1
+has oss-security:2026/10/31/1 || die 'earlier month not read again'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on'
+echo 'test-advisory-watch: earlier month failure passed'
+
+# An outage over two month ends: every month from the one last read is read, then the record moves on.
+for month in 2025/11 2025/12 2026/01 2026/02 2026/03 2026/04 2026/05 2026/06 2026/07 2026/08 2026/09; do
+	sed "s|2026/10|$month|" "$feeds/oss-security-2026-10" >"$feeds/oss-security-$(echo "$month" | tr / -)"
+done
+state=$scratch/months queue=$scratch/months/queue
+mkdir -m 700 "$state"
+echo 2026/08 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1
+for id in oss-security:2026/08/31/1 oss-security:2026/09/31/1 oss-security:2026/10/31/1 oss-security:2026/11/02/2; do
+	has "$id" || die "missing $id"
+done
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on'
+# Over 12 earlier months: the latest 12 are read, the rest named once in the failure, and the record moves on.
+state=$scratch/cap queue=$scratch/cap/queue
+mkdir -m 700 "$state"
+echo 2025/10 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1
+has oss-security:2025/11/31/1 || die 'missing the 12th earlier month'
+grep -Fq 'oss-security: FAILED (2025/10 to 2025/10 not read (12 earlier months at most)); queued' "$scratch/out" ||
+	die 'skipped months not named'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on past the cap'
+run 0 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
+if grep -q 'oss-security: FAILED' "$scratch/out"; then die 'skipped months failed again'; fi
+echo 'test-advisory-watch: months since the record passed'
+
+# A future or malformed record is reported once and replaced by this month, as on a first run.
+for bad in 2027/01 2026/13 garbage; do
+	state=$scratch/bad-$(echo "$bad" | tr / -)
+	queue=$state/queue
+	mkdir -m 700 "$state"
+	echo "$bad" >"$state/oss-security.month"
+	run 1 WATCH_SKIP_SCAN=1
+	has feed-failure:oss-security:2026-11-05 || die "$bad: missing failure"
+	if has oss-security:2026/10/31/1; then die "$bad: read an earlier month"; fi
+	[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die "$bad: record not replaced"
+	run 0 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
+	if grep -q 'oss-security: FAILED' "$scratch/out"; then die "$bad: failed again"; fi
+done
+echo 'test-advisory-watch: bad month record passed'
+
+# On the 1st the record stays on last month, so the next day reads its index once more.
+state=$scratch/first queue=$scratch/first/queue
+mkdir -m 700 "$state"
+echo 2026/10 >"$state/oss-security.month"
+run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$(date -u -d 2026-11-01T12:00:00Z +%s)"
+has oss-security:2026/10/31/1 || die 'missing last month on the 1st'
+[ "$(cat "$state/oss-security.month")" = 2026/10 ] || die 'record moved on on the 1st'
+sed 's|<li><a href="31/4">|<li><a href="31/5">OpenSSH late post</a>\n&|' "$feeds/oss-security-2026-10" >"$scratch/late"
+mv "$scratch/late" "$feeds/oss-security-2026-10"
+run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$(date -u -d 2026-11-02T12:00:00Z +%s)"
+has oss-security:2026/10/31/5 || die 'last month not read again the next day'
+[ "$(cat "$state/oss-security.month")" = 2026/11 ] || die 'month record did not move on after the 1st'
+echo 'test-advisory-watch: first of the month passed'

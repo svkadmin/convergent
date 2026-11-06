@@ -270,9 +270,23 @@ if [ "${1:-}" = auto ]; then (
     fi
 ); fi
 # Run before the daily scan throttle; cleanup takes the int session lock. Never held back: it revokes the trust
-# of an orphaned Incus UI session, first, so the bound only cuts the slower instance stop.
+# of an orphaned Incus UI session, first, so the bound only cuts the slower instance stop. 75 is a lock held (the
+# owner at the unlock prompt, a guest or browser update), retried next minute: not a failure for 6 h (an update
+# takes up to 5 h), then a wedged holder must not hide the orphan. Its start is kept until any other result.
 if [ "${1:-}" = auto ]; then
-    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || logger -p user.err -t check 'Incus UI orphan cleanup failed'
+    ui_rc=0
+    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || ui_rc=$?
+    if [ "$ui_rc" = 75 ]; then
+        read -r ui_now ui_rest </proc/uptime
+        ui_now=${ui_now%.*}
+        read -r ui_first 2>/dev/null </run/convergent/incus-ui-busy || ui_first=
+        # A missing or garbled start is now; one that cannot be written counts from boot.
+        case $ui_first in '' | *[!0-9]* | 0?*) ui_first=$ui_now; echo "$ui_now" >/run/convergent/incus-ui-busy || ui_first=0 ;; esac
+        [ "$((ui_now - ui_first))" -le 21600 ] || logger -p user.err -t check 'Incus UI orphan cleanup busy for over 6 hours'
+    else
+        rm -f /run/convergent/incus-ui-busy
+        [ "$ui_rc" = 0 ] || logger -p user.err -t check 'Incus UI orphan cleanup failed'
+    fi
 fi
 # After self-heal: a frozen QEMU holds each sweep, and its shared guests lock, for the full 30 s. Two sweeps
 # first pushed the heal into the next minute's sweep, so every restart was refused by the guests lock. After

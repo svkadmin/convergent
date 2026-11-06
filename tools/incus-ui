@@ -38,12 +38,14 @@ trap finish 0
 trap 'exit 1' HUP INT TERM
 install -d -m 0755 /run/convergent
 install -d -m 0711 /run/convergent/browser
+# 75 for cleanup: an update holding its lock is busy, retried by check next minute, not a failure.
+busy() { [ "$action" != cleanup ] || { echo "incus-ui: $*" >&2; exit 75; }; die "$*"; }
 case $action in
     setup|rotate|revoke|cleanup)
         exec 9>/run/convergent/guests.lock
-        flock -s -n 9 || die 'guest operation in progress'
+        flock -s -n 9 || busy 'guest operation in progress'
         exec 6>/run/convergent/browser-update.lock
-        flock -s -n 6 || die 'browser update in progress' ;;
+        flock -s -n 6 || busy 'browser update in progress' ;;
 esac
 case $action in
     setup|rotate|cleanup|--reconcile)
