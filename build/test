@@ -2576,6 +2576,9 @@ maintenance_clean() {
 maintenance_clean || bad $LINENO
 # A due push (a rebuild's dns.stale) waits for the hourly dns-push auto, which holds off the restart and
 # starts the Unbound this block stops: in cv16c3 it ran at 18:42 and healed fw2 before the checker could.
+# auto exits 0 on a held lock: a cron push still running (cv16c6, 05:42) must end first, or it reaches fw2
+# after the break and starts its Unbound again.
+flock -w 1200 /run/convergent/dns-push.lock true || bad $LINENO
 dns-push auto || bad $LINENO
 cv_time firewall-self-heal
 # A firewall that stops serving while its QEMU still answers: only the minute checker recovers it.
