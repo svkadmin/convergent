@@ -2839,6 +2839,7 @@ LOCAL
     # Every host-side step of this block, tagged in the console.
     PS4='+CV-MX '; set -x
     log=/var/log/firewall-maintenance-$failure.log
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 "logger -t cv-maint-test 'case $failure'"
     sh "$release/maintenance-test" >"$log" 2>&1 &
     changer=$!
     # A failed iteration must not leave its changer running while the next rewrites the script.
@@ -2848,10 +2849,16 @@ LOCAL
     deadline=$(($(date +%s) + 300))
     # Maintenance demotes whichever firewall is MASTER: in cv16c7 a wan-watch flap of fw1 made it fw2.
     until [ -s /var/lib/convergent/firewall-maintenance ]; do
+        kill -0 "$changer"
         [ "$(date +%s)" -lt "$deadline" ]; sleep 1
     done
     target=$(cat /var/lib/convergent/firewall-maintenance)
-    case $target in fw1|fw2) ;; *) exit 1 ;; esac
+    # fw2 only when fw1 lost MASTER after the case began: maintenance must never demote the BACKUP.
+    case $target in
+    fw1) ;;
+    fw2) timeout 30 ssh -F /etc/convergent/ssh_config fw1 "awk '/cv-maint-test: case $failure\$/ {m = 1} m && /state transition: MASTER -> BACKUP/ {f = 1} END {exit !f}' /var/log/messages" ;;
+    *) exit 1 ;;
+    esac
     until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$target" 'test -f /tmp/convergent-test-maintenance-waiting'; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 1
     done
