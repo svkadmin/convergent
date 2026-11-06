@@ -2612,18 +2612,28 @@ cv_time firewall-self-heal
     done
     before=$(fw_pid fw2)
     broken=fw2
+    read -r broken_at rest </proc/uptime; broken_at=${broken_at%.*}
     fwssh fw2 'rcctl stop unbound'
     # A minute run that finds the heal lock held skips its observation; fw2's 180 s window must survive it.
     # check auto's own steps come before the lock: hold it 45 s past the minute. A slow fw1 answer drops
     # the window on both codes: then once more.
     cv_time firewall-self-heal-window
+    # A fw2 already slow to the heal's 10 s probe before the break has an older window: the heal may restart
+    # it before this sees the window. That restart, after the break, is what this step proves.
+    restarted_since() {
+        since=0
+        [ ! -f /run/convergent/firewall-heal/fw2.restarted ] || read -r since </run/convergent/firewall-heal/fw2.restarted
+        [ "$since" -ge "$broken_at" ]
+    }
     window=/run/convergent/firewall-heal/fw2 tries=0 windowed=
     until [ -n "$windowed" ]; do
         tries=$((tries + 1)); [ "$tries" -le 3 ]
         deadline=$(($(date +%s) + 300))
         until [ -f "$window" ]; do
+            if restarted_since; then windowed=1; break; fi
             [ "$(date +%s)" -lt "$deadline" ]; sleep 1
         done
+        [ -z "$windowed" ] || break
         exec 7>/run/convergent/firewall-heal.lock
         flock -w 120 7
         if ! read -r first0 prev0 peer0 <"$window"; then exec 7>&-; continue; fi
