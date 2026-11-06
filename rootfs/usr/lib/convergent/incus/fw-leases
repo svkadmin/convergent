@@ -10,7 +10,7 @@ leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
     touch "$state/leases/held" && sync || return
-    lease_sources=0
+    lease_sources=0 lease_held=
     for lease_node in fw1 fw2; do
         running "$lease_node" || continue
         # A few KB per pair: an oversized reply is a failed checkpoint and never replaces the saved copy.
@@ -22,7 +22,7 @@ if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; the
     cat /var/db/dhcpd.leases
 fi' >"$work/leases.$lease_node"; then
             mv "$work/leases.$lease_node" "$state/leases/$lease_node" && sync || return
-            lease_sources=$((lease_sources + 1))
+            lease_sources=$((lease_sources + 1)) lease_held="$lease_held $lease_node"
         else
             lease_replaced "$lease_node" || return 1
         fi
@@ -30,12 +30,19 @@ fi' >"$work/leases.$lease_node"; then
     # Nothing read and nothing saved (a migration cut after its holds, both committed nodes silent): only
     # when both roots are replaced, so no peer keeps leases the replacement would not know.
     [ "$lease_sources" != 0 ] || [ -f "$state/leases/saved" ] || { lease_replaced fw1 && lease_replaced fw2; } || return 1
+    # The heal's reconcile needs both: a node Incus could not read is held by no one and merged into nothing.
+    for lease_node in ${lease_required:-}; do
+        case " $lease_held " in *" $lease_node "*) ;; *) return 1 ;; esac
+    done
     for lease_node in fw1 fw2 saved; do
         [ -f "$state/leases/$lease_node" ] || : >"$state/leases/$lease_node" || return
     done
-    awk -f "$lib/leases.awk" "$state/leases/fw1" "$state/leases/fw2" "$state/leases/saved" >"$work/leases.saved" || return
+    lease_now=$(date -u '+%Y/%m/%d %H:%M:%S') || return
+    awk -v now="$lease_now" -f "$lib/leases.awk" "$state/leases/fw1" "$state/leases/fw2" "$state/leases/saved" >"$work/leases.saved" || return
     mv "$work/leases.saved" "$state/leases/saved" && sync || return
     for lease_node in fw1 fw2; do
+        # Only a node held above: one Incus read late gets no merge that lacks its own leases while it allocates.
+        case " $lease_held " in *" $lease_node "*) ;; *) continue ;; esac
         running "$lease_node" || continue
         if ! probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then

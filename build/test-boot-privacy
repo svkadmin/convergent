@@ -575,19 +575,33 @@ done
 # wan's build refuses an sshd_config that could let a password through (OpenSSH on musl has no PAM).
 sed -n '/^awk .BEGIN {want\["passwordauthentication"\]/,/"\$target\/etc\/ssh\/sshd_config" ||$/p' "$repo/guests/wan/build" |
     sed 's#"\$target/etc/ssh/sshd_config" ||$#"$1"#' >"$work/sshd-check"
-[ "$(wc -l <"$work/sshd-check")" = 6 ] || die 'wan build sshd_config check not found'
+[ "$(wc -l <"$work/sshd-check")" = 8 ] || die 'wan build sshd_config check not found'
 check_script "$work/sshd-check"
 wan_sshd=$repo/guests/wan/rootfs/etc/ssh/sshd_config
 sh "$work/sshd-check" "$wan_sshd" || die 'wan build refuses the shipped sshd_config'
+# sshd strips a keyword's quotes and reads ChallengeResponseAuthentication as KbdInteractiveAuthentication.
 for edit in '/^PasswordAuthentication no$/d' '/^KbdInteractiveAuthentication no$/d' '/^AuthenticationMethods publickey$/d' \
     's/^AuthenticationMethods publickey$/AuthenticationMethods publickey,password/' \
     's/^AuthenticationMethods publickey$/AuthenticationMethods publickey password/' \
     '1i PasswordAuthentication=yes' '1i passwordauthentication yes' \
     's/^KbdInteractiveAuthentication no$/  KbdInteractiveAuthentication = yes/' \
-    '$a Match User root' '$a Include /etc/ssh/sshd_config.d/*.conf'; do
+    '1i "PasswordAuthentication" yes' '1i "AuthenticationMethods" password' '1i ChallengeResponseAuthentication yes' \
+    '$a Match User root' '$a Include /etc/ssh/sshd_config.d/*.conf' '$a "Include" /etc/ssh/sshd_config.d/*.conf'; do
     sed "$edit" "$wan_sshd" >"$work/sshd_config"
     if cmp -s "$wan_sshd" "$work/sshd_config"; then die "sshd_config fixture edit changed nothing: $edit"; fi
     if sh "$work/sshd-check" "$work/sshd_config"; then die "wan build accepts sshd_config after: $edit"; fi
+done
+# Nor may conf.d/sshd pass options (-o sets a keyword first) or another config file.
+{ echo 'die() { exit 1; }'; sed -n '/^if grep -Eq .* "\$target\/etc\/conf.d\/sshd"; then$/,/^fi$/p' "$repo/guests/wan/build"; } |
+    sed 's#"\$target/etc/conf.d/sshd"#"$1"#' >"$work/sshd-opts-check"
+[ "$(wc -l <"$work/sshd-opts-check")" = 4 ] || die 'wan build conf.d/sshd check not found'
+check_script "$work/sshd-opts-check"
+wan_opts=$repo/guests/wan/rootfs/etc/conf.d/sshd
+sh "$work/sshd-opts-check" "$wan_opts" || die 'wan build refuses the shipped conf.d/sshd'
+for edit in '$a command_args="-o PasswordAuthentication=yes"' '$a SSHD_OPTS="-o Include=/etc/ssh/extra"' \
+    '$a cfgfile=/etc/ssh/sshd_config.other' '$a   SSHD_CONFDIR=/etc/ssh2'; do
+    sed "$edit" "$wan_opts" >"$work/conf.d-sshd"
+    if sh "$work/sshd-opts-check" "$work/conf.d-sshd"; then die "wan build accepts conf.d/sshd after: $edit"; fi
 done
 echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
 
