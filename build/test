@@ -966,7 +966,12 @@ sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" 
 busy=0 test_peer=MASTER test_target=down test_status=RUNNING failed=0
 logger() { :; }
 flock() { [ "$busy" = 0 ] && command flock "$@"; }
-timeout() { [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"; shift 3; "$@"; }
+timeout() {
+    [ -z "${bounds:-}" ] || echo "$3 ${11:-}" >>"$bounds"
+    # slow: that node misses the 10 s probe and answers the 30 s one.
+    [ -z "${slow:-}" ] || [ "$3:${11:-}" != "10:$slow" ] || return 124
+    shift 3; "$@"
+}
 sleep() { :; }
 # A killed QEMU is one Incus reports STOPPED afterwards, or restarts itself when nothing holds it.
 kill() {
@@ -1110,6 +1115,22 @@ for record in '1000:1 7700 0' '08 7700 0' '7500 7700 08' '7700' '1000 garbage 0'
     tick 7720
     grep -q '^SELF-HEAL fw2: unhealthy for 0s;' "$work/report"
 done
+# A loaded peer that misses its 10 s probe but answers within 30 s still lets the restart come on time: every
+# node that missed it is re-probed with the 30 s bound, and never once the hour's attempts are spent.
+rm -f "$work/run/firewall-heal/"*
+test_status=RUNNING test_target=down test_peer=MASTER failed=0
+before=$(attempts) slow=fw1 bounds=$work/probe-bounds
+for t in 8000 8060 8120; do
+    : >"$bounds"; tick "$t"; [ "$(attempts)" = "$before" ]
+    grep -qx '30 fw1' "$bounds"
+done
+grep -qx 'SELF-HEAL fw2: unhealthy for 120s; peer fw1: master; attempts 0/3 in the last hour' "$work/report"
+tick 8180; [ "$(attempts)" = "$((before + 1))" ]
+rm -f "$work/run/firewall-heal/"*
+printf '%s\n' 8000 8000 8000 >"$work/run/firewall-heal/attempts"
+for t in 8240 8300 8360 8420; do : >"$bounds"; tick "$t"; if grep -qx '30 fw1' "$bounds"; then exit 1; fi; done
+[ "$(attempts)" = "$((before + 1))" ]
+slow= bounds=
 # A state Incus cannot read (hung QEMU monitor) is refused without touching the guest.
 for scenario in unknown peer-down inhibited; do
     rm -f "$work/run/firewall-heal/"*
