@@ -3,15 +3,16 @@
 . /usr/lib/convergent/guest-reply.sh
 # $2: bound in seconds (default 10); the peer check right before a kill gets more.
 heal_probe() {
-    # fw-leases disables a held allocator on purpose; without a hold dhcpd must run.
-    heal_dhcpd=
-    [ ! -e /var/lib/convergent/guests/leases/held ] || heal_dhcpd='! rcctl get dhcpd status >/dev/null ||'
+    # fw-leases disables a held allocator on purpose, and a resume that enabled it but could not start it is
+    # retried (heal_resume) only while the node probes healthy: under a hold dhcpd is not probed at all.
+    heal_dhcpd='rcctl check dhcpd >/dev/null'
+    [ ! -e /var/lib/convergent/guests/leases/held ] || heal_dhcpd=:
     reply=$(guest_reply 65536 timeout -k 1 "${2:-10}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none "$1" '
         set -e
         ifconfig carp
         pfctl -si
         ifconfig pfsync0
-        '"$heal_dhcpd"' rcctl check dhcpd >/dev/null
+        '"$heal_dhcpd"'
         rcctl check unbound >/dev/null
         unbound-control status >/dev/null' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) || return 1
     printf '%s\n' "$reply" | awk -v health=1 -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments -
@@ -77,9 +78,10 @@ heal_end() {
 }
 # A hold this healer could not clear after its restart: released once the node is healthy and nothing else runs.
 heal_unhold() (
-    heal_allowed || exit 0
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
+    # Gated under the lock: a maintenance writes its journal there and releases it.
+    heal_allowed || exit 0
     held=$(timeout -k 1 30 incus --force-local --project default config get "$1" user.convergent.autorestart 9>&- 8>&- 7>&- 6>&-) || exit 1
     if [ "$held" = true ]; then
         timeout -k 1 30 incus --force-local --project default config unset "$1" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- 6>&- || exit 1
@@ -96,6 +98,8 @@ heal_leases() {
         timeout -k 1 "${probe_limit:-30}" ssh -F /etc/convergent/ssh_config -o ControlMaster=no -o ControlPath=none \
             -o ConnectTimeout="$((${probe_limit:-30} / 2))" -o ServerAliveCountMax=12 "$@" 9>&- 8>&- 7>&- 6>&- 2>/dev/null
     }
+    # Both nodes answered their probes: a checkpoint of fewer (an Incus state read that timed out) is no merge.
+    lease_required='fw1 fw2'
     . /usr/lib/convergent/incus/fw-leases
 }
 # A lease hold left by a run that could not reach a node: both allocators resume once both nodes answer.
@@ -120,7 +124,8 @@ heal_booted() {
         [ ! -f "/var/lib/convergent/guests/leases/qemu.$boot_node" ] || read -r seen <"/var/lib/convergent/guests/leases/qemu.$boot_node"
         [ "$seen" != "$boot:$pid" ] || continue
         mkdir -p /var/lib/convergent/guests/leases || return 1
-        if [ -n "$seen" ] && [ ! -f /var/lib/convergent/guests/leases/reconcile ]; then
+        # A new identity restarts the count: a marker exhausted on the old QEMU must not swallow this one.
+        if [ -n "$seen" ]; then
             echo 0 >/var/lib/convergent/guests/leases/reconcile && sync || return 1
             heal_note "$boot_node runs under a new QEMU; work DHCP leases reconcile once both nodes answer"
         fi
@@ -131,9 +136,10 @@ heal_booted() {
 # checkpointed and merged, and the merge written back, under the guests lock and never under a journal.
 # A failed try resumes at once and counts; the third ends it. A hold a resume could not clear is heal_resume's.
 heal_reconcile() (
-    [ -f /var/lib/convergent/guests/leases/reconcile ] && [ ! -f /var/lib/convergent/guests/leases/held ] && heal_allowed || exit 0
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
+    # Gated under the lock: a maintenance writes its journal there and releases it.
+    [ -f /var/lib/convergent/guests/leases/reconcile ] && [ ! -f /var/lib/convergent/guests/leases/held ] && heal_allowed || exit 0
     trap '' HUP INT TERM
     heal_leases
     read -r tries rest <"$state/leases/reconcile" || tries=
@@ -182,7 +188,8 @@ firewall_heal() (
     awk -v now="$now" '$1 > now-3600 {print}' "$heal/attempts" >"$heal/attempts.new" &&
         mv "$heal/attempts.new" "$heal/attempts" || exit 1
     attempts=$(wc -l <"$heal/attempts")
-    heal_booted || exit 1
+    # A record /var/lib cannot take (ENOSPC) must not silence the heal: the change is seen again next run.
+    heal_booted || heal_note 'QEMU record not written; retried next run'
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
     # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
@@ -251,8 +258,6 @@ firewall_heal() (
             echo "SELF-HEAL $node: restarted $((now - restarted))s ago; waiting for its boot"
             continue
         fi
-        # A loaded but healthy peer misses the 10 s probe: asked again with the pre-kill bound.
-        [ "$peer_health" != unhealthy ] || peer_health=$(heal_probe "$peer" 30) || peer_health=unhealthy
         first=$now previous=$now peer_since=0
         [ ! -f "$heal/$node" ] || read -r first previous peer_since <"$heal/$node"
         # A garbled record restarts the window: arithmetic on it would end the heal.
@@ -261,6 +266,10 @@ firewall_heal() (
         done
         # Two missed minutes or a clock discontinuity break the window; one is a run that held the heal lock.
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now peer_since=0; fi
+        # A loaded but healthy peer misses the 10 s probe: asked again with the pre-kill bound, only when the
+        # answer can matter (an attempt left, and MASTER needed from the run before the window's 180 s).
+        [ "$peer_health" != unhealthy ] || [ "$attempts" -ge 3 ] || [ "$((now - first))" -lt 120 ] ||
+            peer_health=$(heal_probe "$peer" 30) || peer_health=unhealthy
         # Since when the peer answers MASTER (0: not now): acting needs it in two runs in a row, as before the
         # window was the node's own, so a stale window never acts on one answer (a host bridge just back).
         if [ "$peer_health" != master ]; then peer_since=0; elif [ "${peer_since:-0}" = 0 ]; then peer_since=$now; fi

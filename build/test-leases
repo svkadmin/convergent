@@ -19,17 +19,19 @@ lease 100.80.36.51 {
 }
 LEASES
 sed 's/10:00:00/12:00:00/' "$work/old" >"$work/new"
-awk -f "$lib/leases.awk" "$work/new" "$work/old" >"$work/merged"
+# The merge is told the time: a binding is current only until it ends.
+merge() { awk -v now='2026/10/26 09:30:00' -f "$lib/leases.awk" "$@"; }
+merge "$work/new" "$work/old" >"$work/merged"
 sort "$work/new" >"$work/expected"
 sort "$work/merged" >"$work/actual"
 cmp "$work/expected" "$work/actual"
-awk -f "$lib/leases.awk" "$work/old" "$work/merged" >"$work/replay"
+merge "$work/old" "$work/merged" >"$work/replay"
 cmp "$work/merged" "$work/replay"
 sed '$d' "$work/old" >"$work/torn"
-if awk -f "$lib/leases.awk" "$work/torn" >/dev/null; then exit 1; fi
+if merge "$work/torn" >/dev/null; then exit 1; fi
 # An unterminated record is refused before it can grow without bound.
 { sed '$d' "$work/old"; yes '  hardware ethernet 00:16:3e:00:00:09;' | head -n 200; echo '}'; } >"$work/huge"
-if awk -f "$lib/leases.awk" "$work/huge" >/dev/null; then exit 1; fi
+if merge "$work/huge" >/dev/null; then exit 1; fi
 # A released address reassigned later: the newer assignment wins over the old, longer reservation in any file.
 cat >"$work/moved" <<'LEASES'
 lease 100.80.32.51 {
@@ -50,7 +52,7 @@ lease 100.80.32.51 {
 LEASES
 for order in "$work/moved $work/new" "$work/new $work/moved"; do
 	# shellcheck disable=SC2086
-	awk -f "$lib/leases.awk" $order >"$work/actual"
+	merge $order >"$work/actual"
 	[ "$(grep -c '^lease 100.80.32.51 ' "$work/actual")" = 1 ]
 	grep -q '00:16:3e:00:00:03' "$work/actual"
 done
@@ -70,7 +72,7 @@ lease 100.80.32.53 {
 LEASES
 for order in "$work/abandoned $work/new" "$work/new $work/abandoned"; do
 	# shellcheck disable=SC2086
-	awk -f "$lib/leases.awk" $order >"$work/actual"
+	merge $order >"$work/actual"
 	[ "$(grep -c '^lease 100.80.32.51 ' "$work/actual")" = 1 ]
 	sed -n '/^lease 100.80.32.51 /,/^}/p' "$work/actual" >"$work/record"
 	if grep -q abandoned "$work/record"; then exit 1; fi
@@ -87,11 +89,58 @@ lease 100.80.32.52 {
 LEASES
 for order in "$work/twice $work/new" "$work/new $work/twice"; do
 	# shellcheck disable=SC2086
-	awk -f "$lib/leases.awk" $order >"$work/actual"
+	merge $order >"$work/actual"
 	[ "$(grep -c '00:16:3e:00:00:01' "$work/actual")" = 1 ]
 	grep -q '^lease 100.80.32.52 ' "$work/actual"
 	if grep -q '^lease 100.80.32.51 ' "$work/actual"; then exit 1; fi
 	grep -q '^lease 100.80.36.51 ' "$work/actual"
+done
+# Within one file the last declaration is current (dhcpd.leases(5)): an expired binding followed by its
+# abandon stays abandoned. Across files the binding wins only while current, else the newer record does.
+cat >"$work/history" <<'LEASES'
+lease 100.80.32.53 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 10:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:04;
+}
+lease 100.80.32.53 {
+  starts 1 2026/10/26 11:00:00 UTC;
+  ends 1 2026/10/26 13:00:00 UTC;
+  abandoned;
+}
+LEASES
+merge "$work/history" >"$work/actual"
+[ "$(grep -c '^lease 100.80.32.53 ' "$work/actual")" = 1 ]
+grep -q abandoned "$work/actual"
+sed -n '1,5p' "$work/history" >"$work/expired"
+sed -n '6,10p' "$work/history" >"$work/abandon"
+for order in "$work/expired $work/abandon" "$work/abandon $work/expired"; do
+	# shellcheck disable=SC2086
+	awk -v now='2026/10/26 11:30:00' -f "$lib/leases.awk" $order >"$work/actual"
+	[ "$(grep -c '^lease 100.80.32.53 ' "$work/actual")" = 1 ]
+	grep -q abandoned "$work/actual"
+	# Still current at 09:30: the binding wins (control).
+	# shellcheck disable=SC2086
+	merge $order >"$work/actual"
+	grep -q '00:16:3e:00:00:04' "$work/actual"
+	if grep -q abandoned "$work/actual"; then exit 1; fi
+done
+# Without the time no binding could be called current: refused.
+if awk -f "$lib/leases.awk" "$work/new" >/dev/null; then exit 1; fi
+# One address per MAC holds per VLAN subnet: a client moved to another VLAN within lease time keeps both.
+cat >"$work/vlans" <<'LEASES'
+lease 100.80.36.52 {
+  starts 1 2026/10/26 11:00:00 UTC;
+  ends 1 2026/10/26 13:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+LEASES
+for order in "$work/vlans $work/new" "$work/new $work/vlans"; do
+	# shellcheck disable=SC2086
+	merge $order >"$work/actual"
+	[ "$(grep -c '00:16:3e:00:00:01' "$work/actual")" = 2 ]
+	grep -q '^lease 100.80.32.51 ' "$work/actual"
+	grep -q '^lease 100.80.36.52 ' "$work/actual"
 done
 state=$work/state
 mkdir -p "$state" "$work/live"
@@ -140,6 +189,19 @@ rm -f "$state/leases/held"
 	[ -e "$state/leases/quiesced" ]
 )
 rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
+# A node not running at the checkpoint but running at the seed (Incus read it late, or restarted it) gets no
+# merge that lacks its own leases while it allocates; the held peer is seeded (control).
+rm "$work/live/fw2"
+printf 'lease 100.80.33.51 {\n  starts 1 2026/10/26 08:00:00 UTC;\n  ends 1 2026/10/26 10:00:00 UTC;\n  hardware ethernet 00:16:3e:00:00:05;\n}\n' >"$work/late"
+(
+	running() { [ -f "$work/live/$1" ] && return 0; [ "$1" = fw2 ] && cp "$work/late" "$work/live/fw2"; return 1; }
+	leases_hold
+	[ -e "$state/leases/quiesced" ]
+	cmp "$work/late" "$work/live/fw2"
+	grep -q '12:00:00' "$work/live/fw1"
+)
+rm -rf "$state/leases/quiesced" "$state/leases/held"
+cp "$work/new" "$work/live/fw2"
 cp "$work/old" "$work/live/fw1"
 # Nothing read and nothing saved: accepted only when both roots are replaced (a migration cut after its
 # holds, or both committed nodes listed as rebuilding), never with one peer's leases left out.

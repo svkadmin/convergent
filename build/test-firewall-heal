@@ -45,6 +45,13 @@ sed -n "/^sh -eu <<'HEAL'/,/^HEAL$/p" "$here/test" | sed '1d;$d' |
         -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/fixture"
 sh -n "$scratch/fixture"
 sh -eu "$scratch/fixture"
+# The unhold's and the reconcile's gates (journal, maintenance, hold) are read under the guests lock: a
+# maintenance writes its journal there and releases it.
+for gate in heal_unhold heal_reconcile; do
+    sed -n "/^$gate() (/,/^)/p" "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" >"$scratch/gate"
+    [ -s "$scratch/gate" ]
+    awk '/flock -n 8/ {lock=NR} /heal_allowed/ && !lock {exit 1} END {exit !lock}' "$scratch/gate"
+done
 # The owner's way out of a frozen QEMU the heal leaves alone.
 sed -n '/^### A frozen guest QEMU$/,/^### /p' "$repo/RECOVERY.md" >"$scratch/frozen-recipe"
 grep -qF "incus --force-local query '/1.0/instances/<guest>/state?project=default'" "$scratch/frozen-recipe"

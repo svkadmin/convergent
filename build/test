@@ -1002,8 +1002,9 @@ ssh() {
     esac
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
     [ "$role" != down ] || return 1
-    # dhcpd_off: nodes fw-leases disabled dhcpd on; the probe's own dhcpd line decides.
-    case " ${dhcpd_off:-} " in *" $7 "*) (rcctl() { return 1; }; eval "$(printf '%s\n' "$8" | grep dhcpd)") || return 1 ;; esac
+    # dhcpd_off: nodes fw-leases disabled dhcpd on (dhcpd_enabled: enabled again but not started); the probe's
+    # own dhcpd line decides.
+    case " ${dhcpd_off:-} " in *" $7 "*) (rcctl() { [ "${dhcpd_enabled:-0}" = 1 ] && [ "$1" = get ]; }; eval "$(printf '%s\n' "$8" | grep dhcpd)") || return 1 ;; esac
     while read -r iface vhid parent segment prefix gateway family; do
         case $iface in \#*|'') continue ;; esac
         echo "$iface: flags=41<UP,RUNNING>"
@@ -1014,11 +1015,16 @@ ssh() {
     echo ' defer: on'
 }
 incus() {
-    # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does.
+    # unknown: a frozen QEMU's monitor makes both state reads time out; slow: only the list does. A marker
+    # unknown.<node> makes that node's next state read (list and query) fail once.
     case $2:${4:-} in
-    query:*) [ "$test_status" != unknown ] || return 1; printf '{"status":"%s"}\n' "$test_status"; return ;;
+    query:*)
+        unknown_node=${3#/1.0/instances/}; unknown_node=${unknown_node%%/*}
+        [ "$test_status" != unknown ] || return 1
+        [ ! -f "$fixture/unknown.$unknown_node" ] || { rm "$fixture/unknown.$unknown_node"; return 1; }
+        printf '{"status":"%s"}\n' "$test_status"; return ;;
     *:list)
-        [ "$test_status" != unknown ] && [ "${list_slow:-0}" = 0 ] || return 1
+        [ "$test_status" != unknown ] && [ "${list_slow:-0}" = 0 ] && [ ! -f "$fixture/unknown.$5" ] || return 1
         case $* in *'-c ns') printf '%s,%s\n%s-old,RUNNING\n' "$5" "$test_status" "$5" ;; *) printf '%s\nRUNNING\n' "$test_status" ;; esac
         return ;;
     esac
@@ -1120,13 +1126,24 @@ tick 7000; test_peer=down; tick 7060
 grep -qx 'SELF-HEAL fw2: unhealthy for 60s; peer fw1: unhealthy; attempts 0/3 in the last hour' "$work/report"
 test_peer=MASTER; tick 7120; [ "$(attempts)" = "$before" ]
 tick 7180; [ "$(attempts)" = "$((before + 1))" ]
-# A loaded peer that misses its 10 s probe but answers within 30 s still lets the restart come on time.
+# A loaded peer that misses its 10 s probe but answers within 30 s still lets the restart come on time. The
+# 30 s re-probe (up to a minute a tick) runs only once its answer can matter: from the window's 120th second,
+# and never once the hour's attempts are spent.
 rm -f "$work/run/firewall-heal/"*
-before=$(attempts) slow=fw1
-for t in 7000 7060 7120; do tick "$t"; [ "$(attempts)" = "$before" ]; done
+before=$(attempts) slow=fw1 bounds=$work/probe-bounds
+for t in 7000 7060; do
+    : >"$bounds"; tick "$t"; [ "$(attempts)" = "$before" ]
+    if grep -qx '30 fw1' "$bounds"; then exit 1; fi
+done
+: >"$bounds"; tick 7120; [ "$(attempts)" = "$before" ]
+grep -qx '30 fw1' "$bounds"
 grep -qx 'SELF-HEAL fw2: unhealthy for 120s; peer fw1: master; attempts 0/3 in the last hour' "$work/report"
 tick 7180; [ "$(attempts)" = "$((before + 1))" ]
-slow=
+rm -f "$work/run/firewall-heal/"*
+printf '%s\n' 7000 7000 7000 >"$work/run/firewall-heal/attempts"
+for t in 7240 7300 7360 7420; do : >"$bounds"; tick "$t"; if grep -qx '30 fw1' "$bounds"; then exit 1; fi; done
+[ "$(attempts)" = "$((before + 1))" ]
+slow= bounds=
 # Window records are replaced whole: check reads them without the heal lock.
 (
     printf() {
@@ -1377,7 +1394,17 @@ printf '%s\n' 'resume fw1' 'resume fw2' >"$work/expected"
 cmp "$work/calls" "$work/expected"
 [ ! -e "$work/state/guests/leases/held" ]
 grep -q 'work DHCP resumed' "$work/run/firewall-heal/event"
-dhcpd_off= test_target=down
+# A resume that enabled dhcpd but could not start it leaves the node enabled and stopped under the hold: it
+# still probes healthy, so the resume is retried rather than the node restarted or left held for good.
+touch "$work/state/guests/leases/held"
+dhcpd_enabled=1
+[ "$(heal_probe fw1)" = master ]
+: >"$work/calls"
+tick 1300
+cmp "$work/calls" "$work/expected"
+[ ! -e "$work/state/guests/leases/held" ]
+if heal_probe fw1; then exit 1; fi
+dhcpd_enabled= dhcpd_off= test_target=down
 # A node that ran under another QEMU since the last run (a restart, a crash Incus restarted, a host reboot)
 # queues one lease reconcile, durably: once both nodes answer, and under no journal or guests lock, both
 # allocators are held, their leases merged and the merge written back, once.
@@ -1423,7 +1450,49 @@ tick 1780
 grep -q 'reconcile given up after 3 failed tries' "$work/run/firewall-heal/event"
 tick 1840
 [ ! -s "$work/calls" ]
-hold_fail=0 test_target=down
+hold_fail=0
+reconciled() { printf '%s\n' 'hold fw1' 'hold fw2' 'seed fw1' 'seed fw2' 'resume fw1' 'resume fw2' >"$work/expected"; cmp "$work/calls" "$work/expected"; }
+# A firewall restarted again before the give-up tick: its new identity restarts the count, so the exhausted
+# marker does not swallow this reconcile.
+qemu 4545 fw2 "$work/incus/fw2/qemu.pid"
+hold_fail=1
+for try in 1 2 3; do tick "$((1840 + try * 60))"; done
+[ "$(cat "$leases/reconcile")" = 3 ]
+hold_fail=0
+qemu 4646 fw2 "$work/incus/fw2/qemu.pid"
+: >"$work/calls"
+tick 2080
+reconciled
+[ ! -f "$leases/reconcile" ]
+# A node Incus cannot read at the checkpoint (a loaded host) and reads again at the seed: no merge that lacks
+# its own leases is written to it while it allocates; the try fails, resumes and is retried.
+qemu 4747 fw2 "$work/incus/fw2/qemu.pid"
+touch "$fixture/unknown.fw2"
+: >"$work/calls"
+tick 2140
+printf '%s\n' 'hold fw1' 'resume fw1' 'resume fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+[ "$(cat "$leases/reconcile")" = 1 ] && [ ! -e "$leases/held" ] && [ ! -e "$fixture/unknown.fw2" ] || exit 1
+grep -q 'lease reconcile failed (1/3)' "$work/run/firewall-heal/event"
+: >"$work/calls"
+tick 2200
+reconciled
+[ ! -f "$leases/reconcile" ]
+# A QEMU record /var/lib cannot take is logged, not fatal: the probes still run, and the next run that can
+# write it queues the reconcile.
+sync() { return 1; }
+qemu 4848 fw2 "$work/incus/fw2/qemu.pid"
+: >"$work/calls"
+tick 2260
+grep -q 'QEMU record not written' "$work/run/firewall-heal/event"
+grep -q '^SELF-HEAL fw2: ' "$work/report"
+[ ! -s "$work/calls" ]
+unset -f sync
+: >"$work/calls"
+tick 2320
+reconciled
+[ ! -f "$leases/reconcile" ]
+test_target=down
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
 rm -rf "$work/run/firewall-heal"
