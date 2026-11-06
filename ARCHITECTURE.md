@@ -749,15 +749,18 @@ The minute run of `check auto`: repairs first, then the baseline scan.
 - A lease hold left by a run that could not reach a firewall does not inhibit the heal: once both
   firewalls answer their probe, work DHCP resumes and the hold is released. While it is set, the
   probe does not check dhcpd (disabled, or enabled but not started by a failed resume: the resume is
-  retried each run).
+  retried each run, on every firewall). After five failed resumes in a row the probe checks dhcpd
+  again, so a dhcpd that never starts shows as unhealthy and its firewall is restarted.
 - A firewall that comes back under a new QEMU (a restart by the heal or by hand, a crash, a host
   reboot) may have abandoned an address its peer bound meanwhile, and dhcpd refuses every later sync
-  of it. The heal queues one lease reconcile (`leases/reconcile`): once both firewalls answer, and
-  under no journal or guests run, it holds both allocators, merges their leases (each file's last
-  declaration per address; a current binding beats an abandoned one; one MAC keeps its newest address
-  per VLAN) and writes the merge back, as a guest update does. Both must be held and checkpointed or
-  nothing is written. A failed try resumes at once; the third ends it, and a further restart counts
-  again.
+  of it; so may a running one whose client answered its pre-offer ping (its count of abandoned
+  records, read with the probe, rises). The heal queues one lease reconcile (`leases/reconcile`):
+  once both firewalls answer, and under no journal or guests run, it holds both allocators, merges
+  their leases (each file's last declaration per address; a current binding beats an abandoned one;
+  one MAC keeps its current, else its newest, address per VLAN) and writes the merge back, as a guest
+  update does. Both must be held and checkpointed or nothing is written, and a firewall installs no
+  merge shorter than announced. A failed try resumes at once; the third ends it, and a further
+  restart counts again.
 - The wired-uplink repair re-adds `wan`'s role after two runs without the allowed NIC, three times
   an hour at most, then reports a failure. `sys usb revoke` and enrolment remove the role once no
   USBGuard rule allows the NIC.

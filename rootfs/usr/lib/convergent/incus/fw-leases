@@ -6,6 +6,11 @@ lease_replaced() {
     case " ${rebuilding:-} " in *" $1 "*) return 0 ;; esac
     [ -d "$state/fw.topology" ] && [ ! -e "$state/fw.topology/committed" ]
 }
+# Each mutation runs on the firewall under one lock and its own bound, shorter than the host's 120 s: a hold
+# or seed the host gave up on (ssh killed; the remote script runs on) ends there before a later resume, never
+# after it. The lock stays in perl, so a daemon started under it does not inherit it. The body is a ksh
+# double-quoted string: no quote, and \$ for what the locked sh must expand.
+lease_guard='exec timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)"'
 leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
@@ -16,10 +21,10 @@ leases_hold() {
         # A few KB per pair: an oversized reply is a failed checkpoint and never replaces the saved copy.
         if probe_limit=120 guest_reply 1048576 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
-    rcctl disable dhcpd
-    if rcctl check dhcpd >/dev/null 2>&1; then rcctl stop dhcpd; fi
-    sync
-    cat /var/db/dhcpd.leases
+    '"$lease_guard"' "rcctl disable dhcpd
+if rcctl check dhcpd >/dev/null 2>&1; then rcctl stop dhcpd; fi
+sync
+cat /var/db/dhcpd.leases"
 fi' >"$work/leases.$lease_node"; then
             mv "$work/leases.$lease_node" "$state/leases/$lease_node" && sync || return
             lease_sources=$((lease_sources + 1)) lease_held="$lease_held $lease_node"
@@ -40,16 +45,21 @@ fi' >"$work/leases.$lease_node"; then
     lease_now=$(date -u '+%Y/%m/%d %H:%M:%S') || return
     awk -v now="$lease_now" -f "$lib/leases.awk" "$state/leases/fw1" "$state/leases/fw2" "$state/leases/saved" >"$work/leases.saved" || return
     mv "$work/leases.saved" "$state/leases/saved" && sync || return
+    # The byte count travels with the merge: a transfer the host's bound cut (the remote cat reads EOF and
+    # exits 0) installs nothing.
+    lease_bytes=$(wc -c <"$state/leases/saved" | tr -d ' ') || return
+    case $lease_bytes in '' | *[!0-9]*) return 1 ;; esac
     for lease_node in fw1 fw2; do
         # Only a node held above: one Incus read late gets no merge that lacks its own leases while it allocates.
         case " $lease_held " in *" $lease_node "*) ;; *) continue ;; esac
         running "$lease_node" || continue
         if ! probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
-    umask 077
-    cat >/var/db/dhcpd.leases.new
-    mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
-    sync
+    '"$lease_guard"' "umask 077
+cat >/var/db/dhcpd.leases.new
+test \$(wc -c </var/db/dhcpd.leases.new) -eq '"$lease_bytes"'
+mv /var/db/dhcpd.leases.new /var/db/dhcpd.leases
+sync"
 fi' <"$state/leases/saved"; then
             lease_replaced "$lease_node" || return 1
         fi
@@ -59,16 +69,18 @@ fi' <"$state/leases/saved"; then
 leases_resume() {
     [ -f "$state/leases/held" ] || return 0
     rm -f "$state/leases/quiesced" && sync || return
-    lease_waiting=
+    lease_waiting= lease_failed=
     for lease_node in ${1:-fw1 fw2}; do
         running "$lease_node" || { lease_waiting=1; continue; }
+        # Every node is tried: one that fails must not leave its healthy peer's allocator off until it recovers.
         probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
-    rcctl enable dhcpd
-    rcctl set dhcpd flags $(cat /etc/convergent/dhcpd.flags)
-    rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd
-fi' >/dev/null || return
+    '"$lease_guard"' "rcctl enable dhcpd
+rcctl set dhcpd flags \$(cat /etc/convergent/dhcpd.flags)
+rcctl check dhcpd >/dev/null 2>&1 || rcctl start dhcpd"
+fi' >/dev/null || lease_failed="$lease_failed $lease_node"
     done
+    [ -z "$lease_failed" ] || return 1
     # A peer-only recovery keeps the hold until both allocators have resumed.
     [ -z "$lease_waiting" ] && [ "$#" = 0 ] || return 0
     rm -f "$state/leases/held" && sync

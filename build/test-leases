@@ -142,6 +142,37 @@ for order in "$work/vlans $work/new" "$work/new $work/vlans"; do
 	grep -q '^lease 100.80.32.51 ' "$work/actual"
 	grep -q '^lease 100.80.36.52 ' "$work/actual"
 done
+# A MAC's expired later address must not erase its live reservation: the current binding is kept.
+cat >"$work/reserved" <<'LEASES'
+lease 100.80.32.51 {
+  starts 1 2026/10/26 08:00:00 UTC;
+  ends 1 2026/10/26 14:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+LEASES
+cat >"$work/expired-move" <<'LEASES'
+lease 100.80.32.52 {
+  starts 1 2026/10/26 10:00:00 UTC;
+  ends 1 2026/10/26 11:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+LEASES
+for order in "$work/reserved $work/expired-move" "$work/expired-move $work/reserved"; do
+	# shellcheck disable=SC2086
+	awk -v now='2026/10/26 11:30:00' -f "$lib/leases.awk" $order >"$work/actual"
+	grep -q '^lease 100.80.32.51 ' "$work/actual"
+	if grep -q '^lease 100.80.32.52 ' "$work/actual"; then exit 1; fi
+	# Both current at 10:30: the newer assignment wins (control).
+	# shellcheck disable=SC2086
+	awk -v now='2026/10/26 10:30:00' -f "$lib/leases.awk" $order >"$work/actual"
+	grep -q '^lease 100.80.32.52 ' "$work/actual"
+	if grep -q '^lease 100.80.32.51 ' "$work/actual"; then exit 1; fi
+done
+# A record left open at a file's end is refused when another file follows, and so is one cut off by the next
+# declaration in the same file.
+if merge "$work/torn" "$work/new" >/dev/null; then exit 1; fi
+cat "$work/torn" "$work/new" >"$work/torn-inside"
+if merge "$work/torn-inside" >/dev/null; then exit 1; fi
 state=$work/state
 mkdir -p "$state" "$work/live"
 cp "$work/old" "$work/live/fw1"
@@ -221,6 +252,54 @@ mv "$state/leases/saved" "$work/saved.keep"
 )
 rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
 mv "$work/saved.keep" "$state/leases/saved"
+# Each remote mutation runs on the firewall under one lock and its own bound (100 s, under the host's 120 s),
+# so a hold or seed the host gave up on cannot outlive a later resume, and the seed installs nothing short of
+# the merge's byte count. The seed script runs here for real, with its paths moved.
+(
+	rsh() {
+		case $2 in *'rcctl disable dhcpd'*) kind=hold ;; *'cat >/var/db/dhcpd.leases.new'*) kind=seed ;; *) kind=resume ;; esac
+		printf '%s\n' "$2" >"$work/script.$1.$kind"
+		case $kind in hold) cat "$work/live/$1" ;; seed) cat >/dev/null ;; esac
+	}
+	leases_hold
+	leases_resume
+	[ "$(ls "$work"/script.* | wc -l)" = 6 ]
+	for script in "$work"/script.*; do
+		grep -qF 'exec timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)" "' "$script"
+	done
+	sed -e "s|/var/run/convergent-leases.lock|$work/lock|g" -e "s|/var/db/dhcpd.leases|$work/seeded|g" \
+		-e "s|/etc/convergent/dhcpd.flags|$work/flags|g" -e "s|/var/db/convergent-seeded|$work/marker|g" \
+		-e 's/timeout -k 5 100 /timeout -k 1 2 /' "$work/script.fw1.seed" >"$work/seed.sh"
+	grep -q 'timeout -k 1 2 ' "$work/seed.sh"
+	touch "$work/flags" "$work/marker"
+	if head -c 20 "$state/leases/saved" | sh "$work/seed.sh"; then exit 1; fi
+	[ ! -e "$work/seeded" ]
+	sh "$work/seed.sh" <"$state/leases/saved"
+	cmp "$work/seeded" "$state/leases/saved"
+	# The lock held by another mutation: waited for until the bound ends the seed, and nothing is installed.
+	perl -MFcntl=:flock -e 'open(L, ">>", $ARGV[0]) or exit 1; flock(L, LOCK_EX) or exit 1; sleep 30' "$work/lock" &
+	holder=$!
+	n=0
+	until perl -MFcntl=:flock -e 'open(L, ">>", $ARGV[0]) or exit 1; exit(flock(L, LOCK_EX | LOCK_NB) ? 1 : 0)' "$work/lock"; do
+		n=$((n += 1)); [ "$n" -lt 100 ] || exit 1; sleep 0.1
+	done
+	rm "$work/seeded"
+	if sh "$work/seed.sh" <"$state/leases/saved"; then exit 1; fi
+	[ ! -e "$work/seeded" ]
+	kill "$holder" 2>/dev/null || :
+	wait "$holder" || :
+)
+# One node's failed resume must not leave its healthy peer's allocator off: every node is tried, the hold
+# stays until all resume, and the failed node is named for the heal's event.
+(
+	rsh() { case $1:$2 in fw1:*'rcctl enable dhcpd'*) return 1 ;; *'rcctl enable dhcpd'*) echo "resume $1" >>"$work/resumes" ;; esac; }
+	touch "$state/leases/held"
+	if leases_resume; then exit 1; fi
+	[ -e "$state/leases/held" ]
+	grep -qx 'resume fw2' "$work/resumes"
+	[ "${lease_failed:-}" = ' fw1' ]
+)
+rm -f "$state/leases/held" "$state/leases/quiesced"
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
 command -v healthy >/dev/null && command -v cleanup >/dev/null

@@ -586,23 +586,37 @@ for edit in '/^PasswordAuthentication no$/d' '/^KbdInteractiveAuthentication no$
     '1i PasswordAuthentication=yes' '1i passwordauthentication yes' \
     's/^KbdInteractiveAuthentication no$/  KbdInteractiveAuthentication = yes/' \
     '1i "PasswordAuthentication" yes' '1i "AuthenticationMethods" password' '1i ChallengeResponseAuthentication yes' \
+    '1i Pass"word"Authentication yes' '1i Authentication"Methods" password' '1i Ma"tch" all' \
     '$a Match User root' '$a Include /etc/ssh/sshd_config.d/*.conf' '$a "Include" /etc/ssh/sshd_config.d/*.conf'; do
     sed "$edit" "$wan_sshd" >"$work/sshd_config"
     if cmp -s "$wan_sshd" "$work/sshd_config"; then die "sshd_config fixture edit changed nothing: $edit"; fi
     if sh "$work/sshd-check" "$work/sshd_config"; then die "wan build accepts sshd_config after: $edit"; fi
 done
-# Nor may conf.d/sshd pass options (-o sets a keyword first) or another config file.
-{ echo 'die() { exit 1; }'; sed -n '/^if grep -Eq .* "\$target\/etc\/conf.d\/sshd"; then$/,/^fi$/p' "$repo/guests/wan/build"; } |
-    sed 's#"\$target/etc/conf.d/sshd"#"$1"#' >"$work/sshd-opts-check"
+# A comment, a blank line and a keyword with a digit still pass (control).
+for edit in '1i # PasswordAuthentication yes' '1s/^/\n/' '1i X11UseLocalhost yes'; do
+    sed "$edit" "$wan_sshd" >"$work/sshd_config"
+    sh "$work/sshd-check" "$work/sshd_config" || die "wan build refuses sshd_config after: $edit"
+done
+# Nor may conf.d/sshd pass options (-o sets a keyword first) or another config file, however the line is
+# spelled: only comments, blank lines and rc_ dependencies pass.
+{ echo 'die() { exit 1; }'; sed -n '/^if \[ ! -f "\$target\/etc\/conf.d\/sshd" \] || grep -Ev .* "\$target\/etc\/conf.d\/sshd"; then$/,/^fi$/p' "$repo/guests/wan/build"; } |
+    sed 's#"\$target/etc/conf.d/sshd"#"$1"#g' >"$work/sshd-opts-check"
 [ "$(wc -l <"$work/sshd-opts-check")" = 4 ] || die 'wan build conf.d/sshd check not found'
 check_script "$work/sshd-opts-check"
 wan_opts=$repo/guests/wan/rootfs/etc/conf.d/sshd
 sh "$work/sshd-opts-check" "$wan_opts" || die 'wan build refuses the shipped conf.d/sshd'
 for edit in '$a command_args="-o PasswordAuthentication=yes"' '$a SSHD_OPTS="-o Include=/etc/ssh/extra"' \
-    '$a cfgfile=/etc/ssh/sshd_config.other' '$a   SSHD_CONFDIR=/etc/ssh2'; do
+    '$a cfgfile=/etc/ssh/sshd_config.other' '$a   SSHD_CONFDIR=/etc/ssh2' \
+    '$a export command_args="-o PasswordAuthentication=yes"' '$a : ${command_args:=-o PasswordAuthentication=yes}' \
+    '$a SSHD_BINARY=/tmp/sshd' '$a . /etc/sshd.extra'; do
     sed "$edit" "$wan_opts" >"$work/conf.d-sshd"
     if sh "$work/sshd-opts-check" "$work/conf.d-sshd"; then die "wan build accepts conf.d/sshd after: $edit"; fi
 done
+for edit in '$a # command_args="-o PasswordAuthentication=yes"' '$s/$/\n/' '$a rc_use="net"'; do
+    sed "$edit" "$wan_opts" >"$work/conf.d-sshd"
+    sh "$work/sshd-opts-check" "$work/conf.d-sshd" || die "wan build refuses conf.d/sshd after: $edit"
+done
+if sh "$work/sshd-opts-check" "$work/no-such-conf.d-sshd"; then die 'wan build accepts a missing conf.d/sshd'; fi
 echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
 
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.
