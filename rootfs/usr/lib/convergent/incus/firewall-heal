@@ -133,6 +133,17 @@ firewall_heal() (
     attempts=$(wc -l <"$heal/attempts")
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
+    # A loaded but healthy node misses the 10 s probe: while an attempt is left, every node that did is asked
+    # again with the pre-kill bound, both at once (30 s in all), so a loaded MASTER beside a frozen peer still
+    # counts and the restart can come.
+    probe_fw1= probe_fw2=
+    if [ "$attempts" -lt 3 ]; then
+        [ "$fw1" != unhealthy ] || { heal_probe fw1 30 >"$heal/fw1.probe" & probe_fw1=$!; }
+        [ "$fw2" != unhealthy ] || { heal_probe fw2 30 >"$heal/fw2.probe" & probe_fw2=$!; }
+    fi
+    [ -z "$probe_fw1" ] || { wait "$probe_fw1" && read -r fw1 <"$heal/fw1.probe" || fw1=unhealthy; }
+    [ -z "$probe_fw2" ] || { wait "$probe_fw2" && read -r fw2 <"$heal/fw2.probe" || fw2=unhealthy; }
+    rm -f "$heal/fw1.probe" "$heal/fw2.probe"
     # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
     # As for one node, 180 s in a row first: a stop by hand is not undone within a minute.
     if [ "$fw1:$fw2" = unhealthy:unhealthy ] && [ "$attempts" -lt 3 ] && heal_pair_stopped; then

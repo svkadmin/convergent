@@ -737,7 +737,8 @@ The minute run of `check auto`: repairs first, then the baseline scan.
 
 - A firewall is restarted after 180 s of failed probes, and only while its peer is healthy and
   MASTER on every registered segment in two runs in a row. One missed minute does not restart the
-  count; two do. A failed probe of the peer does not restart it either.
+  count; two do. A probe that misses its 10 s is asked again with 30 s; a failed peer probe does not
+  restart the count.
 - The heal rechecks both firewalls right before it acts: a node that now answers is left alone.
 - A QEMU Incus can no longer read is killed by the pid in its pid file, after the command line is
   checked to name the instance, and then started. `wan` and an inhibited QEMU are ended by hand
