@@ -54,6 +54,45 @@ for order in "$work/moved $work/new" "$work/new $work/moved"; do
 	[ "$(grep -c '^lease 100.80.32.51 ' "$work/actual")" = 1 ]
 	grep -q '00:16:3e:00:00:03' "$work/actual"
 done
+# A node that pinged the client its peer had just bound abandons the address later than the ACK: the bound
+# record wins in either order. An abandon nothing contradicts is kept (control).
+cat >"$work/abandoned" <<'LEASES'
+lease 100.80.32.51 {
+  starts 1 2026/10/26 11:00:00 UTC;
+  ends 1 2026/10/26 13:00:00 UTC;
+  abandoned;
+}
+lease 100.80.32.53 {
+  starts 1 2026/10/26 11:00:00 UTC;
+  ends 1 2026/10/26 13:00:00 UTC;
+  abandoned;
+}
+LEASES
+for order in "$work/abandoned $work/new" "$work/new $work/abandoned"; do
+	# shellcheck disable=SC2086
+	awk -f "$lib/leases.awk" $order >"$work/actual"
+	[ "$(grep -c '^lease 100.80.32.51 ' "$work/actual")" = 1 ]
+	sed -n '/^lease 100.80.32.51 /,/^}/p' "$work/actual" >"$work/record"
+	if grep -q abandoned "$work/record"; then exit 1; fi
+	grep -q '00:16:3e:00:00:01' "$work/record"
+	sed -n '/^lease 100.80.32.53 /,/^}/p' "$work/actual" | grep -q abandoned
+done
+# One MAC keeps one address, its newest bound record; another MAC keeps its own (control).
+cat >"$work/twice" <<'LEASES'
+lease 100.80.32.52 {
+  starts 1 2026/10/26 11:00:00 UTC;
+  ends 1 2026/10/26 13:00:00 UTC;
+  hardware ethernet 00:16:3e:00:00:01;
+}
+LEASES
+for order in "$work/twice $work/new" "$work/new $work/twice"; do
+	# shellcheck disable=SC2086
+	awk -f "$lib/leases.awk" $order >"$work/actual"
+	[ "$(grep -c '00:16:3e:00:00:01' "$work/actual")" = 1 ]
+	grep -q '^lease 100.80.32.52 ' "$work/actual"
+	if grep -q '^lease 100.80.32.51 ' "$work/actual"; then exit 1; fi
+	grep -q '^lease 100.80.36.51 ' "$work/actual"
+done
 state=$work/state
 mkdir -p "$state" "$work/live"
 cp "$work/old" "$work/live/fw1"

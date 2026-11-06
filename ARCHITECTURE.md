@@ -653,6 +653,7 @@ before new work.
 | `browser.ready` | both browser roles passed on the new image | `sys guests update` replays the commit |
 | `browser.rename` | the legacy `web`/`admin` rename is in progress | `sys guests update` rolls it forward |
 | `leases/held` | work DHCP is quiesced on the firewalls | the checker, once both firewalls answer, or a `guests` run |
+| `leases/reconcile` | a firewall ran under a new QEMU; the pair's leases are merged once both answer | the checker: one merge, or three failed tries |
 | `dns.stale` | a firewall root was rebuilt | the next DNS restore, or the hourly `dns-push auto` |
 | `work-profiles.due` | a firewall update committed; work profiles not reconciled | `sys guests update` |
 
@@ -748,6 +749,12 @@ The minute run of `check auto`: repairs first, then the baseline scan.
 - A lease hold left by a run that could not reach a firewall does not inhibit the heal: once both
   firewalls answer their probe, work DHCP resumes and the hold is released. While it is set, the
   probe accepts a disabled dhcpd.
+- A firewall that comes back under a new QEMU (a restart by the heal or by hand, a crash, a host
+  reboot) may have abandoned an address its peer bound meanwhile, and dhcpd refuses every later sync
+  of it. The heal queues one lease reconcile (`leases/reconcile`): once both firewalls answer, and
+  under no journal or guests run, it holds both allocators, merges their leases (a bound record beats
+  an abandoned one; one MAC keeps its newest address) and writes the merge back, as a guest update
+  does. A failed try resumes at once; the third ends it.
 - The wired-uplink repair re-adds `wan`'s role after two runs without the allowed NIC, three times
   an hour at most, then reports a failure. `sys usb revoke` and enrolment remove the role once no
   USBGuard rule allows the NIC.

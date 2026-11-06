@@ -976,6 +976,8 @@ cv_time maintenance-fixtures
 sh -eu <<'HEAL' || bad $LINENO
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+# The reconcile's subshell rebinds work (fw-leases' scratch): mocks it reaches take the fixture's by this name.
+fixture=$work
 mkdir -p "$work/run" "$work/state/guests" "$work/proc"
 sed -e "s|/run/convergent|$work/run|g" -e "s|/var/lib/convergent|$work/state|g" \
     -e "s|/proc/|$work/proc/|g" -e "s|/run/incus|$work/incus|g" /usr/lib/convergent/incus/firewall-heal >"$work/heal"
@@ -992,7 +994,12 @@ kill() {
 }
 ssh() {
     if [ -n "${sample:-}" ]; then cat "$sample"; return; fi
-    case ${12:-} in *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$work/calls"; return ;; esac
+    case ${12:-} in
+    *'rcctl enable dhcpd'*) echo "resume ${11}" >>"$fixture/calls"; return ;;
+    # fw-leases' checkpoint and seed, on a leases file per node.
+    *'rcctl disable dhcpd'*) echo "hold ${11}" >>"$fixture/calls"; [ "${hold_fail:-0}" = 0 ] || return 1; cat "$fixture/leases.${11}"; return ;;
+    *'cat >/var/db/dhcpd.leases.new'*) echo "seed ${11}" >>"$fixture/calls"; cat >"$fixture/leases.${11}"; return ;;
+    esac
     case $7 in fw1) role=$test_peer ;; fw2) role=$test_target ;; *) return 1 ;; esac
     [ "$role" != down ] || return 1
     # dhcpd_off: nodes fw-leases disabled dhcpd on; the probe's own dhcpd line decides.
@@ -1341,6 +1348,9 @@ heal=$work/run/firewall-heal
 if heal_unhold fw2; then exit 1; fi
 [ -f "$work/held" ] && [ -f "$heal/fw2.hold" ]
 get_failed=0
+# The restart's new QEMU queued a lease reconcile (exercised below): out of this tick's way.
+[ -f "$work/state/guests/leases/reconcile" ]
+rm "$work/state/guests/leases/reconcile"
 : >"$work/calls"
 tick 1240
 grep -q 'config unset fw2' "$work/calls"
@@ -1368,6 +1378,52 @@ cmp "$work/calls" "$work/expected"
 [ ! -e "$work/state/guests/leases/held" ]
 grep -q 'work DHCP resumed' "$work/run/firewall-heal/event"
 dhcpd_off= test_target=down
+# A node that ran under another QEMU since the last run (a restart, a crash Incus restarted, a host reboot)
+# queues one lease reconcile, durably: once both nodes answer, and under no journal or guests lock, both
+# allocators are held, their leases merged and the merge written back, once.
+rm -rf "$work/run/firewall-heal"
+leases=$work/state/guests/leases
+mkdir -p "$work/proc/sys/kernel/random"
+echo feed0001 >"$work/proc/sys/kernel/random/boot_id"
+printf 'lease 100.80.32.51 {\n  starts 1 2026/10/26 08:00:00 UTC;\n  ends 1 2026/10/26 10:00:00 UTC;\n  hardware ethernet 00:16:3e:00:00:01;\n}\n' >"$work/leases.fw1"
+sed 's/32\.51/32.52/; s/00:01/00:02/' "$work/leases.fw1" >"$work/leases.fw2"
+: >"$work/calls"
+tick 1300
+[ -f "$leases/reconcile" ] && [ ! -s "$work/calls" ]
+grep -q 'fw2 runs under a new QEMU' "$work/run/firewall-heal/event"
+test_target=BACKUP
+touch "$work/state/guests/pending"; tick 1360; rm "$work/state/guests/pending"
+busy=1; tick 1420; busy=0
+[ -f "$leases/reconcile" ] && [ ! -s "$work/calls" ]
+tick 1480
+printf '%s\n' 'hold fw1' 'hold fw2' 'seed fw1' 'seed fw2' 'resume fw1' 'resume fw2' >"$work/expected"
+cmp "$work/calls" "$work/expected"
+for node in fw1 fw2; do grep -q '^lease 100.80.32.51 ' "$work/leases.$node"; grep -q '^lease 100.80.32.52 ' "$work/leases.$node"; done
+cmp "$work/leases.fw1" "$leases/saved"
+[ ! -f "$leases/reconcile" ] && [ ! -e "$leases/held" ]
+grep -q 'leases reconciled after a firewall restart' "$work/run/firewall-heal/event"
+if ls -d "$work/state/guests"/work.* >/dev/null 2>&1; then exit 1; fi
+: >"$work/calls"
+tick 1540
+[ ! -s "$work/calls" ]
+# A crash Incus restarted (new pid, same boot). A failed try resumes at once; the third ends the reconcile.
+qemu 4444 fw2 "$work/incus/fw2/qemu.pid"
+hold_fail=1
+for try in 1 2 3; do
+    : >"$work/calls"
+    tick "$((1540 + try * 60))"
+    printf '%s\n' 'hold fw1' 'resume fw1' 'resume fw2' >"$work/expected"
+    cmp "$work/calls" "$work/expected"
+    grep -q "lease reconcile failed ($try/3)" "$work/run/firewall-heal/event"
+    [ "$(cat "$leases/reconcile")" = "$try" ] && [ ! -e "$leases/held" ]
+done
+: >"$work/calls"
+tick 1780
+[ ! -s "$work/calls" ] && [ ! -f "$leases/reconcile" ]
+grep -q 'reconcile given up after 3 failed tries' "$work/run/firewall-heal/event"
+tick 1840
+[ ! -s "$work/calls" ]
+hold_fail=0 test_target=down
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
 rm -rf "$work/run/firewall-heal"
