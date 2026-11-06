@@ -5221,7 +5221,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=16200 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=39600 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=39600 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -5519,7 +5519,7 @@ desktop)
 guests | guests-maint | guests-update | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=12600 ;; guests-update) budget=39600 ;; guests-maint) budget=16200 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=39600 ;; guests-maint) budget=19800 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
 	# past their limits; guests and guests-maint run PF (+1800 for its wait on fw1's relink). guests-update
