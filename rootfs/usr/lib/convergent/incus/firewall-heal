@@ -130,6 +130,9 @@ heal_resume() (
     if leases_resume; then
         rm -f "$heal/resume.failed.fw1" "$heal/resume.failed.fw2" "$heal/resume.stuck"
     else
+        # Failed before its node loop (the quiesced marker not cleared): both nodes count, or the counts
+        # reset and the alert never came.
+        [ -n "${lease_failed:-}" ] || lease_failed='fw1 fw2'
         resume_failures=
         for resume_node in fw1 fw2; do
             case " ${lease_failed:-} " in *" $resume_node "*) ;; *) rm -f "$heal/resume.failed.$resume_node"; continue ;; esac
@@ -166,26 +169,36 @@ heal_booted() {
 # restart anywhere (investigate-dhcp1): an abandoned declaration (address and start) new to a node's probe
 # queues the reconcile too, once an hour at most, unless one is queued. The set is stored as last seen (a
 # count missed a new abandon behind dhcpd's compaction, and rose on the merge seeded from the peer).
-heal_abandoned() {
-    [ -f "$heal/abandoned.$1" ] || return 0
+heal_abandoned() (
+    # Under the guests lock: a write-back (a guest run, the reconcile) stores the sets it wrote, and a set
+    # read before it must not overwrite them. Skipped, the rise is seen again next run.
+    exec 8>/run/convergent/guests.lock
+    flock -n 8 || exit 0
+    [ -f "$heal/abandoned.$1" ] || exit 0
     seen=/var/lib/convergent/guests/leases/abandoned.$1
+    # An address the last write-back left abandoned (the merge keeps an abandon nothing contradicts) is
+    # abandoned anew, with a later start, each time dhcpd reclaims and offers it and the device on it answers
+    # the ping: no rise for 6 h after that write-back, which another merge would repeat for a pause of DHCP.
+    left=/var/lib/convergent/guests/leases/abandoned.seeded
+    [ -n "$(find "$left" -mmin -360 2>/dev/null)" ] || left=/dev/null
     new=0
     # A stored set of another shape (a count, before 0.1.7) is no baseline; the same set needs no write.
     if [ -f "$seen" ] && ! grep -qvE '^abandoned [0-9.]+ [0-9/:]+$' "$seen"; then
-        if cmp -s "$seen" "$heal/abandoned.$1"; then return 0; fi
-        new=$(awk '{if (FILENAME == ARGV[1]) seen[$0] = 1; else if (!($0 in seen)) n++} END {print n + 0}' "$seen" "$heal/abandoned.$1") || return 1
+        if cmp -s "$seen" "$heal/abandoned.$1"; then exit 0; fi
+        new=$(awk 'FILENAME == ARGV[1] {seen[$0] = 1; next} FILENAME == ARGV[2] {left[$2] = 1; next}
+            !($0 in seen) && !($2 in left) {n++} END {print n + 0}' "$seen" "$left" "$heal/abandoned.$1") || exit 1
     fi
-    mkdir -p /var/lib/convergent/guests/leases || return 1
+    mkdir -p /var/lib/convergent/guests/leases || exit 1
     if [ "$new" -gt 0 ] && [ ! -f /var/lib/convergent/guests/leases/reconcile ]; then
         # Within the hour the rise waits, unstored: seen again next run.
         queued=$(heal_count "$heal/abandoned.queued")
-        [ "$queued" = 0 ] || [ "$((now - queued))" -ge 3600 ] || return 0
-        echo 0 >/var/lib/convergent/guests/leases/reconcile && sync || return 1
-        echo "$now" >"$heal/abandoned.queued" || return 1
+        [ "$queued" = 0 ] || [ "$((now - queued))" -ge 3600 ] || exit 0
+        echo 0 >/var/lib/convergent/guests/leases/reconcile && sync || exit 1
+        echo "$now" >"$heal/abandoned.queued" || exit 1
         heal_note "$1 abandoned $new more work DHCP address(es); leases reconcile once both nodes answer"
     fi
-    cp "$heal/abandoned.$1" "$seen.new" && mv "$seen.new" "$seen" && sync || return 1
-}
+    cp "$heal/abandoned.$1" "$seen.new" && mv "$seen.new" "$seen" && sync || exit 1
+)
 # The queued reconcile, once both nodes answer: as a guest update, both allocators are held, their leases
 # checkpointed and merged, and the merge written back, under the guests lock and never under a journal.
 # A failed try resumes at once and counts; the third ends it. A hold a resume could not clear is heal_resume's.
@@ -248,6 +261,19 @@ firewall_heal() (
     heal_booted || heal_note 'QEMU record not written; retried next run'
     fw1=$(heal_probe fw1) || fw1=unhealthy
     fw2=$(heal_probe fw2) || fw2=unhealthy
+    # A loaded but healthy node misses the 10 s probe (at load 17 the peer took the full 10 s): while an
+    # attempt is left, every node that did is asked again with the pre-kill bound, both at once (30 s in
+    # all). Asked one after the other from the loop, two such waits behind a frozen peer's Incus stalls
+    # overran the minute, and the 60 s cap that followed skipped the one probe that mattered: the loaded
+    # peer's, never seen as MASTER once the stalls and the frozen node's own re-probe had used the budget.
+    probe_fw1= probe_fw2=
+    if [ "$attempts" -lt 3 ]; then
+        [ "$fw1" != unhealthy ] || { heal_probe fw1 30 >"$heal/fw1.probe" & probe_fw1=$!; }
+        [ "$fw2" != unhealthy ] || { heal_probe fw2 30 >"$heal/fw2.probe" & probe_fw2=$!; }
+    fi
+    [ -z "$probe_fw1" ] || { wait "$probe_fw1" && read -r fw1 <"$heal/fw1.probe" || fw1=unhealthy; }
+    [ -z "$probe_fw2" ] || { wait "$probe_fw2" && read -r fw2 <"$heal/fw2.probe" || fw2=unhealthy; }
+    rm -f "$heal/fw1.probe" "$heal/fw2.probe"
     for node in fw1 fw2; do heal_abandoned "$node" || heal_note "$node abandoned count not written; retried next run"; done
     # Incus leaves a VM stopped after ten crashes a minute: a pair with neither running has no peer to wait for.
     # As for one node, 180 s in a row first: a stop by hand is not undone within a minute.
@@ -323,13 +349,6 @@ firewall_heal() (
         done
         # Two missed minutes or a clock discontinuity break the window; one is a run that held the heal lock.
         if [ "$now" -lt "$previous" ] || [ "$((now - previous))" -gt 150 ]; then first=$now peer_since=0; fi
-        # A loaded but healthy peer misses the 10 s probe: asked again with the pre-kill bound, only when the
-        # answer can matter (an attempt left, and MASTER needed from the run before the window's 180 s) and
-        # while the run has used under 60 s (two such waits behind a frozen peer's Incus stalls overran the
-        # minute: the next heal came at +180 s, past the window's 150 s gap).
-        read -r uptime rest </proc/uptime
-        [ "$peer_health" != unhealthy ] || [ "$attempts" -ge 3 ] || [ "$((now - first))" -lt 120 ] ||
-            [ "$((${uptime%.*} - now))" -ge 60 ] || peer_health=$(heal_probe "$peer" 30) || peer_health=unhealthy
         # Since when the peer answers MASTER (0: not now): acting needs it in two runs in a row, as before the
         # window was the node's own, so a stale window never acts on one answer (a host bridge just back).
         if [ "$peer_health" != master ]; then peer_since=0; elif [ "${peer_since:-0}" = 0 ]; then peer_since=$now; fi

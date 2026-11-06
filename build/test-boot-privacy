@@ -620,6 +620,34 @@ for edit in '$a # command_args="-o PasswordAuthentication=yes"' '$s/$/\n/' '$a r
     sh "$work/sshd-opts-check" "$work/conf.d-sshd" || die "wan build refuses conf.d/sshd after: $edit"
 done
 if sh "$work/sshd-opts-check" "$work/no-such-conf.d-sshd"; then die 'wan build accepts a missing conf.d/sshd'; fi
+# OpenRC reads conf.d/sshd.<runlevel> instead of conf.d/sshd, then rc.conf and rc.conf.d/*.conf: none of those
+# may exist, and rc.conf gets the same allowlist (openrc's own respawn_ settings pass).
+{ echo 'die() { exit 1; }'; sed -n '/^for extra in "\$target"\/etc\/conf.d\/sshd\.\* "\$target\/etc\/rc.conf.d"; do$/,/^fi$/p' "$repo/guests/wan/build"; } |
+    sed 's/\$target/$1/g' >"$work/sshd-extra-check"
+[ "$(wc -l <"$work/sshd-extra-check")" = 7 ] || die 'wan build sshd extra config check not found'
+check_script "$work/sshd-extra-check"
+wanroot=$work/wan-root
+mkdir -p "$wanroot/etc/conf.d"
+printf '%s\n' '# Global OpenRC configuration settings' '' 'rc_tty_number=12' 'respawn_delay=2' 'respawn_max=5' 'respawn_period=1800' '#rc_parallel="NO"' >"$wanroot/etc/rc.conf"
+sh "$work/sshd-extra-check" "$wanroot" || die 'wan build refuses rc.conf as openrc ships it'
+for extra in conf.d/sshd.default conf.d/sshd.boot rc.conf.d; do
+    case $extra in rc.conf.d) mkdir "$wanroot/etc/$extra" ;; *) : >"$wanroot/etc/$extra" ;; esac
+    if sh "$work/sshd-extra-check" "$wanroot"; then die "wan build accepts $extra"; fi
+    rm -r "${wanroot:?}/etc/$extra"
+done
+cp "$wanroot/etc/rc.conf" "$work/rc.conf"
+for edit in '$a command_args="-o PasswordAuthentication=yes"' '$a SSHD_OPTS="-o Include=/etc/ssh/extra"' \
+    '$a export command_args="-o PasswordAuthentication=yes"' '$a . /etc/sshd.extra' \
+    '$a rc_need="net"; command_args="-o PasswordAuthentication=yes"' '$a respawn_max=5 command_args=x' '$a rc_need="$(sshd -o X=y)"'; do
+    sed "$edit" "$work/rc.conf" >"$wanroot/etc/rc.conf"
+    if sh "$work/sshd-extra-check" "$wanroot"; then die "wan build accepts rc.conf after: $edit"; fi
+done
+for edit in '$a # command_args="-o PasswordAuthentication=yes"' '$a rc_parallel="NO"' '$a   rc_cgroup_mode=unified  '; do
+    sed "$edit" "$work/rc.conf" >"$wanroot/etc/rc.conf"
+    sh "$work/sshd-extra-check" "$wanroot" || die "wan build refuses rc.conf after: $edit"
+done
+rm "$wanroot/etc/rc.conf"
+if sh "$work/sshd-extra-check" "$wanroot"; then die 'wan build accepts a missing rc.conf'; fi
 echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
 
 # Real SHA-512 hashing and file replacement; tty and ownership operations are mocked.

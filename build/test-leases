@@ -325,6 +325,13 @@ rm -rf "$state/leases/quiesced" "$state/leases/held"
 	printf '%s\n' 'abandoned 100.80.32.51 2026/10/26/11:00:00' 'abandoned 100.80.32.53 2026/10/26/11:00:00' >"$work/expected-abandoned"
 	cmp "$state/leases/abandoned.fw1" "$work/expected-abandoned"
 	cmp "$state/leases/abandoned.fw2" "$work/expected-abandoned"
+	# The write-back's own set too (the heal's 6 h backoff per address). The sets are hints: a store the disk
+	# refuses after both nodes hold the merge fails no hold.
+	cmp "$state/leases/abandoned.seeded" "$work/expected-abandoned"
+	rm -f "$state/leases/quiesced" "$state/leases/held" "$state/leases/abandoned.seeded"
+	cp() { case $2 in *abandoned.*) return 1 ;; esac; command cp "$@"; }
+	leases_hold
+	[ -e "$state/leases/quiesced" ] && [ ! -e "$state/leases/abandoned.seeded" ] || exit 1
 )
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
