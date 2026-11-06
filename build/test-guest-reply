@@ -253,6 +253,8 @@ sed -n '/^heal_probe() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall
     sed -e "s|/usr/lib/convergent/incus/carp.awk|$repo/rootfs/usr/lib/convergent/incus/carp.awk|g" \
         -e "s|/etc/convergent/segments|$scratch/registry/etc/convergent/segments|g" >"$scratch/probe"
 [ -s "$scratch/probe" ]; sh -n "$scratch/probe"; . "$scratch/probe"
+# The probe lists the node's abandoned leases with fw-leases' awk.
+. "$repo/rootfs/usr/lib/convergent/incus/fw-leases"
 [ "$(heal_probe fw1)" = master ]
 
 for module in 10-wifi 14-firewall; do

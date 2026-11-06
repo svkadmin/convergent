@@ -11,6 +11,9 @@ lease_replaced() {
 # after it. The lock stays in perl, so a daemon started under it does not inherit it. The body is a ksh
 # double-quoted string: no quote, and \$ for what the locked sh must expand.
 lease_guard='exec timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)"'
+# A leases file's abandoned declarations, one line each (address and start): the heal's probe runs it on the
+# firewall (no quote in it: the remote ksh gets it single-quoted) and the seed runs it over what it wrote.
+lease_abandoned='/^lease /{a=$2; s=""} /^[ \t]*starts /{sub(/;$/, "", $4); s=$3 "/" $4} /^[ \t]*abandoned;/{print "abandoned", a, s}'
 leases_hold() {
     [ ! -f "$state/leases/quiesced" ] || return 0
     mkdir -p "$state/leases" || return
@@ -52,7 +55,8 @@ fi' >"$work/leases.$lease_node"; then
     for lease_node in fw1 fw2; do
         # Only a node held above: one Incus read late gets no merge that lacks its own leases while it allocates.
         case " $lease_held " in *" $lease_node "*) ;; *) continue ;; esac
-        running "$lease_node" || continue
+        # A held node Incus cannot read now keeps its own leases: no reconcile is done with half its write-back.
+        running "$lease_node" || { case " ${lease_required:-} " in *" $lease_node "*) return 1 ;; esac; continue; }
         if ! probe_limit=120 rsh "$lease_node" 'set -e
 if test -f /etc/convergent/dhcpd.flags && test -f /var/db/convergent-seeded; then
     '"$lease_guard"' "umask 077
@@ -63,6 +67,12 @@ sync"
 fi' <"$state/leases/saved"; then
             lease_replaced "$lease_node" || return 1
         fi
+    done
+    # What the seed wrote, as the probe lists it, stored as each node's last seen set (heal_abandoned): a
+    # record the merge carried over from the peer is no rise there.
+    awk "$lease_abandoned" "$state/leases/saved" | sort -u | head -n 1000 >"$work/leases.abandoned" || return
+    for lease_node in fw1 fw2; do
+        cp "$work/leases.abandoned" "$state/leases/abandoned.$lease_node" || return
     done
     touch "$state/leases/quiesced" && sync
 }

@@ -300,6 +300,32 @@ mv "$work/saved.keep" "$state/leases/saved"
 	[ "${lease_failed:-}" = ' fw1' ]
 )
 rm -f "$state/leases/held" "$state/leases/quiesced"
+# The heal's reconcile (lease_required) is no success with a required node Incus read at the checkpoint but
+# not at the seed: that node keeps its own leases. A guest run without the requirement goes on (control).
+(
+	reads=0
+	running() { [ -f "$work/live/$1" ] || return 1; [ "$1" != fw2 ] || [ "$((reads += 1))" -lt 2 ]; }
+	if (lease_required='fw1 fw2'; leases_hold); then exit 1; fi
+	[ ! -e "$state/leases/quiesced" ]
+	reads=0
+	leases_hold
+	[ -e "$state/leases/quiesced" ]
+)
+rm -rf "$state/leases/quiesced" "$state/leases/held"
+# The seed stores the abandoned declarations it wrote (address and start, the probe's format) as each node's
+# last seen set: the heal's abandon trigger sees no rise in its own write-back.
+(
+	state=$work/state2
+	mkdir -p "$state" "$work/live2"
+	running() { [ -f "$work/live2/$1" ]; }
+	rsh() { case $2 in *'cat /var/db/dhcpd.leases'*) cat "$work/live2/$1" ;; *'cat >/var/db/dhcpd.leases.new'*) cat >"$work/live2/$1" ;; esac; }
+	cp "$work/old" "$work/live2/fw1"
+	cp "$work/abandoned" "$work/live2/fw2"
+	leases_hold
+	printf '%s\n' 'abandoned 100.80.32.51 2026/10/26/11:00:00' 'abandoned 100.80.32.53 2026/10/26/11:00:00' >"$work/expected-abandoned"
+	cmp "$state/leases/abandoned.fw1" "$work/expected-abandoned"
+	cmp "$state/leases/abandoned.fw2" "$work/expected-abandoned"
+)
 # Replay must resume only the held peer before health, then checkpoint again before rebuilding.
 eval "$(sed -n '/^rollback() {/,/^}/p; /^healthy() {/,/^}/p; /^reachable() {/p; /^cleanup() {/,/^}/p' "$here/../tools/guests")"
 command -v healthy >/dev/null && command -v cleanup >/dev/null
@@ -315,7 +341,8 @@ seed_start() { :; }
 fw_release() { :; }
 # A frozen target: Incus cannot force it off, so rollback ends its QEMU by the verified pid file before rebuilding.
 eval "$(sed -n '/^force_stop() {/,/^}/p' "$here/../tools/guests")"
-eval "$(sed -e "s|/usr/lib/convergent/guest-reply.sh|$here/../rootfs/usr/lib/convergent/guest-reply.sh|" -e "s|/run/incus|$work/incus|g" -e "s|/proc/|$work/proc/|g" "$lib/firewall-heal")"
+eval "$(sed -e "s|/usr/lib/convergent/guest-reply.sh|$here/../rootfs/usr/lib/convergent/guest-reply.sh|" -e "s|/usr/lib/convergent/incus/fw-leases|$lib/fw-leases|" \
+    -e "s|/run/incus|$work/incus|g" -e "s|/proc/|$work/proc/|g" "$lib/firewall-heal")"
 mkdir -p "$work/incus/fw1" "$work/proc/4242"
 echo 4242 >"$work/incus/fw1/qemu.pid"
 printf '%s\0' /usr/bin/qemu-system-x86_64 -S -name fw1 -uuid x -pidfile "$work/incus/fw1/qemu.pid" >"$work/proc/4242/cmdline"
