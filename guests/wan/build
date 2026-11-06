@@ -139,6 +139,14 @@ awk 'BEGIN {want["passwordauthentication"] = "no"; want["kbdinteractiveauthentic
 if [ ! -f "$target/etc/conf.d/sshd" ] || grep -Ev '^[[:space:]]*(#|$|rc_[a-z_]+="[A-Za-z0-9 _-]*"[[:space:]]*$)' "$target/etc/conf.d/sshd"; then
 	die 'conf.d/sshd must hold only comments and rc_ lines: an option or another config would set a keyword first'
 fi
+# OpenRC reads conf.d/sshd.<runlevel> instead of conf.d/sshd when it exists, then rc.conf and rc.conf.d/*.conf:
+# none of those may exist, and rc.conf (openrc's, with its respawn_ settings) gets the same allowlist.
+for extra in "$target"/etc/conf.d/sshd.* "$target/etc/rc.conf.d"; do
+	[ ! -e "$extra" ] || die "${extra#"$target"} is read for sshd beside conf.d/sshd: remove it"
+done
+if [ ! -f "$target/etc/rc.conf" ] || grep -Ev '^[[:space:]]*(#|$|(rc|respawn)_[a-z_]+=("[A-Za-z0-9 _-]*"|[A-Za-z0-9_-]+)[[:space:]]*$)' "$target/etc/rc.conf"; then
+	die 'rc.conf must hold only comments and rc_ or respawn_ lines: an option or another config would set a keyword first'
+fi
 # The CA comes from the seed at first boot; a stand-in for the check only.
 touch "$target/etc/syslog-ng/svc-ca.pem"
 inchroot syslog-ng --syntax-only -f /etc/syslog-ng/syslog-ng.conf || die "syslog-ng.conf does not parse"

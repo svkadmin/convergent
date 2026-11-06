@@ -69,11 +69,14 @@ fi' <"$state/leases/saved"; then
         fi
     done
     # What the seed wrote, as the probe lists it, stored as each node's last seen set (heal_abandoned): a
-    # record the merge carried over from the peer is no rise there.
-    awk "$lease_abandoned" "$state/leases/saved" | sort -u | head -n 1000 >"$work/leases.abandoned" || return
-    for lease_node in fw1 fw2; do
-        cp "$work/leases.abandoned" "$state/leases/abandoned.$lease_node" || return
-    done
+    # record the merge carried over from the peer is no rise there, nor is one of these addresses abandoned
+    # anew within 6 h (seeded). Hints only, under the caller's guests lock: both nodes already hold the
+    # merge, so a store a full disk refuses fails no hold.
+    if awk "$lease_abandoned" "$state/leases/saved" | sort -u | head -n 1000 >"$work/leases.abandoned"; then
+        for lease_node in fw1 fw2 seeded; do
+            cp "$work/leases.abandoned" "$state/leases/abandoned.$lease_node" || :
+        done
+    fi
     touch "$state/leases/quiesced" && sync
 }
 leases_resume() {

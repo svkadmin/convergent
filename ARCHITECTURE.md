@@ -755,7 +755,8 @@ The minute run of `check auto`: repairs first, then the baseline scan.
 - A firewall that comes back under a new QEMU (a restart by the heal or by hand, a crash, a host
   reboot) may have abandoned an address its peer bound meanwhile, and dhcpd refuses every later sync
   of it; so may a running one whose client answered its pre-offer ping (an abandoned record new to
-  it, read with the probe; once an hour at most). The heal queues one lease reconcile (`leases/reconcile`):
+  it, read with the probe; once an hour at most, and an address the last merge already left abandoned
+  counts again only 6 hours after it). The heal queues one lease reconcile (`leases/reconcile`):
   once both firewalls answer, and under no journal or guests run, it holds both allocators, merges
   their leases (each file's last declaration per address; a current binding beats an abandoned one;
   one MAC keeps its current, else its newest, address per VLAN) and writes the merge back, as a guest
