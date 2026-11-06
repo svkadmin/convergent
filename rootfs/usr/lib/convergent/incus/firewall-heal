@@ -128,6 +128,9 @@ heal_resume() (
     # Failures in a row, per node, for the checker's alert at five (resume.stuck makes its scan due); the
     # resume is retried every run regardless, and a node's restart or a hold gone resets its count.
     if leases_resume; then
+        # A node not RUNNING per Incus (a stalled read) keeps the hold and the counts: reset, they never
+        # reached five while a failure alternated with it.
+        [ ! -f "$state/leases/held" ] || exit 1
         rm -f "$heal/resume.failed.fw1" "$heal/resume.failed.fw2" "$heal/resume.stuck"
     else
         # Failed before its node loop (the quiesced marker not cleared): both nodes count, or the counts
@@ -143,7 +146,6 @@ heal_resume() (
         done
         heal_note "work DHCP resume failed on${resume_failures#,}; lease hold retained"; exit 1
     fi
-    [ ! -f "$state/leases/held" ] || exit 1
     heal_note "work DHCP resumed; lease hold released"
 )
 # A node that ran under another QEMU since the last run (a restart by the heal or by hand, a crash Incus

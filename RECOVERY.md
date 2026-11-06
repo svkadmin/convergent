@@ -798,9 +798,9 @@ Symptom: a browser window is frozen and closing it from the desktop does nothing
    ```sh
    sys browser status
    ```
-2. Stop it (`tmp` stops every temporary browser, the portal one too):
+2. Stop it (`tmp` stops every temporary browser but `tmp-portal`, which is `portal`):
    ```sh
-   sys browser close <role>    # def, tmp or int
+   sys browser close <role>    # def, tmp, int or portal
    ```
 3. Open it again as usual.
 

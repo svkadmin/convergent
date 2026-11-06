@@ -54,29 +54,32 @@ for id in openssh:10.6p2 openssh:10.6 openbsd:7.9:001_xserver openbsd:7.9:002_sm
 	alpine:http://alpinelinux.org/posts/2026-11-05-openssh-password-authentication-bypass.html \
 	alpine:http://alpinelinux.org/posts/alpine-3.24.4-released.html \
 	oss-security:2026/11/02/2 oss-security:2026/11/02/3 oss-security:2026/11/02/5 oss-security:2026/11/02/6 \
+	oss-security:2026/10/31/1 oss-security:2026/10/31/2 \
 	'scan:fw1:OpenBSD 7.9; missing fix 044_unbound; OPENBSD-7.9-044_unbound' \
 	'scan:wan:openssh-server installed 10.2_p1-r0; fixed 10.2_p1-r1; CVE-2099-0001' \
+	'scan:vpn:wireguard-tools installed 1.0.20250521-r0; fixed 1.0.20250521-r1; CVE-2099-0002' \
 	'scan:host:Portage snapshot 20261016, N days old (limit 30); refresh pin'; do
 	has "$id" || die "missing $id"
 done
-[ "$(lines)" = 14 ] || die "first run queued $(lines) items, expected 14"
+[ "$(lines)" = 17 ] || die "first run queued $(lines) items, expected 17"
 awk -F '\t' '$1 != "2026-11-05T12:00:00Z" || $2 == "" {exit 1}' "$queue" || die 'bad time or source column'
 awk -F '\t' '$3 == "openbsd:7.9:001_xserver" && $4 == "001: SECURITY FIX: June 2, 2026 All architectures Multiple vulnerabilities in the X server." &&
 	$5 == "https://www.openbsd.org/errata79.html#p001_xserver" {found = 1} END {exit !found}' "$queue" || die 'erratum title or URL'
 awk -F '\t' '$3 ~ /alpine-3.24.4/ && $5 != "" {exit 1}' "$queue" || die 'plain HTTP URL queued'
 if has chrome:1002 || has chrome:1003; then die 'Chrome entry outside stable desktop queued'; fi
 grep -q 'chrome: 1 of 3 items, 1 new' "$scratch/out" || die 'missing Chrome count'
-grep -q 'advisory-watch: 14 new items in' "$scratch/out" || die 'missing summary'
+grep -q 'advisory-watch: 17 new items in' "$scratch/out" || die 'missing summary'
 run 0
-[ "$(lines)" = 14 ] || die 'second run repeated items'
+[ "$(lines)" = 17 ] || die 'second run repeated items'
 grep -q 'advisory-watch: nothing new' "$scratch/out" || die 'missing nothing-new summary'
 # A day older snapshot is the same item.
 run 0 WATCH_NOW="$day2" FAKE_DAYS=36
 echo 'test-advisory-watch: new items and no repeats passed'
 
-# Keywords: whole words only ("unbounded" is not unbound).
-if has oss-security:2026/11/02/1 || has oss-security:2026/11/02/4; then die 'unmatched subject queued'; fi
-grep -q 'oss-security: 4 of 6 items' "$scratch/out" || die 'missing oss-security count'
+# Keywords: whole words only ("unbounded" is not unbound); last month's index is read too (a post of its last
+# day), and the wan guest's packages and "Linux:" kernel subjects match.
+if has oss-security:2026/11/02/1 || has oss-security:2026/11/02/4 || has oss-security:2026/10/31/3; then die 'unmatched subject queued'; fi
+grep -q 'oss-security: 6 of 9 items' "$scratch/out" || die 'missing oss-security count'
 echo 'test-advisory-watch: keyword filter passed'
 
 # Control bytes, tabs and length.
@@ -104,10 +107,10 @@ run 0 WATCH_SKIP_SCAN=1
 rm "$feeds/alpine"
 run 1 WATCH_SKIP_SCAN=1
 has feed-failure:alpine:2026-11-05 || die 'missing fetch failure item'
-[ "$(lines)" = 15 ] || die 'fetch failure queued more than one item'
+[ "$(lines)" = 18 ] || die 'fetch failure queued more than one item'
 grep -q '^2026-11-05T12:00:00Z status=1 new=1 failed=alpine$' "$state/last" || die "last: $(cat "$state/last")"
 run 0 WATCH_SKIP_SCAN=1
-[ "$(lines)" = 15 ] || die 'failure repeated the same day'
+[ "$(lines)" = 18 ] || die 'failure repeated the same day'
 grep -q 'alpine: FAILED (no fixture alpine); already queued today' "$scratch/out" || die 'failure hidden on repeat'
 run 1 WATCH_SKIP_SCAN=1 WATCH_NOW="$day2"
 has feed-failure:alpine:2026-11-06 || die 'failure not repeated the next day'
@@ -137,7 +140,7 @@ state=$scratch/baseline queue=$scratch/baseline/queue
 mkdir -m 700 "$state"
 for feed in openssh openbsd chrome alpine; do cp "$here/fixtures/advisory-watch/$feed" "$feeds/$feed"; done
 run 1 WATCH_BASELINE=1
-[ "$(lines)" = 3 ] || { cut -f 2,3 "$queue" >&2; die "baseline queued $(lines) items, expected the 3 scan items"; }
+[ "$(lines)" = 4 ] || { cut -f 2,3 "$queue" >&2; die "baseline queued $(lines) items, expected the 4 scan items"; }
 awk -F '\t' '$2 != "scan" {exit 1}' "$queue" || die 'baseline queued feed history'
 grep -qx 'openssh:10.6p2' "$state/seen" || die 'baseline did not mark the feeds seen'
 run 0

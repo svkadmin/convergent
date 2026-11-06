@@ -445,7 +445,7 @@ root, scans like the [weekly scan](#weekly-scan) and then reads:
 
 - OpenSSH release notes and OpenBSD errata for the shipped release;
 - Chrome stable desktop updates and Alpine news;
-- this month's oss-security subjects that match `build/advisory-watch.keywords`.
+- this and last month's oss-security subjects that match `build/advisory-watch.keywords`.
 
 It appends each new item to `/var/lib/convergent/builder/advisory-watch/queue` as one TSV line:
 time, source, ID, title and URL. A source that fails or yields nothing queues

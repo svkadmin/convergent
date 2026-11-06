@@ -16,8 +16,8 @@ PermitEmptyPasswords no
 MaxAuthTries 3
 LoginGraceTime 20
 MaxStartups 4
-# Only the host may log in: a penalty could only lock it out under load.
-PerSourcePenalties no
+# Only the host may log in, and a penalty could lock it out under load: exempt it alone.
+PerSourcePenaltyExemptList @NET@.1.10
 ClientAliveInterval 30
 ClientAliveCountMax 3
 

@@ -8,12 +8,13 @@ firewalls:
 Alpine guests:
   UNKNOWN: svc victoria-logs 1.52.1-r0 (edge/testing): no advisory coverage
   EXCEPTED: svc openssl CVE-2099-0009: Unused affected feature.
-  ACTION: rebuild wan
+  ACTION: rebuild wan, vpn
   wan: openssh-server installed 10.2_p1-r0; fixed 10.2_p1-r1; CVE-2099-0001
+  vpn: wireguard-tools installed 1.0.20250521-r0; fixed 1.0.20250521-r1; CVE-2099-0002
 kernel:
   ok
 pins:
   SNAPSHOT_DATE=20261016 (35 days old)
   ACTION: rebuild host
   host: Portage snapshot 20261016, 35 days old (limit 30); refresh pin
-advisories: rebuild fw1, wan, host
+advisories: rebuild fw1, wan, vpn, host

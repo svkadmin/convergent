@@ -108,14 +108,16 @@ fi
 # A hung session: stop its guest under the launcher's locks; the launcher's cleanup follows its exit.
 if [ "${1:-}" = --close ] && [ "$(id -u)" = 0 ]; then
     case $#:${2:-} in
-        2:def|2:int) pattern="^$2\$" ;;
-        2:tmp) pattern='^tmp-([2-9][0-9]|portal)$' ;;
-        *) die 'usage: browser --close def|tmp|int' ;;
+        2:def|2:int) pattern="^$2\$" profile=browser-$2 ;;
+        # Its own choice: stopped with the others, a captive-portal login was cut mid-way.
+        2:tmp) pattern='^tmp-[2-9][0-9]$' profile=browser-tmp ;;
+        2:portal) pattern='^tmp-portal$' profile=browser-tmp ;;
+        *) die 'usage: browser --close def|tmp|int|portal' ;;
     esac
     browser_locks
     snapshot=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-) ||
         die 'cannot list the browsers'
-    running=$(printf '%s\n' "$snapshot" | jq -r --arg p "$pattern" --arg r "browser-$2" '.[] | select((.name | test($p)) and
+    running=$(printf '%s\n' "$snapshot" | jq -r --arg p "$pattern" --arg r "$profile" '.[] | select((.name | test($p)) and
         .type == "container" and .profiles == ["browser-base", $r] and .status != "Stopped") | .name') || die 'cannot list the browsers'
     [ -n "$running" ] || { echo "browser: no $2 browser is running"; exit 0; }
     for stale in $running; do

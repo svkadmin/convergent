@@ -260,7 +260,7 @@ status and commands on the right. The dashboard refreshes on entry; narrow panes
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,sk(qwerty),ru`), `next` |
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to the clipboard) |
-| `browser` (`br`) | `status`, `def`, `tmp`, `int`, `incus`, `close def\|tmp\|int` (stops a frozen one) |
+| `browser` (`br`) | `status`, `def`, `tmp`, `int`, `incus`, `close def\|tmp\|int\|portal` (stops a frozen one) |
 | `remote` | `open`, `status`, `close` |
 | `security` (`sec`) | `status`, `alerts` (`sys alerts`), `events`, `check`, `report`, `password` |
 | `update` (`up`) | `status`, `check`, `install` *, `usb [MOUNTPOINT\|DEVICE]` * |
