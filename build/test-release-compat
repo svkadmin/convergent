@@ -218,7 +218,8 @@ for mode in check write; do
     (booted=42 latest=44 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ -z "$sync" ])
 done
 echo 'test-release-compat: bounded USB copies, online resumption and older boot fixtures passed'
-# sys update usb names the stick's filesystem as rescue does: no probed driver, no journal replay.
+# sys update usb names the stick's filesystem as rescue does: no probed driver, no journal replay, and no
+# symlink followed on a filesystem that carries them.
 sed 's/\[ -b "\$source" \]/[ -n "$source" ]/' "$repo/rootfs/usr/lib/convergent/sys/90-update" >"$work/update-module"
 grep -q '\[ -n "\$source" \] || die' "$work/update-module" || die 'update module block-device check moved'
 sh -n "$work/update-module"
@@ -246,8 +247,8 @@ for fs in vfat exfat ext4 btrfs xfs udf iso9660 ntfs3 none; do
     [ "$rc" != 0 ] || die "update media accepted fixture $fs"
     case $fs in
     vfat|exfat) mount="sudo mount -t $fs -o ro,nodev,nosuid,noexec -- /dev/sdz1 /run/sys-update" ;;
-    ext4) mount='sudo mount -t ext4 -o ro,nodev,nosuid,noexec,noload -- /dev/sdz1 /run/sys-update' ;;
-    btrfs) mount='sudo mount -t btrfs -o ro,nodev,nosuid,noexec,nologreplay -- /dev/sdz1 /run/sys-update' ;;
+    ext4) mount='sudo mount -t ext4 -o ro,nodev,nosuid,noexec,noload,nosymfollow -- /dev/sdz1 /run/sys-update' ;;
+    btrfs) mount='sudo mount -t btrfs -o ro,nodev,nosuid,noexec,nologreplay,nosymfollow -- /dev/sdz1 /run/sys-update' ;;
     *) mount= ;;
     esac
     if [ -n "$mount" ]; then

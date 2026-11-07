@@ -303,7 +303,8 @@ while :; do
 		# The uplink first: a passed-through wired NIC, or the Wi-Fi network ("-" none, "?" no answer).
 		if (topo["uplink"] == "eth") uplink=span("ETH",topo["wan"])
 		else {
-			ssid=get(st "/wifi"); if (ssid == "") ssid="?"
+			# A stale network name is no answer: "?" with the grey map.
+			ssid=fresh ? get(st "/wifi") : ""; if (ssid == "") ssid="?"
 			if (length(ssid)>16) ssid=substr(ssid,1,14) ".."
 			uplink=span("WLAN:" ssid,ssid == "?" ? "" : ssid == "-" ? "down" : "up")
 		}
@@ -320,8 +321,8 @@ while :; do
 		else if (split(cached("alerts", "alerts"),count," ") == 3)
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
 		else block("? ? ?", grey, "alerts")
-		portal=get(st "/portal")
-		# Shown only while on; "unknown" before guests exist is not news.
+		portal=fresh ? get(st "/portal") : ""
+		# Shown only while on and fresh; "unknown" before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)
 		camera=get("/var/lib/convergent/devices/camera")
 		video=get("/sys/module/videodev/refcnt")

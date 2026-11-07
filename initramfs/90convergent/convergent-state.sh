@@ -10,6 +10,8 @@ release=$(getarg convergent.release=)
 # here for the LUKS resize. Each step checks its own size, so an interrupted grow finishes on a
 # later boot; Btrfs follows the mapping resize. A failure only keeps the old size.
 grow_state() {
+	# rd.debug: getarg turned tracing back on after the unlock, and the resize below takes the passphrase.
+	{ set +x; } 2>/dev/null
 	# Legacy, fixed and percentage installs keep their partition size.
 	[ -f "$state/install-state-size" ] || return 0
 	[ "$(cat "$state/install-state-size")" = auto ] || return 0

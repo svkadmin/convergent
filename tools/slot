@@ -22,7 +22,8 @@ mask=$(umask)
 umask 077
 exec 9>/run/convergent-slot.lock
 umask "$mask"
-flock -w 120 9 || die "another slot is running"
+# 75: busy, as incus-ui's lock; check retries its scan later rather than read a failure as tampering.
+flock -w 120 9 || { logger -p user.err -t slot "another slot is running" 2>/dev/null || :; echo "slot: another slot is running" >&2; exit 75; }
 
 # Unmount whatever this run mounted, on the way out.
 cleanup() {
@@ -165,6 +166,13 @@ copy_rescue() {
 
 bless() {
 	booted
+	# A second cv-esp disk (an install medium left attached) stops bless: a release already good is disarmed
+	# first, or the watchdog resets the board on every boot until the disk is removed.
+	if [ "$(blkid -o device -t PARTLABEL=cv-esp | wc -l)" != 1 ]; then
+		state_mount ro
+		[ "$(cat "$stm/good" 2>/dev/null || :)" != "$release" ] || disarm
+		die "expected one cv-esp partition; detach the other Convergent disk"
+	fi
 	esp_mount
 	# An exhausted newer UKI explains an automatic fallback to this release.
 	for other in "$esp/$linux"/convergent-*-*+0-*.efi "$esp/$linux"/convergent-*-*+0.efi; do

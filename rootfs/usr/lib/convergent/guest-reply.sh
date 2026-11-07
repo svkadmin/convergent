@@ -6,12 +6,17 @@ guest_reply() (
     if [ "$1" = --display ]; then reply_display=1; shift; fi
     reply_limit=$1; shift
     umask 077
-    reply_dir=$(mktemp -d "${TMPDIR:-/tmp}/guest-reply.XXXXXX") || exit 125
+    # Root scratches in its own /run/convergent: an owner filling /tmp must not make replies look hostile.
+    reply_tmp=${TMPDIR:-/tmp}
+    [ "$(id -u)" != 0 ] || [ ! -d /run/convergent ] || reply_tmp=/run/convergent
+    # A local scratch failure is no answer (1), never a rejected one (125).
+    reply_dir=$(mktemp -d "$reply_tmp/guest-reply.XXXXXX") || exit 1
     trap 'rm -rf "$reply_dir"' 0
     trap 'exit 125' HUP INT TERM
     { reply_rc=0; "$@" || reply_rc=$?; printf '%s\n' "$reply_rc" >"$reply_dir/status"; } |
-        head -c "$((reply_limit + 1))" >"$reply_dir/data" || exit 125
-    [ "$(wc -c <"$reply_dir/data")" -le "$reply_limit" ] && [ -s "$reply_dir/status" ] || exit 125
+        head -c "$((reply_limit + 1))" >"$reply_dir/data" || exit 1
+    [ "$(wc -c <"$reply_dir/data")" -le "$reply_limit" ] || exit 125
+    [ -s "$reply_dir/status" ] || exit 1
     reply_rc=$(cat "$reply_dir/status")
     if [ "$reply_rc" != 0 ] && [ "$reply_display" = 0 ]; then
         # 125 distinguishes a rejected answer from an unanswered probe.

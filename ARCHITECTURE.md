@@ -425,9 +425,10 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
    failed.
 
 `convergent-watchdog` feeds the 180 s watchdog for 10 min; a pass disarms it at any time, and an
-already-good release disarms it before the checks. On shutdown `convergent-setup` drains work
-VMs, browsers and Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before
-forcing. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
+already-good release disarms it before the checks. It feeds only an iTCO watchdog with a timeout of
+60 s or more; any other is closed (only while it runs and nowayout is off) and the boot runs without
+one. On shutdown `convergent-setup` drains work VMs, browsers and Remmina, `svc`, `wan` and then the
+firewalls, 20 s graceful stop each before forcing. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
 `stop` is refused.
 
 #### Recovery and Rescue entries
@@ -653,7 +654,7 @@ before new work.
 | `browser.ready` | both browser roles passed on the new image | `sys guests update` replays the commit |
 | `browser.rename` | the legacy `web`/`admin` rename is in progress | `sys guests update` rolls it forward |
 | `leases/held` | work DHCP is quiesced on the firewalls | the checker, once both firewalls answer, or a `guests` run |
-| `leases/reconcile` | a firewall ran under a new QEMU; the pair's leases are merged once both answer | the checker: one merge, or three failed tries |
+| `leases/reconcile` | a firewall ran under a new QEMU, or allocated alone under a hold; the pair's leases are merged once both answer | the checker: one merge, or three failed tries |
 | `dns.stale` | a firewall root was rebuilt | the next DNS restore, or the hourly `dns-push auto` |
 | `work-profiles.due` | a firewall update committed; work profiles not reconciled | `sys guests update` |
 
@@ -757,7 +758,8 @@ The minute run of `check auto`: repairs first, then the baseline scan.
   reboot) may have abandoned an address its peer bound meanwhile, and dhcpd refuses every later sync
   of it; so may a running one whose client answered its pre-offer ping (an abandoned record new to
   it, read with the probe; once an hour at most, and an address the last merge already left abandoned
-  counts again only 6 hours after it). The heal queues one lease reconcile (`leases/reconcile`):
+  counts again only 6 hours after it), or one that resumed alone under a hold while its peer was
+  down. The heal queues one lease reconcile (`leases/reconcile`):
   once both firewalls answer, and under no journal or guests run, it holds both allocators, merges
   their leases (each file's last declaration per address; a current binding beats an abandoned one;
   one MAC keeps its current, else its newest, address per VLAN) and writes the merge back, as a guest

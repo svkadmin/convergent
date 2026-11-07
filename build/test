@@ -371,13 +371,13 @@ if [ "${1:-}" = --install-options ]; then
 		case $fault in safe|loop) [ -f "$work/erase" ] ;; esac
 	done
 	)
-	# SATA must be available before dm-mod.waitfor can enter userspace.
+	# SATA must be available before dm-mod.waitfor can enter userspace; the watchdog service reads sysfs.
 	sed -n '/^for want in CONFIG_VLAN_8021Q=y/,/^done$/p' "$here/image" >"$work/kernel-check"
 	[ -s "$work/kernel-check" ]
 	sh -n "$work/kernel-check"
 	config=$here/kernel.config
 	(. "$work/kernel-check")
-	for symbol in ATA SATA_AHCI; do
+	for symbol in ATA SATA_AHCI WATCHDOG_SYSFS; do
 		grep -qx "CONFIG_$symbol=y" "$here/kernel.config"
 		for value in m n missing; do
 			sed "/^CONFIG_$symbol=/d" "$here/kernel.config" >"$work/kernel.config"
@@ -1429,7 +1429,8 @@ grep -q 'config unset fw2' "$work/calls"
 grep -q 'autorestart hold released' "$work/run/firewall-heal/event"
 test_target=down
 # A lease hold its run could not resume (peer frozen or stopped) inhibits no heal; the held allocators count
-# as healthy only under the hold, and resume once both nodes answer.
+# as healthy only under the hold; the one healthy node resumes its own each run, and the hold ends once both
+# nodes answer.
 rm -rf "$work/run/firewall-heal"
 mkdir -p "$work/state/guests/leases"
 touch "$work/state/guests/leases/held"
@@ -1437,8 +1438,11 @@ dhcpd_off='fw1 fw2'
 : >"$work/calls"
 for t in 1000 1060 1120 1180; do tick "$t"; done
 grep -q 'default restart fw2 --force' "$work/calls"
-if grep -q '^resume ' "$work/calls"; then exit 1; fi
-rm "$work/state/guests/leases/held"
+[ "$(grep -c '^resume ' "$work/calls")" = 4 ] && [ "$(grep -c '^resume fw1$' "$work/calls")" = 4 ] || exit 1
+[ -e "$work/state/guests/leases/held" ] || exit 1
+# What fw1 handed out alone queued a lease reconcile (exercised below): out of the next tick's way.
+[ "$(cat "$work/state/guests/leases/reconcile")" = 0 ] || exit 1
+rm "$work/state/guests/leases/held" "$work/state/guests/leases/reconcile"
 if heal_probe fw1; then exit 1; fi
 touch "$work/state/guests/leases/held"
 test_target=BACKUP
@@ -1691,16 +1695,25 @@ unset -f sync
 grep -q 'work DHCP resume failed on fw1 (1 in a row), fw2 (1 in a row); lease hold retained' "$work/run/firewall-heal/event"
 [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = 1 ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw2")" = 1 ] || exit 1
 rm "$leases/held"
-# A restart resets the restarted node's count only.
+# A restart resets the restarted node's count only; the healthy fw1's own resume, failing alone, counts on.
 rm -rf "$work/run/firewall-heal"; mkdir -p "$work/run/firewall-heal"
 echo 3 >"$work/run/firewall-heal/resume.failed.fw1"; echo 3 >"$work/run/firewall-heal/resume.failed.fw2"
 touch "$leases/held"
-test_target=down
+test_target=down resume_fail=fw1
 : >"$work/calls"
 for t in 1000 1060 1120 1180; do tick "$t"; done
+resume_fail=
 grep -q 'default restart fw2 --force' "$work/calls"
-[ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = 3 ] || exit 1
-rm "$leases/held"
+grep -q 'work DHCP resume failed on fw1 (7 in a row); lease hold retained' "$work/run/firewall-heal/event"
+[ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = 7 ] || exit 1
+if grep -q '^resume fw2$' "$work/calls"; then exit 1; fi
+rm -f "$leases/reconcile"
+# Its success clears that count; the hold stays for fw2, and a merge is queued for when both answer.
+tick 1240
+[ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] && [ -e "$leases/held" ] || exit 1
+[ "$(cat "$leases/reconcile")" = 0 ] || exit 1
+grep -q 'fw1 allocates alone' "$work/run/firewall-heal/event"
+rm "$leases/held" "$leases/reconcile"
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
 rm -rf "$work/run/firewall-heal"

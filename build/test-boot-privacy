@@ -293,10 +293,13 @@ EOF
 
     # Only the device probe and daemon command are mocked for stop.
     sed -n '/^stop() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
-        sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ -c /[ -f /' \
-            -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
+        sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
+            -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
     check_script "$work/stop"
+    grep -q "$work/sys-watchdog/watchdog0/nowayout" "$work/stop" || die 'watchdog nowayout read moved'
     . "$work/stop"
+    mkdir -p "$work/sys-watchdog/watchdog0"
+    echo active >"$work/sys-watchdog/watchdog0/state"; echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
     mock_daemon() {
         printf '%s\n' "$*" >"$work/daemon"
         [ "$daemon_status" = 0 ] || echo 'start-stop-daemon: no matching processes found' >&2
@@ -311,16 +314,30 @@ EOF
         # bless disarms an exited feeder without a message on the owner's terminal.
         [ ! -s "$work/stop.err" ]
     done
+    # No V for an idle one (opening it starts it) nor under nowayout (ignored, and it stays running).
+    for device in inactive:0 active:1 active:; do
+        echo "${device%:*}" >"$work/sys-watchdog/watchdog0/state"
+        echo "${device#*:}" >"$work/sys-watchdog/watchdog0/nowayout"
+        [ -n "${device#*:}" ] || rm "$work/sys-watchdog/watchdog0/nowayout"
+        : >"$work/watchdog"
+        daemon_status=1
+        stop 2>/dev/null || die "watchdog stop failed: $device"
+        [ ! -s "$work/watchdog" ] || die "watchdog closed on stop: $device"
+    done
+    echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
 
     # A start after bless (an owner's restart) must not arm a reset on a good release.
     sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
-        sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' >"$work/start"
+        sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
+            -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" >"$work/start"
     check_script "$work/start"
+    grep -q "$work/sys-watchdog/watchdog0/identity" "$work/start" || die 'watchdog identity read moved'
     . "$work/start"
     ebegin() { :; }; eend() { :; }; einfo() { :; }; ewarn() { exit 97; }; logger() { exit 97; }
     nohup() { echo feeder >>"$work/fed"; }
     pidfile=$work/feeder.pid
-    mkdir -p "$work/openrc/started"
+    mkdir -p "$work/openrc/started" "$work/sys-watchdog/watchdog0"
+    echo iTCO_wdt >"$work/sys-watchdog/watchdog0/identity"; echo 180 >"$work/sys-watchdog/watchdog0/timeout"
     for blessed in no yes; do
         rm -f "$work/fed" "$work/openrc/started/convergent-bless"
         [ "$blessed" = no ] || : >"$work/openrc/started/convergent-bless"
@@ -330,6 +347,35 @@ EOF
         if [ "$blessed" = yes ]; then [ ! -e "$work/fed" ] || die 'watchdog armed after bless'
         else grep -qx feeder "$work/fed" || die 'watchdog not fed before bless'; fi
     done
+    # 30 s feeds only for iTCO at 180 s: a WDAT watchdog (30 s) or an iTCO left at its 30 s default is
+    # closed with the magic V instead, never fed into a reset.
+    rm -f "$work/openrc/started/convergent-bless"
+    for device in wdat_wdt:30 iTCO_wdt:30 iTCO_wdt:x :; do
+        printf '%s\n' "${device%:*}" >"$work/sys-watchdog/watchdog0/identity"
+        printf '%s\n' "${device#*:}" >"$work/sys-watchdog/watchdog0/timeout"
+        [ -n "${device%:*}" ] || rm "$work/sys-watchdog/watchdog0/identity" "$work/sys-watchdog/watchdog0/timeout"
+        echo active >"$work/sys-watchdog/watchdog0/state"
+        rm -f "$work/fed" "$work/logger"
+        : >"$work/watchdog"
+        (
+            ewarn() { :; }; logger() { printf '%s\n' "$*" >"$work/logger"; }
+            start
+        )
+        [ ! -e "$work/fed" ] && [ "$(cat "$work/watchdog")" = V ] || die "watchdog fed: $device"
+        grep -q 'continuing without a watchdog' "$work/logger" || die "watchdog refusal not logged: $device"
+    done
+    # An idle one stays closed: opening it would start it.
+    printf 'wdat_wdt\n' >"$work/sys-watchdog/watchdog0/identity"; echo 30 >"$work/sys-watchdog/watchdog0/timeout"
+    echo inactive >"$work/sys-watchdog/watchdog0/state"
+    rm -f "$work/fed" "$work/logger"
+    : >"$work/watchdog"
+    ( ewarn() { :; }; logger() { :; }; start )
+    [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'idle watchdog opened'
+    # Nor one under nowayout: the V is ignored.
+    echo active >"$work/sys-watchdog/watchdog0/state"; echo 1 >"$work/sys-watchdog/watchdog0/nowayout"
+    : >"$work/watchdog"
+    ( ewarn() { :; }; logger() { :; }; start )
+    [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'watchdog closed under nowayout'
 )
 echo 'test-boot-privacy: watchdog passed'
 
@@ -529,6 +575,11 @@ EOF
         esac
         cmp "$work/expected" "$work/calls" || die "wrong resize: $scenario"
     done
+    # rd.debug: dracut's getarg turns tracing back on after the unlock; the resize's trace never holds the key.
+    echo 0 >"$NEWROOT/usr/lib/convergent/state-max-gib"; echo 4194304 >"$work/sys/vda5/size"; : >"$work/calls"
+    (set -x; grow_state) 2>"$work/grow-trace" || die 'traced grow failed'
+    grep -q '^cryptsetup resize' "$work/calls" || die 'traced grow did not resize'
+    if grep -q fixture-secret "$work/grow-trace"; then die 'grow traced the passphrase'; fi
     # Btrfs must resume even when the mapping was already grown.
     sed -n '/^btrfs -q filesystem resize max /,/^[[:space:]]*warn /p' \
         "$repo/initramfs/90convergent/convergent-state.sh" >"$work/btrfs"
@@ -538,6 +589,29 @@ EOF
     [ "$(cat "$work/btrfs-call")" = "-q filesystem resize max $state" ]
 )
 echo 'test-boot-privacy: state growth passed'
+
+# A console that cannot hide input still unlocks, after a warning before the prompt.
+sed -n '/^tries=0$/,/^done$/p' "$repo/initramfs/90convergent/unlock-state.sh" |
+    sed -e "s|</dev/console|<$work/tty|g" -e "s|>/dev/console|>>$work/console|g" >"$work/unlock"
+check_script "$work/unlock"
+if grep -q /dev/console "$work/unlock"; then die 'unlock extraction kept the console'; fi
+for hidden in yes no; do
+    : >"$work/console"; echo fixture-secret >"$work/tty"
+    (
+        # Sourced by dracut without errexit.
+        set +e
+        dev=/dev/vda5
+        stty() { [ "$1" != -echo ] || [ "$hidden" = yes ]; }
+        cryptsetup() { [ "$*" = "open --type luks2 --key-file - $dev cv-state" ] && [ "$(cat)" = fixture-secret ] || exit 97; }
+        . "$work/unlock"
+    ) || die "unlock failed: hidden $hidden"
+    case $hidden in
+    yes) if grep -q WARNING "$work/console"; then die 'unlock warned with echo off'; fi ;;
+    *) awk '/cannot hide input/ {w=NR} /^Passphrase/ && !p {p=NR} END {exit !(w && w < p)}' "$work/console" ||
+        die 'unlock did not warn before the prompt' ;;
+    esac
+done
+echo 'test-boot-privacy: unlock echo warning passed'
 
 # Configuration coverage only; signed/bogus replies still need the firewall fixture.
 dns=$repo/guests/fw/site/var/unbound/etc
@@ -794,7 +868,7 @@ mkdir "$work/wired"
             mv "$w/rules.new" "$w/rules" ;;
         remove-rule) grep -v "^$2: " "$w/rules" >"$w/rules.new"; mv "$w/rules.new" "$w/rules" ;;
         generate-policy) cat "$w/generated" ;;
-        list-devices) [ "$2" = -a ] || exit 97; printf '5: %s\n' "$nic" ;;
+        list-devices) [ "$2" = -a ] || exit 97; [ ! -e "$w/swapped" ] || return 0; printf '5: %s\n' "$nic" ;;
         *) exit 97 ;;
         esac
     }
@@ -824,18 +898,26 @@ mkdir "$work/wired"
         *) [ ! -s "$w/calls" ] || exit 1 ;;
         esac
     done
-    # attach takes the guests lock only after the owner's answer, and re-reads wan under it.
+    # attach takes the guests lock only after the owner's answer, and re-reads wan and the NIC under it (a NIC
+    # deauthorized or no longer allowed while the prompt waited).
     mkdir -p "$w/sys/1-2"
     printf '0bda\n' >"$w/sys/1-2/idVendor"; printf '8153\n' >"$w/sys/1-2/idProduct"
-    printf 'S1\n' >"$w/sys/1-2/serial"; echo 1 >"$w/sys/1-2/authorized"
+    printf 'S1\n' >"$w/sys/1-2/serial"
     added='-k 1 120 incus --force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false'
-    for change in none role; do
-        echo null >"$w/role"; : >"$w/calls"; : >"$w/order"
+    for change in none role unauthorized swapped; do
+        echo null >"$w/role"; : >"$w/calls"; : >"$w/order"; echo 1 >"$w/sys/1-2/authorized"; rm -f "$w/swapped"
         code=0
         (
             # wired sets its own role: keep the fixture's.
             set_role=$role
-            ask() { echo ask >>"$w/order"; [ "$change" = none ] || echo "$set_role" >"$w/role"; }
+            ask() {
+                echo ask >>"$w/order"
+                case $change in
+                role) echo "$set_role" >"$w/role" ;;
+                unauthorized) echo 0 >"$w/sys/1-2/authorized" ;;
+                swapped) : >"$w/swapped" ;;
+                esac
+            }
             flock() { [ "$*" = '-w 60 9' ] || exit 97; echo lock >>"$w/order"; }
             wired attach 0bda:8153 S1
         ) >/dev/null 2>&1 || code=$?

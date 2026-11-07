@@ -30,6 +30,20 @@ start() {
 		return 0
 	fi
 	ebegin "Feeding the watchdog"
+	# Feeds 30 s apart need the iTCO the initramfs armed at 180 s: another device (WDAT, 30 s by default)
+	# would reset a good boot.
+	wd_identity=$(cat /sys/class/watchdog/watchdog0/identity 2>/dev/null) || wd_identity=
+	wd_timeout=$(cat /sys/class/watchdog/watchdog0/timeout 2>/dev/null) || wd_timeout=
+	case $wd_timeout in '' | *[!0-9]*) wd_timeout=0 ;; esac
+	if [ "$wd_identity" != iTCO_wdt ] || [ "$wd_timeout" -lt 60 ]; then
+		# Closed with the magic V: one the initramfs armed (iTCO at its 30 s default) must not run unfed.
+		# Only while it runs and honours the V: opening an idle one starts it, and nowayout keeps it running.
+		[ ! -c /dev/watchdog ] || [ "$(cat /sys/class/watchdog/watchdog0/state 2>/dev/null)" != active ] ||
+			[ "$(cat /sys/class/watchdog/watchdog0/nowayout 2>/dev/null)" != 0 ] || printf V 2>/dev/null >/dev/watchdog || :
+		logger -t convergent-watchdog "watchdog0 is ${wd_identity:-unknown} with a ${wd_timeout} s timeout; continuing without a watchdog"
+		ewarn "No usable hardware watchdog"
+		return 0
+	fi
 	if [ ! -c /dev/watchdog ] || ! command exec 3>/dev/watchdog; then
 		logger -t convergent-watchdog "cannot open /dev/watchdog; continuing without a watchdog"
 		ewarn "No usable hardware watchdog"
@@ -44,6 +58,7 @@ start() {
 stop() {
 	# Quiet: after ten minutes the feeder has exited, and --quiet still prints "no matching processes".
 	start-stop-daemon --stop --quiet --retry TERM/5 --pidfile "$pidfile" 2>/dev/null || :
-	# An already-exited feeder can still leave the watchdog armed.
-	[ -c /dev/watchdog ] && printf V >/dev/watchdog
+	# An already-exited feeder can still leave the watchdog armed; closed as in start's refusal.
+	[ ! -c /dev/watchdog ] || [ "$(cat /sys/class/watchdog/watchdog0/state 2>/dev/null)" != active ] ||
+		[ "$(cat /sys/class/watchdog/watchdog0/nowayout 2>/dev/null)" != 0 ] || printf V >/dev/watchdog
 }
