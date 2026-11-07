@@ -655,8 +655,9 @@ paused. A target that Incus cannot stop is ended by its verified QEMU pid. Brows
 After an interruption, repeat the same command to resume; a resumed rebuild of a stopped target
 goes on with a warning when the peer fails its health check but still answers SSH (a target that
 autostarted must be stopped first; the refusal names the command). A node a firewall update committed
-but did not record yet is rebuilt from the staged release; if that is no longer staged, the rebuild
-stops and asks to rerun the update. How the pair is replaced:
+but did not record yet is rebuilt from the staged release (a manual `guests update fw` keeps its
+copy for this until the commit ends); if that is no longer staged, the rebuild says so and asks
+whether to use the older installed release instead (default No: it stops). How the pair is replaced:
 [ARCHITECTURE 7.2](ARCHITECTURE.md#72-update).
 
 ## Releases and guests

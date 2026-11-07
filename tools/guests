@@ -13,7 +13,7 @@ conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
-applying= recovering= rebuilding= polling= manual_stage= browser_locked= frozen=
+applying= recovering= rebuilding= polling= manual_stage= manual_commit= browser_locked= frozen=
 step=setup
 . "$lib/fw-topology"
 . "$lib/fw-leases"
@@ -297,7 +297,12 @@ cleanup() {
     set +e
     [ "$result" = 0 ] || printf 'guests: %s: operation failed (status %s); cleaning up\n' "$failed_step" "$failed_status" >&2
     step=cleanup
-    [ -z "$manual_stage" ] || rm -rf "$manual_stage" || { fail "cannot remove $manual_stage"; result=1; }
+    # A firewall commit this manual update left open is redone by rebuild from the same copy, kept until it ends.
+    if [ -n "${manual_commit:-}" ] && [ -f "$state/committed" ] &&
+        awk '$1 ~ /^fw[12]$/ && $2 !~ /-rebuild$/ {found=1} END {exit !found}' "$state/committed"; then
+        { rm -rf "$state/committed.stage" && mv "$manual_stage" "$state/committed.stage" && sync; } ||
+            { fail "cannot keep $manual_stage for the committed update"; result=1; }
+    elif [ -n "$manual_stage" ]; then rm -rf "$manual_stage" || { fail "cannot remove $manual_stage"; result=1; }; fi
     if [ -n "$work" ] && [ -d "$state/fw.topology" ]; then
         topology_recover || {
             # A committed migration goes forward on running firewalls.
@@ -1247,9 +1252,10 @@ wan_extract() {
 wan_read() {
     disk=$pool/virtual-machines/wan/root.img
     [ -f "$disk" ] || die 'unexpected Incus Btrfs VM disk layout'
-    # A disk without a table it can read is the disk's damage; the table stays in memory, so a full scratch is not.
+    # A disk without a table it can read is the disk's damage (sfdisk's 1); the table stays in memory, so a full
+    # scratch is not, nor is a killed sfdisk.
     command -v sfdisk >/dev/null || die 'sfdisk is missing'
-    table=$(sfdisk --json "$disk") || wan_damaged 'cannot read wan partition table'
+    table=$(sfdisk --json "$disk") || case $? in 1) wan_damaged 'cannot read wan partition table' ;; *) die 'sfdisk failed on the wan disk' ;; esac
     printf '%s\n' "$table" >"$work/wan-partitions" || die 'cannot save wan partition table'
     range=$(jq -er --arg disk "$disk" --argjson bytes "$(stat -c %s "$disk")" '
         .partitiontable | select(.label == "gpt" and .unit == "sectors") |
@@ -1442,6 +1448,7 @@ commit_update() {
     if [ ! -f "$state/committed" ]; then
         cp "$state/pending" "$work/committed" && sync &&
             mv "$work/committed" "$state/committed" && sync || return
+        [ -z "$manual_stage" ] || manual_commit=1
     fi
     cp "$state/committed" "$work/committed" || return
     : >"$work/updates" || return
@@ -1457,7 +1464,8 @@ commit_update() {
     done <"$work/committed"
     rm -f "$state/pending" "$state/fw.rebuilt" && rm -rf "$state/profiles.before" && sync || return
     pending=
-    rm "$state/committed" && sync || return
+    # Its kept copy first: a later commit must never find another update's images.
+    rm -rf "$state/committed.stage" && rm "$state/committed" && sync || return
     images_prune || return
     while read -r guest snap image; do rm -rf "$state/iwd.$guest" && prune "$guest" || return; done <"$work/committed"
 }
@@ -1480,6 +1488,12 @@ good_slot() {
         $1 == "slot" {release[$2]=$3; status[$2]=$4}
         END {exit !(r ~ /^[0-9]+$/ && r == g && r <= h && release[s] == r && status[s] == "good")}' "$work/slot" ||
         die 'booted host slot is not marked good'
+}
+# Bounded as sys's: this runs under the guests and DNS locks, which self-heal waits for.
+confirm() {
+    [ -t 0 ] || return 1
+    printf 'guests: %s? [yes/No] ' "$1" >&2
+    timeout --foreground -k 1 60 sh -c 'IFS= read -r a && [ "$a" = yes ]' 9>&- 8>&- 7>&- 6>&-
 }
 
 rebuild() {
@@ -1520,7 +1534,13 @@ rebuild() {
         booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
         staged=/var/lib/convergent/guest-updates
         case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
-        if [ -d "$staged/$booted/fw" ]; then
+        if [ -d "$state/committed.stage" ]; then
+            # A manual update's own copy, kept until its commit ends.
+            [ ! -L "$state/committed.stage" ] && [ -z "$(find "$state/committed.stage" -type l -print)" ] ||
+                die "$state/committed.stage contains symlinks"
+            fw_either=$image_dir image_dir=$state/committed.stage/guests/image
+            verify_image fw
+        elif [ -d "$staged/$booted/fw" ]; then
             for entry in "$staged" "$staged/$booted" "$staged/$booted/fw"; do
                 [ ! -L "$entry" ] && [ "$(stat -c '%u %a %F' "$entry")" = '0 700 directory' ] || die "$entry is not root's private directory"
             done
@@ -1528,8 +1548,12 @@ rebuild() {
             fw_either=$image_dir image_dir=$staged/$booted/fw
             verify_image fw
         else
-            # Pruned or never staged (a manual update): the installed release is not what was committed.
-            die "release $booted is not staged for the committed $1 update; rerun the update"
+            # Pruned, or a trusted-local update: the installed release is older than what was committed. Only the
+            # owner may choose it, never silently.
+            echo "guests: release $booted is not staged for the committed $1 update; the installed release is older" >&2
+            confirm "Rebuild $1 from the installed release" ||
+                die "release $booted is not staged for the committed $1 update; rerun the update"
+            logger -p user.warning -t guests "rebuild $1: committed release not staged; owner chose the installed release" 2>/dev/null || :
         fi
     fi
     [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
@@ -1539,9 +1563,12 @@ rebuild() {
     if ! fw_check "$peer"; then
         awk -v node="$1" '$1 == node && $2 ~ /-rebuild$/ {found=1} END {exit !found}' "$state/pending" 2>/dev/null ||
             die "$peer must be healthy before rebuilding $1"
-        # Firewalls autostart after a power loss: the redo needs its target stopped.
-        stopped "$1" ||
+        # Firewalls autostart after a power loss: the redo needs its target stopped. A state read
+        # that gets no answer (a frozen monitor) is not a running target: stop --force would hang on it too.
+        if ! stopped "$1"; then
+            running "$1" || die "$peer must be healthy before rebuilding $1, whose state Incus did not report; $(frozen_hint)"
             die "$peer must be healthy before rebuilding a running $1; stop it (sudo incus --force-local --project default stop --force $1) and rerun"
+        fi
         # The CARP password check, the release and the pair below still need its answer.
         echo "guests: WARNING: $peer is unhealthy; redoing the interrupted rebuild of $1 ($peer must still answer SSH)" >&2
         logger -p user.warning -t guests "rebuild $1: $peer unhealthy; redoing the interrupted rebuild" 2>/dev/null || :

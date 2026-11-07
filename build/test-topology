@@ -259,6 +259,10 @@ echo 'test-topology: recovery removes only stale probe routes'
     # unchecked: CARP holds, the health check fails (dhcpd off, another release's pf.conf).
     fw_check() { echo "check $1 $image_dir ${fw_either:-}" >>"$log"; [ ! -e "$scratch/$1.unchecked" ] && carp "$1"; }
     stopped() { [ -e "$scratch/$1.stopped" ]; }
+    # frozen: its state read gets no answer.
+    running() { [ ! -e "$scratch/$1.stopped" ] && [ ! -e "$scratch/$1.frozen" ]; }
+    frozen_hint() { echo frozen-hint; }
+    confirm() { [ -e "$scratch/yes" ]; }
     stop_guest() { return 1; }
     replace() { echo "replace $1 pending=${pending:-} $image_dir" >>"$log"; rm -f "$scratch/$1.unhealthy"; [ "$rebuilding" != fw1 ] || touch "$state/fw.handoff"; }
     fw_release() { echo fw_release >>"$log"; rm -f "$state/fw.handoff"; }
@@ -268,7 +272,8 @@ echo 'test-topology: recovery removes only stale probe routes'
     soak() { :; }
     backup_soak() { :; }
     clean() { rm -rf "$state/pending" "$state/committed" "$state/fw.rebuilt" "$state/fw.handoff" "$state/dns.stale" "$scratch"/fw?.unhealthy \
-        "$scratch"/fw?.unchecked "$scratch"/fw?.stopped "$scratch"/fw?.silent "$scratch/updates"; : >"$log"; }
+        "$scratch"/fw?.unchecked "$scratch"/fw?.stopped "$scratch"/fw?.silent "$scratch"/fw?.frozen "$scratch/updates" \
+        "$scratch/yes" "$state/committed.stage"; : >"$log"; }
     finished() { [ ! -e "$state/pending" ] && [ ! -e "$state/committed" ] && [ ! -e "$state/fw.handoff" ] && grep -qx commit "$log"; }
     # Killed between the fw2 commit and fw1's journal: fw1 demoted, nothing pending.
     clean
@@ -294,7 +299,8 @@ echo 'test-topology: recovery removes only stale probe routes'
     finished
     if grep -q '^replace ' "$log"; then exit 1; fi
     # An unhealthy committed update is redone too; fw2's leaves fw1 handed off, released before the redo.
-    # With nothing staged the installed release is no stand-in: it stops and names the update.
+    # With nothing staged the installed release is a stand-in only once the owner, told so, agrees; else it
+    # stops and names the update. A manual update's kept copy comes before the staged release.
     for node in fw1 fw2; do
         clean
         printf '%s\n' "$node guests-20250101T000000-1 image" >"$state/committed"
@@ -302,13 +308,23 @@ echo 'test-topology: recovery removes only stale probe routes'
         touch "$scratch/$node.unhealthy"
         [ "$node" = fw1 ] || touch "$state/fw.handoff"
         if (rebuild "$node") 2>"$scratch/err"; then exit 1; fi
+        grep -qx "guests: release 42 is not staged for the committed $node update; the installed release is older" "$scratch/err"
         grep -qx "release 42 is not staged for the committed $node update; rerun the update" "$scratch/err"
         [ ! -s "$log" ] || exit 1
-        mkdir -p "$scratch/updates/42/fw"
+        touch "$scratch/yes"
+        (rebuild "$node") >/dev/null 2>&1
+        finished
+        grep -qx "replace $node pending=1 $scratch/images" "$log"
+        clean
+        printf '%s\n' "$node guests-20250101T000000-1 image" >"$state/committed"
+        cp "$state/committed" "$state/pending"
+        touch "$scratch/$node.unhealthy"
+        [ "$node" = fw1 ] || touch "$state/fw.handoff"
+        mkdir -p "$scratch/updates/42/fw" "$state/committed.stage/guests/image"
         chmod 700 "$scratch/updates" "$scratch/updates/42" "$scratch/updates/42/fw"
         (rebuild "$node") >/dev/null
         finished
-        grep -qx "replace $node pending=1 $scratch/updates/42/fw" "$log"
+        grep -qx "replace $node pending=1 $state/committed.stage/guests/image" "$log"
     done
     awk '$1 == "fw_release" && !f {f=NR} $1 == "replace" {r=NR} END {exit !(f && f < r)}' "$log"
     # Its images are recorded only after both commits: the committed node is redone from the staged release,
@@ -338,10 +354,10 @@ echo 'test-topology: recovery removes only stale probe routes'
     # An interrupted rebuild of a stopped node goes on past a peer that fails its health check: the redo
     # restores the pair. A running target, or no rebuild journal, still needs a healthy peer; a peer that
     # does not answer SSH is named, not a bare exit after the warning.
-    for case in redo running fresh silent; do
+    for case in redo running frozen fresh silent; do
         clean
         [ "$case" = fresh ] || printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/pending"
-        [ "$case" = running ] || touch "$scratch/fw1.stopped"
+        case $case in running) ;; frozen) touch "$scratch/fw1.frozen" ;; *) touch "$scratch/fw1.stopped" ;; esac
         touch "$scratch/fw2.unchecked"
         [ "$case" != silent ] || touch "$scratch/fw2.silent"
         if [ "$case" = redo ]; then
@@ -357,6 +373,11 @@ echo 'test-topology: recovery removes only stale probe routes'
             # An autostarted target: the refusal names the owner's stop.
             if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
             grep -qx 'fw2 must be healthy before rebuilding a running fw1; stop it (sudo incus --force-local --project default stop --force fw1) and rerun' "$scratch/err"
+            if grep -q '^replace ' "$log"; then exit 1; fi
+        elif [ "$case" = frozen ]; then
+            # An unanswered state read gets the frozen way out, never a stop that would hang too.
+            if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
+            grep -qx 'fw2 must be healthy before rebuilding fw1, whose state Incus did not report; frozen-hint' "$scratch/err"
             if grep -q '^replace ' "$log"; then exit 1; fi
         else
             if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
@@ -521,6 +542,11 @@ echo 'test-topology: replace keeps a redo stopped and rebuilds wan from a damage
     rc=0
     (wan_read) 2>"$scratch/err" || rc=$?
     [ "$rc" = 2 ] && grep -qx 'cannot read wan partition table' "$scratch/err" || exit 1
+    # A killed sfdisk (OOM, a signal) is the host's failure.
+    sfdisk() { return 137; }
+    rc=0
+    (wan_read) 2>"$scratch/err" || rc=$?
+    [ "$rc" = 1 ] && grep -qx 'sfdisk failed on the wan disk' "$scratch/err" || exit 1
     sfdisk() { echo '{"partitiontable": {}}'; }
     mkdir "$work/wan-partitions"
     rc=0
