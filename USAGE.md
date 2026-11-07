@@ -537,6 +537,7 @@ after the hour.
 The host has no USB network drivers and does no DHCP or addressing. After moving an adapter refused
 for an [overlapping lease](#connect) to a safe network, retry its DHCP. Only a safe lease clears
 the refusal; `sys wifi test` shows retry advice while it holds.
+Unplugging the adapter also clears it; a good Wi-Fi lease does not.
 
 ```sh
 sudo ssh -F /etc/convergent/ssh_config wan 'check retry'
