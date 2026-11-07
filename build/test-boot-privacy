@@ -340,6 +340,7 @@ EOF
         printf '%s\n' "${device%:*}" >"$work/sys-watchdog/watchdog0/identity"
         printf '%s\n' "${device#*:}" >"$work/sys-watchdog/watchdog0/timeout"
         [ -n "${device%:*}" ] || rm "$work/sys-watchdog/watchdog0/identity" "$work/sys-watchdog/watchdog0/timeout"
+        echo active >"$work/sys-watchdog/watchdog0/state"
         rm -f "$work/fed" "$work/logger"
         : >"$work/watchdog"
         (
@@ -349,6 +350,13 @@ EOF
         [ ! -e "$work/fed" ] && [ "$(cat "$work/watchdog")" = V ] || die "watchdog fed: $device"
         grep -q 'continuing without a watchdog' "$work/logger" || die "watchdog refusal not logged: $device"
     done
+    # An idle one stays closed: opening it would start it.
+    printf 'wdat_wdt\n' >"$work/sys-watchdog/watchdog0/identity"; echo 30 >"$work/sys-watchdog/watchdog0/timeout"
+    echo inactive >"$work/sys-watchdog/watchdog0/state"
+    rm -f "$work/fed" "$work/logger"
+    : >"$work/watchdog"
+    ( ewarn() { :; }; logger() { :; }; start )
+    [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'idle watchdog opened'
 )
 echo 'test-boot-privacy: watchdog passed'
 
