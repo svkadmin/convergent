@@ -540,15 +540,15 @@ rm "$state/preparing"
 (
     frozen=
     ic() {
+        case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
         [ "$*" = 'query /1.0/instances?recursion=1&all-projects=true' ] || return 1
         echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
             {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]'
     }
-    timeout() { echo "$*" >>"$work/unsets"; }
     : >"$work/unsets"
     autorestart_clear
-    printf '%s\n' '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' \
-        '-k 1 120 incus --force-local --project owner config unset work boot.autorestart user.convergent.autorestart' >"$work/expected-unsets"
+    printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
+        '--project owner config unset work boot.autorestart user.convergent.autorestart' >"$work/expected-unsets"
     cmp "$work/expected-unsets" "$work/unsets"
 )
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).

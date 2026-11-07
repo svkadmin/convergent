@@ -13,7 +13,10 @@ stop_one() (
         ic config set "$node" ephemeral=false --property || exit 1
         ephemeral=false
     fi
-    ic config set "$node" boot.autorestart=false user.convergent.autorestart=true || exit 1
+    # Our own hold saves the guest's value: guests restores it if the drain is killed.
+    if [ "$old_hold" = - ]; then
+        ic config set "$node" boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old="$old_auto" || exit 1
+    else ic config set "$node" boot.autorestart=false user.convergent.autorestart=true || exit 1; fi
     note "stopping $project/$node"
     if ! timeout -k 5 25 incus --force-local --project "$project" stop "$node" --timeout 20 9>&-; then
         note "forcing $project/$node off after graceful stop failed"
@@ -28,7 +31,7 @@ stop_one() (
     # Restore only our override; an interrupted update may already own a hold.
     if [ "$old_auto" = - ]; then ic config unset "$node" boot.autorestart
     else ic config set "$node" boot.autorestart="$old_auto"; fi
-    if [ "$old_hold" = - ]; then ic config unset "$node" user.convergent.autorestart
+    if [ "$old_hold" = - ]; then ic config unset "$node" user.convergent.autorestart user.convergent.autorestart.old
     else ic config set "$node" user.convergent.autorestart="$old_hold"; fi
     if [ "$remember" = true ]; then
         ic config set "$node" volatile.last_state.power=RUNNING || exit 1

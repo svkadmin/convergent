@@ -38,7 +38,7 @@ ic() {
     fi
     case $1 in
     query) timeout -k 1 120 incus --force-local "$@" 9>&- 8>&- 7>&- 6>&- ;; # query takes no --project
-    config) timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
+    config) timeout -k 1 120 incus --force-local --project "${ic_project:-default}" "$@" 9>&- 8>&- 7>&- 6>&- ;;
     *) incus --force-local --project default "$@" 9>&- 8>&- 7>&- 6>&- ;;
     esac || {
         code=$?
@@ -188,13 +188,19 @@ autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
     # Once a read timed out on a frozen monitor, the listing would too (cleanup ignores INT); the next run clears.
     [ -z "$frozen" ] || return 1
-    # A killed shutdown drain leaves its holds in owner projects too.
+    # A killed shutdown drain leaves its holds in owner projects too, with the guest's own value saved beside them.
     ic query '/1.0/instances?recursion=1&all-projects=true' >"$work/autorestart-instances" || return
-    jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | "\(.project // "default") \(.name)"' \
+    jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") |
+        "\(.project // "default") \(.name) \(.config["user.convergent.autorestart.old"] // "")"' \
         "$work/autorestart-instances" >"$work/autorestart" || return
-    while read -r project node; do
-        timeout -k 1 120 incus --force-local --project "$project" config unset "$node" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- 6>&- ||
-            { code=$?; fail "incus config unset $node in project $project failed (status $code)" || return "$code"; }
+    while read -r project node old; do
+        ic_project=$project
+        case $old in
+        '') ic config unset "$node" boot.autorestart user.convergent.autorestart || return ;;
+        -) ic config unset "$node" boot.autorestart user.convergent.autorestart user.convergent.autorestart.old || return ;;
+        *) ic config set "$node" boot.autorestart="$old" &&
+            ic config unset "$node" user.convergent.autorestart user.convergent.autorestart.old || return ;;
+        esac
     done <"$work/autorestart"
 )
 volumes() {
@@ -1148,8 +1154,9 @@ wan_debugfs() (
     cd "$work/wan-read" || exit 1
     # Bound directory listings too; dump does not preserve guest ownership or modes.
     case $1 in dump\ *) ulimit -f 128 ;; *) ulimit -f 2048 ;; esac || exit 1
+    # Output past the cap (SIGXFSZ, 153) is the old disk's content too.
     setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
-        debugfs -R "$1" partition >"$2" 2>"$work/wan-debugfs" 9>&- 8>&- 7>&- 6>&- || exit 1
+        debugfs -R "$1" partition >"$2" 2>"$work/wan-debugfs" 9>&- 8>&- 7>&- 6>&- || case $? in 153) exit 2 ;; *) exit 1 ;; esac
     # debugfs reports a damaged filesystem on stderr and exits 0: that alone is the disk's fault (2).
     awk '/^debugfs [0-9][0-9.]* \([0-9A-Za-z -]+\)$/ {next} {exit 1}' "$work/wan-debugfs" || exit 2
 )
@@ -1190,10 +1197,17 @@ wan_extract() {
         }
     ' "$work/wan-list" >"$work/wan-files" || wan_damaged 'wan iwd extraction limits exceeded'
     while IFS=/ read -r inode size name; do
-        wan_debugfs "dump <$inode> out/profile" "$work/wan-output" || die 'cannot extract wan iwd profile'
+        code=0
+        wan_debugfs "dump <$inode> out/profile" "$work/wan-output" || code=$?
+        case $code in 0|2) ;; *) die 'cannot extract wan iwd profile' ;; esac
         file=$work/wan-read/out/profile
-        [ -f "$file" ] && [ ! -L "$file" ] && [ "$(stat -c %s "$file")" = "$size" ] ||
-            die 'incomplete wan iwd profile'
+        # A profile the old disk cannot give whole stays behind, as one with unexpected content does.
+        if [ "$code" = 2 ] || [ ! -f "$file" ] || [ -L "$file" ] || [ "$(stat -c %s "$file")" != "$size" ]; then
+            logger -p user.warning -t guests 'wan: an unreadable Wi-Fi profile was not carried over' 2>/dev/null || :
+            echo "guests: wan Wi-Fi profile $name not carried over: unreadable on the old disk" >&2
+            rm -f -- "$file" || die 'cannot remove wan extraction scratch file'
+            continue
+        fi
         [ ! -s "$work/wan-output" ] || die 'unexpected wan extraction output'
         # The old wan never chooses what the new one parses: a short INI with what iwd keeps for the
         # networks wan joins, or the profile stays behind (that network asks for its passphrase again).
@@ -1233,7 +1247,10 @@ wan_extract() {
 wan_read() {
     disk=$pool/virtual-machines/wan/root.img
     [ -f "$disk" ] || die 'unexpected Incus Btrfs VM disk layout'
-    sfdisk --json "$disk" >"$work/wan-partitions" || die 'cannot read wan partition table'
+    # A disk without a table it can read is the disk's damage; the table stays in memory, so a full scratch is not.
+    command -v sfdisk >/dev/null || die 'sfdisk is missing'
+    table=$(sfdisk --json "$disk") || wan_damaged 'cannot read wan partition table'
+    printf '%s\n' "$table" >"$work/wan-partitions" || die 'cannot save wan partition table'
     range=$(jq -er --arg disk "$disk" --argjson bytes "$(stat -c %s "$disk")" '
         .partitiontable | select(.label == "gpt" and .unit == "sectors") |
         .sectorsize as $s | select($s == 512 or $s == 4096) |
@@ -1510,6 +1527,9 @@ rebuild() {
             [ -z "$(find "$staged/$booted/fw" -type l -print)" ] || die "$staged/$booted/fw contains symlinks"
             fw_either=$image_dir image_dir=$staged/$booted/fw
             verify_image fw
+        else
+            # Pruned or never staged (a manual update): the installed release is not what was committed.
+            die "release $booted is not staged for the committed $1 update; rerun the update"
         fi
     fi
     [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
@@ -1517,8 +1537,11 @@ rebuild() {
     [ ! -f "$state/leases/held" ] || leases_resume "$peer" || die "cannot resume work DHCP on $peer"
     # An interrupted rebuild of this stopped node is the way back to a healthy pair: then an unhealthy peer only warns.
     if ! fw_check "$peer"; then
-        awk -v node="$1" '$1 == node && $2 ~ /-rebuild$/ {found=1} END {exit !found}' "$state/pending" 2>/dev/null && stopped "$1" ||
+        awk -v node="$1" '$1 == node && $2 ~ /-rebuild$/ {found=1} END {exit !found}' "$state/pending" 2>/dev/null ||
             die "$peer must be healthy before rebuilding $1"
+        # Firewalls autostart after a power loss: the redo needs its target stopped.
+        stopped "$1" ||
+            die "$peer must be healthy before rebuilding a running $1; stop it (sudo incus --force-local --project default stop --force $1) and rerun"
         # The CARP password check, the release and the pair below still need its answer.
         echo "guests: WARNING: $peer is unhealthy; redoing the interrupted rebuild of $1 ($peer must still answer SSH)" >&2
         logger -p user.warning -t guests "rebuild $1: $peer unhealthy; redoing the interrupted rebuild" 2>/dev/null || :

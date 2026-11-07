@@ -427,7 +427,8 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
 `convergent-watchdog` feeds the 180 s watchdog for 10 min; a pass disarms it at any time, and an
 already-good release disarms it before the checks. On shutdown `convergent-setup` drains work
 VMs, browsers and Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before
-forcing. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
+forcing. A drain cut short leaves autorestart holds; the next guests command clears them and
+restores each guest's own setting. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
 `stop` is refused.
 
 #### Recovery and Rescue entries
