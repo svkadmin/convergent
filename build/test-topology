@@ -251,7 +251,8 @@ echo 'test-topology: recovery removes only stale probe routes'
     die() { echo "$*" >&2; exit 1; }
     logger() { :; }
     verify_image() { :; }
-    guest_reply() { sha256sum "$state/carp-pass" | awk '{print $1}'; }
+    # silent: the peer does not answer SSH at all.
+    guest_reply() { [ ! -e "$scratch/$3.silent" ] || return 1; sha256sum "$state/carp-pass" | awk '{print $1}'; }
     carp() { [ ! -e "$scratch/$1.unhealthy" ]; }
     # A handed-off (demoted) fw1 leaves fw2 MASTER.
     pair() { carp "$1" && carp "$2" && if [ -e "$state/fw.handoff" ]; then [ "$1" = fw2 ]; else [ "$1" = fw1 ]; fi; }
@@ -267,7 +268,7 @@ echo 'test-topology: recovery removes only stale probe routes'
     soak() { :; }
     backup_soak() { :; }
     clean() { rm -rf "$state/pending" "$state/committed" "$state/fw.rebuilt" "$state/fw.handoff" "$state/dns.stale" "$scratch"/fw?.unhealthy \
-        "$scratch"/fw?.unchecked "$scratch"/fw?.stopped "$scratch/updates"; : >"$log"; }
+        "$scratch"/fw?.unchecked "$scratch"/fw?.stopped "$scratch"/fw?.silent "$scratch/updates"; : >"$log"; }
     finished() { [ ! -e "$state/pending" ] && [ ! -e "$state/committed" ] && [ ! -e "$state/fw.handoff" ] && grep -qx commit "$log"; }
     # Killed between the fw2 commit and fw1's journal: fw1 demoted, nothing pending.
     clean
@@ -329,17 +330,23 @@ echo 'test-topology: recovery removes only stale probe routes'
         grep -q "is not root's private directory" "$scratch/err"
     done
     # An interrupted rebuild of a stopped node goes on past a peer that fails its health check: the redo
-    # restores the pair. A running target, or no rebuild journal, still needs a healthy peer.
-    for case in redo running fresh; do
+    # restores the pair. A running target, or no rebuild journal, still needs a healthy peer; a peer that
+    # does not answer SSH is named, not a bare exit after the warning.
+    for case in redo running fresh silent; do
         clean
         [ "$case" = fresh ] || printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/pending"
         [ "$case" = running ] || touch "$scratch/fw1.stopped"
         touch "$scratch/fw2.unchecked"
+        [ "$case" != silent ] || touch "$scratch/fw2.silent"
         if [ "$case" = redo ]; then
             (rebuild fw1) >/dev/null 2>"$scratch/err"
             finished
             grep -qx "replace fw1 pending=1 $scratch/images" "$log"
-            grep -qx 'guests: WARNING: fw2 is unhealthy; redoing the interrupted rebuild of fw1' "$scratch/err"
+            grep -qx 'guests: WARNING: fw2 is unhealthy; redoing the interrupted rebuild of fw1 (fw2 must still answer SSH)' "$scratch/err"
+        elif [ "$case" = silent ]; then
+            if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
+            grep -qx 'fw2 does not answer SSH; it must before rebuilding fw1' "$scratch/err"
+            if grep -q '^replace ' "$log"; then exit 1; fi
         else
             if (rebuild fw1) 2>"$scratch/err"; then exit 1; fi
             grep -qx 'fw2 must be healthy before rebuilding fw1' "$scratch/err"
@@ -386,7 +393,8 @@ echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhea
         echo wan_read >>"$log"
         mkdir -p "$work/iwd"
         echo saved >"$work/iwd/home.psk"
-        [ ! -e "$scratch/wan.damaged" ] || die 'cannot list wan iwd store'
+        [ ! -e "$scratch/wan.damaged" ] || exit 2
+        [ ! -e "$scratch/wan.host" ] || die 'cannot copy wan partition'
     }
     replace_root() { echo "replace_root $guest starting=$starting" >>"$log"; }
     # Resumed: the journal redoes the node; nothing may start it.
@@ -395,10 +403,21 @@ echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhea
     replace fw1
     grep -qx 'replace_root fw1 starting=' "$log"
     rebuilding= pending= starting=
-    for case in intact damaged unknown; do
+    for case in intact damaged host unknown; do
         : >"$log"
-        rm -rf "$state/iwd.wan" "$state/pending" "$state/preparing" "$work/iwd" "$scratch/wan.damaged" "$scratch/wan.unknown"
+        rm -rf "$state/iwd.wan" "$state/pending" "$state/preparing" "$work/iwd" "$scratch"/wan.*
         [ "$case" = intact ] || touch "$scratch/wan.$case"
+        if [ "$case" = host ]; then
+            # A host-side failure keeps the saved networks and journals nothing: a rerun reads the disk again.
+            mkdir "$state/iwd.wan"
+            echo kept >"$state/iwd.wan/home.psk"
+            if (replace wan) 2>"$scratch/err"; then exit 1; fi
+            grep -qx 'cannot read the old wan disk' "$scratch/err"
+            [ "$(cat "$state/iwd.wan/home.psk")" = kept ] || exit 1
+            [ ! -e "$state/pending" ] || exit 1
+            if grep -q 'replace_root' "$log"; then exit 1; fi
+            continue
+        fi
         if [ "$case" = unknown ]; then
             if (replace wan) 2>"$scratch/err"; then exit 1; fi
             grep -qx 'refusing to read the wan disk: wan is not stopped' "$scratch/err"
@@ -419,6 +438,30 @@ echo 'test-topology: rebuild releases a journal-less handoff and redoes an unhea
     rm -rf "$state/iwd.wan" "$state/pending" "$state/preparing" "$state/known_hosts.before" "$scratch/wan.damaged"
 )
 echo 'test-topology: replace keeps a redo stopped and rebuilds wan from a damaged old disk'
+# What the old disk holds is its damage (2); a debugfs that does not run is the host's (1).
+(
+    sed -n '/^wan_debugfs() (/,/^)/p; /^wan_damaged() /p; /^wan_listing() {/,/^}/p' "$repo/tools/guests" >"$scratch/wan-read"
+    sh -n "$scratch/wan-read"
+    [ "$(grep -c '^wan_[a-z]*() ' "$scratch/wan-read")" = 3 ] || exit 1
+    . "$scratch/wan-read"
+    die() { echo "$*" >&2; exit 1; }
+    mkdir -p "$work/wan-read"
+    setpriv() {
+        case $(cat "$scratch/debugfs") in
+        ok|garbled) echo 'debugfs 1.47.1 (20-May-2024)' >&2; echo /2/040755/0/0/.// ;;
+        damaged) echo 'partition: Bad magic number in super-block while opening filesystem' >&2 ;;
+        missing) return 127 ;;
+        esac
+        [ "$(cat "$scratch/debugfs")" != ok ] || echo /2/040755/0/0/..//
+    }
+    for case in ok:0 damaged:2 garbled:2 missing:1; do
+        echo "${case%:*}" >"$scratch/debugfs"
+        rc=0
+        (wan_listing /var/lib) 2>/dev/null || rc=$?
+        [ "$rc" = "${case#*:}" ] || { echo "wan_listing ${case%:*}: exit $rc" >&2; exit 1; }
+    done
+)
+echo 'test-topology: a damaged wan disk is told apart from a host-side read failure'
 # A committed wan or svc that stays unhealthy is redone in place by its own update, never rolled back.
 (
     awk '/^update\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" >"$scratch/update"

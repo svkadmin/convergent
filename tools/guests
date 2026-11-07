@@ -1150,10 +1150,13 @@ wan_debugfs() (
     case $1 in dump\ *) ulimit -f 128 ;; *) ulimit -f 2048 ;; esac || exit 1
     setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
         debugfs -R "$1" partition >"$2" 2>"$work/wan-debugfs" 9>&- 8>&- 7>&- 6>&- || exit 1
-    awk '/^debugfs [0-9][0-9.]* \([0-9A-Za-z -]+\)$/ {next} {exit 1}' "$work/wan-debugfs"
+    # debugfs reports a damaged filesystem on stderr and exits 0: that alone is the disk's fault (2).
+    awk '/^debugfs [0-9][0-9.]* \([0-9A-Za-z -]+\)$/ {next} {exit 1}' "$work/wan-debugfs" || exit 2
 )
+# Only what the old disk holds may cost its networks (2); a host-side failure (scratch, tools) dies.
+wan_damaged() { fail "$*" || :; exit 2; }
 wan_listing() {
-    wan_debugfs "ls -p $1" "$work/wan-list" || die 'cannot list wan iwd store'
+    wan_debugfs "ls -p $1" "$work/wan-list" || case $? in 2) wan_damaged 'cannot list wan iwd store' ;; *) die 'cannot list wan iwd store' ;; esac
     awk -F/ '
         /^$/ {next}
         NF != 8 || $1 != "" || $8 != "" || $2 !~ /^[0-9]+$/ ||
@@ -1164,13 +1167,13 @@ wan_listing() {
         substr($3, 1, 2) == "04" {if ($7 != "") exit 1; dirs[$6]++; next}
         $7 !~ /^[0-9]+$/ {exit 1}
         END {if (dirs["."] != 1 || dirs[".."] != 1) exit 1}
-    ' "$work/wan-list" || die 'invalid wan directory listing'
+    ' "$work/wan-list" || wan_damaged 'invalid wan directory listing'
 }
 wan_extract() {
     # Absence is established by a successful parent listing, never an error string.
     wan_listing /var/lib
     inode=$(awk -F/ '$2 != 0 && $6 == "iwd" {if (substr($3, 1, 2) != "04") exit 1; print $2}' "$work/wan-list") ||
-        die 'wan iwd is not a directory'
+        wan_damaged 'wan iwd is not a directory'
     [ -n "$inode" ] || return 0
     wan_listing "<$inode>"
     awk -F/ '
@@ -1185,7 +1188,7 @@ wan_extract() {
             if ($7 > 65536 || ++count > 256 || (total += $7) > 4194304) exit 1
             print $2 "/" $7 "/" $6
         }
-    ' "$work/wan-list" >"$work/wan-files" || die 'wan iwd extraction limits exceeded'
+    ' "$work/wan-list" >"$work/wan-files" || wan_damaged 'wan iwd extraction limits exceeded'
     while IFS=/ read -r inode size name; do
         wan_debugfs "dump <$inode> out/profile" "$work/wan-output" || die 'cannot extract wan iwd profile'
         file=$work/wan-read/out/profile
@@ -1237,7 +1240,7 @@ wan_read() {
         [.partitions[] | select(.node == ($disk + "2"))] | select(length == 1) | .[0] |
         select(.start > 0 and .size > 0 and .start == (.start | floor) and .size == (.size | floor)) |
         select((.start + .size) <= ($bytes / $s | floor)) |
-        "\(.start * $s) \(.size * $s)"' "$work/wan-partitions") || die 'invalid wan partition 2'
+        "\(.start * $s) \(.size * $s)"' "$work/wan-partitions") || wan_damaged 'invalid wan partition 2'
     read -r offset bytes <<EOF
 $range
 EOF
@@ -1346,8 +1349,10 @@ replace() {
     if [ "$guest" = wan ]; then
         # The networks outlive the old disk; both the new disk and a rollback get them. A damaged
         # disk must not block the only internet guest's rebuild: its networks then need their passphrase again.
+        # A host-side failure keeps them: nothing is journaled yet, and a rerun reads the disk again.
         stopped wan || die 'refusing to read the wan disk: wan is not stopped'
         (wan_read) || {
+            [ $? = 2 ] || die 'cannot read the old wan disk'
             echo 'guests: WARNING: cannot read the old wan disk; Wi-Fi networks need their passphrase again' >&2
             logger -p user.warning -t guests 'wan: old disk unreadable; Wi-Fi networks not carried over' 2>/dev/null || :
             rm -rf "$work/wan-read" "$work/iwd" && mkdir "$work/iwd" || die 'cannot reset the wan iwd store'
@@ -1514,11 +1519,13 @@ rebuild() {
     if ! fw_check "$peer"; then
         awk -v node="$1" '$1 == node && $2 ~ /-rebuild$/ {found=1} END {exit !found}' "$state/pending" 2>/dev/null && stopped "$1" ||
             die "$peer must be healthy before rebuilding $1"
-        echo "guests: WARNING: $peer is unhealthy; redoing the interrupted rebuild of $1" >&2
+        # The CARP password check, the release and the pair below still need its answer.
+        echo "guests: WARNING: $peer is unhealthy; redoing the interrupted rebuild of $1 ($peer must still answer SSH)" >&2
         logger -p user.warning -t guests "rebuild $1: $peer unhealthy; redoing the interrupted rebuild" 2>/dev/null || :
     fi
     fw_either=
-    actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
+    actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q") ||
+        die "$peer does not answer SSH; it must before rebuilding $1"
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
     # CARP preempts within seconds of the release: wait for it before judging the pair.
     [ "$1" != fw2 ] || { fw_release && retry carp fw1 MASTER; }

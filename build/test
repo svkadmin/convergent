@@ -3698,7 +3698,7 @@ wan_wifi() (
         n=0
         until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done
     }
-    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
+    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^wan_damaged() /p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
     trap 'code=$?; unmount_root || exit 1; rm -rf "$work";
         running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
     trap 'exit 1' HUP INT TERM

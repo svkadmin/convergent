@@ -455,7 +455,7 @@ stages root-only copies on encrypted host storage, which can remain until recove
 completes. A saved profile carries over only if it is a WPA-PSK, SAE or open network in the form
 iwd writes for a joined one (at most 4 KiB; no EAP). Others are logged and must be joined again.
 If the old disk cannot be read, the replacement goes on with a warning and every network must be
-joined again.
+joined again. A host-side failure (scratch space, tools) stops it instead; rerun it once that is fixed.
 
 ## Captive portals
 
@@ -652,7 +652,7 @@ The rebuild waits for the guest and DNS locks, checks and seeds the replacement,
 roles and pushes the stored DNS. It first starts a `wan` or `svc` that Incus left stopped or
 paused. A target that Incus cannot stop is ended by its verified QEMU pid. Browsers may stay open.
 After an interruption, repeat the same command to resume; a resumed rebuild of a stopped target
-goes on with a warning when the peer fails its health check. A node a firewall update committed
+goes on with a warning when the peer fails its health check but still answers SSH. A node a firewall update committed
 but did not record yet is rebuilt from the staged release. How the pair is replaced:
 [ARCHITECTURE 7.2](ARCHITECTURE.md#72-update).
 
