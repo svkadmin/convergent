@@ -266,6 +266,24 @@ done
 if grep -q '^-w /etc/' "$rules"; then die 'audit watches covered inodes'; fi
 echo 'test-slot-backup: audit backing directory, failure gates and watches passed'
 
+# Every Btrfs state mount is nosuid, the Incus pool included.
+sed -n '/^opts=noatime,nodev,nosuid$/,/could not mount the writable places"$/p' \
+    "$repo/initramfs/90convergent/convergent-state.sh" >"$work/mounts"
+[ -s "$work/mounts" ] || die 'missing state mounts'
+sh -n "$work/mounts"
+(
+    NEWROOT=$work/root release=1
+    mkdir() { :; }
+    mount() { echo "mount $*" >>"$work/calls"; }
+    : >"$work/calls"
+    . "$work/mounts"
+    grep -qx "mount -t btrfs -o subvol=pool,noatime,nodev,nosuid /dev/mapper/cv-state $NEWROOT/var/lib/incus-pool" \
+        "$work/calls" || die 'the pool mount allows setuid'
+    awk '/^mount -t btrfs / {n++; if ($5 !~ /(^|,)nosuid(,|$)/) bad=1} END {exit (bad || n != 3)}' "$work/calls" ||
+        die 'a state mount allows setuid'
+)
+echo 'test-slot-backup: nosuid state mounts passed'
+
 # Run the boot cleanup, including both locations and the legacy empty placeholder.
 sed -n '/^# As in the removed backup tool/,/^# Prepare this release/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/boot-cleanup"
 [ -s "$work/boot-cleanup" ] || die 'missing boot cleanup'
