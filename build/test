@@ -371,13 +371,13 @@ if [ "${1:-}" = --install-options ]; then
 		case $fault in safe|loop) [ -f "$work/erase" ] ;; esac
 	done
 	)
-	# SATA must be available before dm-mod.waitfor can enter userspace.
+	# SATA must be available before dm-mod.waitfor can enter userspace; the watchdog service reads sysfs.
 	sed -n '/^for want in CONFIG_VLAN_8021Q=y/,/^done$/p' "$here/image" >"$work/kernel-check"
 	[ -s "$work/kernel-check" ]
 	sh -n "$work/kernel-check"
 	config=$here/kernel.config
 	(. "$work/kernel-check")
-	for symbol in ATA SATA_AHCI; do
+	for symbol in ATA SATA_AHCI WATCHDOG_SYSFS; do
 		grep -qx "CONFIG_$symbol=y" "$here/kernel.config"
 		for value in m n missing; do
 			sed "/^CONFIG_$symbol=/d" "$here/kernel.config" >"$work/kernel.config"
@@ -1440,7 +1440,9 @@ for t in 1000 1060 1120 1180; do tick "$t"; done
 grep -q 'default restart fw2 --force' "$work/calls"
 [ "$(grep -c '^resume ' "$work/calls")" = 4 ] && [ "$(grep -c '^resume fw1$' "$work/calls")" = 4 ] || exit 1
 [ -e "$work/state/guests/leases/held" ] || exit 1
-rm "$work/state/guests/leases/held"
+# What fw1 handed out alone queued a lease reconcile (exercised below): out of the next tick's way.
+[ "$(cat "$work/state/guests/leases/reconcile")" = 0 ] || exit 1
+rm "$work/state/guests/leases/held" "$work/state/guests/leases/reconcile"
 if heal_probe fw1; then exit 1; fi
 touch "$work/state/guests/leases/held"
 test_target=BACKUP
@@ -1705,10 +1707,13 @@ grep -q 'default restart fw2 --force' "$work/calls"
 grep -q 'work DHCP resume failed on fw1 (7 in a row); lease hold retained' "$work/run/firewall-heal/event"
 [ ! -e "$work/run/firewall-heal/resume.failed.fw2" ] && [ "$(cat "$work/run/firewall-heal/resume.failed.fw1")" = 7 ] || exit 1
 if grep -q '^resume fw2$' "$work/calls"; then exit 1; fi
-# Its success clears that count; the hold stays for fw2.
+rm -f "$leases/reconcile"
+# Its success clears that count; the hold stays for fw2, and a merge is queued for when both answer.
 tick 1240
 [ ! -e "$work/run/firewall-heal/resume.failed.fw1" ] && [ -e "$leases/held" ] || exit 1
-rm "$leases/held"
+[ "$(cat "$leases/reconcile")" = 0 ] || exit 1
+grep -q 'fw1 allocates alone' "$work/run/firewall-heal/event"
+rm "$leases/held" "$leases/reconcile"
 # A pair Incus left entirely stopped: after 180 s in a row both start, bounded, under both locks, with attempts
 # and grace recorded.
 rm -rf "$work/run/firewall-heal"

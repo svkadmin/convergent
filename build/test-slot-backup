@@ -452,3 +452,35 @@ for sample in ok busy-auto busy failed; do
     esac || die "check slot status: $sample"
 done
 echo 'test-slot-backup: busy slot lock retries the scan passed'
+
+# Rescue USB sticks: ext4 and Btrfs links are not followed, read-only or not, as in sys update usb.
+sed -n '/^usb_mount() {/,/^}/p' "$repo/initramfs/91convergent-rescue/menu.sh" | sed 's/\[ -b /[ -n /' >"$work/usb-mount"
+grep -q 'mount -t "$fs"' "$work/usb-mount" || die 'missing rescue usb_mount'
+sh -n "$work/usb-mount"
+(
+    . "$work/usb-mount"
+    lsblk() {
+        case $* in
+        '-p -o NAME,SIZE,FSTYPE,TRAN,MOUNTPOINTS' | '-nro MOUNTPOINTS /dev/sdz1') ;;
+        '-snro TRAN /dev/sdz1') echo usb ;;
+        '-snrpo NAME /dev/disk/by-partlabel/cv-state') printf '%s\n' /dev/nvme0n1p3 /dev/nvme0n1 ;;
+        '-snrpo NAME /dev/sdz1') printf '%s\n' /dev/sdz1 /dev/sdz ;;
+        *) exit 97 ;;
+        esac
+    }
+    readlink() { [ "$*" = '-f /dev/sdz1' ] || exit 97; echo /dev/sdz1; }
+    blkid() { [ "$*" = '-s TYPE -o value /dev/sdz1' ] || exit 97; echo "$fs_type"; }
+    mount() { printf '%s\n' "$*" >"$work/usb-mounted"; }
+    usb=$work/usb
+    echo /dev/sdz1 >"$work/usb-device"
+    for want in ext4:ro:,noload,nosymfollow ext4:rw:,nosymfollow btrfs:ro:,nologreplay,nosymfollow \
+        btrfs:rw:,nosymfollow vfat:ro: exfat:rw:; do
+        fs_type=${want%%:*} mode=${want#*:}
+        extra=${mode#*:} mode=${mode%%:*}
+        rm -f "$work/usb-mounted"
+        usb_mount "$mode" <"$work/usb-device" >/dev/null || die "rescue usb_mount failed: $want"
+        [ "$(cat "$work/usb-mounted")" = "-t $fs_type -o $mode,nodev,nosuid,noexec$extra /dev/sdz1 $usb" ] ||
+            die "rescue usb_mount options: $want: $(cat "$work/usb-mounted")"
+    done
+)
+echo 'test-slot-backup: rescue USB mounts passed'

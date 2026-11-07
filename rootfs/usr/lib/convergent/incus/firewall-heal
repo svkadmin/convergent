@@ -130,7 +130,15 @@ heal_resume() (
     # resume is retried every run regardless, and a node's restart or a hold gone resets its count.
     if leases_resume "$@"; then
         # Retried every run while the peer is down: quiet. A node not RUNNING keeps its count, as below.
-        if [ "$#" = 1 ]; then [ -n "${lease_waiting:-}" ] || rm -f "$heal/resume.failed.$1"; exit 0; fi
+        if [ "$#" = 1 ]; then
+            [ -z "${lease_waiting:-}" ] || exit 0
+            rm -f "$heal/resume.failed.$1"
+            # What it hands out alone its peer never saw: the full resume is followed by a merge.
+            [ ! -f "$state/leases/reconcile" ] || exit 0
+            echo 0 >"$state/leases/reconcile" && sync || exit 1
+            heal_note "$1 allocates alone; work DHCP leases reconcile once both nodes answer"
+            exit 0
+        fi
         # A node not RUNNING per Incus (a stalled read) keeps the hold and the counts: reset, they never
         # reached five while a failure alternated with it.
         [ ! -f "$state/leases/held" ] || exit 1

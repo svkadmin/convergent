@@ -293,10 +293,13 @@ EOF
 
     # Only the device probe and daemon command are mocked for stop.
     sed -n '/^stop() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
-        sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ -c /[ -f /' \
-            -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
+        sed -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
+            -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" -e 's/start-stop-daemon/mock_daemon/' >"$work/stop"
     check_script "$work/stop"
+    grep -q "$work/sys-watchdog/watchdog0/nowayout" "$work/stop" || die 'watchdog nowayout read moved'
     . "$work/stop"
+    mkdir -p "$work/sys-watchdog/watchdog0"
+    echo active >"$work/sys-watchdog/watchdog0/state"; echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
     mock_daemon() {
         printf '%s\n' "$*" >"$work/daemon"
         [ "$daemon_status" = 0 ] || echo 'start-stop-daemon: no matching processes found' >&2
@@ -311,6 +314,17 @@ EOF
         # bless disarms an exited feeder without a message on the owner's terminal.
         [ ! -s "$work/stop.err" ]
     done
+    # No V for an idle one (opening it starts it) nor under nowayout (ignored, and it stays running).
+    for device in inactive:0 active:1 active:; do
+        echo "${device%:*}" >"$work/sys-watchdog/watchdog0/state"
+        echo "${device#*:}" >"$work/sys-watchdog/watchdog0/nowayout"
+        [ -n "${device#*:}" ] || rm "$work/sys-watchdog/watchdog0/nowayout"
+        : >"$work/watchdog"
+        daemon_status=1
+        stop 2>/dev/null || die "watchdog stop failed: $device"
+        [ ! -s "$work/watchdog" ] || die "watchdog closed on stop: $device"
+    done
+    echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
 
     # A start after bless (an owner's restart) must not arm a reset on a good release.
     sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
@@ -357,6 +371,11 @@ EOF
     : >"$work/watchdog"
     ( ewarn() { :; }; logger() { :; }; start )
     [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'idle watchdog opened'
+    # Nor one under nowayout: the V is ignored.
+    echo active >"$work/sys-watchdog/watchdog0/state"; echo 1 >"$work/sys-watchdog/watchdog0/nowayout"
+    : >"$work/watchdog"
+    ( ewarn() { :; }; logger() { :; }; start )
+    [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'watchdog closed under nowayout'
 )
 echo 'test-boot-privacy: watchdog passed'
 

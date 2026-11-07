@@ -26,8 +26,9 @@ usb_mount() {
 	fs=$(blkid -s TYPE -o value "$device") || return 1
 	options=$1,nodev,nosuid,noexec
 	case $fs in
-	ext4) [ "$1" != ro ] || options=$options,noload ;;
-	btrfs) [ "$1" != ro ] || options=$options,nologreplay ;;
+	# Links on the stick are not followed, as in sys update usb.
+	ext4) [ "$1" != ro ] || options=$options,noload; options=$options,nosymfollow ;;
+	btrfs) [ "$1" != ro ] || options=$options,nologreplay; options=$options,nosymfollow ;;
 	vfat | exfat) ;;
 	*) echo 'Use a FAT, exFAT, ext4 or Btrfs USB filesystem.'; return 1 ;;
 	esac
