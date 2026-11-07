@@ -414,8 +414,8 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
 5. The initramfs snapshots the good release's `var` for a new release, or seeds it from the image
    on a first install. It mounts `var`, `home` and the pool, merges missing system accounts below
    ID 1000 (existing entries win; collisions warn), adds the owner to dialout and binds the listed
-   `etc` files. `var` and `home` use nodev,nosuid; the pool nodev; `tmp` is an 8 GiB
-   nodev,nosuid,noexec tmpfs.
+   `etc` files. `var`, `home` and the pool use nodev,nosuid (a container's setuid file never runs
+   as host root); `tmp` is an 8 GiB nodev,nosuid,noexec tmpfs.
 6. OpenRC starts the host and Incus. `fw1`, `fw2`, `wan` and `svc` autostart together, with no
    priority or delay set. Startup needs no DNS before Unbound.
 7. `slot bless` runs after every service. It raises highest if lower, removes the counter, disarms
