@@ -188,11 +188,13 @@ autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
     # Once a read timed out on a frozen monitor, the listing would too (cleanup ignores INT); the next run clears.
     [ -z "$frozen" ] || return 1
-    ic query '/1.0/instances?recursion=1&project=default' >"$work/autorestart-instances" || return
-    jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | .name' \
+    # A killed shutdown drain leaves its holds in owner projects too.
+    ic query '/1.0/instances?recursion=1&all-projects=true' >"$work/autorestart-instances" || return
+    jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") | "\(.project // "default") \(.name)"' \
         "$work/autorestart-instances" >"$work/autorestart" || return
-    while read -r node; do
-        ic config unset "$node" boot.autorestart user.convergent.autorestart || return
+    while read -r project node; do
+        timeout -k 1 120 incus --force-local --project "$project" config unset "$node" boot.autorestart user.convergent.autorestart 9>&- 8>&- 7>&- 6>&- ||
+            { code=$?; fail "incus config unset $node in project $project failed (status $code)" || return "$code"; }
     done <"$work/autorestart"
 )
 volumes() {
@@ -301,6 +303,8 @@ cleanup() {
     clear_probes || { fail 'cannot remove probe routes'; result=1; }
     if [ -n "${recovering:-}" ]; then
         if [ -f "$state/committed" ]; then commit_update || { fail 'cannot finish committed update'; result=1; }; fi
+        # Both browsers passed: finish their commit rather than leave them stopped under pending.
+        if [ -f "$state/browser.ready" ]; then browser_commit || { fail 'cannot finish browser commit'; result=1; }; fi
         # Profiles first: the restored instance starts with what it ran with.
         if [ ! -f "$state/browser.ready" ] && [ ! -f "$state/committed" ]; then
             if [ "$result" != 0 ] && [ -d "$state/profiles.before" ]; then
@@ -313,6 +317,11 @@ cleanup() {
             fi
         fi
     fi
+    # A failed firewall rebuild has no volumes to undo: its preparation journal would only hold the heal.
+    if [ -n "${rebuilding:-}" ] && [ -z "${recovering:-}" ] && [ -f "$state/preparing" ] &&
+        read -r prep_guest prep_rest <"$state/preparing" && [ "$prep_guest" = "$rebuilding" ]; then
+        rm "$state/preparing" && sync || { fail 'cannot remove the rebuild preparation journal'; result=1; }
+    fi
     if [ -n "$starting" ] && ! running "$starting"; then start_guest "$starting" || { fail "cannot restart $starting"; result=1; }; fi
     if [ -n "$work" ] && [ -f "$state/leases/held" ]; then
         for peer in fw1 fw2; do if running "$peer"; then retry reachable "$peer" || :; fi; done
@@ -320,7 +329,9 @@ cleanup() {
     [ -z "$work" ] || leases_resume || result=1
     [ -z "$work" ] || dns_restore || result=1
     [ -z "$work" ] || autorestart_clear || { fail 'cannot clear autorestart overrides; rerun sys guests update'; result=1; }
-    [ -z "$work" ] || rm -rf "$work" || { fail "cannot remove $work"; result=1; }
+    # A rollback above may have mounted a wan root below the scratch directory again.
+    unmount_root || { fail "cannot detach root mount or loop device"; result=1; }
+    [ -z "$work" ] || rm -rf --one-file-system "$work" || { fail "cannot remove $work"; result=1; }
     [ "$result" = 0 ] || printf 'guests: %s: exiting with status %s (original status %s)\n' "$failed_step" "$result" "$failed_status" >&2
     [ "$result" = 0 ] || logger -p user.err -t guests "$failed_step: failed (status $result, original $failed_status); cleanup finished" 2>/dev/null || :
     if [ -n "$applying" ]; then
@@ -740,7 +751,11 @@ fw_check() {
     guest_reply 65536 rsh "$1" 'ifconfig pfsync0' >"$work/pfsync" || return
     grep -q RUNNING "$work/pfsync" && grep -q 'defer: on' "$work/pfsync" || { fail 'pfsync is not running with defer enabled'; return 1; }
     rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || { fail 'PF is not enabled'; return 1; }
-    [ "$(guest_reply 128 rsh "$1" 'sha256 -q /etc/pf.conf')" = "$(cat "$image_dir/$1.pf.sha256")" ] || { fail 'pf.conf digest differs from release'; return 1; }
+    pf_digest=$(guest_reply 128 rsh "$1" 'sha256 -q /etc/pf.conf') || pf_digest=
+    # A rebuild's peer beside an unrecorded committed fw update may run either release.
+    [ "$pf_digest" = "$(cat "$image_dir/$1.pf.sha256")" ] ||
+        { [ -n "${fw_either:-}" ] && [ "$pf_digest" = "$(cat "$fw_either/$1.pf.sha256")" ]; } ||
+        { fail 'pf.conf digest differs from release'; return 1; }
     if [ "${2:-}" = release ]; then
         [ "$(guest_reply 128 rsh "$1" "pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q")" = "$(cat "$image_dir/$1.rules.sha256")" ] || { fail 'loaded PF rules digest differs from release'; return 1; }
     fi
@@ -847,7 +862,11 @@ seed_attach() {
     seed_source=$state/seeds/$1.img
     case $1 in
     svc)
-        [ -f "$state/seeds/svc.autostart" ] || ic config get svc boot.autostart >"$state/seeds/svc.autostart" || return
+        # Saved whole or not at all: a failed read must not leave an empty saved value.
+        if [ ! -f "$state/seeds/svc.autostart" ]; then
+            ic config get svc boot.autostart >"$state/seeds/svc.autostart.new" &&
+                mv "$state/seeds/svc.autostart.new" "$state/seeds/svc.autostart" || return
+        fi
         ic config set svc boot.autostart=false || return
         losetup -j "$seed_source" >"$work/seed-loops" || return
         seed_loops=$(cut -d: -f1 "$work/seed-loops") || return
@@ -1207,11 +1226,11 @@ wan_extract() {
         rm "$file" || die 'cannot remove wan extraction scratch file'
     done <"$work/wan-files"
 }
+# The caller confirms wan stopped and runs this in a subshell: every step checks its own status.
 wan_read() {
-    running wan && die 'refusing to read a running wan disk'
     disk=$pool/virtual-machines/wan/root.img
     [ -f "$disk" ] || die 'unexpected Incus Btrfs VM disk layout'
-    sfdisk --json "$disk" >"$work/wan-partitions"
+    sfdisk --json "$disk" >"$work/wan-partitions" || die 'cannot read wan partition table'
     range=$(jq -er --arg disk "$disk" --argjson bytes "$(stat -c %s "$disk")" '
         .partitiontable | select(.label == "gpt" and .unit == "sectors") |
         .sectorsize as $s | select($s == 512 or $s == 4096) |
@@ -1222,19 +1241,19 @@ wan_read() {
     read -r offset bytes <<EOF
 $range
 EOF
-    mkdir -p "$work/wan-read/out" "$work/iwd"
+    mkdir -p "$work/wan-read/out" "$work/iwd" || die 'cannot create wan read scratch'
     dd if="$disk" of="$work/wan-read/partition" bs=4M iflag=skip_bytes,count_bytes \
-        skip="$offset" count="$bytes" status=none
+        skip="$offset" count="$bytes" status=none || die 'cannot copy wan partition'
     [ "$(stat -c %s "$work/wan-read/partition")" = "$bytes" ] || die 'short wan partition copy'
-    chown 65534:65534 "$work/wan-read/partition" "$work/wan-read/out"
-    chmod 0400 "$work/wan-read/partition"
-    chmod 0700 "$work/wan-read/out"
-    chmod 0711 "$work/wan-read"
+    chown 65534:65534 "$work/wan-read/partition" "$work/wan-read/out" &&
+        chmod 0400 "$work/wan-read/partition" && chmod 0700 "$work/wan-read/out" && chmod 0711 "$work/wan-read" ||
+        die 'cannot prepare wan read scratch'
     wan_extract
-    rm -rf "$work/wan-read"
+    rm -rf "$work/wan-read" || die 'cannot remove wan read scratch'
 }
 wan_mount() {
-    running wan && die 'refusing to mount a running wan disk'
+    # A failed state query is no proof that QEMU has let go of the disk.
+    stopped wan || die 'refusing to mount the wan disk: wan is not stopped'
     [ -f "$pool/virtual-machines/wan/root.img" ] || die 'unexpected Incus Btrfs VM disk layout'
     mkdir -p "$work/root" || return
     loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img") || return
@@ -1293,6 +1312,8 @@ replace() {
     case $guest in fw1|fw2) leases_hold ;; esac
     autorestart_hold "$guest"
     if [ -n "$rebuilding" ] && [ -n "$pending" ]; then
+        # The journal redoes this guest: a failure below must not start its seedless half-rebuilt root.
+        starting=
         # Only a positively stopped guest skips the stop: a frozen or unreadable one goes through it.
         stopped "$guest" || stop_guest "$guest"
         seed_remove "$guest"
@@ -1323,8 +1344,14 @@ replace() {
     esac
     for volume in $(volumes "$guest"); do locked ic storage volume snapshot create default "$volume" "$snap" --no-expiry; done
     if [ "$guest" = wan ]; then
-        # The networks outlive the old disk; both the new disk and a rollback get them.
-        wan_read
+        # The networks outlive the old disk; both the new disk and a rollback get them. A damaged
+        # disk must not block the only internet guest's rebuild: its networks then need their passphrase again.
+        stopped wan || die 'refusing to read the wan disk: wan is not stopped'
+        (wan_read) || {
+            echo 'guests: WARNING: cannot read the old wan disk; Wi-Fi networks need their passphrase again' >&2
+            logger -p user.warning -t guests 'wan: old disk unreadable; Wi-Fi networks not carried over' 2>/dev/null || :
+            rm -rf "$work/wan-read" "$work/iwd" && mkdir "$work/iwd" || die 'cannot reset the wan iwd store'
+        }
         rm -rf "$state/iwd.wan"
         mv "$work/iwd" "$state/iwd.wan"
         sync
@@ -1413,16 +1440,16 @@ commit_update() {
     while read -r guest snap image; do rm -rf "$state/iwd.$guest" && prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
-    # The durable marker means both replacements passed; recovery finishes the commit.
-    browser_image=$(cat "$state/browser.ready")
-    image_alias browser "$browser_image"
-    [ ! -f "$state/pending" ] || commit_update
-    browser_profiles_prune
-    rm -rf "$state/profiles.before"
-    rm -rf "$state/browser.rename"
-    sync
-    rm "$state/browser.ready"
-    sync
+    # The durable marker means both replacements passed; recovery finishes the commit (cleanup too, without errexit).
+    browser_image=$(cat "$state/browser.ready") || return
+    image_alias browser "$browser_image" || return
+    [ ! -f "$state/pending" ] || commit_update || return
+    browser_profiles_prune || return
+    rm -rf "$state/profiles.before" || return
+    rm -rf "$state/browser.rename" || return
+    sync || return
+    rm "$state/browser.ready" || return
+    sync || return
     images_prune
 }
 good_slot() {
@@ -1464,10 +1491,33 @@ rebuild() {
     image_dir=/var/lib/convergent/release-guests/guests/fw
     [ -d "$image_dir" ] || die 'installed firewall images are missing'
     verify_image fw
+    # The installed images are recorded after both commits of a fw update: a node its journal committed
+    # is redone from the staged release, and the peer may run either.
+    fw_either=
+    if awk -v node="$1" '$1 == node && $2 !~ /-rebuild$/ {found=1} END {exit !found}' "$state/committed" 2>/dev/null; then
+        booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
+        staged=/var/lib/convergent/guest-updates
+        case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+        if [ -d "$staged/$booted/fw" ]; then
+            for entry in "$staged" "$staged/$booted" "$staged/$booted/fw"; do
+                [ ! -L "$entry" ] && [ "$(stat -c '%u %a %F' "$entry")" = '0 700 directory' ] || die "$entry is not root's private directory"
+            done
+            [ -z "$(find "$staged/$booted/fw" -type l -print)" ] || die "$staged/$booted/fw contains symlinks"
+            fw_either=$image_dir image_dir=$staged/$booted/fw
+            verify_image fw
+        fi
+    fi
     [ -s "$state/carp-pass" ] || die 'missing laptop CARP password'
     # A retained lease hold left dhcpd off on the peer, as rollback does: resume it before judging it.
     [ ! -f "$state/leases/held" ] || leases_resume "$peer" || die "cannot resume work DHCP on $peer"
-    fw_check "$peer" || die "$peer must be healthy before rebuilding $1"
+    # An interrupted rebuild of this stopped node is the way back to a healthy pair: then an unhealthy peer only warns.
+    if ! fw_check "$peer"; then
+        awk -v node="$1" '$1 == node && $2 ~ /-rebuild$/ {found=1} END {exit !found}' "$state/pending" 2>/dev/null && stopped "$1" ||
+            die "$peer must be healthy before rebuilding $1"
+        echo "guests: WARNING: $peer is unhealthy; redoing the interrupted rebuild of $1" >&2
+        logger -p user.warning -t guests "rebuild $1: $peer unhealthy; redoing the interrupted rebuild" 2>/dev/null || :
+    fi
+    fw_either=
     actual=$(guest_reply 128 rsh "$peer" "awk '{for(i=1;i<NF;i++) if(\$i==\"pass\") print \$(i+1)}' /etc/hostname.carp0 | sha256 -q")
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
     # CARP preempts within seconds of the release: wait for it before judging the pair.

@@ -1874,7 +1874,7 @@ timeout() {
     case "$*" in
     "-k 1 30 incus --force-local query /1.0/instances/$frozen_vm/state?project=default") return 124 ;;
     '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
-    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default')
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
         [ -z "$frozen_vm" ] || return 124
         echo '[{"name":"fw2","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
     '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart') ;;
@@ -1903,7 +1903,7 @@ touch "$work/state/guests/pending"
 if autorestart_clear 2>"$work/err"; then exit 1; fi
 grep -q "timed out; fw2's QEMU no longer answers Incus; kill the pid in /run/incus/fw2/qemu.pid, then rerun" "$work/err"
 rm "$work/state/guests/pending"
-if ic query '/1.0/instances?recursion=1&project=default' >/dev/null 2>&1; then exit 1; fi
+if ic query '/1.0/instances?recursion=1&all-projects=true' >/dev/null 2>&1; then exit 1; fi
 [ "$frozen" = 1 ]
 : >"$work/ic-bounds"
 if autorestart_clear; then exit 1; fi
@@ -2078,7 +2078,7 @@ for function in wan_mount unmount_root; do
     [ -s "$work/$function" ]; sh -n "$work/$function"; . "$work/$function"
 done
 die() { echo "$*" >&2; exit 1; }
-running() { return 1; }
+stopped() { return 0; }
 mkdir() { echo mkdir >>"$work/events"; [ "$fault" != mkdir ]; }
 losetup() {
     if [ "$1" = -d ]; then
@@ -2122,6 +2122,11 @@ for fault in mkdir losetup partition mount none umount; do
     esac
     [ "$(tr '\n' ' ' <"$work/events")" = "$expected " ]
 done
+# A failed state query is no proof that QEMU let go of the disk: nothing is attached.
+stopped() { return 1; }
+: >"$work/events"
+if (wan_mount) 2>/dev/null; then exit 1; fi
+[ ! -s "$work/events" ]
 WAN_MOUNT
 # Guest recovery guards; debugfs diagnostics can accompany a successful exit.
 sh -eu <<'GUEST_GUARDS' || bad $LINENO
@@ -3688,6 +3693,7 @@ wan_wifi() (
     loop= mounted=
     die() { echo "CV-WIFI $*" >&2; exit 1; }
     running() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Running ]; }
+    stopped() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]; }
     retry() {
         n=0
         until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done

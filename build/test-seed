@@ -694,4 +694,27 @@ KEY
     grep -qx broken "$key"
     [ ! -s "$root/dev/console" ]
 done
+# A failed read of svc's autostart saves nothing: the rerun reads it again instead of restoring an empty value.
+(
+    state=$scratch/autostart work=$scratch/autostart-work
+    mkdir -p "$state/seeds" "$work" || exit 1
+    eval "$(sed -n '/^seed_attach() {/,/^}/p' "$repo/tools/guests")"
+    command -v seed_attach >/dev/null || exit 1
+    seed_create() { :; }
+    ic() {
+        case $1:${2:-} in
+        query:*) echo '{"devices":{}}' ;;
+        config:get) if [ -e "$work/get-fails" ]; then echo partial; return 124; fi; echo true ;;
+        # Stops here: the read was saved or not before this change.
+        config:set) return 1 ;;
+        *) return 1 ;;
+        esac
+    }
+    touch "$work/get-fails"
+    if seed_attach svc; then exit 1; fi
+    [ ! -e "$state/seeds/svc.autostart" ] || exit 1
+    rm "$work/get-fails"
+    if seed_attach svc; then exit 1; fi
+    [ "$(cat "$state/seeds/svc.autostart")" = true ] || exit 1
+) || die 'svc autostart saved from a failed read'
 echo 'test-seed: credential retries, identity checks and atomic markers passed'

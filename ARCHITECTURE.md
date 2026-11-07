@@ -603,7 +603,7 @@ stopped after ten crashes in a minute, or paused on a full disk.
 A replaced `wan` keeps its networks: the old partition is read in userspace by unprivileged
 debugfs, never mounted, and only iwd `.psk`, `.open` and `.8021x` files of at most 4 KiB with the
 settings iwd writes for joined networks are carried over (no EAP); others are logged and left
-behind. Legacy `web` and `admin` objects migrate to `def` and `int` under `browser-update.lock`,
+behind. An unreadable old disk carries none over (warned) rather than block the rebuild. Legacy `web` and `admin` objects migrate to `def` and `int` under `browser-update.lock`,
 with state, bookmarks and logins kept. Planned: signed firmware capsules and menu updates.
 
 #### The firewall pair
@@ -629,8 +629,8 @@ The pair replaced one firewall at a time, so a gateway always answers.
 
 A firewall update refuses to start during maintenance. A failure restores the target before its
 peer is touched. Once committed, a firewall that never answers is rebuilt from the journal by
-`sys firewall rebuild`, or automatically after a topology change. A rebuild of one firewall takes
-the same path. Work DHCP leases are
+`sys firewall rebuild`, or automatically after a topology change; until the update is recorded,
+from its staged release. A rebuild of one firewall takes the same path. Work DHCP leases are
 checkpointed and reseeded, and the stored DNS policy is pushed again after every root rebuild. A
 topology change stops both firewalls under the `fw.topology` journal, holds work DHCP before the
 lease checkpoint and restores both roots on failure before either boots; work access stays closed
