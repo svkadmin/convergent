@@ -325,6 +325,19 @@ echo 'test-topology: recovery removes only stale probe routes'
         (rebuild "$node") >/dev/null
         finished
         grep -qx "replace $node pending=1 $state/committed.stage/guests/image" "$log"
+        # A damaged kept copy is dropped and the staged release used.
+        clean
+        printf '%s\n' "$node guests-20250101T000000-1 image" >"$state/committed"
+        cp "$state/committed" "$state/pending"
+        touch "$scratch/$node.unhealthy"
+        [ "$node" = fw1 ] || touch "$state/fw.handoff"
+        mkdir -p "$scratch/updates/42/fw" "$state/committed.stage/guests/image"
+        chmod 700 "$scratch/updates" "$scratch/updates/42" "$scratch/updates/42/fw"
+        ln -s /nonexistent "$state/committed.stage/guests/image/bad"
+        (rebuild "$node") >/dev/null 2>&1
+        finished
+        [ ! -e "$state/committed.stage" ]
+        grep -qx "replace $node pending=1 $scratch/updates/42/fw" "$log"
     done
     awk '$1 == "fw_release" && !f {f=NR} $1 == "replace" {r=NR} END {exit !(f && f < r)}' "$log"
     # Its images are recorded only after both commits: the committed node is redone from the staged release,

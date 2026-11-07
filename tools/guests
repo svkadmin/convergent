@@ -1534,12 +1534,19 @@ rebuild() {
         booted=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
         staged=/var/lib/convergent/guest-updates
         case $booted in ''|*[!0-9]*) die 'the kernel command line names no release' ;; esac
+        stage=
         if [ -d "$state/committed.stage" ]; then
-            # A manual update's own copy, kept until its commit ends.
-            [ ! -L "$state/committed.stage" ] && [ -z "$(find "$state/committed.stage" -type l -print)" ] ||
-                die "$state/committed.stage contains symlinks"
-            fw_either=$image_dir image_dir=$state/committed.stage/guests/image
-            verify_image fw
+            # A manual update's own copy, kept until its commit ends; a damaged one is dropped, never a dead end.
+            if [ ! -L "$state/committed.stage" ] && [ -z "$(find "$state/committed.stage" -type l -print)" ] &&
+                (image_dir=$state/committed.stage/guests/image; verify_image fw); then
+                stage=$state/committed.stage/guests/image
+            else
+                echo "guests: $state/committed.stage is damaged; dropping it" >&2
+                rm -rf "$state/committed.stage" && sync || die "cannot remove $state/committed.stage"
+            fi
+        fi
+        if [ -n "$stage" ]; then
+            fw_either=$image_dir image_dir=$stage
         elif [ -d "$staged/$booted/fw" ]; then
             for entry in "$staged" "$staged/$booted" "$staged/$booted/fw"; do
                 [ ! -L "$entry" ] && [ "$(stat -c '%u %a %F' "$entry")" = '0 700 directory' ] || die "$entry is not root's private directory"
