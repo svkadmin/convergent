@@ -2933,7 +2933,7 @@ answer 1053 public A 93.184.216.34
 REBIND
 done
 fw_unlocked() {
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
+    timeout 30 ssh -F /etc/convergent/ssh_config "${1:-fw1}" 'exec /usr/bin/perl -MFcntl=:DEFAULT,:flock -e '\''
         sysopen(my $lock, "/var/run/convergent-maintenance.lock", O_WRONLY|O_NOFOLLOW) or exit 2;
         exit(flock($lock, LOCK_EX|LOCK_NB) ? 0 : 1);
     '\'''
@@ -2947,21 +2947,23 @@ maintenance_clean() {
         printf 'yes\n' | sys firewall undo >/dev/null 2>&1 || sleep 15
         n=$((n + 1))
     done
-    # Maintenance demotes whichever firewall is MASTER and these steps expect fw1: a failed step left fw1
-    # demoted by wan-watch (its Unbound still starting) and fw2 MASTER.
+    # Each step starts from the normal roles: a failed step left fw1 demoted by wan-watch (its Unbound
+    # still starting) and fw2 MASTER.
     n=0
     until (. /usr/lib/convergent/incus/firewall-heal; [ "$(heal_probe fw1 30)" = master ] && [ "$(heal_probe fw2 30)" = backup ]); do
         [ "$n" -lt 60 ] || { echo 'CV-MAINT no healthy fw1 MASTER / fw2 BACKUP'; return 1; }
         n=$((n + 1)); sleep 10
     done
-    # A previous holder may still run on fw1 for its 90 s pause.
-    n=0
-    while :; do
-        rc=0; fw_unlocked || rc=$?
-        # 2: no lock file; 1 held, anything else (frozen fw1, SSH failure) proves nothing.
-        case $rc in 0|2) return 0 ;; esac
-        [ "$n" -lt 90 ] || { echo 'CV-MAINT fw1 maintenance lock still held'; return 1; }
-        n=$((n + 1)); sleep 2
+    # A previous holder may still run on either firewall for its pause.
+    for f in fw1 fw2; do
+        n=0
+        while :; do
+            rc=0; fw_unlocked "$f" || rc=$?
+            # 2: no lock file; 1 held, anything else (frozen firewall, SSH failure) proves nothing.
+            case $rc in 0|2) break ;; esac
+            [ "$n" -lt 90 ] || { echo "CV-MAINT $f maintenance lock still held"; return 1; }
+            n=$((n + 1)); sleep 2
+        done
     done
 }
 maintenance_clean || bad $LINENO
@@ -3163,7 +3165,9 @@ for failure in timeout host-kill remote-kill; do
 maintenance_clean || bad $LINENO
 (
     set -e
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'rm -f /tmp/convergent-test-maintenance /tmp/convergent-test-maintenance-waiting'
+    for f in fw1 fw2; do
+        timeout 30 ssh -F /etc/convergent/ssh_config "$f" 'rm -f /tmp/convergent-test-maintenance /tmp/convergent-test-maintenance-waiting'
+    done
     # An earlier iteration's pid must never be the one host-kill signals.
     rm -f /run/convergent/maintenance-test-returned /run/convergent/maintenance-test.pid
     {
@@ -3180,7 +3184,7 @@ LOCAL
                 print "logger -t cv-maint-test \"wait pid $$\""
                 print "trap \"logger -t cv-maint-test signal; exit 1\" INT TERM"
                 print "trap \"logger -t cv-maint-test exit \\$?\" 0"
-                # firewall_mutate discards the remote stdout: progress is a file on fw1.
+                # firewall_mutate discards the remote stdout: progress is a file on the target.
                 print "touch /tmp/convergent-test-maintenance-waiting"
                 print "n=0"
                 print "until [ -f /tmp/convergent-test-maintenance ]; do"
@@ -3205,6 +3209,7 @@ LOCAL
     # Every host-side step of this block, tagged in the console.
     PS4='+CV-MX '; set -x
     log=/var/log/firewall-maintenance-$failure.log
+    timeout 30 ssh -F /etc/convergent/ssh_config fw1 "logger -t cv-maint-test 'case $failure'"
     sh "$release/maintenance-test" >"$log" 2>&1 &
     changer=$!
     # A failed iteration must not leave its changer running while the next rewrites the script.
@@ -3212,14 +3217,26 @@ LOCAL
     # Twelve health reads and, for remote-kill, the whole demotion come first: at fw1 load 16 they took
     # 49 s, 55 s and just over the old 60 s.
     deadline=$(($(date +%s) + 300))
-    until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 fw1 'test -f /tmp/convergent-test-maintenance-waiting'; do
+    # Maintenance demotes whichever firewall is MASTER: in cv16c7 a wan-watch flap of fw1 made it fw2.
+    until [ -s /var/lib/convergent/firewall-maintenance ]; do
+        kill -0 "$changer"
+        [ "$(date +%s)" -lt "$deadline" ]; sleep 1
+    done
+    target=$(cat /var/lib/convergent/firewall-maintenance)
+    # fw2 only when fw1 lost MASTER after the case began: maintenance must never demote the BACKUP.
+    case $target in
+    fw1) ;;
+    fw2) timeout 30 ssh -F /etc/convergent/ssh_config fw1 "awk '/cv-maint-test: case $failure\$/ {m = 1} m && /state transition: MASTER -> BACKUP/ {f = 1} END {exit !f}' /var/log/messages" ;;
+    *) exit 1 ;;
+    esac
+    until timeout 60 ssh -F /etc/convergent/ssh_config -o ConnectTimeout=30 "$target" 'test -f /tmp/convergent-test-maintenance-waiting'; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 1
     done
     if flock -n /run/convergent/guests.lock true; then exit 1; fi
     if flock -n /run/convergent/dns-push.lock true; then exit 1; fi
     case $failure in
     host-kill) kill -KILL "$(cat /run/convergent/maintenance-test.pid)" ;;
-    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -KILL "$(cat /var/run/convergent-maintenance.lock)"' ;;
+    remote-kill) timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'kill -KILL "$(cat /var/run/convergent-maintenance.lock)"' ;;
     esac
     if wait "$changer"; then exit 1; fi
     changer=
@@ -3234,32 +3251,32 @@ LOCAL
     else
         grep -q 'demotion uncertain' "$log"
     fi
-    [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
+    [ "$(cat /var/lib/convergent/firewall-maintenance)" = "$target" ]
     if [ "$failure" = remote-kill ]; then
-        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance &&
+        timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'test -f /etc/convergent/seeded/maintenance &&
             test -f /var/run/convergent-maintenance.lock && ! kill -0 "$(cat /var/run/convergent-maintenance.lock)" 2>/dev/null'
     else
-        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'kill -0 "$(cat /var/run/convergent-maintenance.lock)"'
-        rc=0; fw_unlocked || rc=$?; [ "$rc" = 1 ]
+        timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'kill -0 "$(cat /var/run/convergent-maintenance.lock)"'
+        rc=0; fw_unlocked "$target" || rc=$?; [ "$rc" = 1 ]
         if printf 'yes\n' | sys firewall undo; then exit 1; fi
         [ -f /var/lib/convergent/firewall-maintenance ]
-        timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance && touch /tmp/convergent-test-maintenance'
+        timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'test ! -e /etc/convergent/seeded/maintenance && touch /tmp/convergent-test-maintenance'
         n=0
-        until timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test -f /etc/convergent/seeded/maintenance'; do
+        until timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'test -f /etc/convergent/seeded/maintenance'; do
             n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
         done
     fi
     # A killed shell's children may still hold the descriptor briefly.
     n=0
-    until fw_unlocked; do
+    until fw_unlocked "$target"; do
         n=$((n + 1)); [ "$n" -lt 30 ]; sleep 1
     done
     # Undo fails after releasing when fw1 takes MASTER back late; the next maintenance_clean waits for the roles.
     printf 'yes\n' | sys firewall undo || [ ! -e /var/lib/convergent/firewall-maintenance ]
     [ ! -e /var/lib/convergent/firewall-maintenance ]
-    timeout 30 ssh -F /etc/convergent/ssh_config fw1 'test ! -e /etc/convergent/seeded/maintenance'
-    fw_unlocked
-    carp=$(timeout 30 ssh -F /etc/convergent/ssh_config fw1 ifconfig)
+    timeout 30 ssh -F /etc/convergent/ssh_config "$target" 'test ! -e /etc/convergent/seeded/maintenance'
+    fw_unlocked "$target"
+    carp=$(timeout 30 ssh -F /etc/convergent/ssh_config "$target" ifconfig)
     if printf '%s\n' "$carp" | grep -Eq '^[[:space:]]*groups:.* sysmaint( |$)'; then exit 1; fi
 )
 [ "$?" = 0 ] || { tail -n 20 "/var/log/firewall-maintenance-$failure.log" | sed "s/^/CV-MXLOG $failure: /"; fw_diag; bad $LINENO; }
@@ -3270,8 +3287,15 @@ cv_time maintenance-reboot
 (
     set -e
     PS4='+CV-MR ${SECONDS}s '; set -x
-    printf 'yes\n' | sys firewall maintenance
-    [ "$(cat /var/lib/convergent/firewall-maintenance)" = fw1 ]
+    # A wan-watch flap of fw1 under rig load hands the demotion to fw2 (cv16c7): release and retry.
+    attempt=1
+    while :; do
+        printf 'yes\n' | sys firewall maintenance
+        [ "$(cat /var/lib/convergent/firewall-maintenance)" != fw1 ] || break
+        [ "$attempt" -lt 3 ]
+        maintenance_clean
+        attempt=$((attempt + 1))
+    done
     if guests update fw "$release/guests/fw" --trusted-local >"$release/maintenance-refusal" 2>&1; then exit 1; fi
     grep -q 'firewall maintenance is active' "$release/maintenance-refusal"
     fw1_state() { echo "CV-MAINT $1"; ic list fw1 -c ns -f csv; ic console fw1 --show-log 2>&1 | tail -n 25 | sed 's/^/CV-MAINT console /'; }
