@@ -118,11 +118,12 @@ fi
 [ -d "$state/pool" ] || btrfs -q subvolume create "$state/pool"
 mkdir -p "$state/etc"
 
+# nosuid on the pool too: a container root's setuid file in a shifted volume must not run as host root.
 opts=noatime,nodev,nosuid
 mount -t btrfs -o "subvol=var-$release,$opts" /dev/mapper/cv-state "$NEWROOT/var" &&
 	mount -t btrfs -o "subvol=home,$opts" /dev/mapper/cv-state "$NEWROOT/home" &&
 	mkdir -p "$NEWROOT/var/lib/incus-pool" &&
-	mount -t btrfs -o "subvol=pool,noatime,nodev" /dev/mapper/cv-state "$NEWROOT/var/lib/incus-pool" &&
+	mount -t btrfs -o "subvol=pool,$opts" /dev/mapper/cv-state "$NEWROOT/var/lib/incus-pool" &&
 	mount -t tmpfs -o mode=1777,nodev,nosuid,noexec,size=8G tmpfs "$NEWROOT/tmp" ||
 	die "state: could not mount the writable places"
 if [ -d "$state/swap" ]; then

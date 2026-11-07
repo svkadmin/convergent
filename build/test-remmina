@@ -17,7 +17,7 @@ cleanup() {
     rc=$?
     trap - 0
     ic stop remmina --force >/dev/null 2>&1 || :
-    rm -rf "$work"
+    rm -rf "$work" /var/lib/incus-pool/custom/default_share/.cv-suid
     echo "CV-REMOTE $mode result=$rc"
     exit "$rc"
 }
@@ -46,6 +46,20 @@ ic exec remmina --user 1000 --group 1000 -- sh -eu -c '
     printf "share\n" >/share/.cv-share
     mkdir -p /home/remmina/.cv-keyring
 '
+# The pool is nosuid: a setuid-root file the container root plants in share runs on the host as its caller.
+# The host's own id, so it runs here; executed through an fd root opened, so directory modes cannot hide it.
+pool=/var/lib/incus-pool
+for path in "$pool" /var/lib/incus/storage-pools/default; do
+    findmnt -no OPTIONS -T "$path" | grep -Eq '(^|,)nosuid(,|$)' || { echo "test-remmina: $path allows setuid" >&2; exit 1; }
+done
+id=$(command -v id)
+ic exec remmina -- sh -eu -c 'cat >/share/.cv-suid; chmod 4755 /share/.cv-suid' <"$id"
+for planted in "$pool/custom/default_share/.cv-suid" /var/lib/incus/storage-pools/default/custom/default_share/.cv-suid; do
+    cmp -s "$id" "$planted" && [ "$(stat -c '%u %a' "$planted")" = '0 4755' ] || exit 1
+    [ "$(setpriv --reuid=65534 --regid=65534 --clear-groups /proc/self/fd/9 -u 9<"$planted" 8>&-)" = 65534 ] ||
+        { echo 'test-remmina: a planted setuid file ran as root' >&2; exit 1; }
+done
+ic exec remmina -- rm /share/.cv-suid
 # A private test home exercises encrypted keyring persistence without owner credentials.
 keyring() {
     ic exec remmina --user 1000 --group 1000 -- env HOME=/home/remmina/.cv-keyring \
