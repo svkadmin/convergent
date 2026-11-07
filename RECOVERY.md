@@ -181,7 +181,7 @@ The release does not boot, or the previous one came back by itself:
 1. On the previous release, read the failed release's log from its own `/var`:
    ```sh
    sudo slot status                                     # booted release, slot, good, highest
-   sudo mkdir -p /run/st && sudo mount -o ro,nologreplay,subvolid=5 /dev/mapper/cv-state /run/st
+   sudo mkdir -p /run/st && sudo mount -o ro,nologreplay,nodev,nosuid,noexec,subvolid=5 /dev/mapper/cv-state /run/st
    sudo grep ' slot:' /run/st/var-<failed release>/log/messages
    sudo umount /run/st
    ```
@@ -466,7 +466,7 @@ On another Linux with the disk attached, as root:
 1. Open and mount the state partition read-only:
    ```sh
    cryptsetup open /dev/disk/by-partlabel/cv-state cvstate     # asks the LUKS passphrase
-   mkdir -p /mnt/cv && mount -o ro,nologreplay,subvolid=5 /dev/mapper/cvstate /mnt/cv
+   mkdir -p /mnt/cv && mount -o ro,nologreplay,nodev,nosuid,noexec,subvolid=5 /dev/mapper/cvstate /mnt/cv
    ls /mnt/cv          # home, pool (guests), var-<release> (one per release), etc
    ```
 2. Copy what you need, then close:
