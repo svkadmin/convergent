@@ -11,7 +11,8 @@
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
 #   build/test --guests <release> <guests-dir>
 #   build/test --guests-maint <release> <guests-dir>   maintenance, DNS and handoff recovery
-#   build/test --guests-update <release> <guests-dir> <broken-svc-dir>   updates and rollback
+#   build/test --guests-update <release> <guests-dir> <broken-svc-dir>   updates and rollback (half A)
+#   build/test --guests-topology <release> <guests-dir>   no-peer rebuild, topology migration, Remmina update (half B)
 #   build/test --online <release> <guests-dir>   once <release> is published: its guests from R2
 #   build/test --advisories                  offline gate fixtures; no root needed
 set -eu
@@ -604,7 +605,7 @@ for fixture in test-topology test-leases test-work-gate test-release-compat test
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --guests-topology <release> <guests-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
@@ -613,7 +614,7 @@ case ${1:-} in
 --recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
 --rescue) mode=rescue; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
---guests | --guests-maint | --guests-update | --online)
+--guests | --guests-maint | --guests-update | --guests-topology | --online)
 	mode=${1#--}; shift
 	if [ "$mode" = guests-update ]; then
 		[ $# = 3 ] || usage
@@ -641,6 +642,21 @@ for r in "$@"; do
 done
 if [ -n "$other" ]; then
 	expr "$other" '>' "$release" >/dev/null || die "release $other must be newer than $release"
+fi
+# The topology migration's previous-release firewalls, found before the first boot: a misconfigured rig fails here.
+if [ "$mode" = guests-topology ]; then
+	legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
+	if [ -z "$legacy_release" ]; then
+		for candidate in $(find "$BUILDER/releases" -mindepth 1 -maxdepth 1 -type d | sort -r); do
+			grep -Eq '^version 0\.1\.3(-[^ ]*)?$' "$candidate/manifest" || continue
+			[ -d "$candidate/guests/fw" ] || continue
+			legacy_release=$candidate
+			break
+		done
+	fi
+	# A skip would pass the mode without its migration.
+	[ -n "$legacy_release" ] || die 'guests-topology needs a 0.1.3 release with firewall images (or CONVERGENT_LEGACY_RELEASE)'
+	case $legacy_release in /*) ;; *) legacy_release=$BUILDER/releases/$legacy_release ;; esac
 fi
 
 bld() { chroot "$BUILDER" "$@"; }
@@ -678,7 +694,7 @@ if [ "$mode" = desktop ]; then
 	bld gcc -O2 -Wall -Werror -std=c99 -I/staging/usr/include -L/staging/usr/lib64 \
 		-Wl,-rpath-link,/staging/usr/lib64 "$work/wayland-registry.c" -lwayland-client -o "$work/wayland-registry"
 fi
-case $mode in guests|guests-maint|guests-update|online)
+case $mode in guests|guests-maint|guests-update|guests-topology|online)
 	cp -R "$here/fixtures" "$BUILDER$work/fixtures"
 	bld gcc -O2 -static -Wall -Werror -std=c99 "$work/fixtures/pf-l2.c" -o "$work/fixtures/pf-l2-bin" || die 'pf-l2 compilation failed'
 	cp "$here/../rootfs/usr/lib/convergent/incus/shutdown" "$BUILDER$work/shutdown-original"
@@ -3490,6 +3506,17 @@ REMOTE
 done
 EOF
 	fi
+	# Both halves drive the pair through this timed copy: half A's firewall update and rebuild
+	# interruptions, half B's topology migration.
+	case $mode in guests-update | guests-topology)
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+# Mark bounded waits inside the pair update, not the diagnostic probe loop.
+{ cat "$release/timing"; awk '{print} $0 == "retry() {" {print "    cv_time \"firewall-update-$(printf %s \"$1\" | tr _ -)\" >&3"; n++}
+    END {exit n != 1}' /usr/local/sbin/guests; } >"$release/guests-fw-timed" || bad $LINENO
+# End bounded waits.
+EOF
+		;;
+	esac
 	if [ "$mode" = guests-update ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time firewall-pair-start
@@ -3532,7 +3559,9 @@ cv_time firewall-pair-start
 [ "$?" = 0 ] || { trace_tail /var/log/firewall-pair-start-test.log; fw_diag; bad $LINENO; }
 EOF
 	fi
-	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+	# guests-maint and half A; half B settles in its own section.
+	if [ "$mode" != guests-topology ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time handoff-recovery
 # guests-update comes here first after guests init booted the pair, which may still relink: a relinking
 # firewall froze for seconds under the update's load and answers SSH late.
@@ -3546,6 +3575,7 @@ for address in 100.80.0.10 100.80.2.10; do
     ip route replace "$address/32" via 100.80.1.3 dev host || bad $LINENO
 done
 EOF
+	fi
 	if [ "$mode" = guests-update ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 before=$(ic config get svc volatile.base_image) || bad $LINENO
@@ -3635,9 +3665,6 @@ cv_time guests-start-stopped
 /usr/local/sbin/guests apply || bad $LINENO
 sha256sum -c "$release/tls-renewed" || bad $LINENO
 cv_time firewall-update
-# Mark bounded waits inside the pair update, not the diagnostic probe loop.
-{ cat "$release/timing"; awk '{print} $0 == "retry() {" {print "    cv_time \"firewall-update-$(printf %s \"$1\" | tr _ -)\" >&3"; n++}
-    END {exit n != 1}' /usr/local/sbin/guests; } >"$release/guests-fw-timed" || bad $LINENO
 # Evidence while fw updates: fw1 over SSH, its route and ARP entry, every 20 s.
 ( while sleep 20; do
     date -u +%T; ip route get 100.80.1.2; ip neigh show 100.80.1.2
@@ -4255,7 +4282,7 @@ cv_time wired-lock-wait
     holder=
 )
 [ "$?" = 0 ] || { trace_tail /var/log/wired-lock-test.log; tail -n 5 /var/log/wired-lock-status.log; bad $LINENO; }
-cv_time firewall-no-peer
+cv_time firewall-rebuild-interruptions
 pair_ok() {
     for f in fw1 fw2; do
         case $f in fw1) want=MASTER ;; fw2) want=BACKUP ;; esac
@@ -4263,31 +4290,10 @@ pair_ok() {
             awk -v want="$want" -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >/dev/null || return 1
     done
 }
-(
-bad() { echo "CV-UPDATE-FAIL line $1"; exit 1; }
-# Keep the minute healer out of this controlled reboot and its nested boot: check auto skips
-# self-heal while its lock is held (guests-stopping would also stop guests from rebuilding).
-exec 7>/run/convergent/firewall-heal.lock
-flock -w 120 7 || exit 1
-# A peer that cannot take over: the rebuild gives up after GUEST_BOOT_TIMEOUT and restarts fw1.
-awk '{print} $0 == "carp() {" {print "    [ \"$1\" != fw2 ] || return 1"}' /usr/local/sbin/guests >"$release/guests-no-peer"
-# The rebuild also starts a svc Incus left stopped: its soak needs it.
-cv_time firewall-no-peer-svc
-trap '[ "$(ic_status svc)" = Running ] || ic start svc || :' 0
-trap 'exit 1' HUP INT TERM
-ic stop svc || bad $LINENO
-GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/guests-rebuild-no-peer.log
-code=$?
-echo CV-REBUILD no-peer "$code"
-[ "$code" = 1 ] && grep -q '^+ start_guest fw1$' /var/log/guests-rebuild-no-peer.log || { tail -n 15 /var/log/guests-rebuild-no-peer.log; bad $LINENO; }
-n=0
-until [ "$(ic_status svc)" = Running ]; do
-    n=$((n + 1)); [ "$n" -lt 6 ] || { echo "CV-REBUILD svc $(ic_status svc)"; bad $LINENO; }; sleep 10
-done
-# The next step's rebuild checks and demotes fw1: the restarted fw1 must finish its boot and relink first.
-fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; exit 1; }
-) || bad $LINENO
-cv_time firewall-rebuild-interruptions
+# The rebuild checks and demotes fw1: the pair settled after the firewall update, and nothing has restarted
+# a firewall since (the no-peer step that settled it here runs in guests-topology). A heal restart during the
+# dashboard checks can still need a nested boot plus relink (~45 min): the same bound as the other settles.
+fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; bad $LINENO; }
 # Kill before the handoff marker, after rebuilding, and after rollback hands back to fw1.
 for step in journal rebuilt; do
     cv_time "firewall-rebuild-$step"
@@ -4399,18 +4405,56 @@ done
 tail -n 25 /var/log/guests-update-fw.log /var/log/guests-update-svc.log
 EOF
 	fi
-	# Topology-change migration and rollback; reuse production pair transactions.
-	if [ "$mode" = guests-update ]; then
+	# Half B (guests-topology): a rebuild with no peer to take over, then the topology-change migration
+	# and rollback (production pair transactions). It needs nothing from half A.
+	if [ "$mode" = guests-topology ]; then
 		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+cv_time topology-setup
+# As half A's first step: guests init booted the pair, which may still relink.
+fw_settled fw1 fw2 || { fw_diag; bad $LINENO; }
+# A rebuild takes the installed firewall images: on a laptop the installer put them there, in half A the
+# firewall update recorded them. Install this release's as install/install does.
+mkdir -p /var/lib/convergent/release-guests/guests &&
+    cp -a "$release/guests/fw" /var/lib/convergent/release-guests/guests/ || bad $LINENO
+cv_time firewall-no-peer
+(
+bad() { echo "CV-UPDATE-FAIL line $1"; exit 1; }
+# Keep the minute healer out of this controlled reboot and its nested boot: check auto skips
+# self-heal while its lock is held (guests-stopping would also stop guests from rebuilding).
+exec 7>/run/convergent/firewall-heal.lock
+flock -w 120 7 || exit 1
+# A peer that cannot take over: the rebuild gives up after GUEST_BOOT_TIMEOUT and restarts fw1.
+awk '{print} $0 == "carp() {" {print "    [ \"$1\" != fw2 ] || return 1"}' /usr/local/sbin/guests >"$release/guests-no-peer"
+# The rebuild also starts a svc Incus left stopped: its soak needs it.
+cv_time firewall-no-peer-svc
+trap '[ "$(ic_status svc)" = Running ] || ic start svc || :' 0
+trap 'exit 1' HUP INT TERM
+ic stop svc || bad $LINENO
+GUEST_BOOT_TIMEOUT=30 sh -x "$release/guests-no-peer" rebuild fw1 2>/var/log/guests-rebuild-no-peer.log
+code=$?
+echo CV-REBUILD no-peer "$code"
+[ "$code" = 1 ] && grep -q '^+ start_guest fw1$' /var/log/guests-rebuild-no-peer.log || { tail -n 15 /var/log/guests-rebuild-no-peer.log; bad $LINENO; }
+n=0
+until [ "$(ic_status svc)" = Running ]; do
+    n=$((n + 1)); [ "$n" -lt 6 ] || { echo "CV-REBUILD svc $(ic_status svc)"; bad $LINENO; }; sleep 10
+done
+# The topology migration replaces fw1 next: the restarted fw1 must finish its boot and relink first.
+fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; exit 1; }
+) || bad $LINENO
 cv_time work-topology-migration
 sh "$release/topology-test" || { fw_diag; bad $LINENO; }
 EOF
 	fi
 	# End topology migration section.
-	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
+	# guests-maint and half B.
+	if [ "$mode" != guests-update ]; then
+		cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 # Remmina: rebuild failure restores state and leaves share alone.
 timeout -k 30 600 sh /var/lib/convergent/test-release/remmina-test update || bad $LINENO
 # End Remmina.
+EOF
+	fi
+	cat >>"$var/lib/convergent/test-release/update-test" <<'EOF'
 cv_time update-done
 sync
 echo CV-UPDATE-RESULT "$result"
@@ -4507,33 +4551,23 @@ EOF
 	cp -R "$BUILDER$work/fixtures" "$var/lib/convergent/test-release/fixtures"
 	cp "$here/fixtures/shutdown" "$var/lib/convergent/test-release/shutdown-test"
 	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
-	if [ "$mode" = guests-update ]; then
-		legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
-		if [ -z "$legacy_release" ]; then
-			for candidate in $(find "$BUILDER/releases" -mindepth 1 -maxdepth 1 -type d | sort -r); do
-				grep -Eq '^version 0\.1\.3(-[^ ]*)?$' "$candidate/manifest" || continue
-				[ -d "$candidate/guests/fw" ] || continue
-				legacy_release=$candidate
-				break
-			done
-		fi
-		if [ -n "$legacy_release" ]; then
-			case $legacy_release in /*) ;; *) legacy_release=$BUILDER/releases/$legacy_release ;; esac
-			legacy_fw=$var/lib/convergent/test-release/legacy-fw
-			mkdir -p "$legacy_fw"
-			cp -a "$legacy_release/guests/fw/." "$legacy_fw/"
-			for node in fw1 fw2; do
-				[ -f "$legacy_fw/$node.qcow2" ] || zstd -q -d --long=27 "$legacy_fw/$node.qcow2.zst" -o "$legacy_fw/$node.qcow2"
-				(cd "$legacy_fw" && awk -v f="$node.qcow2" '$2 == f {print; n++} END {exit n != 1}' SHA256SUMS | sha256sum -c -) || die 'legacy firewall checksum failed'
-			done
-		fi
+	# The topology migration's previous-release firewalls (legacy_release, found while parsing arguments);
+	# topology-test skips (exit 0) without them.
+	if [ "$mode" = guests-topology ]; then
+		legacy_fw=$var/lib/convergent/test-release/legacy-fw
+		mkdir -p "$legacy_fw"
+		cp -a "$legacy_release/guests/fw/." "$legacy_fw/"
+		for node in fw1 fw2; do
+			[ -f "$legacy_fw/$node.qcow2" ] || zstd -q -d --long=27 "$legacy_fw/$node.qcow2.zst" -o "$legacy_fw/$node.qcow2"
+			(cd "$legacy_fw" && awk -v f="$node.qcow2" '$2 == f {print; n++} END {exit n != 1}' SHA256SUMS | sha256sum -c -) || die 'legacy firewall checksum failed'
+		done
 	fi
 	# Incus UI session tests.
 	cp "$here/test-incus-ui" "$var/lib/convergent/test-release/incus-ui-test"
 	# End Incus UI checks.
 	cp "$here/test-browser-migration" "$var/lib/convergent/test-release/browser-migration-test"
 	cp -r "$here/fixtures/browser-legacy" "$var/lib/convergent/test-release/"
-	if [ "$mode" = guests-maint ] || [ "$mode" = guests-update ]; then
+	if [ "$mode" = guests-maint ] || [ "$mode" = guests-update ] || [ "$mode" = guests-topology ]; then
 		cp "$here/../guests/svc/dashboards/check-data" "$var/lib/convergent/test-release/dashboard-check"
 		cp -r "$here/../guests/svc/rootfs/usr/share/grafana/dashboards" "$var/lib/convergent/test-release/"
 		inject_guest_update
@@ -5639,7 +5673,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=39600 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=23400 ;; guests-topology) memory=8192 cpus=8; limit=21600 ;; desktop | update) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -5667,10 +5701,11 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
-guest_test = goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update")
-drain_test = goal in ("guests", "guests-maint", "guests-update", "online")
+guest_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update")
+drain_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online")
 # The guest flows print two verdicts (smoke, then the update flow); both must be 0.
 markers = {"guests-maint": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "guests-update": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
+           "guests-topology": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
            "online": [b"CV-GUESTS-RESULT", b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
 verdicts = {}
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
@@ -5692,7 +5727,9 @@ qemu = subprocess.Popen([
     "-sandbox", "on,obsolete=deny,elevateprivileges=allow,spawn=deny,resourcecontrol=deny",
     "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/edk2/OvmfX64/OVMF_CODE.fd",
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
-    "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
+    # A throwaway disk: unsafe skips the rig's flushes (5% on a guests run); a killed QEMU still loses none of
+    # its writes, so the crash modes test the same thing.
+    "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw,cache=unsafe", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
     # Return each corrupt boot to the fallback counter checks.
@@ -5700,7 +5737,7 @@ qemu = subprocess.Popen([
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
     (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
     # Guest tests get a QEMU user-networking uplink, which the test bridges into wan as eth1.
-    (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "online") else ["-nic", "none"]),
+    (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online") else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
     env={"PATH": os.environ["PATH"], "LC_ALL": "C"})
 qmp = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -5886,7 +5923,7 @@ detach
 [ "$mode" != update ] || inject_update
 cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 runs=0
-case $mode in boot | corrupt | recovery | rescue | desktop | guests | guests-maint | guests-update | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
+case $mode in boot | corrupt | recovery | rescue | desktop | guests | guests-maint | guests-update | guests-topology | online) budget=300 ;; interrupt) budget=600 ;; update) budget=1200 ;; fallback) budget=1800 ;; esac
 deadline=$(($(date +%s) + budget))
 case $mode in update | recovery | rescue) run_vm "$mode" ;; *) run_vm ;; esac
 case $mode in
@@ -5934,16 +5971,16 @@ desktop)
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
 	[ "$ended" = desktop-0 ] || die "desktop smoke test failed ($ended); CV-DESKTOP lines in $log"
 	;;
-guests | guests-maint | guests-update | online)
+guests | guests-maint | guests-update | guests-topology | online)
 	blessed || die "initial release $release did not bless; see $log"
 	inject_guests
-	case $mode in guests) budget=12600 ;; guests-update) budget=39600 ;; guests-maint) budget=19800 ;; *) budget=14400 ;; esac
+	case $mode in guests) budget=12600 ;; guests-update) budget=23400 ;; guests-topology) budget=21600 ;; guests-maint) budget=19800 ;; *) budget=14400 ;; esac
 	# L2 injection (1140), real Remmina session with its work-gate wait (1800), shutdown preparation/drain (720);
 	# firewall relinks and work-gate waits on a one-vCPU firewall three hypervisors deep took the old 10800/7200
 	# past their limits; guests and guests-maint run PF (+1800 for its wait on fw1's relink). guests-update
-	# skips those smokes; its firewall rebuild interruptions boot fw1 three times (~1 h) and the topology
-	# migration after them about eight times (~2.5 h); relink settles before those steps and the fault steps
-	# took it past 7 h, then past 10 h with the fault steps.
+	# and guests-topology skip those smokes. The update flow, split for two rigs, took 35.6k s (budget 39600):
+	# guests-update (half A) about 20.1k, guests-topology (half B: fw1 boots in the no-peer step and about
+	# eight times in the topology migration) about 18.8k. Each keeps that margin (~11%), up to the half hour.
 	budget=$((budget + 3660))
 	deadline=$(($(date +%s) + budget))
 	vm_ok=1
@@ -5952,6 +5989,11 @@ guests | guests-maint | guests-update | online)
 	guest_logs
 	[ "$vm_ok" = 1 ] || die "QEMU driver failed; see $log"
 	[ "$ended" = "$mode-0" ] || die "$mode failed ($ended); see $log"
+	# test-topology-live exits 0 when it skips: only its own last line proves the migration ran.
+	if [ "$mode" = guests-topology ] &&
+		! tr -d '\r' <"$log" | grep -qx 'CV-TOPOLOGY legacy migration, the hold fault and both rebuild faults passed'; then
+		die "guests-topology: the topology migration did not pass; see $log"
+	fi
 	;;
 fallback | interrupt)
 	blessed || die "initial release $release did not bless; see $log"
