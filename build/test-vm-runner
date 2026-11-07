@@ -157,11 +157,21 @@ for mode in guests-maint guests-update guests-topology; do
     )
 done
 [ "$(comm -12 "$fixture/steps-guests-update" "$fixture/steps-guests-topology" | tr '\n' ' ')" = 'update-done update-test ' ]
+# Together the halves keep every step the single guests-update mode ran (fix-019's update-test).
+for step in update-test firewall-pair-start handoff-recovery certificate-renewal certificate-clock \
+    guests-start-stopped firewall-update firewall-update-roles wan-update wan-wifi-rollback wan-forced-stop \
+    wan-late-stop svc-preparation svc-interruptions svc-seed-failure svc-snapshot-refusal svc-torn-rebuild \
+    svc-torn-restore svc-unhealthy-recovery svc-rebuild-failure svc-readonly svc-legacy-recovery \
+    svc-broken-rollback dashboard-checks svc-commit-recovery svc-staged-apply wired-lock-wait firewall-no-peer \
+    firewall-no-peer-svc firewall-rebuild-interruptions work-topology-migration update-done; do
+    grep -qx "$step" "$fixture/steps-guests-update" || grep -qx "$step" "$fixture/steps-guests-topology" ||
+        { echo "test-vm-runner: old guests-update step $step is in neither half" >&2; exit 1; }
+done
 # A skipped topology test exits 0: guests-topology requires its own passed line.
 passed=$(sed -n "s/^echo '\(CV-TOPOLOGY .* passed\)'\$/\1/p" "$here/test-topology-live")
 [ -n "$passed" ] || exit 1
 grep -qF "grep -qx '$passed'" "$here/test"
-echo 'test-vm-runner: update halves split, verdicts and topology pass line checked'
+echo 'test-vm-runner: update halves split and cover the old mode, verdicts and topology pass line checked'
 # Timed firewall waits keep command replies and redirected logs intact.
 sed -n '/^# Mark bounded waits/,/^# End bounded waits/p' "$here/test" | sed '$d' |
     sed "s|/usr/local/sbin/guests|$here/../tools/guests|g" >"$fixture/timed"

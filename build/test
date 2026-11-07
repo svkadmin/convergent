@@ -643,6 +643,21 @@ done
 if [ -n "$other" ]; then
 	expr "$other" '>' "$release" >/dev/null || die "release $other must be newer than $release"
 fi
+# The topology migration's previous-release firewalls, found before the first boot: a misconfigured rig fails here.
+if [ "$mode" = guests-topology ]; then
+	legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
+	if [ -z "$legacy_release" ]; then
+		for candidate in $(find "$BUILDER/releases" -mindepth 1 -maxdepth 1 -type d | sort -r); do
+			grep -Eq '^version 0\.1\.3(-[^ ]*)?$' "$candidate/manifest" || continue
+			[ -d "$candidate/guests/fw" ] || continue
+			legacy_release=$candidate
+			break
+		done
+	fi
+	# A skip would pass the mode without its migration.
+	[ -n "$legacy_release" ] || die 'guests-topology needs a 0.1.3 release with firewall images (or CONVERGENT_LEGACY_RELEASE)'
+	case $legacy_release in /*) ;; *) legacy_release=$BUILDER/releases/$legacy_release ;; esac
+fi
 
 bld() { chroot "$BUILDER" "$@"; }
 # One directory per test: several may run at once.
@@ -4276,8 +4291,9 @@ pair_ok() {
     done
 }
 # The rebuild checks and demotes fw1: the pair settled after the firewall update, and nothing has restarted
-# a firewall since (the no-peer step that settled it here runs in guests-topology).
-fw_settled fw1:master fw2:backup || { fw_diag; bad $LINENO; }
+# a firewall since (the no-peer step that settled it here runs in guests-topology). A heal restart during the
+# dashboard checks can still need a nested boot plus relink (~45 min): the same bound as the other settles.
+fw_settled -t 3600 fw1:master fw2:backup || { fw_diag; bad $LINENO; }
 # Kill before the handoff marker, after rebuilding, and after rollback hands back to fw1.
 for step in journal rebuilt; do
     cv_time "firewall-rebuild-$step"
@@ -4535,20 +4551,9 @@ EOF
 	cp -R "$BUILDER$work/fixtures" "$var/lib/convergent/test-release/fixtures"
 	cp "$here/fixtures/shutdown" "$var/lib/convergent/test-release/shutdown-test"
 	cp "$here/test-topology-live" "$var/lib/convergent/test-release/topology-test"
-	# The topology migration's previous-release firewalls; topology-test skips (exit 0) without them.
+	# The topology migration's previous-release firewalls (legacy_release, found while parsing arguments);
+	# topology-test skips (exit 0) without them.
 	if [ "$mode" = guests-topology ]; then
-		legacy_release=${CONVERGENT_LEGACY_RELEASE:-}
-		if [ -z "$legacy_release" ]; then
-			for candidate in $(find "$BUILDER/releases" -mindepth 1 -maxdepth 1 -type d | sort -r); do
-				grep -Eq '^version 0\.1\.3(-[^ ]*)?$' "$candidate/manifest" || continue
-				[ -d "$candidate/guests/fw" ] || continue
-				legacy_release=$candidate
-				break
-			done
-		fi
-		# A skip would pass the mode without its migration.
-		[ -n "$legacy_release" ] || die 'guests-topology needs a 0.1.3 release with firewall images (or CONVERGENT_LEGACY_RELEASE)'
-		case $legacy_release in /*) ;; *) legacy_release=$BUILDER/releases/$legacy_release ;; esac
 		legacy_fw=$var/lib/convergent/test-release/legacy-fw
 		mkdir -p "$legacy_fw"
 		cp -a "$legacy_release/guests/fw/." "$legacy_fw/"
