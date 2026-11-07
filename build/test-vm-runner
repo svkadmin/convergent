@@ -71,8 +71,8 @@ sh -n "$fixture/driver-check"
 # Check both budget layers and the generated smoke selection without booting.
 sed -n '/^[[:space:]]*cat >"\$var\/lib\/convergent\/test-release\/smoke-test"/,/^[[:space:]]*# Gentoo configures/p' "$here/test" | sed '$d' >"$fixture/smoke"
 [ -s "$fixture/smoke" ]
-for mode in guests guests-maint guests-update online; do
-    case $mode in guests) want=12600 ;; guests-maint) want=19800 ;; guests-update) want=39600 ;; *) want=14400 ;; esac
+for mode in guests guests-maint guests-update guests-topology online; do
+    case $mode in guests) want=12600 ;; guests-maint) want=19800 ;; guests-update) want=23400 ;; guests-topology) want=21600 ;; *) want=14400 ;; esac
     (
         . "$fixture/run-vm"
         BUILDER= work=$fixture/budget-$mode
@@ -114,8 +114,66 @@ for mode in guests guests-maint guests-update online; do
     )
 done
 echo 'test-vm-runner: guest budgets and smoke selection passed'
+# The update flow's halves: each step in exactly one of guests-update and guests-topology, each half
+# with its own verdict; guests-maint keeps handoff recovery and the Remmina update.
+# Heredoc lines end functions at column 0 too: stop at the next function.
+sed -n '/^inject_guest_update() {/,/^inject_online() {/p' "$here/test" | sed '$d' >"$fixture/inject-update"
+[ -s "$fixture/inject-update" ]
+for mode in guests-maint guests-update guests-topology; do
+    (
+        var=$fixture/var-$mode broken=$fixture/broken-svc
+        mkdir -p "$var/lib/convergent/test-release" "$broken"
+        . "$fixture/inject-update"
+        inject_guest_update
+        script=$var/lib/convergent/test-release/update-test
+        sh -n "$script"
+        [ "$(tail -n 1 "$script")" = 'echo CV-UPDATE-RESULT "$result"' ]
+        sed -n 's/^cv_time \([a-z0-9-]*\)$/\1/p' "$script" | sort >"$fixture/steps-$mode"
+        has() { grep -qx "$1" "$fixture/steps-$mode"; }
+        timed() { grep -q '>"$release/guests-fw-timed" || bad $LINENO$' "$script"; }
+        topology() { grep -qx 'sh "$release/topology-test" || { fw_diag; bad $LINENO; }' "$script"; }
+        remmina() { grep -q '^timeout -k 30 600 sh /var/lib/convergent/test-release/remmina-test update ' "$script"; }
+        case $mode in
+        guests-maint)
+            has handoff-recovery && remmina || exit 1
+            if timed || topology || has firewall-no-peer || has firewall-update; then exit 1; fi
+            ;;
+        guests-update)
+            for step in firewall-pair-start handoff-recovery certificate-renewal guests-start-stopped firewall-update \
+                wan-update svc-preparation svc-broken-rollback dashboard-checks wired-lock-wait \
+                firewall-rebuild-interruptions; do
+                has "$step"
+            done
+            timed && [ -d "$var/lib/convergent/test-release/broken-svc" ] || exit 1
+            if topology || remmina || has firewall-no-peer || has work-topology-migration; then exit 1; fi
+            ;;
+        guests-topology)
+            for step in topology-setup firewall-no-peer work-topology-migration; do has "$step"; done
+            timed && topology && remmina || exit 1
+            if has handoff-recovery || has firewall-pair-start || has firewall-update || has firewall-rebuild-interruptions; then exit 1; fi
+            if [ -e "$var/lib/convergent/test-release/broken-svc" ]; then exit 1; fi
+            ;;
+        esac
+    )
+done
+[ "$(comm -12 "$fixture/steps-guests-update" "$fixture/steps-guests-topology" | tr '\n' ' ')" = 'update-done update-test ' ]
+# Together the halves keep every step the single guests-update mode ran (fix-019's update-test).
+for step in update-test firewall-pair-start handoff-recovery certificate-renewal certificate-clock \
+    guests-start-stopped firewall-update firewall-update-roles wan-update wan-wifi-rollback wan-forced-stop \
+    wan-late-stop svc-preparation svc-interruptions svc-seed-failure svc-snapshot-refusal svc-torn-rebuild \
+    svc-torn-restore svc-unhealthy-recovery svc-rebuild-failure svc-readonly svc-legacy-recovery \
+    svc-broken-rollback dashboard-checks svc-commit-recovery svc-staged-apply wired-lock-wait firewall-no-peer \
+    firewall-no-peer-svc firewall-rebuild-interruptions work-topology-migration update-done; do
+    grep -qx "$step" "$fixture/steps-guests-update" || grep -qx "$step" "$fixture/steps-guests-topology" ||
+        { echo "test-vm-runner: old guests-update step $step is in neither half" >&2; exit 1; }
+done
+# A skipped topology test exits 0: guests-topology requires its own passed line.
+passed=$(sed -n "s/^echo '\(CV-TOPOLOGY .* passed\)'\$/\1/p" "$here/test-topology-live")
+[ -n "$passed" ] || exit 1
+grep -qF "grep -qx '$passed'" "$here/test"
+echo 'test-vm-runner: update halves split and cover the old mode, verdicts and topology pass line checked'
 # Timed firewall waits keep command replies and redirected logs intact.
-sed -n '/^# Mark bounded waits/,/^# Evidence while fw updates/p' "$here/test" | sed '$d' |
+sed -n '/^# Mark bounded waits/,/^# End bounded waits/p' "$here/test" | sed '$d' |
     sed "s|/usr/local/sbin/guests|$here/../tools/guests|g" >"$fixture/timed"
 [ -s "$fixture/timed" ]
 (
@@ -144,7 +202,7 @@ sed -n '/^# Mark bounded waits/,/^# Evidence while fw updates/p' "$here/test" | 
 echo 'test-vm-runner: timed firewall waits preserve replies and failures'
 for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to kill init'; do
     export signature
-    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update online desktop update; do
+    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update guests-topology online desktop update; do
         goal=$mode
         case $mode in boot | fallback | interrupt | corrupt) goal=bless ;; esac
         export mode goal
@@ -196,6 +254,17 @@ for guest in (None, 0, 1):
             want = None if guest is None or online is None else max(guest, online)
             assert state["result"] == want, (guest, online, order, state["result"])
 print("test-vm-runner: online requires both successful verdicts")
+for goal in ("guests-maint", "guests-update", "guests-topology"):
+    for guest in (None, 0, 1):
+        for update in (None, 0, 1):
+            state = dict(goal=goal, guest_test=True, result=None, verdicts={}, re=re)
+            exec(markers, state)
+            rows = [(b"CV-GUESTS-RESULT", guest), (b"CV-UPDATE-RESULT", update)]
+            state["seen"] = b"".join(marker + b" %d\n" % value for marker, value in rows if value is not None)
+            exec(parse, state)
+            want = None if guest is None or update is None else max(guest, update)
+            assert state["result"] == want, (goal, guest, update, state["result"])
+print("test-vm-runner: both update halves and guests-maint require both verdicts")
 
 # Use host monotonic time, never the guest's elapsed field or ordinary console output.
 start = source.index("                    timing += chunk")
@@ -212,11 +281,11 @@ class Clock:
     def monotonic(self):
         return self.now
 
-for goal in ("guests", "guests-maint", "guests-update", "online", "desktop", "update", "bless"):
+for goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update", "bless"):
     clock = Clock()
     state = dict(time=clock, re=re, timing=b"", last_progress=0, last_step="boot",
                  deadline=20000, ended="stopped", result=0, verdicts={b"result": 0},
-                 drain_test=goal in ("guests", "guests-maint", "guests-update", "online"),
+                 drain_test=goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online"),
                  print=lambda *args, **kwargs: None)
     def feed(chunk):
         state["chunk"] = chunk
