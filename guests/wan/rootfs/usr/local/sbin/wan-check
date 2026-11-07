@@ -16,7 +16,22 @@ m=/run/node_exporter
 mkdir -p "$d" "$m"
 chmod 755 "$d" "$m"
 exec 9> "$d/check.lock"
-flock -n 9 || { [ "${1:-}" != retry ]; exit $?; }
+# A new lease's check waits out a running one, which may have read the addresses before it.
+case ${1:-} in
+--delay) flock -w 30 9 || exit 1 ;;
+*) flock -n 9 || { [ "${1:-}" != retry ]; exit $?; } ;;
+esac
+
+# Drop one uplink's refusal; the others stay latched.
+unrefuse() {
+	[ -e "$d/refused" ] || return 0
+	grep -v "^$1 " "$d/refused" > "$d/refused.new"
+	case $? in
+	0) mv "$d/refused.new" "$d/refused" ;;
+	1) rm -f "$d/refused" "$d/refused.new" ;;
+	*) rm -f "$d/refused.new"; return 1 ;;
+	esac
+}
 
 rc=0
 # Retry only configured wired uplinks; keep the alarm until a safe lease arrives.
@@ -51,10 +66,11 @@ done
 good=0
 bad=0
 for ifc in $UP_IFS; do
+	ifc_good=0 ifc_bad=0
 	route_overlap=$(cat "$d/dhcp-overlap.$ifc" 2>/dev/null || :)
 	for cidr in $(ip -4 -o addr show dev "$ifc" scope global 2>/dev/null | awk '{print $4}') $route_overlap; do
 		if overlaps_internal "${cidr%/*}" "${cidr#*/}"; then
-			bad=1
+			bad=1 ifc_bad=1
 			[ -z "$route_overlap" ] || ! grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
 			# One line per interface: another uplink's refusal stays latched.
 			{ grep -v "^$ifc " "$d/refused" 2>/dev/null; echo "$ifc $cidr $(date +%s)"; } > "$d/refused.new"
@@ -74,13 +90,18 @@ for ifc in $UP_IFS; do
 				ip link set dev "$ifc" down 2>/dev/null
 			fi
 		else
-			good=1
+			good=1 ifc_good=1
 		fi
 	done
+	# A safe lease on this uplink, or its removal, clears its refusal.
+	if [ "$ifc_bad" = 0 ] && { [ "$ifc_good" = 1 ] || [ ! -e "/sys/class/net/$ifc" ]; }; then
+		unrefuse "$ifc" || rc=1
+	fi
 done
 
+# A disconnected Wi-Fi's refusal also ends with a safe uplink; a wired one keeps its link down until then.
 if [ "$bad" -eq 0 ] && [ "$good" -eq 1 ]; then
-	rm -f "$d/refused"
+	unrefuse "$WIFI_IF" || rc=1
 fi
 
 /usr/local/sbin/wan-portal expire || rc=1

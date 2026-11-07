@@ -591,5 +591,23 @@ echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
     sh -c '. "$1"; kill -TERM $$' sh "$dns/trap" 2>"$dns/error" || code=$?
     [ "$code" = 1 ]
     grep -qx 'dns-push: interrupted' "$dns/error"
+    # Each opening restarts its entries' age: a leftover one would expire mid-download.
+    sed -n '/^download() {/,/^}$/p' "$repo/tools/dns-push" >"$dns/open"
+    [ -s "$dns/open" ]
+    sh -n "$dns/open"
+    . "$dns/open"
+    die() { echo "test-networks: $*" >&2; exit 1; }
+    BLOCKLIST_URL=https://fixture.invalid/list BLOCKLIST_MAX_BYTES=1024 work=$dns
+    getent() { echo '198.51.100.7 STREAM fixture.invalid'; }
+    public_v4() { [ "$1" = 198.51.100.7 ]; }
+    rsh() { printf '%s\n' "$*" >>"$dns/opened"; }
+    curl() { :; }
+    close_src() { src_open=; }
+    : >"$dns/opened"
+    download
+    for fw in fw2 fw1; do
+        echo "$fw pfctl -q -t blocklist_src -T replace 198.51.100.7 && pfctl -q -t blocklist_src -T zero"
+    done >"$dns/want"
+    cmp "$dns/want" "$dns/opened"
 )
 echo 'test-networks: DNS source close and interruption diagnostics passed'
