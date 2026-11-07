@@ -118,6 +118,7 @@ heal_leases() {
     . /usr/lib/convergent/incus/fw-leases
 }
 # A lease hold left by a run that could not reach a node: both allocators resume once both nodes answer.
+# $1: the one healthy node, resumed alone while its peer is down; the hold stays for the peer.
 heal_resume() (
     exec 8>/run/convergent/guests.lock
     flock -n 8 || exit 0
@@ -127,7 +128,9 @@ heal_resume() (
     heal_leases
     # Failures in a row, per node, for the checker's alert at five (resume.stuck makes its scan due); the
     # resume is retried every run regardless, and a node's restart or a hold gone resets its count.
-    if leases_resume; then
+    if leases_resume "$@"; then
+        # Retried every run while the peer is down: quiet. A node not RUNNING keeps its count, as below.
+        if [ "$#" = 1 ]; then [ -n "${lease_waiting:-}" ] || rm -f "$heal/resume.failed.$1"; exit 0; fi
         # A node not RUNNING per Incus (a stalled read) keeps the hold and the counts: reset, they never
         # reached five while a failure alternated with it.
         [ ! -f "$state/leases/held" ] || exit 1
@@ -135,9 +138,9 @@ heal_resume() (
     else
         # Failed before its node loop (the quiesced marker not cleared): both nodes count, or the counts
         # reset and the alert never came.
-        [ -n "${lease_failed:-}" ] || lease_failed='fw1 fw2' lease_waiting=
+        [ -n "${lease_failed:-}" ] || lease_failed=${1:-fw1 fw2} lease_waiting=
         resume_failures=
-        for resume_node in fw1 fw2; do
+        for resume_node in ${1:-fw1 fw2}; do
             # A node waiting (not RUNNING) while its peer failed keeps its count.
             case " ${lease_waiting:-} " in *" $resume_node "*) continue ;; esac
             case " ${lease_failed:-} " in *" $resume_node "*) ;; *) rm -f "$heal/resume.failed.$resume_node"; continue ;; esac
@@ -430,6 +433,12 @@ firewall_heal() (
         ) >/dev/null 2>&1
         exec 6>&- 8>&-
     done
-    [ "$fw1" = unhealthy ] || [ "$fw2" = unhealthy ] || { heal_resume >/dev/null 2>&1 || :; heal_reconcile >/dev/null 2>&1 || :; }
+    # One healthy node under a hold (its peer down, frozen or in ERROR) gets its allocator back now.
+    case $fw1:$fw2 in
+    unhealthy:unhealthy) ;;
+    unhealthy:*) heal_resume fw2 >/dev/null 2>&1 || : ;;
+    *:unhealthy) heal_resume fw1 >/dev/null 2>&1 || : ;;
+    *) heal_resume >/dev/null 2>&1 || :; heal_reconcile >/dev/null 2>&1 || : ;;
+    esac
     [ ! -f "$heal/event" ] || cat "$heal/event"
 )

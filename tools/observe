@@ -36,9 +36,14 @@ now=$(date +%s)
             echo 'cv_https_probe_available 1'
             https=0
             if [ "$dns" = 1 ]; then
-                timeout -k 1 10 nsenter --target "$pid" --net -- setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs curl -q4fsS --noproxy '*' --proto '=https' \
-                    --resolve "example.com:443:$address" --connect-timeout 3 --max-time 8 \
-                    --output /dev/null https://example.com/ && https=1
+                # The namespace held open, then def's PID read again: a PID reused meanwhile is another guest's.
+                {
+                    again=$(timeout -k 1 5 incus --force-local query "/1.0/instances/def/state?project=default" 2>/dev/null |
+                        jq -er 'select(.status == "Running") | .pid') && [ "$again" = "$pid" ] &&
+                        timeout -k 1 10 nsenter --net=/proc/self/fd/3 -- setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs curl -q4fsS --noproxy '*' --proto '=https' \
+                            --resolve "example.com:443:$address" --connect-timeout 3 --max-time 8 \
+                            --output /dev/null https://example.com/ && https=1
+                } 3<"/proc/$pid/ns/net"
             fi
             echo "cv_internet_probe_success{probe=\"https\",source=\"def\",target=\"example.com\"} $https"
         elif printf '%s\n' "$state" | jq -e '.status == "Stopped"' >/dev/null; then

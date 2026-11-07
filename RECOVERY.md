@@ -175,6 +175,8 @@ of the default runlevel, a protection not running, Incus not answering). Fix tha
 three commands again, within the watchdog window. `slot: cannot read the highest blessed release`
 means the state file `highest` is damaged: in the Recovery root shell, write the release ID the
 menu names into it (`echo <release> >/run/cv-state/highest`), then Continue.
+`slot: expected one cv-esp partition` means a second Convergent disk (an install medium) is
+attached: detach it and run the three commands again. A release already good is not reset meanwhile.
 
 The release does not boot, or the previous one came back by itself:
 

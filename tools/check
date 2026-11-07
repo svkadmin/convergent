@@ -18,12 +18,13 @@ rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&-
 # serial, to no serial-pinned role: a replugged NIC stays off wan until the role is added again.
 # Prints the serial when its one present NIC is authorized, allowed by USBGuard and has an interface off
 # usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan or
-# without USBGuard's answer.
+# without USBGuard's answer. $1: the serial of a re-add that failed, which left no role.
 wired_lost() (
     # 10 s: a late answer only defers the re-attach; 30 s with a firewall fault overran the minute run.
     serial=$(timeout -k 1 10 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
-        jq -er 'select(.status == "Running") | .devices["wired-uplink"] |
-            select(del(.serial) == {type: "usb", vendorid: "0bda", productid: "8153", required: "false"}) | .serial') || exit 2
+        jq -er 'select(.status == "Running") | .devices["wired-uplink"] | if . == null then "?" else
+            select(del(.serial) == {type: "usb", vendorid: "0bda", productid: "8153", required: "false"}) | .serial end') || exit 2
+    [ "$serial" != '?' ] || serial=${1:-}
     case $serial in ''|*[!A-Za-z0-9_.:-]*) exit 2 ;; esac
     found=0 lost=0
     for d in /sys/bus/usb/devices/*; do
@@ -45,7 +46,9 @@ wired_heal() (
     strike=/run/convergent/wired-strike outcome=/run/convergent/wired-heal
     ic() { timeout -k 1 120 incus --force-local --project default "$@" 9>&- 8>&- 7>&-; }
     heal_allowed || exit 0
-    serial=$(wired_lost)
+    # A failed re-add can leave no role: its serial, from the outcome, is what gets retried.
+    retry=$(sed -n 's/^failed //p' "$outcome" 2>/dev/null)
+    serial=$(wired_lost "$retry")
     case $? in 0) ;; 1) rm -f "$strike" "$outcome"; exit 0 ;; *) exit 0 ;; esac
     case $(cat "$outcome" 2>/dev/null) in
     '') ;;
@@ -68,7 +71,7 @@ wired_heal() (
     fi
     # Reads above run unlocked (a frozen wan stalls them); the change is re-checked under the lock.
     exec 8>/run/convergent/guests.lock
-    flock -n 8 && [ "$(wired_lost)" = "$serial" ] || exit 0
+    flock -n 8 && [ "$(wired_lost "$retry")" = "$serial" ] || exit 0
     rm -f "$strike"
     # As firewall-heal, three an hour: each add leaves a usb-host qdev behind. Past that the scan alerts.
     attempts=/run/convergent/wired-attempts
@@ -85,7 +88,8 @@ wired_heal() (
         exit 0
     fi
     echo "$now" >>"$attempts" || exit 1
-    if ic config device remove wan wired-uplink &&
+    # After a failed re-add the role may be gone: the add, which refuses an existing one, decides then.
+    if { ic config device remove wan wired-uplink || [ -n "$retry" ]; } &&
         ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false; then
         echo "healed $serial" >"$outcome"
         logger -t check 'wired uplink: wan did not hold its NIC for two runs; role removed and added again' 2>/dev/null || :
@@ -377,7 +381,14 @@ esac
 baseline=$state/accepted
 manifest=$baseline/manifest
 [ "${1:-}" != accept ] || manifest=$2/manifest
-slot status >"$work/slot" 2>>"$work/report" || bad 'slot status failed'
+# A long slot write holds the slot lock past status's wait (75): not tampering, retry the whole scan later.
+slot_rc=0
+slot status >"$work/slot" 2>>"$work/report" || slot_rc=$?
+case $slot_rc in
+    0) ;;
+    75) [ "${1:-}" = auto ] && exit 0; die 'a slot operation is running' ;;
+    *) bad 'slot status failed' ;;
+esac
 release=$(cat /usr/lib/convergent/release)
 version=$(cat /usr/lib/convergent/version 2>/dev/null) || version=
 printf 'Release: %s (%s)\n' "${version:-$release}" "$release" >>"$work/report"

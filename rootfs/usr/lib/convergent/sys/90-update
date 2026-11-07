@@ -29,8 +29,9 @@ update_media() (
 	options=ro,nodev,nosuid,noexec
 	case $fs in
 	vfat|exfat) ;;
-	ext4) options=$options,noload ;;
-	btrfs) options=$options,nologreplay ;;
+	# These carry symlinks: root's fetch-release must never follow one off the stick.
+	ext4) options=$options,noload,nosymfollow ;;
+	btrfs) options=$options,nologreplay,nosymfollow ;;
 	*) die 'use a FAT, exFAT, ext4 or Btrfs USB filesystem' ;;
 	esac
 	target=/run/sys-update

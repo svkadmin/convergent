@@ -133,7 +133,7 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
         '--force-local query /1.0/instances/wan?project=default')
             printf '{"type":"virtual-machine","status":"%s","devices":{"wired-uplink":%s}}\n' "$(cat "$w/status")" "$(cat "$w/role")" ;;
         '--force-local --project default config device remove wan wired-uplink')
-            echo remove >>"$w/calls"; echo null >"$w/role" ;;
+            echo remove >>"$w/calls"; [ "$(cat "$w/role")" != null ] || return 1; echo null >"$w/role" ;;
         '--force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false')
             echo add >>"$w/calls"; [ "$add" = ok ] || return 1; echo "$role" >"$w/role" ;;
         *) echo "unexpected incus: $*" >&2; exit 97 ;;
@@ -224,6 +224,10 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     run 5080; is "$strike" 'S1 5080'; echo 'failed S1' >"$outcome"
     guard=down; run 5140; is "$strike" 'S1 5080'; is "$outcome" 'failed S1'
     reported
+    # A failed re-add that left wan without a role is retried for the outcome's serial once the hour allows.
+    guard=up; echo null >"$w/role"; : >"$w/calls"
+    run 9000; is "$strike" 'S1 9000'; is "$w/calls" ''
+    run 9060; is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; is "$w/role" "$role"
 )
 # The scan reports a work DHCP resume the heal could not do five runs in a row, per firewall; a garbled or
 # lower count is nothing.

@@ -425,8 +425,9 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
    failed.
 
 `convergent-watchdog` feeds the 180 s watchdog for 10 min; a pass disarms it at any time, and an
-already-good release disarms it before the checks. On shutdown `convergent-setup` drains work
-VMs, browsers and Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before
+already-good release disarms it before the checks. It feeds only an iTCO watchdog with a timeout of
+60 s or more; any other is closed and the boot runs without one. On shutdown `convergent-setup`
+drains work VMs, browsers and Remmina, `svc`, `wan` and then the firewalls, 20 s graceful stop each before
 forcing. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
 `stop` is refused.
 

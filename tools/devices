@@ -128,29 +128,34 @@ wired() {
 		case $serial in ''|*[!A-Za-z0-9_.:-]*) die 'invalid USB serial' ;; esac
 		[ "${#serial}" -le 64 ] || die 'USB serial exceeds 64 characters'
 		[ "$role" = null ] || die 'remove the existing wired role first'
-		allowed=$(usbguard list-devices -a) || die 'USBGuard does not answer'
-		printf '%s\n' "$allowed" | serial="$serial" awk '
-		$2 == "allow" && $3 == "id" && $4 == "0bda:8153" &&
-		index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
-		END {exit n != 1}' || die 'exactly one matching NIC must be allowed by USBGuard; use sys usb allow first'
-		found=0
-		for d in /sys/bus/usb/devices/*; do
-			[ "$(cat "$d/idVendor" 2>/dev/null)" = 0bda ] &&
-			[ "$(cat "$d/idProduct" 2>/dev/null)" = 8153 ] &&
-			[ "$(cat "$d/serial" 2>/dev/null)" = "$serial" ] || continue
-			[ "$(cat "$d/authorized")" = 1 ] || die 'NIC is not authorized'
-			for n in "$d"/*/net/*; do
-				[ -e "$n" ] || continue
-				addresses=$(ip -o addr show dev "${n##*/}") || die 'cannot check host NIC addresses'
-				[ -z "$addresses" ] || die 'NIC has host addresses; refusing passthrough'
+		# Checked again after the answer, under the lock: the NIC can be swapped while the prompt waits.
+		wired_nic() {
+			allowed=$(usbguard list-devices -a) || die 'USBGuard does not answer'
+			printf '%s\n' "$allowed" | serial="$serial" awk '
+			$2 == "allow" && $3 == "id" && $4 == "0bda:8153" &&
+			index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
+			END {exit n != 1}' || die 'exactly one matching NIC must be allowed by USBGuard; use sys usb allow first'
+			found=0
+			for d in /sys/bus/usb/devices/*; do
+				[ "$(cat "$d/idVendor" 2>/dev/null)" = 0bda ] &&
+				[ "$(cat "$d/idProduct" 2>/dev/null)" = 8153 ] &&
+				[ "$(cat "$d/serial" 2>/dev/null)" = "$serial" ] || continue
+				[ "$(cat "$d/authorized")" = 1 ] || die 'NIC is not authorized'
+				for n in "$d"/*/net/*; do
+					[ -e "$n" ] || continue
+					addresses=$(ip -o addr show dev "${n##*/}") || die 'cannot check host NIC addresses'
+					[ -z "$addresses" ] || die 'NIC has host addresses; refusing passthrough'
+				done
+				found=$((found + 1))
 			done
-			found=$((found + 1))
-		done
-		[ "$found" = 1 ] || die 'NIC missing or serial is ambiguous'
+			[ "$found" = 1 ] || die 'NIC missing or serial is ambiguous'
+		}
+		wired_nic
 		ask "Assign 0bda:8153 serial $serial to wan, including future replugs?"
 		flock -w 60 9 || die 'another guest operation is running'
 		wired_read
 		[ "$role" = null ] || die 'wan changed during the confirmation; retry'
+		wired_nic
 		ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false
 		echo 'Wired role set. After a replug, check re-attaches it within two minutes if USBGuard allows it; sys wired remove clears it.'
 		;;

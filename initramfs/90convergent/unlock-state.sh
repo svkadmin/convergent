@@ -16,7 +16,9 @@ tries=0
 while :; do
 	[ "$tries" -lt 3 ] || die "state: the state volume did not open"
 	tries=$((tries + 1))
-	stty -echo </dev/console 2>/dev/null
+	# A console that cannot hide input still unlocks, but the owner is told before typing.
+	stty -echo </dev/console 2>/dev/null ||
+		printf 'WARNING: this console cannot hide input; the passphrase will be visible\n' >/dev/console
 	printf 'Passphrase [%s/3]: ' "$tries" >/dev/console
 	IFS= read -r pass </dev/console || pass=''
 	stty echo </dev/console 2>/dev/null

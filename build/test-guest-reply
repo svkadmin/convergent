@@ -50,6 +50,26 @@ timeout -k 1 5 sh "$scratch/stream" "$repo/rootfs/usr/lib/convergent/guest-reply
 [ "$code" = 125 ]
 [ ! -s "$scratch/output" ]
 [ -z "$(find "$TMPDIR" -mindepth 1 -print)" ]
+# Root scratches in /run/convergent, never in an owner's full /tmp; a local scratch failure (no directory,
+# ENOSPC) is no answer (1), never a rejected reply (125).
+sed "s|/run/convergent|$scratch/run|g" "$repo/rootfs/usr/lib/convergent/guest-reply.sh" >"$scratch/reply-root"
+(
+    . "$scratch/reply-root"
+    id() { [ "$*" = -u ] || exit 97; echo 0; }
+    TMPDIR=$scratch/missing
+    printf 'valid\n' >"$reply"
+    mkdir "$scratch/run"
+    guest_reply 128 transport >"$scratch/output"
+    cmp "$reply" "$scratch/output"
+    [ -z "$(find "$scratch/run" -mindepth 1 -print)" ]
+    rmdir "$scratch/run"
+    code=0; guest_reply 128 transport >"$scratch/output" || code=$?
+    [ "$code" = 1 ] && [ ! -s "$scratch/output" ] || exit 1
+    mkdir "$scratch/run"
+    head() { command head "$@" >/dev/full; }
+    code=0; guest_reply 128 transport >"$scratch/output" || code=$?
+    [ "$code" = 1 ] && [ ! -s "$scratch/output" ] || exit 1
+)
 # Guest text for the owner keeps newline and tab, never a control byte; stdout and the status stay raw.
 ctl=$(printf '[\001-\010\013-\037\177]')
 shown() { if LC_ALL=C grep -q "$ctl" "$1"; then echo "test-guest-reply: control bytes shown by $2" >&2; exit 1; fi; }

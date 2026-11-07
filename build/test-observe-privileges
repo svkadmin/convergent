@@ -6,8 +6,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 trap 'exit 1' HUP INT TERM
 # Stop before host cgroup collection.
-command awk '/^    ok=1$/ && !started {started=1} started {print} /cv_collector_timestamp_seconds.*internet/ {exit}' "$here/../tools/observe" >"$work/probes"
+command awk '/^    ok=1$/ && !started {started=1} started {print} /cv_collector_timestamp_seconds.*internet/ {exit}' "$here/../tools/observe" |
+    sed "s|/proc/\$pid/ns/net|$work/ns.\$pid|" >"$work/probes"
 [ -s "$work/probes" ]; sh -n "$work/probes"
+: >"$work/ns.123"
 setpriv() (
     [ "$1:$2:$3:$4" = '--reuid=65534:--regid=65534:--clear-groups:--no-new-privs' ] || exit 90
     shift 4
@@ -20,10 +22,15 @@ prlimit() {
     [ "$1:$2:$3" = '--as=134217728:--fsize=1048576:--' ] || exit 90
     shift 3; "$@"
 }
+# The namespace def's PID named, held open while that PID was read again.
 nsenter() {
     [ "${dropped:-}" = '' ] || exit 90
-    [ "$1:$2:$3:$4" = '--target:123:--net:--' ] || exit 90
-    shift 4
+    case "$1:$2:$3:$4" in
+    '--net=/proc/self/fd/3:--:'*) [ "$(readlink /proc/self/fd/3)" = "$work/ns.123" ] || exit 90; shift 2 ;;
+    # By PID alone: no namespace held, and no PID read again (the reads count tells).
+    --target:123:--net:--) shift 4 ;;
+    *) exit 90 ;;
+    esac
     namespace=def
     "$@"
 }
@@ -47,15 +54,17 @@ jq() {
         [ "${dropped:-}" = yes ] || exit 90
         [ "$(cat)" = guest-data ] || exit 90
         echo parsed >>"$work/calls"; echo cv_rules_healthy\ 1 ;;
-    *) [ "$(cat)" = trusted-state ] || exit 90; echo 123 ;;
+    # reused: def's PID differs when read again (def restarted, its old PID another process's).
+    *) [ "$(cat)" = trusted-state ] || exit 90; echo state >>"$work/reads"
+       if [ "$fault" = reused ] && [ "$(wc -l <"$work/reads")" = 2 ]; then echo 456; else echo 123; fi ;;
     esac
 }
 logger() { :; }
 now=100000 tmp=$work/output
-for fault in none curl jq getent; do
-    : >"$work/calls"
+for fault in none curl jq getent reused; do
+    : >"$work/calls"; : >"$work/reads"
     . "$work/probes" >"$work/result"
-    if [ "$fault" = none ] || [ "$fault" = getent ]; then
+    if [ "$fault" = none ] || [ "$fault" = getent ] || [ "$fault" = reused ]; then
         grep -qx 'cv_collector_success{collector="rules"} 1' "$work/result"
         grep -qx parsed "$work/calls"
     else
@@ -64,9 +73,11 @@ for fault in none curl jq getent; do
     fi
     if [ "$fault" = none ] || [ "$fault" = jq ]; then
         grep -qx https "$work/calls"
+        [ "$(wc -l <"$work/reads")" = 2 ]
     else
         if grep -qx https "$work/calls"; then exit 1; fi
     fi
+    [ "$fault" != reused ] || grep -qx 'cv_internet_probe_success{probe="https",source="def",target="example.com"} 0' "$work/result"
     [ ! -e "$tmp.rules" ]
 done
-echo 'observe: dropped clients/parsers, root namespace entry and failed drops passed'
+echo 'observe: dropped clients/parsers, root namespace entry, a reused PID and failed drops passed'
