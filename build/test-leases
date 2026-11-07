@@ -422,7 +422,7 @@ touch "$state/leases/held"
 scenario=booting boots=0
 (
     unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }
-    rm() { [ "$*" != "-rf $work" ] || return 0; command rm "$@"; }
+    rm() { case "$*" in "-rf $work"|"-rf --one-file-system $work") return 0 ;; esac; command rm "$@"; }
     manual_stage= recovering= starting= applying= step=test
     cleanup 0
 )
@@ -437,7 +437,7 @@ boots=0
 if (
     unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; logger() { :; }
     fail() { echo "$step: $*" >&2; return 1; }
-    rm() { [ "$*" != "-rf $work" ] || return 0; command rm "$@"; }
+    rm() { case "$*" in "-rf $work"|"-rf --one-file-system $work") return 0 ;; esac; command rm "$@"; }
     manual_stage= recovering= starting= applying= step=test frozen=1
     cleanup 0
 ) 2>"$work/cleanup.err"; then exit 1; fi
@@ -468,6 +468,130 @@ if (
 grep -qx 'cleanup: pair commit pending; rerun sys guests update' "$work/cleanup.err"
 rm "$state/fw.topology/committed"
 rmdir "$state/fw.topology"
+# A rollback's wan mount is detached again before the scratch removal, which stays on its own file system.
+: >"$work/cleanup-events"
+touch "$state/pending"
+if (
+    clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }; leases_resume() { :; }; logger() { :; }
+    prepare_cleanup() { :; }; fw_release() { :; }; running() { return 1; }
+    unmount_root() { echo "unmount ${mounted:-}" >>"$work/cleanup-events"; mounted=; }
+    rollback() { echo rollback >>"$work/cleanup-events"; mounted=1; return 1; }
+    rm() {
+        case "$*" in
+        "-rf --one-file-system $work") echo rm >>"$work/cleanup-events"; return 0 ;;
+        "-rf $work") echo rm-across >>"$work/cleanup-events"; return 0 ;;
+        esac
+        command rm "$@"
+    }
+    manual_stage= recovering=1 starting= applying= rebuilding= step=test guest=wan snap=test mounted=
+    cleanup 1
+) 2>/dev/null; then exit 1; fi
+printf '%s\n' 'unmount ' rollback 'unmount 1' rm >"$work/expected-events"
+cmp "$work/expected-events" "$work/cleanup-events"
+rm "$state/pending"
+# Both browsers passed but their commit failed: cleanup finishes it (no rollback). A commit without errexit
+# stops at its first failure and keeps its marker.
+(
+    unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }; leases_resume() { :; }
+    prepare_cleanup() { :; }; fw_release() { :; }; running() { return 1; }; logger() { :; }
+    rollback() { echo rollback >>"$work/cleanup-events"; }
+    browser_commit() { echo browser_commit >>"$work/cleanup-events"; command rm "$state/browser.ready"; }
+    rm() { case "$*" in "-rf --one-file-system $work") return 0 ;; esac; command rm "$@"; }
+    : >"$work/cleanup-events"
+    echo fingerprint >"$state/browser.ready"
+    manual_stage= recovering=1 starting= applying= rebuilding= step=test
+    cleanup 0
+) || exit 1
+[ "$(cat "$work/cleanup-events")" = browser_commit ] && [ ! -e "$state/browser.ready" ] || exit 1
+(
+    eval "$(sed -n '/^browser_commit() {/,/^}/p' "$here/../tools/guests")"
+    command -v browser_commit >/dev/null
+    image_alias() { return 1; }
+    commit_update() { echo commit >>"$work/cleanup-events"; }
+    browser_profiles_prune() { echo prune >>"$work/cleanup-events"; }
+    images_prune() { echo images >>"$work/cleanup-events"; }
+    : >"$work/cleanup-events"
+    echo fingerprint >"$state/browser.ready"
+    touch "$state/pending"
+    set +e
+    browser_commit
+    code=$?
+    set -e
+    [ "$code" != 0 ] && [ -e "$state/browser.ready" ] && [ ! -s "$work/cleanup-events" ] || exit 97
+)
+rm "$state/browser.ready" "$state/pending"
+# A failed firewall rebuild drops its own preparation journal (it would hold the heal); another node's, or
+# one under recovery, stays.
+for case in own other recovering; do
+    case $case in other) node=fw2 ;; *) node=fw1 ;; esac
+    echo "$node guests-20250101T000000-1-rebuild yes" >"$state/preparing"
+    if (
+        unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }; leases_resume() { :; }
+        prepare_cleanup() { :; }; fw_release() { :; }; running() { return 1; }; logger() { :; }
+        rm() { case "$*" in "-rf --one-file-system $work") return 0 ;; esac; command rm "$@"; }
+        manual_stage= recovering= starting= applying= rebuilding=fw1 step=test
+        [ "$case" != recovering ] || recovering=1
+        cleanup 1
+    ) 2>/dev/null; then exit 1; fi
+    if [ "$case" = own ]; then [ ! -e "$state/preparing" ]; else [ -e "$state/preparing" ]; fi
+done
+rm "$state/preparing"
+# A manual update whose own firewall commit failed keeps its copy for rebuild; one with no commit, a wan commit
+# or a commit an earlier run left removes it.
+for case in kept none wan earlier; do
+    rm -rf "$state/committed.stage" "$work/stage"
+    mkdir -p "$work/stage/guests/image"
+    commit=1
+    case $case in
+    kept|earlier) echo 'fw2 guests-20250101T000000-1 image' >"$state/committed" ;;
+    wan) echo 'wan guests-20250101T000000-1 image' >"$state/committed" ;;
+    esac
+    [ "$case" != earlier ] || commit=
+    if (
+        unmount_root() { :; }; clear_probes() { :; }; dns_restore() { :; }; autorestart_clear() { :; }; leases_resume() { :; }
+        prepare_cleanup() { :; }; fw_release() { :; }; running() { return 1; }; logger() { :; }
+        commit_update() { return 1; }
+        rm() { case "$*" in "-rf --one-file-system $work") return 0 ;; esac; command rm "$@"; }
+        manual_stage=$work/stage manual_commit=$commit recovering=1 starting= applying= rebuilding= step=test
+        cleanup 1
+    ) 2>/dev/null; then exit 1; fi
+    [ ! -e "$work/stage" ] || exit 1
+    if [ "$case" = kept ]; then [ -d "$state/committed.stage/guests/image" ] || exit 1
+    elif [ -e "$state/committed.stage" ]; then exit 1; fi
+    rm -f "$state/committed"
+done
+# The copy goes with the commit that ends; one that fails keeps it. A commit this manual run opens is its own.
+(
+    eval "$(sed -n '/^commit_update() {/,/^}/p' "$here/../tools/guests")"
+    command -v commit_update >/dev/null
+    running() { :; }; images_prune() { :; }; prune() { :; }
+    retry() { [ ! -e "$work/unhealthy" ]; }
+    manual_stage=$work/stage manual_commit=
+    echo 'fw2 guests-20250101T000000-1 image' >"$state/pending"
+    mkdir -p "$state/committed.stage/guests/image"
+    touch "$work/unhealthy"
+    if commit_update; then exit 1; fi
+    [ -d "$state/committed.stage" ] && [ -f "$state/committed" ] && [ "$manual_commit" = 1 ] || exit 1
+    rm "$work/unhealthy"
+    commit_update
+    [ ! -e "$state/committed.stage" ] && [ ! -e "$state/committed" ] || exit 1
+    rm -f "$state/updates"
+)
+# A killed shutdown drain leaves its holds in owner projects too: the clear lists every project.
+(
+    frozen=
+    ic() {
+        case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
+        [ "$*" = 'query /1.0/instances?recursion=1&all-projects=true' ] || return 1
+        echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
+            {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]'
+    }
+    : >"$work/unsets"
+    autorestart_clear
+    printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
+        '--project owner config unset work boot.autorestart user.convergent.autorestart' >"$work/expected-unsets"
+    cmp "$work/expected-unsets" "$work/unsets"
+)
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
     eval "$(sed -n '/^retry() {/,/^}/p' "$here/../tools/guests")"
@@ -507,10 +631,27 @@ rmdir "$state/fw.topology"
     fail() { echo "$*" >&2; return 1; }
     if fw_check fw2 2>"$work/fw_check.err"; then exit 1; fi
     grep -qx 'dhcpd is not running' "$work/fw_check.err"
+    # A rebuild's peer beside an unrecorded committed fw update passes with either release's pf.conf, only then.
+    mkdir -p "$work/release-old" "$work/release-new"
+    echo old-pf >"$work/release-old/fw2.pf.sha256"
+    echo new-pf >"$work/release-new/fw2.pf.sha256"
+    guest_reply() {
+        case $4 in
+        *pfsync0) echo 'RUNNING defer: on' ;;
+        'sha256 -q /etc/pf.conf') echo old-pf ;;
+        *) echo digest ;;
+        esac
+    }
+    rsh() { case $2 in 'pfctl -si') echo 'Status: Enabled' ;; host*) echo 100.80.2.10 ;; esac; }
+    image_dir=$work/release-new fw_either=
+    if fw_check fw2 2>"$work/fw_check.err"; then exit 1; fi
+    grep -qx 'pf.conf digest differs from release' "$work/fw_check.err"
+    fw_either=$work/release-old
+    fw_check fw2
 )
 sed -n '/^rebuild() {/,/^}/p' "$here/../tools/guests" |
     awk -v resume_line='    [ ! -f "$state/leases/held" ] || leases_resume "$peer" || die "cannot resume work DHCP on $peer"' \
-        -v check_line='    fw_check "$peer" || die "$peer must be healthy before rebuilding $1"' \
+        -v check_line='    if ! fw_check "$peer"; then' \
         '$0 == resume_line {resume=NR} $0 == check_line {check=NR} END {exit !(resume && check > resume)}'
 echo 'test-leases: held peer replay, fresh checkpoint, booting peer and failed safety gates passed'
 # fw-seed: rcctl refuses flags on a disabled daemon, so a held dhcpd must not get them there.

@@ -1887,7 +1887,7 @@ timeout() {
     case "$*" in
     "-k 1 30 incus --force-local query /1.0/instances/$frozen_vm/state?project=default") return 124 ;;
     '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
-    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default')
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
         [ -z "$frozen_vm" ] || return 124
         echo '[{"name":"fw2","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
     '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart') ;;
@@ -1916,11 +1916,38 @@ touch "$work/state/guests/pending"
 if autorestart_clear 2>"$work/err"; then exit 1; fi
 grep -q "timed out; fw2's QEMU no longer answers Incus; kill the pid in /run/incus/fw2/qemu.pid, then rerun" "$work/err"
 rm "$work/state/guests/pending"
-if ic query '/1.0/instances?recursion=1&project=default' >/dev/null 2>&1; then exit 1; fi
+if ic query '/1.0/instances?recursion=1&all-projects=true' >/dev/null 2>&1; then exit 1; fi
 [ "$frozen" = 1 ]
 : >"$work/ic-bounds"
 if autorestart_clear; then exit 1; fi
 [ ! -s "$work/ic-bounds" ]
+# A killed drain saved an owner guest's own value: it comes back before the hold goes; a timed-out
+# change still names the frozen way out.
+frozen= frozen_vm= set_timeout=
+timeout() {
+    echo "$*" >>"$work/ic-bounds"
+    case "$*" in
+    '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
+        echo '[{"name":"build","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"true"}},
+            {"name":"vm","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}}]' ;;
+    '-k 1 120 incus --force-local --project owner config set build boot.autorestart=true') [ -z "$set_timeout" ] || return 124 ;;
+    '-k 1 120 incus --force-local --project owner config unset build user.convergent.autorestart user.convergent.autorestart.old') ;;
+    '-k 1 120 incus --force-local --project owner config unset vm boot.autorestart user.convergent.autorestart user.convergent.autorestart.old') ;;
+    *) return 1 ;;
+    esac
+}
+: >"$work/ic-bounds"
+autorestart_clear
+printf '%s\n' '-k 1 120 incus --force-local --project owner config set build boot.autorestart=true' \
+    '-k 1 120 incus --force-local --project owner config unset build user.convergent.autorestart user.convergent.autorestart.old' \
+    '-k 1 120 incus --force-local --project owner config unset vm boot.autorestart user.convergent.autorestart user.convergent.autorestart.old' >"$work/expected"
+grep config "$work/ic-bounds" | cmp - "$work/expected"
+set_timeout=1
+: >"$work/ic-bounds"
+if autorestart_clear 2>"$work/err"; then exit 1; fi
+grep -q 'incus config timed out; if a guest QEMU is frozen' "$work/err" || exit 1
+if grep -q 'config unset' "$work/ic-bounds"; then exit 1; fi
 echo 'test-firewall-heal: restart gates, limits, unknown state, hung QEMU and bounded guest stop passed'
 HEAL
 sh -eu <<'DRAIN' || bad $LINENO
@@ -1955,10 +1982,11 @@ incus() {
                 [ "$clear_timeout" = 0 ] || return 124 ;;
             ephemeral=true) [ "$8" = --property ]; touch "$fixture/ephemeral" ;;
             boot.autorestart=false) touch "$fixture/held" ;;
+            boot.autorestart=true) : ;;
             volatile.last_state.power=RUNNING)
                 [ -f "$fixture/stopped" ] || return 1
                 grep -Eq 'config (unset wan boot.autorestart|set wan boot.autorestart=false)$' "$fixture/calls" || return 1
-                grep -Eq 'config (unset wan user.convergent.autorestart|set wan user.convergent.autorestart=true)$' "$fixture/calls" || return 1
+                grep -Eq 'config (unset wan user.convergent.autorestart user.convergent.autorestart.old|set wan user.convergent.autorestart=true)$' "$fixture/calls" || return 1
                 [ "$last_state_fail" = 0 ] || return 1 ;;
             user.convergent.autorestart=true) : ;;
             *) return 1 ;;
@@ -1981,10 +2009,20 @@ grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
 grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
 grep -q 'config unset wan boot.autorestart' "$fixture/calls"
 grep -q 'config unset wan user.convergent.autorestart' "$fixture/calls"
+# Our own hold saves the guest's value for guests' clear after a killed drain, and drops it after the restore.
+grep -qx -- '--force-local --project default config set wan boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old=-' "$fixture/calls"
+grep -qx -- '--force-local --project default config unset wan user.convergent.autorestart user.convergent.autorestart.old' "$fixture/calls"
 rm "$fixture/stopped"; : >"$fixture/calls"
+stop_one owner wan true - false 0 false
+grep -qx -- '--force-local --project owner config set wan boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old=true' "$fixture/calls"
+grep -qx -- '--force-local --project owner config set wan boot.autorestart=true' "$fixture/calls"
+rm "$fixture/stopped"; : >"$fixture/calls"
+# A hold another owns (an update, a killed drain) keeps its saved value.
 stop_one default wan false true false 3 false
 grep -q 'config set wan boot.autorestart=false$' "$fixture/calls"
 grep -q 'config set wan user.convergent.autorestart=true$' "$fixture/calls"
+grep -qx -- '--force-local --project default config set wan boot.autorestart=false user.convergent.autorestart=true' "$fixture/calls"
+if grep -q 'autorestart.old' "$fixture/calls"; then exit 1; fi
 rm "$fixture/stopped"; : >"$fixture/calls"
 stuck=1
 if stop_one default wan - - false 3 false; then exit 1; fi
@@ -2029,7 +2067,7 @@ for fault in none clear clear-timeout stop query missing last-state; do
         [ ! -f "$fixture/deleted" ]
         grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
         grep -q 'config unset wan boot.autorestart$' "$fixture/calls"
-        grep -q 'config unset wan user.convergent.autorestart$' "$fixture/calls"
+        grep -q 'config unset wan user.convergent.autorestart user.convergent.autorestart.old$' "$fixture/calls"
     elif grep -q 'volatile.last_state.power\|config unset' "$fixture/calls"; then exit 1; fi
 done
 clear_fail=0 clear_timeout=0 stuck=0 query_fail=0 last_state_fail=0
@@ -2091,7 +2129,7 @@ for function in wan_mount unmount_root; do
     [ -s "$work/$function" ]; sh -n "$work/$function"; . "$work/$function"
 done
 die() { echo "$*" >&2; exit 1; }
-running() { return 1; }
+stopped() { return 0; }
 mkdir() { echo mkdir >>"$work/events"; [ "$fault" != mkdir ]; }
 losetup() {
     if [ "$1" = -d ]; then
@@ -2135,6 +2173,11 @@ for fault in mkdir losetup partition mount none umount; do
     esac
     [ "$(tr '\n' ' ' <"$work/events")" = "$expected " ]
 done
+# A failed state query is no proof that QEMU let go of the disk: nothing is attached.
+stopped() { return 1; }
+: >"$work/events"
+if (wan_mount) 2>/dev/null; then exit 1; fi
+[ ! -s "$work/events" ]
 WAN_MOUNT
 # Guest recovery guards; debugfs diagnostics can accompany a successful exit.
 sh -eu <<'GUEST_GUARDS' || bad $LINENO
@@ -3701,11 +3744,12 @@ wan_wifi() (
     loop= mounted=
     die() { echo "CV-WIFI $*" >&2; exit 1; }
     running() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Running ]; }
+    stopped() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]; }
     retry() {
         n=0
         until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done
     }
-    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
+    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^wan_damaged() /p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
     trap 'code=$?; unmount_root || exit 1; rm -rf "$work";
         running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
     trap 'exit 1' HUP INT TERM

@@ -453,7 +453,10 @@ uplink, see [Wired uplink](#wired-uplink).
 Credentials are stored in `wan`. A replacement also
 stages root-only copies on encrypted host storage, which can remain until recovery or cleanup
 completes. A saved profile carries over only if it is a WPA-PSK, SAE or open network in the form
-iwd writes for a joined one (at most 4 KiB; no EAP). Others are logged and must be joined again.
+iwd writes for a joined one (at most 4 KiB; no EAP) and the old disk gives it whole. Others are
+logged and must be joined again.
+If the old disk cannot be read, the replacement goes on with a warning and every network must be
+joined again. A host-side failure (scratch space, tools) stops it instead; rerun it once that is fixed.
 
 ## Captive portals
 
@@ -650,7 +653,12 @@ installed images and seed. Before you run it:
 The rebuild waits for the guest and DNS locks, checks and seeds the replacement, restores normal
 roles and pushes the stored DNS. It first starts a `wan` or `svc` that Incus left stopped or
 paused. A target that Incus cannot stop is ended by its verified QEMU pid. Browsers may stay open.
-After an interruption, repeat the same command to resume. How the pair is replaced:
+After an interruption, repeat the same command to resume; a resumed rebuild of a stopped target
+goes on with a warning when the peer fails its health check but still answers SSH (a target that
+autostarted must be stopped first; the refusal names the command). A node a firewall update committed
+but did not record yet is rebuilt from the staged release (a manual `guests update fw` keeps its
+copy for this until the commit ends); if that is no longer staged, the rebuild says so and asks
+whether to use the older installed release instead (default No: it stops). How the pair is replaced:
 [ARCHITECTURE 7.2](ARCHITECTURE.md#72-update).
 
 ## Releases and guests
