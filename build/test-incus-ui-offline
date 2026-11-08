@@ -579,8 +579,8 @@ for gate in open guests update stopping nonroot arguments; do
         printf '%s\n' '-s -n 9' '-s -n 6' >"$work/expected"
         cmp "$work/expected" "$work/locks-taken" ;;
     nonroot) [ ! -e "$work/swept" ] && [ ! -s "$work/locks-taken" ] ;;
-    # An update's held lock defers the sweep (75); check does not log that as a failure.
-    guests|update) [ "$rc" = 75 ] && [ ! -e "$work/swept" ] ;;
+    # An update's held lock, or guests stopping, defers the sweep (75); check does not log that as a failure.
+    guests|update|stopping) [ "$rc" = 75 ] && [ ! -e "$work/swept" ] ;;
     *) [ "$rc" = 1 ] && [ ! -e "$work/swept" ] ;;
     esac || exit 1
 done
@@ -606,23 +606,46 @@ for gate in reap:guests reap:update close:guests reap:open; do
     *) [ "$rc" = 1 ] ;;
     esac || exit 1
 done
-# check logs a sweep's failure, not its deferral.
-sed -n '/^# 75 is a guest or browser update holding its lock/,/^# End Remmina\./p' "$repo/tools/check" >"$work/sweep-log"
-[ "$(grep -c 'orphan cleanup failed' "$work/sweep-log")" = 2 ]
-for code in 0 75 1 124; do
+# check logs a sweep's failure, not its deferral, until that has lasted 6 h (a wedged holder must not hide an
+# orphan); any other result forgets the deferral's start.
+sed -n '/^# 75 is a guest or browser update holding its lock/,/^# End Remmina\./p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/|g; s|/proc/uptime|$work/uptime|" >"$work/sweep-log"
+[ "$(grep -c 'reap_result [a-z]* "$reap_rc"' "$work/sweep-log")" = 2 ]
+grep -q "$work/\$1-reap-busy" "$work/sweep-log"
+echo '100000.25 5.00' >"$work/uptime"
+for sample in 0:set:none 1:set:failed 124:none:failed 75:none:none 75:garbled:none 75:78400:none 75:78399:busy; do
+    code=${sample%%:*} before=${sample#*:}
+    logged=${before#*:} before=${before%:*}
     : >"$work/sweep-logged"
+    for name in browser remote; do
+        case $before in none) rm -f "$work/$name-reap-busy" ;; set) echo 99000 >"$work/$name-reap-busy" ;; *) echo "$before" >"$work/$name-reap-busy" ;; esac
+    done
     (
         sweep=1
-        timeout() { [ "$1 $2 $3" = '-k 1 30' ] || exit 97; return "$code"; }
+        timeout() {
+            [ "$1 $2 $3" = '-k 1 30' ] || exit 97
+            shift 3
+            case $* in '/usr/local/sbin/browser --reap-tmp' | '/usr/local/sbin/remote reap') ;; *) exit 97 ;; esac
+            return "$code"
+        }
         logger() { echo "$*" >>"$work/sweep-logged"; }
         set -- auto
         . "$work/sweep-log"
     )
-    case $code in
-    0|75) [ ! -s "$work/sweep-logged" ] ;;
-    *) printf '%s\n' '-p user.warning -t browser orphan cleanup failed' '-p user.warning -t remote orphan cleanup failed' |
+    case $logged in
+    none) [ ! -s "$work/sweep-logged" ] ;;
+    failed) printf '%s\n' '-p user.warning -t browser orphan cleanup failed' '-p user.warning -t remote orphan cleanup failed' |
         cmp -s - "$work/sweep-logged" ;;
+    busy) printf '%s\n' '-p user.err -t browser orphan cleanup busy for over 6 hours' \
+        '-p user.err -t remote orphan cleanup busy for over 6 hours' | cmp -s - "$work/sweep-logged" ;;
     esac || exit 1
+    for name in browser remote; do
+        case $code:$before in
+        75:none | 75:garbled) [ "$(cat "$work/$name-reap-busy")" = 100000 ] ;;
+        75:*) [ "$(cat "$work/$name-reap-busy")" = "$before" ] ;;
+        *) [ ! -e "$work/$name-reap-busy" ] ;;
+        esac || exit 1
+    done
 done
 # check bounds the UI cleanup: the trust goes first, so the bound can cut only the slower instance calls.
 # A failed revocation still stops int, and fails.

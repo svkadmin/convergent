@@ -609,7 +609,8 @@ is refused.
    ```
    The checker retries it every minute, and boot cleanup runs before the greeter. While a guest or
    browser update holds its lock the retries stay quiet; after 6 hours syslog shows `Incus UI orphan
-   cleanup busy for over 6 hours`: an update is stuck.
+   cleanup busy for over 6 hours`: an update is stuck. The tmp browser and Remmina orphan sweeps do the
+   same and then log `orphan cleanup busy for over 6 hours` under the tag `browser` or `remote`.
 2. A launcher still holds the session lock: close its terminal, or stop the unlocked session,
    delete its credential and set up a new one with a new passphrase:
    ```sh
