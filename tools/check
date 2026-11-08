@@ -311,12 +311,17 @@ heal_capped=$(awk -v now="${heal_uptime%.*}" '$1 > now - 3480 {n++} END {print n
         [ "$heal_valid" = 1 ] || continue
         if [ "${heal_peer:-0}" -gt 0 ] || [ "$((${heal_uptime%.*} - heal_first))" -lt 1800 ]; then sweep=0; fi
     done
+# 75 is a guest or browser update holding its lock: deferred to the next minute, not a failure.
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
-    timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger -p user.warning -t browser 'orphan cleanup deferred or failed'
+    reap_rc=0
+    timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || reap_rc=$?
+    [ "$reap_rc" = 0 ] || [ "$reap_rc" = 75 ] || logger -p user.warning -t browser 'orphan cleanup failed'
 fi
 # Remmina: a killed supervisor must not leave an unlocked orphan running.
 if [ "${1:-}" = auto ] && [ "$sweep" = 1 ]; then
-    timeout -k 1 30 /usr/local/sbin/remote reap || logger -p user.warning -t remote 'orphan cleanup deferred or failed'
+    reap_rc=0
+    timeout -k 1 30 /usr/local/sbin/remote reap || reap_rc=$?
+    [ "$reap_rc" = 0 ] || [ "$reap_rc" = 75 ] || logger -p user.warning -t remote 'orphan cleanup failed'
 fi
 # End Remmina.
 exec 9>/run/convergent/check.lock
@@ -500,9 +505,17 @@ timeout -k 1 30 incus --force-local list --all-projects --fast --format json >"$
 timeout -k 1 30 incus --force-local query '/1.0/profiles/browser-tmp?project=default' >"$work/browser-tmp.raw" 2>>"$work/report" || bad 'browser-tmp profile query failed'
 jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
     {config, devices}' "$work/browser-tmp.raw" >"$work/browser-tmp" || bad 'browser-tmp profile unreadable'
-timeout -k 1 30 incus --force-local query '/1.0/profiles/remmina?project=default' >"$work/remmina-profile.raw" 2>>"$work/report" || bad 'Remmina profile query failed'
-jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
-    {config, devices}' "$work/remmina-profile.raw" >"$work/remmina-profile" || bad 'Remmina profile unreadable'
+# Remmina is an optional sidecar: a profile that is not found and that an answered listing lacks is
+# inventoried as null; no answer fails.
+remmina_absent() { jq -e 'type == "array" and all(.[]; .name != "remmina")' "$work/profiles" >/dev/null 2>&1; }
+timeout -k 1 30 incus --force-local query '/1.0/profiles?recursion=1&project=default' >"$work/profiles" 2>>"$work/report" || bad 'Incus profile list failed'
+timeout -k 1 30 incus --force-local query '/1.0/profiles/remmina?project=default' >"$work/remmina-profile.raw" 2>>"$work/report" || remmina_absent || bad 'Remmina profile query failed'
+if [ ! -s "$work/remmina-profile.raw" ] && remmina_absent; then
+    echo null >"$work/remmina-profile"
+else
+    jq -eS 'select((.config | type) == "object" and (.devices | type) == "object") |
+        {config, devices}' "$work/remmina-profile.raw" >"$work/remmina-profile" || bad 'Remmina profile unreadable'
+fi
 incus_limits() {
     jq -S 'map(if .name == "svc" and (.config["limits.memory"] == "350MiB" or .config["limits.memory"] == "768MiB")
         then .config["limits.memory"] = "350MiB" else . end) | sort_by(.name)' "$1"
@@ -516,7 +529,8 @@ jq -e 'all(.[] | select((.project // "default") == "default" and .name == "svc")
     "$work/instances" >/dev/null || bad 'svc memory limit differs'
 
 if [ "${1:-}" = accept ]; then
-    jq -e 'any(.[]; .name == "def") and any(.[]; .name == "int") and any(.[]; .name == "remmina" and .profiles == ["remmina"])' "$work/incus" >/dev/null ||
+    jq -e --slurpfile p "$work/remmina-profile" 'any(.[]; .name == "def") and any(.[]; .name == "int") and
+        ($p == [null] or any(.[]; .name == "remmina" and .profiles == ["remmina"]))' "$work/incus" >/dev/null 2>&1 ||
         die 'open and close def, int and Remmina, then retry acceptance'
     [ "$ok" = 1 ] || { cat "$work/report" >&2; die 'refusing acceptance: host verification failed'; }
     mkdir -p "$work/accepted/etc" "$work/accepted/fw" || die 'cannot prepare acceptance'
