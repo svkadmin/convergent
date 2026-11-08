@@ -14,7 +14,7 @@ flowchart TD
   GM["build/guests<br/>guests.manifest, remmina.manifest, .zst"]
   S["build/sign<br/>manifest.sig, packages.sig, guest manifest signatures<br/>latest + latest.sig"]
   T["build/test modes in QEMU"]
-  PU["build/publish<br/>advisory gate · upload channel/REL and latest<br/>keep 2 releases, 30 GiB"]
+  PU["build/publish<br/>advisory gate · upload channel/REL and latest<br/>keep 2 releases, 9 GiB"]
   ST["build/stick · disk image"]
   L["laptop: sys update install"]
   N["laptop: write the image, or convergent-install"]
@@ -279,7 +279,7 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
   The signed `<channel>/latest` binds the release and the guest manifest hashes (`none` if
   absent). Download sizes are bounded.
 - **Order.** Signatures upload first; rerunning the publisher repairs an interrupted upload.
-- **Retention.** At most two releases per channel remain, under a 30 GiB bucket cap (the free tier is 10 GB; the rest costs cents a month).
+- **Retention.** At most two releases per channel remain, under a 9 GiB cap for the releases (the free tier is 10 GB); the install image, once published, has its own budget on top, the part the owner pays for.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
   including `latest` and its signature, and writes nothing if they match. New content or a
   re-signed pointer needs a new release ID.
