@@ -1,0 +1,20 @@
+#!/bin/sh
+# installer: the install image's only console program (the initramfs inittab starts it through agetty -n -l).
+# Runs the installer, then says why it stopped; init starts it again.
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+tty=$(tty 2>/dev/null) || tty=
+tty=${tty#/dev/}
+# A console elsewhere (a serial line, another screen) is told where the installer runs.
+active=$(cat /sys/class/tty/console/active 2>/dev/null) || active=
+here=
+case " $active " in *" ${tty:-none} "*) here=1 ;; esac
+case $tty:" $active " in tty[1-9]*:*" tty0 "*) here=1 ;; esac
+[ -n "$here" ] || printf 'Convergent installer: running on %s\n' "${tty:-an unknown terminal}" >/dev/console 2>/dev/null || :
+# Ctrl-C or Ctrl-\ stops the installer, never the pause: a fast respawn trips init's limit. A handler, not
+# an ignore, so the installer gets the signals' defaults.
+trap : INT QUIT
+status=0
+/usr/lib/convergent/install-stub || status=$?
+trap '' INT QUIT
+printf '\nThe installer stopped (exit status %s); it starts again in 2 seconds.\n' "$status"
+sleep 2

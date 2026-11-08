@@ -324,6 +324,17 @@ for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard bo
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
 done
+# The install image's runlevel (initramfs convergent-install.sh): the console and the host firewall, with
+# the hardening sysctls, lo and /run/utmp that boot would have given it.
+mkdir -p "$rl/install"
+for s in keymaps consolefont convergent-firewall sysctl loopback bootmisc; do
+	[ -e "$root/etc/init.d/$s" ] || die "no init script for $s"
+	ln -sfn "/etc/init.d/$s" "$rl/install/$s"
+done
+# Pressing I during a runlevel change must never offer a shell (the install boot and the laptop).
+[ "$(grep -c '^[[:space:]]*rc_interactive=' "$root/etc/rc.conf")" = 1 ] && grep -qx 'rc_interactive="NO"' "$root/etc/rc.conf" ||
+	die 'OpenRC interactive boot is not off'
+chmod 0755 "$root/usr/lib/convergent/installer" "$root/usr/lib/convergent/install-stub"
 
 # 2. Firmware: copy selected paths with links resolved before dropping other generations.
 mkdir -p "$out/firmware"
@@ -484,7 +495,7 @@ done
 for file in 's?bin/convergent-rescue' 's?bin/slot' lib/convergent-unlock.sh lib/convergent-recovery.sh; do
 	grep -Eq " (usr/)?$file$" "$BUILDER$profiles/contents" || die "rescue initramfs lacks $file"
 done
-! grep -q 'convergent-state.sh' "$BUILDER$profiles/contents" || die "rescue contains the slot mount hook"
+! grep -q 'convergent-state.sh\|convergent-install.sh' "$BUILDER$profiles/contents" || die "rescue contains a slot mount hook"
 if [ -f "$root/etc/convergent/release.pub" ]; then
 	grep -q ' etc/convergent/release.pub$' "$BUILDER$profiles/contents" || die "rescue lacks its release key"
 fi
@@ -492,6 +503,10 @@ echo "image: rescue initramfs $(stat -c %s "$BUILDER$profiles/initramfs.img") by
 rm -rf "$BUILDER$profiles"
 profiles=
 bld lsinitrd "$rel/initramfs.img" >"$out/initramfs.list"
+# The install hook before the state hook: an install boot must never reach the unlock.
+for hook in 49-convergent-install.sh 50-convergent-state.sh; do
+	grep -q "/pre-pivot/$hook\$" "$out/initramfs.list" || die "initramfs lacks pre-pivot $hook"
+done
 awk '$NF ~ /\/kernel\/.*\.ko(\..*)?$/ {sub(/^.*\/kernel\//, "kernel/", $NF); print $NF}' \
 	"$out/initramfs.list" | sort -u >"$out/initramfs.modules"
 rm -rf "$root/usr/lib/dracut" "$root/etc/dracut.conf" "$root/etc/dracut.conf.d" \

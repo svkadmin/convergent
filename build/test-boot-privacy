@@ -344,9 +344,11 @@ EOF
     # A start after bless (an owner's restart) must not arm a reset on a good release.
     sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
         sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
-            -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" >"$work/start"
+            -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" -e "s|/proc/cmdline|$work/cmdline|g" >"$work/start"
     check_script "$work/start"
     grep -q "$work/sys-watchdog/watchdog0/identity" "$work/start" || die 'watchdog identity read moved'
+    grep -q "$work/cmdline" "$work/start" || die 'watchdog command line read moved'
+    echo 'root=/dev/dm-0 convergent.release=42 init=/sbin/init' >"$work/cmdline"
     . "$work/start"
     ebegin() { :; }; eend() { :; }; einfo() { :; }; ewarn() { exit 97; }; logger() { exit 97; }
     nohup() { echo feeder >>"$work/fed"; }
@@ -362,6 +364,20 @@ EOF
         if [ "$blessed" = yes ]; then [ ! -e "$work/fed" ] || die 'watchdog armed after bless'
         else grep -qx feeder "$work/fed" || die 'watchdog not fed before bless'; fi
     done
+    # The install image never blesses: no feeder and no V, whatever the device; a look-alike flag still arms.
+    rm -f "$work/openrc/started/convergent-bless"
+    for flag in convergent.install=1 convergent.install=0 xconvergent.install=1 convergent.install.console=ttyS0; do
+        echo "root=/dev/dm-0 $flag init=/sbin/init" >"$work/cmdline"
+        rm -f "$work/fed"
+        : >"$work/watchdog"
+        start
+        wait
+        case $flag in
+        convergent.install=1) [ ! -e "$work/fed" ] && [ ! -s "$work/watchdog" ] || die 'watchdog armed on the install image' ;;
+        *) grep -qx feeder "$work/fed" || die "watchdog not fed with $flag" ;;
+        esac
+    done
+    echo 'root=/dev/dm-0 convergent.release=42 init=/sbin/init' >"$work/cmdline"
     # 30 s feeds only for iTCO at 180 s: a WDAT watchdog (30 s) or an iTCO left at its 30 s default is
     # closed with the magic V instead, never fed into a reset.
     rm -f "$work/openrc/started/convergent-bless"
@@ -1336,3 +1352,243 @@ check_script "$work/allow-usb"
     done
 )
 echo 'test-boot-privacy: USB allow warnings passed'
+
+# The install image's initramfs hook: its mounts, its only console program, and refusals before any of them.
+sed -e "s|/run/|$work/inst/run/|g" -e "s|/sys/class/block/|$work/inst/sys/|g" \
+    -e "s|\[ -c \"/dev/\$console\" \]|[ -f \"$work/inst/dev/\$console\" ]|" \
+    "$repo/initramfs/90convergent/convergent-install.sh" >"$work/install-hook"
+check_script "$work/install-hook"
+grep -q "\[ -f \"$work/inst/dev/\$console\" \]" "$work/install-hook" || die 'install hook terminal check moved'
+if grep -q -e '"/dev/' -e ' /run/' -e '/sys/class' "$work/install-hook"; then die 'install hook keeps a real path'; fi
+install_hook() {   # flags root-disk data-disk count
+    rm -rf "$work/inst"
+    mkdir -p "$work/inst/run" "$work/inst/dev" "$work/inst/sys/sda/sda2" "$work/inst/sys/sda/sda3" "$work/inst/sys/sdb/sdb3" "$work/inst/newroot/var/lib" \
+        "$work/inst/newroot/etc/runlevels/install" "$work/inst/newroot/etc/runlevels/boot"
+    # tty0 exists, as on a real system: only the name refuses it.
+    : >"$work/inst/dev/tty1"; : >"$work/inst/dev/ttyS0"; : >"$work/inst/dev/tty0"
+    ln -s "$2" "$work/inst/sys/root-part"; ln -s "$3" "$work/inst/sys/data-part"
+    (
+        flags=$1 count=$4 NEWROOT=$work/inst/newroot
+        getarg() {
+            for a in $flags; do case $a in "$1"*) printf '%s\n' "${a#"$1"}"; return 0 ;; esac; done
+            return 1
+        }
+        die() { echo "$*" >"$work/inst/died"; exit 1; }
+        udevadm() { :; }
+        blkid() {
+            [ "$1:$2:$3" = '-o:device:-t' ] || exit 97
+            case $4 in PARTLABEL=cv-inst-root) part='root-part' ;; PARTLABEL=cv-inst-data) part='data-part' ;; *) exit 97 ;; esac
+            i=0; while [ "$i" -lt "$count" ]; do echo "/dev/$part"; i=$((i + 1)); done
+        }
+        mount() { echo "mount $*" >>"$work/inst/calls"; }
+        umount() { echo "umount $*" >>"$work/inst/calls"; }
+        . "$work/install-hook"
+        echo returned >"$work/inst/returned"
+    )
+}
+install_hook 'convergent.release=42 convergent.install=1' sda/sda2 sda/sda3 1 || die 'install hook failed'
+[ -e "$work/inst/returned" ] && [ ! -e "$work/inst/died" ] || die 'install hook did not finish'
+calls=$work/inst/calls
+for want in "mount -t erofs -o ro,nodev,nosuid,noexec /dev/data-part $work/inst/run/convergent-install" \
+    "mount -t tmpfs -o mode=0755,nodev,nosuid tmpfs $work/inst/newroot/var" \
+    "mount -t tmpfs -o mode=0755,nodev,nosuid,noexec tmpfs $work/inst/newroot/home" \
+    "mount -t tmpfs -o mode=1777,nodev,nosuid,noexec,size=8G tmpfs $work/inst/newroot/tmp" \
+    "mount --bind $work/inst/run/convergent-install-boot/inittab $work/inst/newroot/etc/inittab" \
+    "mount --bind $work/inst/run/convergent-install-boot/empty $work/inst/newroot/etc/runlevels/boot"; do
+    grep -qxF "$want" "$calls" || die "install hook: no $want"
+done
+tab=$work/inst/run/convergent-install-boot/inittab
+grep -qx 'rc::bootwait:/sbin/openrc install' "$tab" && grep -qx 'si::sysinit:/sbin/openrc sysinit' "$tab" &&
+    grep -qx 'i1:3:respawn:/sbin/agetty -n -l /usr/lib/convergent/installer tty1 linux' "$tab" || die 'install inittab'
+[ "$(grep -c respawn "$tab")" = 1 ] && [ "$(grep -c agetty "$tab")" = 1 ] || die 'install inittab starts more than the installer'
+if grep -q -e greetd -e 'openrc boot' -e 'openrc default' -e sulogin "$tab"; then die 'install inittab starts the system'; fi
+[ -d "$work/inst/run/convergent-install-boot/empty" ] && [ -z "$(ls -A "$work/inst/run/convergent-install-boot/empty")" ] ||
+    die 'install boot runlevel is not empty'
+install_hook 'convergent.release=42 convergent.install=1 convergent.install.console=ttyS0' sda/sda2 sda/sda3 1 || die 'install hook failed on ttyS0'
+grep -qx 'i1:3:respawn:/sbin/agetty -n -l /usr/lib/convergent/installer -L 115200 ttyS0 vt100' "$work/inst/run/convergent-install-boot/inittab" ||
+    die 'install inittab on ttyS0'
+# Refused before any mount: a look-alike console, a missing one, two sticks, data on another disk, an old image.
+for case in console=tty0 console=ttyUSB0 'console=ttyS0;x' console=../tty1 console=tty2 count=2 count=0 disk runlevel; do
+    flags='convergent.release=42 convergent.install=1' data=sda/sda3 count=1
+    case $case in console=*) flags="$flags convergent.install.$case" ;; count=*) count=${case#count=} ;; disk) data=sdb/sdb3 ;; esac
+    if [ "$case" = runlevel ]; then
+        # The release image lacks the install runlevel.
+        rm -rf "$work/inst"
+        mkdir -p "$work/inst/run" "$work/inst/dev" "$work/inst/sys/sda/sda2" "$work/inst/sys/sda/sda3" "$work/inst/newroot/var" "$work/inst/newroot/etc/runlevels/boot"
+        : >"$work/inst/dev/tty1"
+        ln -s sda/sda2 "$work/inst/sys/root-part"; ln -s sda/sda3 "$work/inst/sys/data-part"
+        if (
+            flags=$flags count=1 NEWROOT=$work/inst/newroot
+            getarg() { for a in $flags; do case $a in "$1"*) printf '%s\n' "${a#"$1"}"; return 0 ;; esac; done; return 1; }
+            die() { echo "$*" >"$work/inst/died"; exit 1; }
+            udevadm() { :; }
+            blkid() { case $4 in PARTLABEL=cv-inst-root) echo /dev/root-part ;; *) echo /dev/data-part ;; esac; }
+            mount() { echo "mount $*" >>"$work/inst/calls"; }
+            umount() { :; }
+            . "$work/install-hook"
+        ); then die 'install hook accepted an image without the install runlevel'; fi
+        if grep -q -- '--bind .*inittab' "$work/inst/calls"; then die 'install inittab bound without the install runlevel'; fi
+        continue
+    fi
+    if install_hook "$flags" sda/sda2 "$data" "$count" 2>/dev/null; then die "install hook accepted $case"; fi
+    [ -s "$work/inst/died" ] || die "install hook did not say why: $case"
+    [ ! -e "$work/inst/calls" ] || die "install hook mounted before refusing $case"
+done
+# Not the install image: nothing at all; the state hook goes on to the unlock only then.
+for flags in 'convergent.release=42' 'convergent.release=42 convergent.install=0' 'convergent.release=42 convergent.install.console=ttyS0'; do
+    install_hook "$flags" sda/sda2 sda/sda3 1 || die "install hook failed without the flag: $flags"
+    [ -e "$work/inst/returned" ] && [ ! -e "$work/inst/calls" ] || die "install hook acted without the flag: $flags"
+done
+for flag in 1 0; do
+    rm -f "$work/state-returned"
+    (
+        getarg() { case $1 in convergent.release=) echo 42 ;; convergent.install=) echo "$flag" ;; *) return 1 ;; esac; }
+        die() { exit 1; }
+        warn() { :; }
+        # Past the early return the hook sources the unlock helper, which a fixture does not have.
+        . "$repo/initramfs/90convergent/convergent-state.sh"
+        echo returned >"$work/state-returned"
+    ) 2>/dev/null || :
+    case $flag in
+    1) [ -e "$work/state-returned" ] || die 'state hook did not stop for the install image' ;;
+    0) [ ! -e "$work/state-returned" ] || die 'state hook stopped without the install flag' ;;
+    esac
+done
+echo 'test-boot-privacy: install image boot hook passed'
+
+# build/image: the install runlevel gets what boot would have started for it; no interactive boot.
+sed -n "/^# The install image's runlevel/,/^chmod 0755 /p" "$repo/build/image" | sed '$d' >"$work/image-install"
+check_script "$work/image-install"
+[ "$(wc -l <"$work/image-install")" -lt 20 ] && grep -q rc_interactive "$work/image-install" || die 'install runlevel block moved'
+image_install() {   # rc.conf
+    rm -rf "$work/img"
+    mkdir -p "$work/img/etc/init.d" "$work/img/etc/runlevels"
+    for s in keymaps consolefont convergent-firewall sysctl loopback bootmisc usbguard incus; do : >"$work/img/etc/init.d/$s"; done
+    cp "$1" "$work/img/etc/rc.conf"
+    sh -eu -c 'root=$1 rl=$1/etc/runlevels; die() { echo "$*" >&2; exit 1; }; . "$2"' sh "$work/img" "$work/image-install"
+}
+image_install "$repo/rootfs/etc/rc.conf" || die 'install runlevel block failed'
+[ "$(ls "$work/img/etc/runlevels/install" | tr '\n' ' ')" = 'bootmisc consolefont convergent-firewall keymaps loopback sysctl ' ] ||
+    die 'install runlevel services'
+for s in bootmisc consolefont convergent-firewall keymaps loopback sysctl; do
+    [ "$(readlink "$work/img/etc/runlevels/install/$s")" = "/etc/init.d/$s" ] || die "install runlevel link $s"
+done
+for case in missing yes twice indented; do
+    case $case in
+    missing) sed '/^rc_interactive=/d' "$repo/rootfs/etc/rc.conf" ;;
+    yes) sed 's/^rc_interactive=.*/rc_interactive="YES"/' "$repo/rootfs/etc/rc.conf" ;;
+    twice) cat "$repo/rootfs/etc/rc.conf"; echo 'rc_interactive="YES"' ;;
+    indented) cat "$repo/rootfs/etc/rc.conf"; echo ' rc_interactive="YES"' ;;
+    esac >"$work/rc.conf"
+    if image_install "$work/rc.conf" 2>/dev/null; then die "image accepted rc.conf with interactive boot $case"; fi
+done
+echo 'test-boot-privacy: install runlevel and interactive boot passed'
+
+# The installer wrapper: Ctrl-C or Ctrl-\ stops the installer, never the 2 s pause (init's respawn limit).
+sed -e "s|/usr/lib/convergent/install-stub|sh $work/inst-stub|" -e "s|/sys/class/tty/console/active|$work/inst-active|" \
+    -e "s|>/dev/console|>>$work/inst-console|" "$repo/rootfs/usr/lib/convergent/installer" >"$work/installer"
+check_script "$work/installer"
+grep -q "^sh $work/inst-stub || status" "$work/installer" && grep -q "$work/inst-active" "$work/installer" || die 'installer stub call moved'
+if grep -q -e /dev/console -e /sys/ "$work/installer"; then die 'installer keeps a real path'; fi
+echo tty0 >"$work/inst-active"
+for sig in INT QUIT; do
+    # The signal, then again during the pause: an async list ignores SIGINT and SIGQUIT (once it has
+    # started), so its sender lives. bash survives SIGQUIT: the stub then ends by itself.
+    printf '(sleep 1; kill -%s 0; : >"%s") &\nsleep 0.3\nkill -%s 0\nexit 3\n' "$sig" "$work/inst-second" "$sig" >"$work/inst-stub"
+    rm -f "$work/inst-second"
+    start=$(date +%s%N)
+    # A session of its own (Ctrl-C's process group), the signals at their defaults whoever started this fixture.
+    (
+        cd "$work" &&
+            setsid -w perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec @ARGV or exit 1' sh "$work/installer" >"$work/inst-out" 2>&1 </dev/null
+    ) || :
+    elapsed=$((($(date +%s%N) - start) / 1000000))
+    grep -q "^The installer stopped (exit status [0-9]*); it starts again in 2 seconds\.$" "$work/inst-out" ||
+        die "installer: $sig skipped the message"
+    [ "$elapsed" -ge 1900 ] || die "installer: $sig cut the pause (${elapsed} ms)"
+    [ -e "$work/inst-second" ] || die "installer: no second $sig"
+done
+echo 'test-boot-privacy: installer wrapper signals passed'
+
+# build/stick: the install UKI's inputs are slot A's, and a release that trusts a key ships signed manifests.
+sed -n "/^# The install UKI's inputs are not in the manifest/,/^rm \"\$work\/a\.linux\"/p" "$repo/build/stick" >"$work/stick-inputs"
+check_script "$work/stick-inputs"
+[ "$(wc -l <"$work/stick-inputs")" -lt 20 ] && grep -q objcopy "$work/stick-inputs" || die 'stick input check moved'
+mkdir -p "$work/st/data"
+printf 'abcde' >"$work/st/microcode.cpio"
+printf 'ABCDEFG' >"$work/st/initramfs.img"
+printf 'kernel' >"$work/st/vmlinuz"
+h=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+stick_inputs() {   # manifest-lines cmdline-hash linux-section initrd-section
+    printf "release 42\\n$1" >"$work/st/manifest"
+    printf 'root=/dev/dm-0 dm-mod.create="vroot,,,ro,0 8 verity 1 PARTLABEL=cv-slot-a PARTLABEL=cv-slot-a 4096 4096 1 1 sha256 %s 00ff 2 restart_on_error" init=/sbin/init' \
+        "$2" >"$work/st/cmdline-a"
+    printf "$3" >"$work/st/sec.linux"
+    printf "$4" >"$work/st/sec.initrd"
+    sh -eu -c '
+        work=$1/st dir=$1/st inside=$1/st release=42
+        die() { echo "$*" >&2; exit 1; }
+        # objcopy with the sections this case gave the slot A UKI.
+        bld() {
+            [ "$1 $2 $4" = "objcopy --dump-section --dump-section" ] && [ "$6 $7" = "$dir/data/convergent-42-a.efi $dir/a.efi" ] || exit 97
+            cp "$dir/sec.linux" "${3#.linux=}" && cp "$dir/sec.initrd" "${5#.initrd=}" && : >"$7"
+        }
+        . "$2"
+        [ ! -e "$dir/a.linux" ] && [ ! -e "$dir/a.initrd" ] && [ ! -e "$dir/a.efi" ] || exit 97
+    ' sh "$work" "$work/stick-inputs"
+}
+good_initrd='abcde\000\000\000ABCDEFG\000'
+stick_inputs "roothash $h\\n" "$h" kernel "$good_initrd" || die 'stick refused slot A inputs'
+for case in hash twice short kernel unpadded tail initramfs; do
+    lines="roothash $h\\n" hash=$h linux=kernel initrd=$good_initrd
+    case $case in
+    hash) hash=1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ;;
+    twice) lines="$lines$lines" ;;
+    short) lines="roothash ${h%?}\\n" hash=${h%?} ;;
+    kernel) linux=kernei ;;
+    unpadded) initrd='abcdeABCDEFG\000\000\000\000' ;;
+    tail) initrd='abcde\000\000\000ABCDEFG' ;;
+    initramfs) initrd='abcde\000\000\000ABCDEFX\000' ;;
+    esac
+    if stick_inputs "$lines" "$hash" "$linux" "$initrd" 2>/dev/null; then die "stick accepted install UKI inputs: $case"; fi
+done
+sed -n '/^# A listing that succeeded, not a failed stat/,/^umount /p;/^# A release that trusts a key has every manifest/,/^fi$/p' "$repo/build/stick" >"$work/stick-sigs"
+check_script "$work/stick-sigs"
+[ "$(wc -l <"$work/stick-sigs")" -lt 20 ] && grep -q pkeyutl "$work/stick-sigs" && grep -q 'ls -A' "$work/stick-sigs" || die 'stick signature check moved'
+openssl genpkey -algorithm ed25519 -out "$work/st/key" 2>/dev/null
+openssl pkey -in "$work/st/key" -pubout -out "$work/st/key.pub"
+openssl genpkey -algorithm ed25519 -out "$work/st/other" 2>/dev/null
+stick_sigs() {   # case
+    rm -rf "$work/st/root" "$work/st/data" "$work/st/release.pub"
+    mkdir -p "$work/st/root/etc/convergent" "$work/st/data"
+    : >"$work/st/root/etc/convergent/update.conf"
+    for m in manifest guests.manifest; do
+        echo "release 42 $m" >"$work/st/data/$m"
+        openssl pkeyutl -sign -inkey "$work/st/key" -rawin -in "$work/st/data/$m" -out "$work/st/data/$m.sig"
+    done
+    case $1 in
+    keyless) rm "$work/st/data/manifest.sig" ;;
+    *) cp "$work/st/key.pub" "$work/st/root/etc/convergent/release.pub" ;;
+    esac
+    case $1 in
+    unsigned) rm "$work/st/data/guests.manifest.sig" ;;
+    other) openssl pkeyutl -sign -inkey "$work/st/other" -rawin -in "$work/st/data/guests.manifest" -out "$work/st/data/guests.manifest.sig" ;;
+    changed) echo extra >>"$work/st/data/manifest" ;;
+    unlisted) rm -r "$work/st/root/etc/convergent" ;;
+    esac
+    sh -eu -c '
+        work=$1/st manifests="manifest guests.manifest"
+        die() { echo "$*" >&2; exit 1; }
+        umount() { [ "$1" = "$work/root" ] || exit 97; }
+        . "$2"
+        echo "${key:-none}" >"$work/key-used"
+    ' sh "$work" "$work/stick-sigs"
+}
+stick_sigs keyless || die 'stick refused a release without a key'
+[ "$(cat "$work/st/key-used")" = none ] || die 'stick found a key in a release without one'
+stick_sigs signed || die 'stick refused signed manifests'
+[ "$(cat "$work/st/key-used")" = "$work/st/release.pub" ] && cmp -s "$work/st/release.pub" "$work/st/key.pub" || die 'stick lost the release key'
+for case in unsigned other changed unlisted; do
+    if stick_sigs "$case" 2>/dev/null; then die "stick accepted manifest signatures: $case"; fi
+done
+echo 'test-boot-privacy: install image inputs and signatures passed'

@@ -78,7 +78,7 @@ file the built-in defaults apply. `config.example.yaml` lists every key and its 
 
 - `tools/config-get` validates each key; an unknown, duplicate or invalid key stops the build.
 - Image settings are baked into the release.
-- Owner, disk, state, swap and image size inputs apply only to an install or a disk image.
+- Owner, disk, state and swap inputs apply only to `convergent-install`; `build/stick` reads none.
 - Use the same config for the host, `fw`, `wan` and `svc` builds.
 
 Installer keys and value ranges: [USAGE, Install options](USAGE.md#install-options).
@@ -150,23 +150,31 @@ or a Node build.
 ### USB disk image
 
 ```sh
-build/stick <release> $g <out.img> [size]
+build/stick <release> <out.img>
 zstd -T0 <out.img>
 ```
 
-`build/stick` runs the real installer onto a loop device, then prints the image's SHA-256 and the
-`dd` command to write it.
+`build/stick` makes the release's generic install image after `build/guests`; it reads no input
+and holds no owner, password or state. It checks the files against their manifests, the manifests'
+signatures when the release holds a release key, and the install UKI's kernel, initrds and root hash
+against slot A's, then prints the image's SHA-256 and the `dd` command to write it. Three
+partitions, each as small as its content:
 
-- **Passwords.** It asks for the owner password, then the LUKS passphrase: 12–256 bytes each, and
-  twice each at a terminal. Entries that differ are refused. The
-  LUKS passphrase must use printable ASCII (space through `~`). Piped input supplies one line each.
-- **Owner.** `CONVERGENT_INSTALL_OWNER`, then `owner_login` in the config file, then a prompt.
-- **Size.** `[size]` defaults to `image_size` (30G); bytes or a K, M, G or T suffix. State is
-  always `auto` and grows on first boot. The image holds the ESP, both slots, 12 GiB of state and
-  any state swap from `install.swap`: even 1 GiB of state swap exceeds the default size.
+- **`cv-inst-esp`.** systemd-boot and `convergent-install.efi`, with no boot counter. That UKI is
+  slot A's, booting `cv-inst-root` with `convergent.install=1`; the manifests ride in it as an
+  extra initrd.
+- **`cv-inst-root`.** `slot.img` byte for byte.
+- **`cv-inst-data`.** An EROFS of the release as published: manifests and signatures, both UKIs,
+  the guest files.
 
-> [!CAUTION]
-> A disk image contains the owner's account. Never publish it.
+The image boots to the installer on tty1 (`convergent.install.console=ttyS0` for a serial line),
+with tmpfs `/var`, `/home` and `/tmp`, no getty and no watchdog. Its installer is still a stub that
+shows the hardware and installs nothing. `convergent-install` on a running system asks the owner
+password and the LUKS passphrase, 12–256 bytes each. The
+LUKS passphrase must use printable ASCII (space through `~`).
+
+> [!NOTE]
+> The image holds no owner account or secrets. `build/publish` does not upload it.
 
 ### Builder caches
 
@@ -514,6 +522,7 @@ at the same time. Every mode first runs `build/test-topology`, `build/test-lease
 | `build/test --rescue <release>` | standalone Rescue UKI with both slots empty | |
 | `build/test --corrupt <release>` | one flipped bit: verity refuses it, nothing is marked good | |
 | `build/test --desktop <release>` | Sway, bar and `sys`: session programs and config | |
+| `build/test --install <release>` | `build/stick`'s image: layout, then the installer on ttyS0 and tty1 | `build/guests` run |
 | `build/test --fallback <good> <newer>` | broken newer slot: the good one returns | two releases |
 | `build/test --interrupt <good> <newer>` | update cut off half-way: still boots | two releases |
 | `build/test --update <good> <newer>` | signed slot write and reboot | two signed releases |

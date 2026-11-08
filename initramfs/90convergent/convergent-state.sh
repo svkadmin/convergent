@@ -3,6 +3,8 @@
 
 release=$(getarg convergent.release=)
 [ -n "$release" ] || die "state: no convergent.release= on the command line"
+# The install image has no state to unlock and no watchdog to arm (convergent-install.sh).
+[ "$(getarg convergent.install=)" != 1 ] || return 0
 
 . /lib/convergent-unlock.sh
 

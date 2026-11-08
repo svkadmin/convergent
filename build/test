@@ -6,6 +6,7 @@
 #   build/test --rescue <release>       standalone rescue, empty slots, unlock and power off
 #   build/test --corrupt <release>
 #   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
+#   build/test --install <release>      build/stick's image: offline checks, then boots to the installer (ttyS0, tty1)
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
@@ -618,12 +619,13 @@ for fixture in test-topology test-leases test-work-gate test-release-compat test
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --guests-topology <release> <guests-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--install|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --guests-topology <release> <guests-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
+--install) mode=install; shift; [ $# = 1 ] || usage ;;
 --recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
 --rescue) mode=rescue; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
@@ -5868,7 +5870,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=23400 ;; guests-topology) memory=8192 cpus=8; limit=21600 ;; desktop | update) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=23400 ;; guests-topology) memory=8192 cpus=8; limit=21600 ;; desktop | update | install | install-tty1) limit=600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -5898,10 +5900,13 @@ run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
 guest_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update")
 drain_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online")
+# The install image boots from a USB stick to the installer: on ttyS0 its last line; on tty1 the console's pointer.
+install_test = goal in ("install", "install-tty1")
 # The guest flows print two verdicts (smoke, then the update flow); both must be 0.
 markers = {"guests-maint": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "guests-update": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
            "guests-topology": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
            "online": [b"CV-GUESTS-RESULT", b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
+install_markers = {"install": rb"(?:^|\n)This test build installs nothing\.", "install-tty1": rb"(?:^|\n)Convergent installer: running on tty1\r?\n"}
 verdicts = {}
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
@@ -5924,13 +5929,18 @@ qemu = subprocess.Popen([
     "-drive", f"if=pflash,format=raw,file={work}/vars.fd",
     # A throwaway disk: unsafe skips the rig's flushes (5% on a guests run); a killed QEMU still loses none of
     # its writes, so the crash modes test the same thing.
-    "-drive", f"file={work}/disk.img,if=none,id=disk,format=raw,cache=unsafe", "-device", "virtio-blk-pci,drive=disk,bootindex=0",
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
+    # The install image as a USB stick on xHCI, with a USB keyboard and a virtio screen for tty1.
+    (["-drive", f"file={work}/install.img,if=none,id=stick,format=raw,cache=unsafe", "-device", "qemu-xhci,id=xhci",
+      "-device", "usb-storage,bus=xhci.0,drive=stick,bootindex=0", "-device", "usb-kbd,bus=xhci.0",
+      "-vga", "none", "-device", "virtio-vga"] if install_test else
+     ["-drive", f"file={work}/disk.img,if=none,id=disk,format=raw,cache=unsafe", "-device", "virtio-blk-pci,drive=disk,bootindex=0"]) +
     # Return each corrupt boot to the fallback counter checks.
-    (["-no-reboot"] if goal == "bless" or drain_test else []) +
+    (["-no-reboot"] if goal == "bless" or drain_test or install_test else []) +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
-    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue") else []) +
+    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue", "install-tty1") else []) +
+    (["-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200 convergent.install.console=ttyS0"] if goal == "install" else []) +
     # Guest tests get a QEMU user-networking uplink, which the test bridges into wan as eth1.
     (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online") else ["-nic", "none"]),
     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -6035,6 +6045,8 @@ try:
             if not sent and prompted is not None and time.monotonic() - prompted >= 1:
                 qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
+            if install_test:
+                done = re.search(install_markers[goal], seen)
             if goal == "recovery":
                 done = done and continued
             if goal == "rescue" or drain_test:
@@ -6049,6 +6061,8 @@ try:
                 ended = "blessed" if quitting else "poweroff" if powered_off else "reboot" if rebooted else "stopped"
                 if quitting and guest_test:
                     ended = f"{goal}-{result}"
+                if quitting and install_test:
+                    ended = goal
                 if drain_test and powered_off and not rebooted and drain_started is not None:
                     print(f"CV-TIME shutdown-poweroff-duration {int(time.monotonic() - drain_started)}", flush=True)
                     ended = f"{goal}-0" if result == 0 and drain_result == 0 else f"{goal}-1"
@@ -6097,6 +6111,83 @@ refused() {
 		grep -Eq 'verity:.*(data|metadata) block [0-9]+ is corrupted' "$log"
 }
 
+# The install image: build/stick's layout, then a boot to the installer on ttyS0 and on tty1.
+if [ "$mode" = install ]; then
+	img=$BUILDER$work/install.img
+	sh "$here/stick" "$release" "$img" || die "build/stick failed"
+	bld sgdisk -p "$work/install.img" >"$BUILDER$work/table"
+	[ "$(awk '/^Number/ {t = 1; next} t && NF {n++} END {print n + 0}' "$BUILDER$work/table")" = 3 ] || die 'the install image has not three partitions'
+	for p in 1:cv-inst-esp 2:cv-inst-root 3:cv-inst-data; do
+		bld sgdisk -i "${p%%:*}" "$work/install.img" | grep -qx "Partition name: '${p#*:}'" || die "partition ${p%%:*} is not ${p#*:}"
+	done
+	loop=$(losetup -fP --show "$img")
+	for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p3" ] && break; sleep 1; done
+	# No LUKS: a FAT ESP and two EROFS, p2 the release's slot.img byte for byte.
+	for p in 1:vfat 2:erofs 3:erofs; do
+		[ "$(bld blkid -p -o value -s TYPE "${loop}p${p%%:*}")" = "${p#*:}" ] || die "partition ${p%%:*} is not ${p#*:}"
+	done
+	cmp "$BUILDER/releases/$release/slot.img" "${loop}p2" || die 'p2 is not slot.img'
+	mount -t vfat -o ro,nodev,nosuid,noexec "${loop}p1" "$esp"
+	[ "$(cd "$esp" && find . -type f | sort | tr '\n' ' ')" = './EFI/BOOT/BOOTX64.EFI ./EFI/Linux/convergent-install.efi ./loader/loader.conf ' ] ||
+		die 'unexpected files on the install ESP'
+	[ -z "$(find "$esp" -name '*+*')" ] || die 'the install ESP has a boot counter'
+	[ "$(cat "$esp/loader/loader.conf")" = "$(printf 'timeout 0\neditor no\ndefault convergent-install.efi')" ] || die 'unexpected install loader.conf'
+	cp "$esp/EFI/Linux/convergent-install.efi" "$BUILDER$work/install.efi"
+	umount "$esp"
+	bld ukify inspect "$work/install.efi" >"$BUILDER$work/install.inspect"
+	grep -qF ' convergent.install=1 init=/sbin/init' "$BUILDER$work/install.inspect" &&
+		[ "$(grep -o 'PARTLABEL=cv-inst-root ' "$BUILDER$work/install.inspect" | wc -l)" = 3 ] &&
+		! grep -q 'cv-slot-' "$BUILDER$work/install.inspect" || die 'unexpected install command line'
+	mkdir -p "$root"
+	mount -t erofs -o ro,nodev,nosuid,noexec "${loop}p2" "$root"
+	[ -z "$(awk -F: '$3 >= 1000 && $3 != 65534' "$root/etc/passwd")" ] || die 'the install root has an owner account'
+	[ -z "$(find "$root" -xdev \( -uid +999 ! -uid 65534 \) -print -quit)" ] || die 'the install root has files of uid 1000 or more'
+	umount "$root"
+	mount -t erofs -o ro,nodev,nosuid,noexec "${loop}p3" "$root"
+	for f in manifest guests.manifest "convergent-$release-a.efi" "convergent-$release-b.efi"; do
+		[ -s "$root/$f" ] || die "the install data lacks $f"
+	done
+	[ ! -e "$root/slot.img" ] || die 'the install data carries slot.img twice'
+	umount "$root"
+	detach
+	# Budget: what it carries (slot.img, both UKIs, guest files), the install UKI, and 96 MiB of layout and ESP.
+	set -- manifest guests.manifest
+	[ ! -f "$BUILDER/releases/$release/remmina.manifest" ] || set -- "$@" remmina.manifest
+	content=$(cd "$BUILDER/releases/$release" && awk '$1 == "size" && NF == 3 {s += $3} END {printf "%.0f\n", s}' "$@")
+	budget=$((content + $(stat -c %s "$BUILDER$work/install.efi") + 100663296))
+	[ "$(stat -c %s "$img")" -le "$budget" ] || die "install image $(stat -c %s "$img") bytes exceeds its budget $budget"
+	echo "test: install image $(stat -c %s "$img") bytes, budget $budget"
+	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+	runs=0 pass=no-unlock-on-the-install-image
+	deadline=$(($(date +%s) + 1200))
+	run_vm install
+	[ "$ended" = install ] || die "the install image did not reach the installer on ttyS0 ($ended); see $log"
+	tr -d '\r' <"$log" >"$BUILDER$work/install-ttyS0.log"
+	grep -qF "Convergent installer: release $release (" "$BUILDER$work/install-ttyS0.log" || die "no installer line; see $log"
+	awk '$1 == "Mounted:" && $2 == "/run/convergent-install" && $3 == "erofs" {
+		n = split($4, o, ","); for (i = 1; i <= n; i++) seen[o[i]] = 1
+		ok = seen["ro"] && seen["nodev"] && seen["nosuid"] && seen["noexec"]
+	} END {exit !ok}' "$BUILDER$work/install-ttyS0.log" || die "install data not mounted ro,nodev,nosuid,noexec; see $log"
+	for path in /var /home /tmp; do
+		grep -q "^Mounted: $path tmpfs " "$BUILDER$work/install-ttyS0.log" || die "$path is not tmpfs; see $log"
+	done
+	grep -q '^Manifests: .*guests\.manifest .*manifest ' "$BUILDER$work/install-ttyS0.log" || die "no embedded manifests; see $log"
+	# The install runlevel's sysctl service ran (the kernel's kptr_restrict default is 0).
+	grep -qx 'Hardening: sysrq 0 kptr_restrict 2' "$BUILDER$work/install-ttyS0.log" || die "install image without its sysctls; see $log"
+	grep -qF 'Install image; the watchdog stays disarmed' "$BUILDER$work/install-ttyS0.log" || die "no disarmed watchdog line; see $log"
+	if grep -q -e 'assphrase \[' -e ' is good' -e 'Convergent installer: running on' -e 'Feeding the watchdog' "$BUILDER$work/install-ttyS0.log"; then
+		die "the install image unlocked, blessed, fed the watchdog or put the installer elsewhere; see $log"
+	fi
+	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+	run_vm install-tty1
+	[ "$ended" = install-tty1 ] || die "the install image did not start the installer on tty1 ($ended); see $log"
+	if grep -q -e 'assphrase \[' -e 'Convergent installer: release' -e 'This test build' "$log"; then
+		die "the installer ran on the serial console, not tty1; see $log"
+	fi
+	cv_time finished
+	echo "test: install passed ($runs boots); image and consoles in $BUILDER$work"
+	exit 0
+fi
 if [ "$mode" = guests-update ]; then
 	test_guest_delivery
 	make_broken_svc

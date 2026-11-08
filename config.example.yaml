@@ -28,7 +28,7 @@ idle_lock_minutes: 10
 # Login: 1..32 lowercase letters/digits/_/-, starts with letter or _.
 # Omit to prompt; CONVERGENT_INSTALL_OWNER overrides. Password always prompted.
 owner_login: owner
-# Stick image GiB: 1G..99999G; must fit the layout. Positional build/stick size overrides.
+# Former stick image GiB: 1G..99999G; still accepted, unused (build/stick sizes the image to its content).
 image_size: 30G
 
 # Work names: 1..32 lowercase letters/digits/hyphens, starts with a letter, no trailing hyphen.
@@ -50,13 +50,12 @@ install:
   # Or /dev/disk/by-id/<whole-disk-id>; no slash in ID, no -partN suffix.
   # ID starts with letter/digit/_; remaining chars letters/digits/_.:+-.
   # Explicit targets still reject boot disks, mounts, active swap, holders and read-only disks.
-  # build/stick always targets its loop image; this key selects a physical install target.
+  # This key selects a physical install target.
   disk: auto
   # auto: all remaining space, grows after copying to a larger disk.
   # 1%..100%: whole percentage of space after ESP, slots and GPT/alignment.
   # 32GiB..999999GiB: whole GiB. Percent/GiB sizes stay fixed after installation.
   # Must fit, leaving >=32 GiB state (>=12 GiB on build media) plus any state swap.
-  # build/stick forces auto state; enlarge image_size to fit state swap.
   state_size: auto
   # none, zram:1GiB..zram:1024GiB, or state:1GiB..state:1024GiB.
   # zram is logical uncompressed capacity; state is a swapfile inside encrypted state.

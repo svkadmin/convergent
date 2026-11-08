@@ -1,118 +1,209 @@
 #!/bin/sh
-# stick <release> <guests-dir> <out.img> [size]: build USB media with the real installer.
-# Set CONVERGENT_INSTALL_OWNER for unattended use; stdin is password then LUKS passphrase.
+# stick <release> <out.img>: the release's generic install image (no owner, no secrets, no input).
+#   p1 cv-inst-esp: systemd-boot and convergent-install.efi (no boot counter);
+#   p2 cv-inst-root: slot.img byte for byte;
+#   p3 cv-inst-data: an EROFS of the release as published (manifests, both UKIs, guest files).
+# The install UKI boots p2 with convergent.install=1 and carries the manifests as an extra initrd.
 set -eu
 set +ax
 umask 077
 export LC_ALL=C
 
 here=$(cd "$(dirname "$0")" && pwd -P)
-input=${CONVERGENT_CONFIG:-/etc/convergent/config.yaml}
-cfg() { sh "$here/../tools/config-get" "$input" "$1"; }
-default_size=$(cfg image_size)
-[ -e "$input" ] || echo 'stick: config absent; using defaults' >&2
 . "$here/build.conf"
 . "$here/chroot.sh"
 die() { echo "stick: $*" >&2; exit 1; }
-. "$here/../install/options.sh"
-state_size=auto
-swap=$(cfg install.swap)
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 3 ] || [ $# = 4 ] || die "usage: build/stick <release> <guests-dir> <out.img> [size, default 30G; auto state grows on first boot]"
+[ $# = 2 ] || die "usage: build/stick <release> <out.img>"
 release=$1
 case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
-size=${4:-$default_size}
-case ${size%[KMGT]} in '' | *[!0-9]*) die "size must be bytes or an integer with K, M, G or T suffix" ;; esac
-size_bytes=$(awk -v size="$size" 'BEGIN {
-	unit = substr(size, length(size))
-	scale = index("KMGT", unit)
-	printf "%.0f\n", (size + 0) * 1024 ^ scale
-}')
-(
-	die() {
-		needed_mib=$((esp_mib + slot_mib * 2 + 4 + 12288 + swap_mib))
-		echo "stick: image size $size is too small for swap $swap; need at least ${needed_mib}M (or $(((needed_mib + 1023) / 1024))G)" >&2
-		exit 1
-	}
-	install_size "$size_bytes" 12288
-)
-[ -s "$BUILDER/releases/$release/slot.img" ] || die "no release $release; run build/image first"
-guests=$(cd "$2" && pwd -P) || die "no guests directory"
-for file in fw/fw1.qcow2 fw/fw2.qcow2 wan/wan.qcow2 wan/wan-metadata.tar.xz \
-	fw/fw1.pf.sha256 fw/fw2.pf.sha256 fw/fw1.rules.sha256 fw/fw2.rules.sha256 \
-	svc/metadata.tar.gz svc/rootfs.tar.gz svc/incus.yaml browser/metadata.tar.gz browser/rootfs.tar.gz \
-	browser/incus/base.yaml browser/incus/def.yaml browser/incus/tmp.yaml browser/incus/int.yaml \
-	remmina/metadata.tar.gz remmina/rootfs.tar.gz remmina/incus.yaml \
-	fw/SHA256SUMS wan/SHA256SUMS svc/SHA256SUMS browser/SHA256SUMS remmina/SHA256SUMS; do
-	[ -s "$guests/$file" ] || die "missing guest artifact: $file"
-	case $file in */SHA256SUMS | */incus.yaml | */incus/*) continue ;; esac
-	kind=${file%%/*}
-	awk -v name="${file#*/}" '($2 == name || $2 == "*" name) && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-fA-F]/ {n++}
-		END {exit n != 1}' "$guests/$kind/SHA256SUMS" || die "missing or invalid checksum: $file"
+dir=$BUILDER/releases/$release
+rel=/releases/$release
+for f in slot.img manifest "convergent-$release-a.efi" "convergent-$release-b.efi" vmlinuz microcode.cpio initramfs.img \
+	cmdline-a os-release-a guests.manifest; do
+	[ -s "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "release $release lacks $f; run build/image and build/guests first"
 done
-for kind in fw wan svc browser remmina; do
-	(cd "$guests/$kind" && sha256sum -c SHA256SUMS) || die "guest checksum mismatch: $kind"
+manifests=manifest
+for m in guests.manifest remmina.manifest; do
+	if [ -f "$dir/$m" ]; then manifests="$manifests $m"; fi
 done
-outdir=$(cd "$(dirname "$3")" && pwd -P) || die "no output directory"
-out=$outdir/$(basename "$3")
+# Every file the manifests list, by its published path; nothing else goes on the image.
+files=
+for m in $manifests; do
+	grep -qx "release $release" "$dir/$m" || die "$m is not for release $release"
+	list=$(awk 'NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ {
+		if ($2 !~ /^(slot\.img|convergent-[0-9]+-[ab]\.efi|guests\/(fw|wan|svc|browser|remmina)\/[A-Za-z0-9._-]+|guests\/browser\/incus\/[A-Za-z0-9._-]+\.yaml)$/ ||
+			$2 ~ /\/\.\.?$/) exit 1
+		print $2
+	}' "$dir/$m") || die "invalid path in $m"
+	files="$files $list"
+done
+for f in slot.img "convergent-$release-a.efi" "convergent-$release-b.efi"; do
+	printf '%s\n' $files | grep -qxF "$f" || die "manifest does not list $f"
+done
+printf '%s\n' $files | grep -q '^guests/' || die "guests.manifest lists no guest files"
+[ -z "$(printf '%s\n' $files | sort | uniq -d)" ] || die "a file is listed twice"
+outdir=$(cd "$(dirname "$2")" && pwd -P) || die "no output directory"
+out=$outdir/$(basename "$2")
 [ ! -e "$out" ] && [ ! -L "$out" ] || die "output already exists: $out"
-owner=$(cfg owner_login)
-if ! grep -q '^owner_login *:' "$input" 2>/dev/null; then owner=; fi
-owner=${CONVERGENT_INSTALL_OWNER:-$owner}
-if [ -z "$owner" ]; then
-	printf 'Owner login name: ' >/dev/tty
-	IFS= read -r owner </dev/tty || die "set CONVERGENT_INSTALL_OWNER without a terminal"
-fi
-case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;; esac
-[ "${#owner}" -le 32 ] || die "login name is too long"
+kver=$(awk '$1 == "kernel" && NF == 2 {print $2}' "$dir/manifest")
+[ -n "$kver" ] || die "no kernel in the manifest"
 
 bld() { chroot "$BUILDER" "$@"; }
-work= loop= guest_mounted= chroot_ready=
+work= loop= mounted= chroot_ready= made=
 cleanup() {
 	status=$?
 	trap - 0
-	if [ -n "$guest_mounted" ]; then umount "$work/guests" || status=1; fi
+	if [ -n "$mounted" ]; then umount "$mounted" || status=1; fi
 	if [ -n "$loop" ]; then losetup -d "$loop" || status=1; fi
 	if [ -n "$chroot_ready" ]; then chroot_umount || status=1; fi
-	if [ -n "$work" ] && ! mountpoint -q "$work/guests"; then rm -rf "$work" || status=1; fi
-	[ "$status" = 0 ] || echo "stick: build failed; any output image is incomplete" >&2
+	if [ -n "$work" ] && ! grep -q " $work/" /proc/mounts; then rm -rf "$work" || status=1; fi
+	# An incomplete image must not be written to a stick.
+	if [ "$status" != 0 ] && [ -n "$made" ]; then rm -f "$out"; fi
+	[ "$status" = 0 ] || echo "stick: build failed; no image written" >&2
 	exit "$status"
 }
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
-exec 4<&0
 exec </dev/null
 chroot_ready=1
 chroot_mount
 work=$(mktemp -d "$BUILDER/tmp/cv-stick.XXXXXX")
 inside=${work#"$BUILDER"}
-cp "$here/../install/install" "$work/install"
-cp "$here/../install/options.sh" "$work/options.sh"
-cp "$here/../tools/config-get" "$work/config-get"
-if [ -f "$input" ]; then cp "$input" "$work/config.yaml"; else : >"$work/config.yaml"; fi
-chmod 600 "$work/config.yaml"
-mkdir "$work/guests"
-mount --bind "$guests" "$work/guests"
-guest_mounted=1
-mount -o remount,bind,ro "$work/guests"
+mkdir "$work/data" "$work/esp" "$work/root"
+for m in $manifests; do
+	cp "$dir/$m" "$work/data/$m"
+	if [ -f "$dir/$m.sig" ]; then cp "$dir/$m.sig" "$work/data/$m.sig"; fi
+done
+for f in $files; do
+	[ "$f" != slot.img ] || continue
+	mkdir -p "$work/data/${f%/*}"
+	cp "$dir/$f" "$work/data/$f"
+done
+# The copies are what the image carries: check them, and slot.img where it is read from.
+for m in $manifests; do
+	(cd "$work/data" && grep -E '^[0-9a-f]{64}  ' "$m" | grep -v '  slot\.img$' | sha256sum -c --quiet -) ||
+		die "the release does not match its $m"
+done
+grep -E '^[0-9a-f]{64}  slot\.img$' "$dir/manifest" | (cd "$dir" && sha256sum -c --quiet -) || die "slot.img does not match the manifest"
+slot_bytes=$(stat -c %s "$dir/slot.img")
+[ $((slot_bytes % 4096)) = 0 ] || die "slot.img is not whole 4 KiB blocks"
+# The install UKI's inputs are not in the manifest: slot A's root hash, and slot A's kernel and initrds
+# (ukify pads each initrd to 4 bytes).
+roothash=$(awk '$1 == "roothash" && NF == 2 && length($2) == 64 && $2 !~ /[^0-9a-f]/ {n++; h = $2} END {if (n == 1) print h}' "$dir/manifest")
+[ -n "$roothash" ] && [ "$(grep -o ' sha256 [0-9a-f]* ' "$dir/cmdline-a")" = " sha256 $roothash " ] ||
+	die "cmdline-a does not carry the manifest's root hash"
+bld objcopy --dump-section .linux="$inside/a.linux" --dump-section .initrd="$inside/a.initrd" \
+	"$inside/data/convergent-$release-a.efi" "$inside/a.efi" || die "cannot read convergent-$release-a.efi"
+mc_bytes=$(stat -c %s "$dir/microcode.cpio")
+ir_bytes=$(stat -c %s "$dir/initramfs.img")
+mc_end=$(((mc_bytes + 3) / 4 * 4))
+cmp -s "$work/a.linux" "$dir/vmlinuz" && [ "$(stat -c %s "$work/a.initrd")" = $((mc_end + (ir_bytes + 3) / 4 * 4)) ] &&
+	cmp -s -n "$mc_bytes" "$work/a.initrd" "$dir/microcode.cpio" &&
+	cmp -s -n "$ir_bytes" -i "$mc_end:0" "$work/a.initrd" "$dir/initramfs.img" ||
+	die "vmlinuz, microcode.cpio or initramfs.img is not what convergent-$release-a.efi boots"
+rm "$work/a.linux" "$work/a.initrd" "$work/a.efi"
+
+# systemd-boot and the release key of the release itself.
+mount -t erofs -o ro,nodev,nosuid,noexec,loop "$dir/slot.img" "$work/root"
+mounted=$work/root
+cp "$work/root/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$work/systemd-boot.efi" || die "release has no systemd-boot"
+# A listing that succeeded, not a failed stat, says the release trusts no key.
+ls -A "$work/root/etc/convergent" >"$work/etc-convergent"
+key=
+if grep -qx release.pub "$work/etc-convergent"; then
+	cp "$work/root/etc/convergent/release.pub" "$work/release.pub"
+	key=$work/release.pub
+fi
+umount "$work/root"
+mounted=
+# A release that trusts a key has every manifest signed by it, checked before anything is packed.
+if [ -n "$key" ]; then
+	for m in $manifests; do
+		[ -f "$work/data/$m.sig" ] || die "$m is not signed"
+		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/data/$m" -sigfile "$work/data/$m.sig" >/dev/null ||
+			die "$m has an invalid signature"
+	done
+fi
+
+# The manifests as an extra initrd: the UKI, hence its digest, vouches for them.
+mkdir -p "$work/initrd/run/convergent-install-manifests"
+for m in $manifests; do
+	cp "$work/data/$m" "$work/initrd/run/convergent-install-manifests/"
+	if [ -f "$work/data/$m.sig" ]; then cp "$work/data/$m.sig" "$work/initrd/run/convergent-install-manifests/"; fi
+done
+find "$work/initrd" -type d -exec chmod 0755 {} +
+find "$work/initrd" -type f -exec chmod 0644 {} +
+bld sh -c 'cd "$1" && find run -print | sort | cpio -o -H newc --owner=0:0 --reproducible --quiet' sh "$inside/initrd" >"$work/manifests.cpio"
+# Slot A's line, booting p2: cv-inst-root in dm-mod.waitfor and the verity table, convergent.install=1 before init=.
+sed 's/PARTLABEL=cv-slot-a /PARTLABEL=cv-inst-root /g; s/ init=/ convergent.install=1 init=/' "$dir/cmdline-a" >"$work/cmdline"
+[ "$(grep -o 'PARTLABEL=cv-inst-root ' "$work/cmdline" | wc -l)" = 3 ] && ! grep -q 'cv-slot' "$work/cmdline" &&
+	[ "$(grep -o ' convergent\.install=1 init=' "$work/cmdline" | wc -l)" = 1 ] || die "unexpected slot A command line"
+sed 's/^PRETTY_NAME="SLOT A /PRETTY_NAME="INSTALL /' "$dir/os-release-a" >"$work/os-release"
+grep -q '^PRETTY_NAME="INSTALL ' "$work/os-release" || die "unexpected slot A os-release"
+bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "$rel/initramfs.img" \
+	--initrd "$inside/manifests.cpio" --cmdline "@$inside/cmdline" --os-release "@$inside/os-release" --uname "$kver" \
+	--output "$inside/convergent-install.efi" >/dev/null
+bld ukify inspect "$inside/convergent-install.efi" >"$work/inspect" || die "invalid install UKI"
+grep -qF ' convergent.install=1 init=/sbin/init' "$work/inspect" || die "the install UKI lacks its command line"
+
+bld mkfs.erofs --all-root "$inside/data.erofs" "$inside/data" >/dev/null
+data_bytes=$(stat -c %s "$work/data.erofs")
+
+# As small as the content: the ESP its files plus 16 MiB (FAT32, at least 64 MiB), p2 exactly slot.img.
+esp_mib=$((($(stat -c %s "$work/systemd-boot.efi") + $(stat -c %s "$work/convergent-install.efi")) / 1048576 + 17))
+[ "$esp_mib" -ge 64 ] || esp_mib=64
+p1_end=$((2048 + esp_mib * 2048 - 1))
+p2_start=$((p1_end + 1))
+p2_end=$((p2_start + slot_bytes / 512 - 1))
+p3_start=$(((p2_end + 1 + 2047) / 2048 * 2048))
+p3_end=$((p3_start + (data_bytes + 1048575) / 1048576 * 2048 - 1))
 # Noclobber also refuses an output created since the existence check.
 (set -C; : >"$out") || die "cannot create output: $out"
-truncate -s "$size" "$out"
-install_size "$(stat -c %s "$out")" 12288
+made=1
+truncate -s $(((p3_end + 1 + 2048) * 512)) "$out"
 loop=$(losetup --find --show --partscan "$out")
-CONVERGENT_UNSIGNED=1 CONVERGENT_INSTALL_DISK="$loop" CONVERGENT_INSTALL_OWNER="$owner" \
-	CONVERGENT_INSTALL_GUESTS="$inside/guests" bld sh "$inside/install" --config "$inside/config.yaml" "/releases/$release" <&4 4<&-
-exec 4<&-
+bld sgdisk -n "1:2048:$p1_end" -t1:ef00 -c1:cv-inst-esp -n "2:$p2_start:$p2_end" -t2:8300 -c2:cv-inst-root \
+	-n "3:$p3_start:$p3_end" -t3:8300 -c3:cv-inst-data "$loop" >/dev/null
+blockdev --rereadpt "$loop"
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p3" ] && break; sleep 1; done
+for p in 1 2 3; do [ -b "${loop}p$p" ] || die "no partition device ${loop}p$p"; done
+[ "$(blockdev --getsize64 "${loop}p2")" = "$slot_bytes" ] || die "p2 is not exactly slot.img"
+
+bld mkfs.vfat -F 32 -n CV-INSTALL "${loop}p1" >/dev/null
+mount -t vfat -o nodev,nosuid,noexec "${loop}p1" "$work/esp"
+mounted=$work/esp
+mkdir -p "$work/esp/EFI/BOOT" "$work/esp/EFI/Linux" "$work/esp/loader"
+cp "$work/systemd-boot.efi" "$work/esp/EFI/BOOT/BOOTX64.EFI"
+cp "$work/convergent-install.efi" "$work/esp/EFI/Linux/convergent-install.efi"
+printf 'timeout 0\neditor no\ndefault convergent-install.efi\n' >"$work/esp/loader/loader.conf"
 sync
+cmp "$work/systemd-boot.efi" "$work/esp/EFI/BOOT/BOOTX64.EFI" &&
+	cmp "$work/convergent-install.efi" "$work/esp/EFI/Linux/convergent-install.efi" || die "ESP readback differs"
+umount "$work/esp"
+mounted=
+dd if="$dir/slot.img" of="${loop}p2" bs=4M conv=fsync status=none
+dd if="$work/data.erofs" of="${loop}p3" bs=4M conv=fsync status=none
+blockdev --flushbufs "$loop"
+cmp "$dir/slot.img" "${loop}p2" || die "p2 readback differs"
+cmp -n "$data_bytes" "$work/data.erofs" "${loop}p3" || die "p3 readback differs"
+# What the installer will read: every listed file on p3 against its manifest.
+mount -t erofs -o ro,nodev,nosuid,noexec "${loop}p3" "$work/root"
+mounted=$work/root
+for m in $manifests; do
+	cmp "$work/data/$m" "$work/root/$m" || die "p3 $m differs"
+	(cd "$work/root" && grep -E '^[0-9a-f]{64}  ' "$m" | grep -v '  slot\.img$' | sha256sum -c --quiet -) || die "p3 does not match $m"
+done
+umount "$work/root"
+mounted=
 losetup -d "$loop"
 loop=
 printf 'Image: %s (%s bytes)\n' "$out" "$(stat -c %s "$out")"
 sha256sum "$out"
-printf 'Check /dev/sdX carefully: this overwrites the entire device; it must fit the image.\n'
+printf 'Check /dev/sdX carefully: this overwrites the entire device.\n'
 quoted=$(printf '%s' "$out" | sed "s/'/'\\\\''/g")
 printf 'if [ "$(blockdev --getss /dev/sdX)" = 512 ]; then\n'
 printf "    dd if='%s' of=/dev/sdX bs=4M conv=fsync status=progress\n" "$quoted"
 printf "else\n    echo 'Image writing requires 512-byte logical sectors; target refused.' >&2\nfi\n"
-printf 'For a 4Kn internal disk, boot compatible USB media and run convergent-install.\n'
-printf 'Boot with Secure Boot OFF; unlock LUKS and log in as %s.\n' "$owner"
-printf 'The first boot grows auto-sized state and creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
+printf 'Boot it with Secure Boot OFF.\n'
+made=

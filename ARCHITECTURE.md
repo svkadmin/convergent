@@ -428,7 +428,9 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
 `convergent-watchdog` feeds the 180 s watchdog for 10 min; a pass disarms it at any time, and an
 already-good release disarms it before the checks. It feeds only an iTCO watchdog with a timeout of
 60 s or more; any other is closed (only while it runs and nowayout is off) and the boot runs without
-one. On shutdown `convergent-setup` drains work VMs, browsers and Remmina, `svc`, `wan` and then the
+one. The install image (`build/stick`, `convergent.install=1`) never blesses: its initramfs skips the
+unlock and the watchdog, mounts tmpfs `/var`, `/home` and `/tmp` and the install data read-only, and
+its inittab starts only the installer, with no getty. On shutdown `convergent-setup` drains work VMs, browsers and Remmina, `svc`, `wan` and then the
 firewalls, 20 s graceful stop each before forcing. A drain cut short leaves autorestart holds; the next
 guests command clears them and restores each guest's own setting. Only shutdown drains: `rc-service convergent-setup restart` leaves the guests running and
 `stop` is refused.
