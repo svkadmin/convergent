@@ -272,6 +272,13 @@ find "$gccdir" -maxdepth 1 \( -name 'libgfortran*' -o -name 'libquadmath*' -o -n
 (cd "$root/usr/share/qemu" && rm -rf edk2-arm* edk2-aarch64* edk2-riscv* edk2-loongarch64* edk2-i386-code.fd \
 	edk2-i386-secure-code.fd skiboot.lid openbios-* slof.bin hppa-* u-boot* opensbi-* palcode-* s390-* pnv-* \
 	vof* npcm* ast27x0* QEMU,* qemu_vga.ndrv dtb)
+# Gentoo links the VGA and option ROMs to seavgabios, sgabios and ipxe; Incus's QEMU profile allows
+# /usr/share/qemu/** only, and the firewall VMs could not load vgabios-virtio.bin (Incus 7.0.2). Real files.
+find "$root/usr/share/qemu" -maxdepth 1 -type l | while read -r link; do
+	target=$(readlink -f "$link") && [ -f "$target" ] || die "dangling ROM link ${link#"$root"}"
+	rm "$link" && cp "$target" "$link" || die "cannot copy ${target#"$root"}"
+done
+[ -z "$(find "$root/usr/share/qemu" -type l)" ] || die "symlinks remain under /usr/share/qemu"
 printf '%s\n' "$release" >"$root/usr/lib/convergent/release"
 printf '%s\n' "$VERSION" >"$root/usr/lib/convergent/version"
 # Mount points the initramfs needs: the image is read-only once made.
