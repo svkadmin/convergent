@@ -684,8 +684,8 @@ that never becomes good falls back to the previous one
 
 1. Run `sys update check`. It reports the newest release or "up to date", and the age of the signed
    metadata; over 30 days is stale.
-2. Run `sys update install`. It verifies and downloads the host and changed guests, writes the
-   other slot and offers a reboot.
+2. Run `sys update install`. It verifies and downloads the host and changed guests (three files at
+   a time, each checked against the signed manifest), writes the other slot and offers a reboot.
 3. Type `yes` to reboot.
 4. Wait for `good`, then for `GUESTS` to clear.
 5. [Accept the new baseline](#accept-the-new-baseline).

@@ -531,7 +531,7 @@ Symptom: `sys update install` stops with a reason.
 | Message | Do |
 |---|---|
 | `resolves to no public address` | Wi-Fi first (recipe 5). Else the blocklist holds the server: `sys dns allow <host>` with the host from `/etc/convergent/update.conf`, then retry |
-| `could not open the update source` | A firewall is not answering: recipe 6 |
+| `could not open the update source` | Neither firewall is answering: recipe 6. One that is stopped or not answering only gets a warning; the download goes through the other |
 | `signature does not verify`, `latest is not signed`, `does not match the manifest` | Never bypass it: what arrived is not what was published. Retry; if it repeats, update from USB with a release you built ([USAGE, USB updates](USAGE.md#usb-updates)); after a release-key rotation, [BUILD, Sign and publish](BUILD.md#sign-and-publish) |
 | `this release has no online updates` | The release has no release key or update URL: update from USB |
 | `not enough free space in /var` | Free what is still missing in `/var`, plus 1 GiB |

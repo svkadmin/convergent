@@ -200,6 +200,31 @@ if (download slot.img) >"$work/log" 2>&1; then die 'accepted dropped online down
 [ -f "$work/refreshed" ] || die 'online download did not refresh the update source'
 [ "$(cat "$dir/slot.img")" = go ]
 )
+# Downloads run three at a time; one failure lets the others finish, then fails the run.
+sed -n '/^downloads() {/,/^}/p' "$repo/tools/fetch-release" >"$work/downloads"
+grep -q '^downloads()' "$work/downloads" || die 'downloads() moved'
+sh -n "$work/downloads"
+(
+. "$work/downloads"
+files='a b c d e f g'
+download() {
+    mkdir "$work/run.$1"
+    ls -d "$work"/run.* 2>/dev/null | wc -l >>"$work/concurrent"
+    sleep 1
+    rmdir "$work/run.$1"
+    touch "$work/done.$1"
+    [ "$1" != b ]
+}
+if (downloads) 2>"$work/log"; then die 'a failed download passed'; fi
+grep -qx 'test-release-compat: a download failed; run again' "$work/log" || die 'no reason for the failed downloads'
+for f in $files; do [ -f "$work/done.$f" ] || die "a failure skipped download $f"; done
+max=$(sort -n "$work/concurrent" | tail -n 1)
+[ "$max" -ge 2 ] && [ "$max" -le 3 ] || die "ran $max downloads at once"
+rm -f "$work"/done.*
+download() { touch "$work/done.$1"; }
+downloads
+for f in $files; do [ -f "$work/done.$f" ] || die "skipped download $f"; done
+)
 # The anti-rollback floor is not evidence that the running release is current.
 sed -n '/^uptodate=/,/^# Fail now/p' "$repo/tools/fetch-release" >"$work/current"
 [ -s "$work/current" ] && grep -q '^sync=' "$work/current"
@@ -217,7 +242,7 @@ for mode in check write; do
     (booted=43 latest=43 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ "$sync" = 1 ])
     (booted=42 latest=44 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ -z "$sync" ])
 done
-echo 'test-release-compat: bounded USB copies, online resumption and older boot fixtures passed'
+echo 'test-release-compat: bounded USB copies, online resumption, parallel downloads and older boot fixtures passed'
 # sys update usb names the stick's filesystem as rescue does: no probed driver, no journal replay, and no
 # symlink followed on a filesystem that carries them.
 sed 's/\[ -b "\$source" \]/[ -n "$source" ]/' "$repo/rootfs/usr/lib/convergent/sys/90-update" >"$work/update-module"
@@ -331,6 +356,46 @@ for failed_fw in none fw2 fw1; do
             echo "warning: could not refresh the update source on $failed_fw" | cmp - "$work/pf-warned"
         fi
     done
+done
+# A firewall stopped for its replacement or not answering is named and skipped; with neither, nothing opens.
+getent() { [ "$*" = 'ahostsv4 r2.fixture' ] || exit 97; printf '%s STREAM r2.fixture\n' 172.64.1.1 104.16.1.1; }
+rsh() { case " $down " in *" $1 "*) return 255 ;; esac; fw=$1; (eval "$2"); }
+pfctl() {
+    printf '%s %s\n' "$fw" "$*" >>"$work/pf-calls"
+    case $* in
+    '-q -t update_src -T replace 104.16.1.1 172.64.1.1' | '-q -t update_src -T flush' | '-q -k label -k update') ;;
+    *) exit 97 ;;
+    esac
+}
+for down in '' fw2 fw1 'fw2 fw1'; do
+    : >"$work/pf-calls"
+    rm -f "$work/skip"
+    if (open_src r2.fixture; [ "$src_open" = 1 ] || exit 96; printf '%s\n' "$src_skip" >"$work/skip") 2>"$work/pf-error"; then
+        [ "$down" != 'fw2 fw1' ] || die 'opened the update source with no firewall answering'
+        [ "$(cat "$work/skip")" = "${down:+ $down}" ] || die "wrong skipped firewalls with '$down' down"
+    else
+        [ "$down" = 'fw2 fw1' ] || { cat "$work/pf-error"; die "refused the update source with '$down' down"; }
+        grep -qx 'test-release-compat: could not open the update source on either firewall' "$work/pf-error" || die 'no reason for the refusal'
+    fi
+    for fw in $fws; do
+        case " $down " in
+        *" $fw "*) grep -qx "warning: could not open the update source on $fw (stopped or not answering); using the other firewall" "$work/pf-error" ||
+            die "skipped $fw without naming it" ;;
+        *) grep -qx "$fw -q -t update_src -T replace 104.16.1.1 172.64.1.1" "$work/pf-calls" || die "did not open on $fw" ;;
+        esac
+    done
+    [ -n "$down" ] || [ ! -s "$work/pf-error" ] || die 'warned with both firewalls answering'
+    # Cleanup: a skipped firewall that still does not answer is named; one that took the opening must close.
+    src_open=1 src_skip=${down:+ $down}
+    if close_src 2>"$work/pf-error"; then [ -z "$src_open" ] || die 'kept tracking after a clean close'; else die "close failed with '$down' skipped"; fi
+    for fw in $down; do
+        grep -qx "warning: could not close the update source on $fw; it expires within 4 hours" "$work/pf-error" || die "close skipped $fw silently"
+    done
+    if [ -n "$down" ]; then
+        src_open=1 src_skip=
+        if close_src 2>/dev/null; then die "an opened firewall that did not close passed with '$down' down"; fi
+        [ "$src_open" = 1 ] || die 'dropped tracking after a failed close'
+    fi
 done
 # A manual pfctl -f reloads a file-backed table empty: the opening lives only in the kernel.
 grep -Eqx 'table <update_src>[[:space:]]+persist' "$repo/guests/fw/site/etc/pf.conf" || die 'update_src is not a plain persist table'
