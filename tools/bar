@@ -8,6 +8,7 @@ export LC_ALL=C
 
 vmalert=http://100.80.2.10:8880
 ps=/sys/class/power_supply
+rfkill=/sys/class/rfkill
 st=/run/convergent/status
 uid=$(id -u)
 # swayidle's timeout skips the lock while this file exists (sway config).
@@ -197,13 +198,20 @@ while :; do
 	mtime=$(stat -c %Y "$st/topology" 2>/dev/null) || mtime=0
 	memtime=$(stat -c %Y "$st/guestmem" 2>/dev/null) || memtime=0
 	if [ -e /run/openrc/started/convergent-bless ]; then bl=good; else bl=UNBLESSED; fi
+	# A Bluetooth radio that can transmit: neither kill switch reads 1 (sysfs reads do not block).
+	bt=
+	for radio in "$rfkill"/rfkill*; do
+		type= soft= hard=
+		{ read -r type <"$radio/type"; read -r soft <"$radio/soft"; read -r hard <"$radio/hard"; } 2>/dev/null
+		[ "$type" != bluetooth ] || [ "$soft" = 1 ] || [ "$hard" = 1 ] || bt=on
+	done
 	# One formatter per frame; procfs/sysfs reads that cannot block need no helpers. UTF-8: the network
 	# name is cut by characters.
 	LC_ALL=C.UTF-8 awk -v work="$work" -v st="$st" -v bat="$bat" -v now="$now" -v mtime="$mtime" \
 		-v memtime="$memtime" -v wall="$wall" \
 		-v grey="$theme_dim" -v green="$theme_ok" -v red="$theme_crit" -v orange="$theme_warn" \
 		-v master="$theme_master" -v backup="$theme_backup" -v fg="$theme_text" \
-		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v comma="$comma" -v rel="$release" '
+		-v clock="${stamp#* }" -v nl="$nl" -v bl="$bl" -v bt="$bt" -v comma="$comma" -v rel="$release" '
 	function get(path, value) {
 		if ((getline value < path) <= 0) value=""
 		close(path)
@@ -327,6 +335,7 @@ while :; do
 		camera=get("/var/lib/convergent/devices/camera")
 		video=get("/sys/module/videodev/refcnt")
 		if (camera == "on" || video != "") block(camera == "on" ? "CAM" : "CAM!", orange)
+		if (bt == "on") block("BT", orange)
 		# First boot of a disk image: guests being created (convergent-setup).
 		setup=get(st "/setup")
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)

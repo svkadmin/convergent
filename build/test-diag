@@ -44,6 +44,12 @@ grep -qF '[2646:1234] 0000:00:14.3' "$work/public"
 grep -qF 'authorized=0' "$work/public"
 grep -qF 'scaling_max_freq=2500000' "$work/public"
 grep -qF 'BERT record=1 severity=fatal' "$work/public"
+# Bluetooth field data: radios, USB names and USBGuard's view, kernel lines for Bluetooth and bus 3.
+for probe in 'x rfkill list' 'x lsusb -t' 'x usbguard list-devices'; do
+	grep -qxF "$probe" "$here/diag/body-std.sh" || die "no probe: $probe"
+done
+grep -qF 'idVendor idProduct product authorized' "$here/diag/body-std.sh" || die 'no USB product probe'
+grep -qF '|bluetooth|usb 3-" "$1/kernel"' "$here/diag/body-std.sh" || die 'no Bluetooth kernel lines'
 cat >"$work/smart" <<'EOF'
 Model Number: Alice private SSD
 Serial Number: SECRET123

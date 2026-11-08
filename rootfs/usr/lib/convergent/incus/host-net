@@ -62,3 +62,9 @@ for key in net.ipv4.conf.host.arp_ignore net.ipv4.ip_forward; do
 done
 ip -4 route show default dev host | grep -Eq '^default via 100\.80\.1\.1 dev host( |$)' ||
 	ip route replace default via 100.80.1.1 dev host
+# rfkill.default_state=0 also blocks a platform Wi-Fi switch (dell-laptop) that can cut wan's card.
+for radio in /sys/class/rfkill/rfkill*; do
+	case $(cat "$radio/type" 2>/dev/null) in
+	wlan|wwan) rfkill unblock wlan wwan || die 'cannot unblock the platform Wi-Fi switch'; break ;;
+	esac
+done

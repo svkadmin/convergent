@@ -7,7 +7,7 @@ umask 077
 tb=/sys/bus/thunderbolt/devices
 
 die() { echo "devices: $*" >&2; exit 1; }
-usage() { echo "usage: devices list | review | enrol | revoke RULE | allow ID | allow tb ID | wired status|remove|attach VENDOR:PRODUCT SERIAL | camera on|off|restore|load [MODULE]" >&2; exit 2; }
+usage() { echo "usage: devices list | review | enrol | revoke RULE | allow ID | allow tb ID | wired status|remove|attach VENDOR:PRODUCT SERIAL | camera on|off|restore|load [MODULE] | bluetooth on|off" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
 # ask: show the question, accept only the word yes from a terminal.
@@ -276,9 +276,61 @@ camera() {
 	fi
 }
 
+# The kill switch is the gate (rfkill.default_state=0 blocks every radio at boot); no saved choice.
+bluetooth() {
+	case ${1:-} in on|off) [ "$#" = 1 ] || usage ;; *) usage ;; esac
+	exec 8>/run/convergent-bluetooth.lock
+	flock -x 8
+	if [ "$1" = on ]; then
+		bluetooth_radio || die 'no Bluetooth radio'
+		# Interrupted before power-on: block again.
+		trap "bluetooth_block 'interrupted'" INT TERM HUP
+		rfkill unblock bluetooth || bluetooth_block 'rfkill refused'
+		rc-service bluetooth start || bluetooth_block 'bluetoothd did not start'
+		# The adapter registers with bluetoothd after the unblock.
+		waited=0
+		until timeout -k 1 10 bluetoothctl show >/dev/null 2>&1; do
+			waited=$((waited + 1))
+			[ "$waited" -lt 10 ] || bluetooth_block 'no Bluetooth adapter'
+			sleep 1
+		done
+		timeout -k 1 10 bluetoothctl power on || bluetooth_block 'the adapter did not power on'
+		trap - INT TERM HUP
+		return
+	fi
+	timeout -k 1 10 bluetoothctl power off >/dev/null 2>&1 || :
+	failed=
+	rfkill block bluetooth || failed='rfkill refused'
+	rc-service bluetooth stop || failed=${failed:-'bluetoothd did not stop'}
+	bluetooth_blocked || die 'a Bluetooth radio still reads unblocked'
+	[ -z "$failed" ] || die "$failed"
+}
+bluetooth_radio() {
+	for radio in /sys/class/rfkill/rfkill*; do
+		[ "$(cat "$radio/type" 2>/dev/null)" != bluetooth ] || return 0
+	done
+	return 1
+}
+# A radio that vanished is blocked.
+bluetooth_blocked() {
+	for radio in /sys/class/rfkill/rfkill*; do
+		[ -e "$radio" ] || continue
+		kind=$(cat "$radio/type" 2>/dev/null) || continue
+		[ "$kind" = bluetooth ] || continue
+		soft=$(cat "$radio/soft" 2>/dev/null) || continue; [ "$soft" = 1 ] || return 1
+	done
+}
+# A failed on leaves the radio blocked and bluetoothd stopped.
+bluetooth_block() {
+	rfkill block bluetooth || :
+	rc-service bluetooth stop || :
+	die "$1; the radio is blocked again"
+}
+
 case ${1:-} in
 wired) shift; wired "$@"; exit ;;
 camera) shift; camera "$@"; exit ;;
+bluetooth) shift; bluetooth "$@"; exit ;;
 esac
 # Serialize owner policy changes, including the review interval.
 exec 9>/run/convergent-usb.lock
