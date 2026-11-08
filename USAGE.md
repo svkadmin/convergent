@@ -871,7 +871,8 @@ sudo check accept-fw <guest-dir>/fw   # updated firewall hashes, same Secure Boo
 ```
 
 - Baseline input needs `manifest` and `guests/fw/fw{1,2}.{pf,rules}.sha256`.
-- Acceptance needs `def`, `int` and Remmina to exist: open and close each once first.
+- Acceptance needs `def`, `int` and Remmina to exist: open and close each once first. Without the
+  optional Remmina guest (no `remmina` profile), `def` and `int` suffice.
 - Accept again if the baseline lacks the profile of `tmp` or Remmina.
 - The check fails without a baseline or with Secure Boot off.
 - Acceptance does not verify manifest signatures: verify the release yourself first.

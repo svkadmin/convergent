@@ -17,10 +17,13 @@ close|reap)
         exec sudo -- /usr/local/sbin/remote close
     fi
     mkdir -p /run/convergent
+    # 75 for reap: an update holding its lock defers it to check's next minute; it is no failure.
+    busy=1
+    [ "$1" != reap ] || busy=75
     exec 9>/run/convergent/guests.lock
-    flock -s -n 9 || { echo 'remote: guest update in progress' >&2; exit 1; }
+    flock -s -n 9 || { echo 'remote: guest update in progress' >&2; exit "$busy"; }
     exec 6>/run/convergent/browser-update.lock
-    flock -s -n 6 || { echo 'remote: browser update in progress' >&2; exit 1; }
+    flock -s -n 6 || { echo 'remote: browser update in progress' >&2; exit "$busy"; }
     if [ "$1" = reap ]; then
         mkdir -p /run/convergent/browser
         exec 8>/run/convergent/browser/remmina.lock

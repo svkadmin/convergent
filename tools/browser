@@ -86,21 +86,24 @@ wait_socket() {
     done
 }
 
+# 75 for the sweep: an update holding its lock, or guests stopping, defers it to check's next minute; no failure.
+busy() { [ -z "${reaping:-}" ] || { echo "browser: $*" >&2; exit 75; }; die "$*"; }
 browser_locks() {
     install -d -m 0755 /run/convergent
     mkdir -p /run/convergent/browser
     chmod 711 /run/convergent/browser
     # The guests lock covers launch; the browser lock covers the whole session.
     exec 9>/run/convergent/guests.lock
-    flock -s -n 9 || die 'guest update in progress'
-    [ ! -e /run/convergent/guests-stopping ] || die 'host is stopping guests'
+    flock -s -n 9 || busy 'guest update in progress'
+    [ ! -e /run/convergent/guests-stopping ] || busy 'host is stopping guests'
     exec 6>/run/convergent/browser-update.lock
-    flock -s -n 6 || die 'browser update in progress'
+    flock -s -n 6 || busy 'browser update in progress'
 }
 
 # Periodic cleanup has no owner session and keeps both shared locks until done.
 if [ "${1:-}" = --reap-tmp ] && [ "$(id -u)" = 0 ]; then
     [ $# = 1 ] || die 'usage: browser --reap-tmp'
+    reaping=1
     browser_locks
     reap_tmp
     exit

@@ -44,6 +44,21 @@ for shape in stock missing duplicate changed; do
     fi
 done
 sh "$work/fw-stock" >"$work/fw-stock-rules"
+# The build's logs do not ship in the firewall image: archives go, every other log stays, empty.
+sed -n "/^# The build's logs/,/-exec sh -c 'for f do/p" "$fw/install.site" |
+    sed "s|/var/log|$work/varlog|g" >"$work/fw-logs"
+check_script "$work/fw-logs"
+grep -q "$work/varlog" "$work/fw-logs" || die 'log cleanup not mapped'
+mkdir -p "$work/varlog/nested"
+echo 'dhcpleased[72886]: adding 10.0.2.15 to em0 (lease from 10.0.2.2)' >"$work/varlog/daemon"
+echo old >"$work/varlog/messages.0.gz"
+echo old >"$work/varlog/nested/xferlog.1"
+echo header >"$work/varlog/pflog"
+(rcctl() { [ "$*" = 'stop syslogd' ] || exit 97; touch "$work/syslogd-stopped"; }; . "$work/fw-logs")
+[ -e "$work/syslogd-stopped" ] || die 'syslogd still writes during the log cleanup'
+[ -f "$work/varlog/daemon" ] && [ ! -s "$work/varlog/daemon" ] && [ -f "$work/varlog/pflog" ] && [ ! -s "$work/varlog/pflog" ] ||
+    die 'build logs ship in the firewall image'
+[ ! -e "$work/varlog/messages.0.gz" ] && [ ! -e "$work/varlog/nested/xferlog.1" ] || die 'build log archives ship'
 { printf '. "%s/fw-mocks"\n' "$work"
     sed "s|/var/run/fw-pf-reload.lock|$work/reload.lock|" "$fw/usr/local/libexec/convergent/fw-pf-reload"
 } >"$work/fw-reload"

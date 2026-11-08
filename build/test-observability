@@ -831,6 +831,8 @@ sh -n "$work/reads"
         esac
     }
     guests() { echo 'svc running'; }
+    # A timed-out profile listing tells no missing Remmina.
+    remmina_absent() { return 1; }
     timeout() {
         [ "$1:$2:$3" = '-k:1:30' ] || exit 1
         shift 3
@@ -842,8 +844,8 @@ sh -n "$work/reads"
         : >"$work/timeouts"
         failures=0
         . "$work/reads"
-        [ "$(wc -l <"$work/timeouts")" = 6 ]
-        if [ "$reply" = 0 ]; then [ "$failures" = 0 ]; else [ "$failures" = 6 ]; fi
+        [ "$(wc -l <"$work/timeouts")" = 7 ]
+        if [ "$reply" = 0 ]; then [ "$failures" = 0 ]; else [ "$failures" = 7 ]; fi
     done
 )
 sed -n '/^    kib=0$/,/^    for pid / { /^    for pid /d; p; }' "$repo/tools/check" |

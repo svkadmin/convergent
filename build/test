@@ -2857,6 +2857,32 @@ IMPORT
 		esac
 	done
 )
+# Remmina is optional: a listing without its profile inventories null; one with it, or no answer, keeps the query.
+(
+	bad() { echo "$*" >>"$work/report"; ok=0; }
+	timeout() { shift 3; "$@"; }
+	sed -n '/^# Remmina is an optional sidecar/,/^fi$/p' /usr/local/sbin/check >"$work/remmina-read"
+	[ -s "$work/remmina-read" ]
+	for listing in absent present none; do
+		incus() {
+			case $3:$listing in
+			'/1.0/profiles?recursion=1&project=default:absent') echo '[{"name":"default"},{"name":"browser-tmp"}]' ;;
+			'/1.0/profiles?recursion=1&project=default:present') echo '[{"name":"remmina"}]' ;;
+			'/1.0/profiles/remmina?project=default:present') echo '{"config":{},"devices":{"share":{"type":"disk"}}}' ;;
+			*) echo 'Error: Fetch profile: Profile not found' >&2; return 1 ;;
+			esac
+		}
+		ok=1
+		: >"$work/report"
+		rm -f "$work/remmina-profile"
+		. "$work/remmina-read"
+		case $listing in
+		absent) [ "$ok" = 1 ] && [ "$(cat "$work/remmina-profile")" = null ] ;;
+		present) [ "$ok" = 1 ] && jq -e '.devices.share.type == "disk"' "$work/remmina-profile" >/dev/null ;;
+		none) [ "$ok" = 0 ] && grep -qx 'Remmina profile query failed' "$work/report" ;;
+		esac || exit 1
+	done
+)
 # Exercise both real prompts; declining upload must keep output entirely local.
 (
 	state=$work/debug-state tmp=$work/debug-run
@@ -5521,14 +5547,21 @@ for code in 0 7 21 31 37 42; do
 	fi
 done
 sed -n '/^    jq -e .*def.*int/,/retry acceptance/p' /usr/local/sbin/check >"$work/accept"
-for names in '[]' '[{"name":"def"}]' '[{"name":"int"}]' '[{"name":"def"},{"name":"int"}]' '[{"name":"def"},{"name":"int"},{"name":"remmina","profiles":["remmina"]}]'; do
-	printf '%s\n' "$names" >"$work/incus"
-	if (die() { echo "$*"; exit 1; }; . "$work/accept") >"$work/out"; then
-		[ "$names" = '[{"name":"def"},{"name":"int"},{"name":"remmina","profiles":["remmina"]}]' ]
-	else
-		[ "$names" != '[{"name":"def"},{"name":"int"},{"name":"remmina","profiles":["remmina"]}]' ]
-		grep -q 'open and close def, int and Remmina, then retry acceptance' "$work/out"
-	fi
+full='[{"name":"def"},{"name":"int"},{"name":"remmina","profiles":["remmina"]}]'
+for profile in '{}' null; do
+	printf '%s\n' "$profile" >"$work/remmina-profile"
+	for names in '[]' '[{"name":"def"}]' '[{"name":"int"}]' '[{"name":"def"},{"name":"int"}]' "$full"; do
+		printf '%s\n' "$names" >"$work/incus"
+		# Without the optional Remmina (its profile inventoried null), def and int suffice.
+		expect=refused
+		case $profile:$names in "{}:$full" | "null:$full" | 'null:[{"name":"def"},{"name":"int"}]') expect=accepted ;; esac
+		if (die() { echo "$*"; exit 1; }; . "$work/accept") >"$work/out"; then
+			[ "$expect" = accepted ]
+		else
+			[ "$expect" = refused ]
+			grep -q 'open and close def, int and Remmina, then retry acceptance' "$work/out"
+		fi
+	done
 done
 CHECK
 t sh -u <<'CHECK'

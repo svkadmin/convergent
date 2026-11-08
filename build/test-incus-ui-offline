@@ -551,7 +551,7 @@ EOF
     if reap_tmp; then exit 1; fi
 )
 # The periodic root-only entry point takes both shared locks before sweeping.
-sed -n '/^browser_locks() {/,/^}/p; /^if \[ "${1:-}" = --reap-tmp \]/,/^fi/p' "$repo/tools/browser" |
+sed -n '/^busy() /p; /^browser_locks() {/,/^}/p; /^if \[ "${1:-}" = --reap-tmp \]/,/^fi/p' "$repo/tools/browser" |
     sed "s|/run/convergent|$work/run|g" >"$work/sweep"
 [ -s "$work/sweep" ]
 sh -n "$work/sweep"
@@ -579,10 +579,74 @@ for gate in open guests update stopping nonroot arguments; do
         printf '%s\n' '-s -n 9' '-s -n 6' >"$work/expected"
         cmp "$work/expected" "$work/locks-taken" ;;
     nonroot) [ ! -e "$work/swept" ] && [ ! -s "$work/locks-taken" ] ;;
-    *) [ "$rc" != 0 ] && [ ! -e "$work/swept" ] ;;
-    esac
+    # An update's held lock, or guests stopping, defers the sweep (75); check does not log that as a failure.
+    guests|update|stopping) [ "$rc" = 75 ] && [ ! -e "$work/swept" ] ;;
+    *) [ "$rc" = 1 ] && [ ! -e "$work/swept" ] ;;
+    esac || exit 1
 done
-grep -Fq 'timeout -k 1 30 /usr/local/sbin/browser --reap-tmp || logger' "$repo/tools/check"
+# The owner's launch still fails plainly on a held lock.
+rc=0
+(die() { exit 1; }; . "$work/sweep" >/dev/null 2>&1 || :; busy 'guest update in progress') 2>/dev/null || rc=$?
+[ "$rc" = 1 ]
+# remote reap defers the same way; the owner's close still fails.
+sed "s|/run/convergent|$work/remote-run|g" "$repo/tools/remote" >"$work/remote"
+grep -q "$work/remote-run/guests.lock" "$work/remote"
+for gate in reap:guests reap:update close:guests reap:open; do
+    rc=0
+    (
+        id() { echo 0; }
+        flock() { case ${gate#*:}:$* in 'guests:-s -n 9'|'update:-s -n 6') return 1 ;; esac; }
+        timeout() { [ "$1 $2 $3 $4" = '-k 1 30 incus' ] || exit 97; echo '[]'; }
+        set -- "${gate%:*}"
+        . "$work/remote"
+    ) 2>/dev/null || rc=$?
+    case $gate in
+    reap:open) [ "$rc" = 0 ] ;;
+    reap:*) [ "$rc" = 75 ] ;;
+    *) [ "$rc" = 1 ] ;;
+    esac || exit 1
+done
+# check logs a sweep's failure, not its deferral, until that has lasted 6 h (a wedged holder must not hide an
+# orphan); any other result forgets the deferral's start.
+sed -n '/^# 75 is a guest or browser update holding its lock/,/^# End Remmina\./p' "$repo/tools/check" |
+    sed "s|/run/convergent/|$work/|g; s|/proc/uptime|$work/uptime|" >"$work/sweep-log"
+[ "$(grep -c 'reap_result [a-z]* "$reap_rc"' "$work/sweep-log")" = 2 ]
+grep -q "$work/\$1-reap-busy" "$work/sweep-log"
+echo '100000.25 5.00' >"$work/uptime"
+for sample in 0:set:none 1:set:failed 124:none:failed 75:none:none 75:garbled:none 75:78400:none 75:78399:busy; do
+    code=${sample%%:*} before=${sample#*:}
+    logged=${before#*:} before=${before%:*}
+    : >"$work/sweep-logged"
+    for name in browser remote; do
+        case $before in none) rm -f "$work/$name-reap-busy" ;; set) echo 99000 >"$work/$name-reap-busy" ;; *) echo "$before" >"$work/$name-reap-busy" ;; esac
+    done
+    (
+        sweep=1
+        timeout() {
+            [ "$1 $2 $3" = '-k 1 30' ] || exit 97
+            shift 3
+            case $* in '/usr/local/sbin/browser --reap-tmp' | '/usr/local/sbin/remote reap') ;; *) exit 97 ;; esac
+            return "$code"
+        }
+        logger() { echo "$*" >>"$work/sweep-logged"; }
+        set -- auto
+        . "$work/sweep-log"
+    )
+    case $logged in
+    none) [ ! -s "$work/sweep-logged" ] ;;
+    failed) printf '%s\n' '-p user.warning -t browser orphan cleanup failed' '-p user.warning -t remote orphan cleanup failed' |
+        cmp -s - "$work/sweep-logged" ;;
+    busy) printf '%s\n' '-p user.err -t browser orphan cleanup busy for over 6 hours' \
+        '-p user.err -t remote orphan cleanup busy for over 6 hours' | cmp -s - "$work/sweep-logged" ;;
+    esac || exit 1
+    for name in browser remote; do
+        case $code:$before in
+        75:none | 75:garbled) [ "$(cat "$work/$name-reap-busy")" = 100000 ] ;;
+        75:*) [ "$(cat "$work/$name-reap-busy")" = "$before" ] ;;
+        *) [ ! -e "$work/$name-reap-busy" ] ;;
+        esac || exit 1
+    done
+done
 # check bounds the UI cleanup: the trust goes first, so the bound can cut only the slower instance calls.
 # A failed revocation still stops int, and fails.
 grep -Fqx '    timeout -k 5 120 /usr/local/sbin/incus-ui cleanup || ui_rc=$?' "$repo/tools/check"
