@@ -4,6 +4,7 @@ ssh_conf=/etc/convergent/ssh_config
 key=/etc/convergent/release.pub
 fws="fw2 fw1"
 src_open=
+src_skip=
 
 # Own connections, lock fds closed, as in dns-push: a shared master's death or the config's 15 s connect
 # and 30 s keepalive must not cut a source write (or its close) inside 120 s.
@@ -16,7 +17,12 @@ lock_src() {
 close_src() {
 	_r=0
 	for _f in $fws; do
-		rsh "$_f" 'rc=0; pfctl -q -t update_src -T flush || rc=1; pfctl -q -k label -k update || rc=1; exit "$rc"' >/dev/null || _r=1
+		rsh "$_f" 'rc=0; pfctl -q -t update_src -T flush || rc=1; pfctl -q -k label -k update || rc=1; exit "$rc"' >/dev/null && continue
+		# One that took no opening is named, not a failure; what it got from a refresh expires.
+		case " $src_skip " in
+		*" $_f "*) echo "warning: could not close the update source on $_f; it expires within 4 hours" >&2 ;;
+		*) _r=1 ;;
+		esac
 	done
 	[ "$_r" = 1 ] || src_open=
 	return "$_r"
@@ -46,10 +52,14 @@ open_src() {
 		if public_v4 "$_a"; then ips="$ips $_a"; fi
 	done
 	[ -n "$ips" ] || die "$host resolves to no public address (no Wi-Fi, or the blocklist: run sys dns allow $host)"
-	src_open=1
+	src_open=1 src_skip=
+	# A firewall stopped for its replacement or not answering only narrows access: the other carries it.
 	for _f in $fws; do
-		rsh "$_f" "pfctl -q -t update_src -T replace$ips" >/dev/null || die "could not open the update source on $_f"
+		rsh "$_f" "pfctl -q -t update_src -T replace$ips" >/dev/null && continue
+		echo "warning: could not open the update source on $_f (stopped or not answering); using the other firewall" >&2
+		src_skip="$src_skip $_f"
 	done
+	[ "$src_skip" != " $fws" ] || die "could not open the update source on either firewall"
 	res=$(echo $ips | tr ' ' ',')
 }
 # The firewalls expire an opening 4 hours after its stats were cleared: a long download clears them per file,
