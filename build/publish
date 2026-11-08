@@ -1,7 +1,7 @@
 #!/bin/sh
 # publish: upload a signed release to <channel>/<release>/ in the R2 bucket, then point
-# <channel>/latest at it. Keeps two releases per channel and the bucket under 30 GiB (the owner
-# pays R2 past its free 10 GB; storage is cents a month). Only the five host files, guests.manifest and its signature go up,
+# <channel>/latest at it. Keeps two releases per channel and the releases under 9 GiB (R2's free tier
+# is 10 GB; the install image, once published, is budgeted apart and is what the owner pays for). Only the five host files, guests.manifest and its signature go up,
 # and the guest files it lists; the bucket is public.
 #   CHANNEL=beta build/publish <release-dir>      override the build.conf default
 set -eu
@@ -10,7 +10,7 @@ umask 077
 
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
-cap=$((30 * 1024 * 1024 * 1024))
+cap=$((9 * 1024 * 1024 * 1024))
 keep=2
 die() { echo "publish: $*" >&2; exit 1; }
 case $CHANNEL in '' | *[!a-z0-9-]*) die "invalid channel: $CHANNEL" ;; dev) die "dev is unpublished" ;; esac
