@@ -1083,7 +1083,7 @@ browser_migrate() {
     for node in def int; do
         jq -e --arg n "$node" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null || continue
         if running "$node"; then stop_guest "$node"; fi
-        ic profile assign "$node" "browser-base,browser-$node"
+        ic profile assign "$node" browser-base "browser-$node"
     done
     # Reap the retired ephemeral role before removing its unused profile.
     if jq -e 'any(.[]; .name == "portal" and .ephemeral and .profiles == ["browser-base", "browser-portal"])' "$work/browsers" >/dev/null; then

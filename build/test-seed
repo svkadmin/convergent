@@ -742,3 +742,6 @@ KEY
     [ ! -s "$root/dev/console" ]
 done
 echo 'test-seed: credential retries, identity checks and atomic markers passed'
+# Incus 7.0.2 takes the profiles of `profile assign` as separate arguments; a comma list names one profile.
+grep -En 'profile assign .*,' "$repo/tools/guests" && die 'profile assign with a comma list'
+echo 'test-seed: profile assign names profiles separately'
