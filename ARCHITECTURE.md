@@ -415,7 +415,8 @@ refuse, and only a missing one counts as 0. **exhausted** is a UKI at `+0`.
    on a first install. It mounts `var`, `home` and the pool, merges missing system accounts below
    ID 1000 (existing entries win; collisions warn), adds the owner to dialout and binds the listed
    `etc` files. `var`, `home` and the pool use nodev,nosuid (a container's setuid file never runs
-   as host root); `tmp` is an 8 GiB nodev,nosuid,noexec tmpfs.
+   as host root); Incus remounts the pool with its `btrfs.mount_options`, which carry nosuid too
+   (`guests apply` sets them on an older pool). `tmp` is an 8 GiB nodev,nosuid,noexec tmpfs.
 6. OpenRC starts the host and Incus. `fw1`, `fw2`, `wan` and `svc` autostart together, with no
    priority or delay set. Startup needs no DNS before Unbound.
 7. `slot bless` runs after every service. It raises highest if lower, removes the counter, disarms

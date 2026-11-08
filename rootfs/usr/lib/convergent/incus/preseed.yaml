@@ -5,6 +5,8 @@ storage_pools:
     driver: btrfs
     config:
       source: /var/lib/incus-pool
+      # Incus remounts the pool with these; the default drops the source's nosuid (tools/guests pool_options).
+      btrfs.mount_options: user_subvol_rm_allowed,nosuid,nodev,noatime
 networks:
   - name: transit
     type: bridge
