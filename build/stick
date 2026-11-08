@@ -4,6 +4,8 @@
 #   p2 cv-inst-root: slot.img byte for byte;
 #   p3 cv-inst-data: an EROFS of the release as published (manifests, both UKIs, guest files).
 # The install UKI boots p2 with convergent.install=1 and carries the manifests as an extra initrd.
+# stick --release <release-dir> <out-dir>: the published form, convergent-<release>.img.zst and its
+# .sha256 (signed by build/sign --image, here when the channel key is on this host).
 set -eu
 set +ax
 umask 077
@@ -14,7 +16,20 @@ here=$(cd "$(dirname "$0")" && pwd -P)
 . "$here/chroot.sh"
 die() { echo "stick: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 2 ] || die "usage: build/stick <release> <out.img>"
+zst=
+if [ "${1:-}" = --release ]; then
+	[ $# = 3 ] || die "usage: build/stick --release <release-dir> <out-dir>"
+	release=$(awk '$1 == "release" && NF == 2 {print $2}' "$2/manifest") || die "no manifest in $2"
+	case $release in '' | *[!0-9]*) die "invalid release in $2/manifest" ;; esac
+	[ "$(cd "$2" && pwd -P)" = "$(cd "$BUILDER/releases/$release" && pwd -P)" ] || die "$2 is not $BUILDER/releases/$release"
+	zdir=$(cd "$3" && pwd -P) || die "no output directory: $3"
+	zst=$zdir/convergent-$release.img.zst
+	for f in "$zst" "$zst.sha256" "$zst.sha256.sig"; do
+		[ ! -e "$f" ] && [ ! -L "$f" ] || die "output already exists: $f"
+	done
+	set -- "$release" "${zst%.zst}"
+fi
+[ $# = 2 ] || die "usage: build/stick <release> <out.img> | --release <release-dir> <out-dir>"
 release=$1
 case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
 dir=$BUILDER/releases/$release
@@ -50,7 +65,7 @@ kver=$(awk '$1 == "kernel" && NF == 2 {print $2}' "$dir/manifest")
 [ -n "$kver" ] || die "no kernel in the manifest"
 
 bld() { chroot "$BUILDER" "$@"; }
-work= loop= mounted= chroot_ready= made=
+work= loop= mounted= chroot_ready= made= zmade=
 cleanup() {
 	status=$?
 	trap - 0
@@ -60,6 +75,7 @@ cleanup() {
 	if [ -n "$work" ] && ! grep -q " $work/" /proc/mounts; then rm -rf "$work" || status=1; fi
 	# An incomplete image must not be written to a stick.
 	if [ "$status" != 0 ] && [ -n "$made" ]; then rm -f "$out"; fi
+	if [ "$status" != 0 ] && [ -n "$zmade" ]; then rm -f "$zst" "$zst.sha256" "$zst.sha256.sig"; fi
 	[ "$status" = 0 ] || echo "stick: build failed; no image written" >&2
 	exit "$status"
 }
@@ -198,6 +214,20 @@ umount "$work/root"
 mounted=
 losetup -d "$loop"
 loop=
+if [ -n "$zst" ]; then
+	# Not in the manifest (it holds the manifests): the signed .sha256 of the compressed file vouches for it.
+	(set -C; : >"$zst") || die "cannot create output: $zst"
+	zmade=1
+	bld zstd -q -T0 -6 -c <"$out" >"$zst" || die "zstd failed"
+	bld zstd -q -dc <"$zst" | cmp - "$out" || die "the compressed image differs"
+	(set -C; cd "$zdir" && sha256sum "${zst##*/}" >"${zst##*/}.sha256") || die "cannot write $zst.sha256"
+	printf 'Image: %s (%s bytes; %s bytes uncompressed)\n' "$zst" "$(stat -c %s "$zst")" "$(stat -c %s "$out")"
+	cat "$zst.sha256"
+	if [ -f "/etc/convergent/keys/$CHANNEL.key" ]; then "$here/sign" --image "$zdir" "$dir" || die "signing the image failed"; fi
+	rm "$out"
+	made= zmade=
+	exit 0
+fi
 printf 'Image: %s (%s bytes)\n' "$out" "$(stat -c %s "$out")"
 sha256sum "$out"
 printf 'Check /dev/sdX carefully: this overwrites the entire device.\n'

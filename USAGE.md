@@ -25,20 +25,36 @@ header backup. A summary follows; type the disk path again, or `ERASE` and its s
 A disk that already holds Convergent asks for `REINSTALL <disk>`; another disk with Convergent must be
 detached. It copies the guests and powers off. Ctrl-D or a wrong answer three times starts it again.
 The Wi-Fi passphrase waits in the encrypted `/var` until the first guest setup moves it into wan. The
-header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk.
+header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk. At the end it
+prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup)).
 
-1. Identify the USB disk:
+1. Download the channel's image, published beside its release (the latest release's only), with its
+   checksum and signature, and check both with the channel's public key (`/etc/convergent/release.pub`
+   on a Convergent laptop, `/etc/convergent/keys/<channel>.pub` on the build host):
+
+   ```sh
+   for f in convergent-<release>.img.zst convergent-<release>.img.zst.sha256 convergent-<release>.img.zst.sha256.sig; do
+       curl -fO "<public URL>/<channel>/<release>/install/$f"
+   done
+   openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in convergent-<release>.img.zst.sha256 \
+       -sigfile convergent-<release>.img.zst.sha256.sig
+   sha256sum -c convergent-<release>.img.zst.sha256
+   ```
+
+   Write it only when both report success.
+
+2. Identify the USB disk:
 
    ```sh
    lsblk -o NAME,SIZE,MODEL,TRAN
    ```
 
-2. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
+3. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
    logical sectors:
 
    ```sh
    if [ "$(sudo blockdev --getss /dev/sdX)" = 512 ]; then
-       zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
+       zstd -dc convergent-<release>.img.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
    else
        echo 'Image writing requires 512-byte logical sectors; target refused.' >&2
    fi

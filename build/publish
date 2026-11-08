@@ -3,7 +3,9 @@
 # <channel>/latest at it. Keeps two releases per channel and the releases under 9 GiB (R2's free tier
 # is 10 GB; the install image, once published, is budgeted apart and is what the owner pays for). Only the five host files, guests.manifest and its signature go up,
 # and the guest files it lists; the bucket is public.
-#   CHANNEL=beta build/publish <release-dir>      override the build.conf default
+#   CHANNEL=beta build/publish <release-dir> [image-dir]      override the build.conf default
+# With an image-dir, build/stick --release's image and its signed .sha256 then go to
+# <channel>/<release>/install/, the channel's only image, under image_cap apart from the releases' cap.
 set -eu
 export LC_ALL=C
 umask 077
@@ -11,14 +13,15 @@ umask 077
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 cap=$((9 * 1024 * 1024 * 1024))
+image_cap=$((6 * 1024 * 1024 * 1024))
 keep=2
 die() { echo "publish: $*" >&2; exit 1; }
 case $CHANNEL in '' | *[!a-z0-9-]*) die "invalid channel: $CHANNEL" ;; dev) die "dev is unpublished" ;; esac
 pub=/etc/convergent/keys/$CHANNEL.pub
 env=/etc/convergent/r2-$CHANNEL.env
 [ "$(id -u)" = 0 ] || die "run as root"
-[ $# = 1 ] || die "usage: build/publish <release-dir>"
-dir=$1
+[ $# = 1 ] || [ $# = 2 ] || die "usage: build/publish <release-dir> [image-dir]"
+dir=$1 img=${2:-}
 release=$(awk '$1 == "release" { print $2 }' "$dir/manifest" 2>/dev/null) || :
 case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
 [ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
@@ -58,6 +61,51 @@ remmina=none
 awk -v remmina="$remmina" '$1 == "remmina" {n++; if (NF != 2 || $2 != remmina) bad=1}
 	END {exit bad || (n != 1 && !(n == 0 && remmina == "none"))}' "$dir/latest" || die 'latest does not match Remmina'
 
+# The install image is not in the manifest (it holds the manifests): its .sha256 is signed, and every
+# release published here trusts the channel key (release-check).
+zst=convergent-$release.img.zst
+image_files="$zst $zst.sha256.sig $zst.sha256"
+image_local() {
+	img_new=0
+	for f in $image_files; do
+		[ -f "$img/$f" ] && [ ! -L "$img/$f" ] || die "missing $img/$f"
+		n=$(stat -c %s "$img/$f") || die "cannot read $img/$f"
+		[ "$n" -lt $((5 * 1024 * 1024 * 1024)) ] || die "$f is over R2's 5 GiB single upload; it needs a multipart upload"
+		img_new=$((img_new + n))
+	done
+	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$img/$zst.sha256" -sigfile "$img/$zst.sha256.sig" >/dev/null ||
+		die "$zst.sha256 is not signed with the $CHANNEL key"
+	awk -v f="$zst" '{if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $2 != f) bad = 1}
+		END {exit bad || NR != 1}' "$img/$zst.sha256" && (cd "$img" && sha256sum -c --quiet "$zst.sha256") ||
+		die "$zst does not match its .sha256"
+}
+# Bytes under prefix $1 ('' for the bucket) of the releases, or of the install images (<channel>/<n>/install/).
+bytes_of() {
+	printf '%s\n' "$objects" | awk -v p="$1" -v kind="$2" '{ k = substr($0, index($0, " ") + 1) }
+		(p == "" || index(k, p) == 1) && (k ~ /^[^\/]+\/[0-9]+\/install\//) == (kind == "image") { s += $1 } END { print s + 0 }'
+}
+image_room() {
+	# This channel's images make way for the new one; other channels' stay.
+	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/" image) + img_new))
+	[ "$images" -le "$image_cap" ] ||
+		die "the install images would hold $((images / 1048576)) MiB, over the $((image_cap / 1048576)) MiB image cap"
+}
+image_upload() {
+	# Latest image only: the channel's other images go first, never the one being uploaded.
+	printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '{ k = substr($0, index($0, " ") + 1) }
+		index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r && p[2] == "install") print k }' |
+		while IFS= read -r k; do
+			s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
+			echo "publish: removed $k"
+		done
+	for f in $image_files; do
+		s3 -o /dev/null -T "$img/$f" "$ep/$CHANNEL/$release/install/$f" || die "upload of install/$f failed"
+		got=$(s3 -I "$ep/$CHANNEL/$release/install/$f" | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { print $2 }')
+		[ "$got" = "$(stat -c %s "$img/$f")" ] || die "install/$f is $got bytes in the bucket"
+	done
+}
+if [ -n "$img" ]; then image_local; fi
+
 # Fresh advisory data, before any bucket mutation (including pruning).
 "$here/advisories" --gate "$dir" || die "advisory gate failed"
 
@@ -78,7 +126,10 @@ flock -n 9 || die "another publish is running"
 list=$(s3 "$ep?list-type=2&max-keys=1000") || die "cannot list the bucket"
 case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket" ;; esac
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
-total=$(printf '%s\n' "$objects" | awk '{ s += $1 } END { print s + 0 }')
+# Two budgets: the releases' (cap) and the install images' (image_cap).
+total=$(bytes_of '' release)
+images=$(bytes_of '' image)
+if [ -n "$img" ]; then image_room; fi
 new=0
 for f in $files latest latest.sig; do
 	n=$(stat -c %s "$dir/$f")
@@ -100,7 +151,7 @@ keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0,
 if [ "$release" = "$latest" ]; then
 	# An advertised prefix must survive a failed retry unchanged.
 	want=$(for f in $files; do printf '%s/%s/%s\n' "$CHANNEL" "$release" "$f"; done | sort)
-	[ "$(keys_of "$release" | grep -Ev '/advisories\.json(\.sig)?$' | sort)" = "$want" ] || die "published file set differs; use a new release ID"
+	[ "$(keys_of "$release" | grep -Ev '/advisories\.json(\.sig)?$|^[^/]+/[0-9]+/install/' | sort)" = "$want" ] || die "published file set differs; use a new release ID"
 	check=$(mktemp) || die "cannot create retry check"
 	trap 'rm -f "$check"' EXIT
 	trap 'exit 1' HUP INT TERM
@@ -110,9 +161,13 @@ if [ "$release" = "$latest" ]; then
 		cmp -s "$check" "$dir/$f" || die "published $f differs; use a new release ID"
 	done
 	echo "publish: $CHANNEL/$release is already latest and identical"
+	if [ -n "$img" ]; then
+		image_upload
+		echo "publish: $CHANNEL/$release/install/$zst; install images $((images / 1048576)) MiB of $((image_cap / 1048576))"
+	fi
 	exit 0
 fi
-size_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { s += $1 } END { print s + 0 }'; }
+size_of() { bytes_of "$CHANNEL/$1/" "$2"; }
 overwritten=$(printf '%s\n' "$objects" | awk -v p="$CHANNEL/$release/" -v files="$files" '
 	BEGIN {n=split(files, f, /[[:space:]]+/); for (i=1;i<=n;i++) replace[p f[i]]=1}
 	{ k = substr($0, index($0, " ") + 1); if (k in replace) s += $1 } END {print s + 0}')
@@ -121,7 +176,7 @@ olds=$(printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '
 	{ k = substr($0, index($0, " ") + 1) }
 	# Diagnostics are not releases, even under bucket pressure.
 	index(k, c "debug/") == 1 || index(k, "debug-out/") == 1 {next}
-	index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r) print p[1] }' | sort -u -n)
+	index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r && p[2] != "install") print p[1] }' | sort -u -n)
 n=$(printf '%s\n' $olds | grep -c . || :)
 # Oldest first, never the one latest points at.
 for old in $olds; do
@@ -130,18 +185,21 @@ for old in $olds; do
 	keys_of "$old" | while IFS= read -r k; do
 		s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
 	done
-	total=$((total - $(size_of "$old"))); n=$((n - 1))
+	total=$((total - $(size_of "$old" release))); n=$((n - 1))
+	if [ -z "$img" ]; then images=$((images - $(size_of "$old" image))); fi
 	echo "publish: removed $CHANNEL/$old"
 done
 [ $((total + new)) -le "$cap" ] ||
-	die "the bucket would hold $(((total + new) / 1048576)) MiB, over the $((cap / 1048576)) MiB cap"
+	die "the releases would hold $(((total + new) / 1048576)) MiB, over the $((cap / 1048576)) MiB cap"
 
 for f in $files; do
 	s3 -o /dev/null -T "$dir/$f" "$ep/$CHANNEL/$release/$f" || die "upload of $f failed"
 	got=$(s3 -I "$ep/$CHANNEL/$release/$f" | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { print $2 }')
 	[ "$got" = "$(stat -c %s "$dir/$f")" ] || die "$f is $got bytes in the bucket"
 done
+# The image after the release files, before latest points at them.
+if [ -n "$img" ]; then image_upload; fi
 for f in latest.sig latest; do
 	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/$f" "$ep/$CHANNEL/$f" || die "could not update $f"
 done
-echo "publish: $CHANNEL/$release is latest; bucket $(((total + new) / 1048576)) MiB of $((cap / 1048576))"
+echo "publish: $CHANNEL/$release is latest; bucket: releases $(((total + new) / 1048576)) MiB of $((cap / 1048576)), install images $((images / 1048576)) MiB of $((image_cap / 1048576))"

@@ -834,6 +834,7 @@ else
 fi
 if [ -n "$saved" ]; then
 	printf 'LUKS header backup: %s on %s. It keeps this passphrase valid for this disk.\n' "$saved" "$backup"
+	printf 'Restore it (RECOVERY 10): cryptsetup luksHeaderRestore /dev/disk/by-partlabel/cv-state --header-backup-file %s\n' "$saved"
 elif [ -n "$backup" ]; then
 	printf 'install: the LUKS header backup on %s failed; the installed system is complete.\n' "$backup" >&2
 	printf "Press Enter to power off: " >&3

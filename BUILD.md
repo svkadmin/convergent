@@ -14,25 +14,25 @@ flowchart TD
   GM["build/guests<br/>guests.manifest, remmina.manifest, .zst"]
   S["build/sign<br/>manifest.sig, packages.sig, guest manifest signatures<br/>latest + latest.sig"]
   T["build/test modes in QEMU"]
-  PU["build/publish<br/>advisory gate · upload channel/REL and latest<br/>keep 2 releases, 9 GiB"]
-  ST["build/stick · disk image"]
+  PU["build/publish<br/>advisory gate · upload channel/REL and latest<br/>keep 2 releases, 9 GiB; latest image, 6 GiB"]
+  ST["build/stick --release · install image .img.zst"]
   L["laptop: sys update install"]
   N["laptop: write the image, or convergent-install"]
   A["build/advisories-publish<br/>signed status per release"]
   E --> P --> I --> S
   G --> GM --> S
   I --> GM
-  S --> T
+  S --> ST --> T
   T --> PU --> L
-  T --> ST --> N
+  PU --> N
   PU -.->|"then daily, by hand"| A
 ```
 
 *From the pinned builder to the laptop: one release, signed once, delivered online or on USB.*
 
 The builder compiles packages and assembles the host image. Guest images are built separately and
-listed in their own signed manifests. A tested release is either published to a channel or written
-to a private disk image. `build/stick` checks neither the signature nor a test result.
+listed in their own signed manifests. A tested release is published to a channel with its install
+image. `build/stick` does not check a test result.
 
 ### Release checklist
 
@@ -40,10 +40,11 @@ to a private disk image. `build/stick` checks neither the signature nor a test r
 2. Run `build/image` ([Host image](#host-image)).
 3. Build the guests and run `build/guests` ([Guest images](#guest-images)).
 4. Run `build/sign` when the channel key is offline ([Sign](#sign)).
-5. Run the `build/test` modes ([Test in QEMU](#test-in-qemu)).
-6. Run `build/publish` ([Publish](#publish)).
-7. Run `build/advisories-publish` ([Daily advisory status](#daily-advisory-status)).
-8. Tag the commit ([Channels](#channels)).
+5. Run `build/stick --release`, and `build/sign --image` when the key is offline ([USB disk image](#usb-disk-image)).
+6. Run the `build/test` modes, `--install` with that image ([Test in QEMU](#test-in-qemu)).
+7. Run `build/publish` with the image directory ([Publish](#publish)).
+8. Run `build/advisories-publish` ([Daily advisory status](#daily-advisory-status)).
+9. Tag the commit ([Channels](#channels)).
 
 ## Status
 
@@ -150,9 +151,14 @@ or a Node build.
 ### USB disk image
 
 ```sh
-build/stick <release> <out.img>
-zstd -T0 <out.img>
+build/stick --release <release-dir> <out-dir>     # what build/publish uploads
+build/stick <release> <out.img>                   # a raw image only
 ```
+
+`--release` writes `convergent-<release>.img.zst` (`zstd -6`) and its `.sha256` to `<out-dir>` and
+prints both sizes. The image is not in the manifest (it holds the manifests): the signed `.sha256`
+vouches for it. `build/stick` signs it when the channel key is on the build host; with an offline
+key run `build/sign --image <out-dir> <release-dir> <key>`.
 
 `build/stick` makes the release's generic install image after `build/guests`; it reads no input
 and holds no owner, password or state. It checks the files against their manifests, the manifests'
@@ -176,7 +182,7 @@ each. The
 LUKS passphrase must use printable ASCII (space through `~`).
 
 > [!NOTE]
-> The image holds no owner account or secrets. `build/publish` does not upload it.
+> The image holds no owner account or secrets. `build/publish` uploads it with the release.
 
 ### Builder caches
 
@@ -262,7 +268,8 @@ CHANNEL=stable build/sign <release-dir> /media/offline/stable.key
 
 `build/sign` writes `manifest.sig`, `packages.sig`, `guests.manifest.sig` and
 `remmina.manifest.sig` when present, `latest` and `latest.sig`. An encrypted key asks for its
-passphrase once per signed file, up to five times.
+passphrase once per signed file, up to five times. `build/sign --image <image-dir> <release-dir> [key]`
+signs only the install image's `.sha256`, after checking it against the image.
 
 Signing and publication require the release's provenance to match the channel and key, except
 for the [bleeding-edge bridge](#the-bleeding-edge-bridge). The build-host-only `provenance` file
@@ -276,7 +283,7 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
 
 ### Publish
 
-`build/publish <release-dir>` reads `/etc/convergent/r2-<channel>.env`. Create it mode 600 with:
+`build/publish <release-dir> [image-dir]` reads `/etc/convergent/r2-<channel>.env`. Create it mode 600 with:
 
 | Variable | Use |
 |---|---|
@@ -288,8 +295,14 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
 - **What goes up.** The verified host, guest and Remmina payloads go to `<channel>/<release>/`.
   The signed `<channel>/latest` binds the release and the guest manifest hashes (`none` if
   absent). Download sizes are bounded.
+- **Install image.** With an image directory, `convergent-<release>.img.zst`, its `.sha256` and
+  `.sha256.sig` go to `<channel>/<release>/install/` after the release files, before `latest`. The
+  signature is required. Laptops never read `install/`.
 - **Order.** Signatures upload first; rerunning the publisher repairs an interrupted upload.
 - **Retention.** At most two releases per channel remain, under a 9 GiB cap for the releases (the free tier is 10 GB); the install image, once published, has its own budget on top, the part the owner pays for.
+  Only the latest image per channel stays: the channel's older images are removed first. The images
+  have a 6 GiB cap of their own, and publish reports both totals. A file over R2's 5 GiB single
+  upload is refused; 0.1.6 would make an image of about 2.6 GiB.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
   including `latest` and its signature, and writes nothing if they match. New content or a
   re-signed pointer needs a new release ID.
@@ -524,7 +537,7 @@ at the same time. Every mode first runs `build/test-topology`, `build/test-lease
 | `build/test --rescue <release>` | standalone Rescue UKI with both slots empty | |
 | `build/test --corrupt <release>` | one flipped bit: verity refuses it, nothing is marked good | |
 | `build/test --desktop <release>` | Sway, bar and `sys`: session programs and config | |
-| `build/test --install <release>` | `build/stick`'s image: layout, tampered files, the installer's refusals, power loss and reinstall, a USB target, then the installed disk's first boot | `build/guests` run |
+| `build/test --install <release> [image.zst]` | `build/stick`'s image, or the given `--release` image once its `.sha256` matches: layout, tampered files, the installer's refusals, power loss and reinstall, a USB target, then the installed disk's first boot | `build/guests` run |
 | `build/test --fallback <good> <newer>` | broken newer slot: the good one returns | two releases |
 | `build/test --interrupt <good> <newer>` | update cut off half-way: still boots | two releases |
 | `build/test --update <good> <newer>` | signed slot write and reboot | two signed releases |

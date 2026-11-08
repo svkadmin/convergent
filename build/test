@@ -6,7 +6,8 @@
 #   build/test --rescue <release>       standalone rescue, empty slots, unlock and power off
 #   build/test --corrupt <release>
 #   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
-#   build/test --install <release>      build/stick's image: offline checks, the installer through ttyS0, the installed disk
+#   build/test --install <release> [image.zst]   build/stick's image (or build/stick --release's, decompressed):
+#                                       offline checks, the installer through ttyS0, the installed disk
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
@@ -264,6 +265,11 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	)
 	exec sh "$here/advisories" --selftest
 fi
+# A published install image: its .sha256 is one line naming the file beside it, and the file matches.
+image_sum() {
+	awk -v f="${1##*/}" '{if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $2 != f) bad = 1}
+		END {exit bad || NR != 1}' "$1.sha256" && (cd "$(dirname "$1")" && sha256sum -c --quiet "${1##*/}.sha256")
+}
 if [ "${1:-}" = --install-options ]; then
 	[ $# = 1 ] || exit 1
 	die() { echo "test: $*" >&2; exit 1; }
@@ -801,6 +807,24 @@ aaaa-0002'
 		die 'the image does not copy its zoneinfo to /etc/localtime'
 	if grep -q 'ln .*etc/localtime' "$here/image"; then die 'the image links /etc/localtime'; fi
 	)
+	(
+	work=$(mktemp -d)
+	trap 'rm -rf "$work"' 0
+	# --install with a published image checks its .sha256 before using it.
+	f=$work/convergent-42.img.zst
+	printf 'image\n' >"$f"
+	(cd "$work" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
+	image_sum "$f" || die 'refused a matching image'
+	printf 'other\n' >"$f"
+	if image_sum "$f" >/dev/null 2>&1; then die 'accepted an image that does not match its .sha256'; fi
+	(cd "$work" && sha256sum convergent-42.img.zst | sed 's/  / */' >convergent-42.img.zst.sha256)
+	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a binary-mode .sha256 line'; fi
+	(cd "$work" && cp convergent-42.img.zst convergent-43.img.zst && sha256sum convergent-43.img.zst >convergent-42.img.zst.sha256)
+	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a .sha256 naming another file'; fi
+	(cd "$work" && { sha256sum convergent-42.img.zst; sha256sum convergent-42.img.zst; } >convergent-42.img.zst.sha256)
+	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a .sha256 of two lines'; fi
+	grep -q '^		image_sum "\$image" || die' "$here/test" || die 'the --install image check moved'
+	)
 	echo 'test: install options passed'
 	exit 0
 fi
@@ -809,13 +833,22 @@ for fixture in test-topology test-leases test-work-gate test-release-compat test
 . "$here/chroot.sh"
 
 die() { echo "test: $*" >&2; exit 1; }
-usage() { die "usage: build/test [--corrupt|--desktop|--install|--recovery|--rescue] <release> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --guests-topology <release> <guests-dir> | --online <release> <guests-dir>"; }
+usage() { die "usage: build/test [--corrupt|--desktop|--install|--recovery|--rescue] <release> | --install <release> <image.zst> | --fallback <good> <bad> | --interrupt <good> <new> | --update <old> <new> | --guests <release> <guests-dir> | --guests-maint <release> <guests-dir> | --guests-update <release> <guests-dir> <broken-svc-dir> | --guests-topology <release> <guests-dir> | --online <release> <guests-dir>"; }
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=boot
 case ${1:-} in
 --corrupt) mode=corrupt; shift; [ $# = 1 ] || usage ;;
 --desktop) mode=desktop; shift; [ $# = 1 ] || usage ;;
---install) mode=install; shift; [ $# = 1 ] || usage ;;
+--install)
+	mode=install; shift
+	[ $# = 1 ] || [ $# = 2 ] || usage
+	image=
+	if [ $# = 2 ]; then
+		[ -f "$2" ] || die "no image: $2"
+		image=$(cd "$(dirname "$2")" && pwd)/${2##*/}
+		set -- "$1"
+	fi
+	;;
 --recovery) mode=recovery; shift; [ $# = 1 ] || usage ;;
 --rescue) mode=rescue; shift; [ $# = 1 ] || usage ;;
 --fallback | --interrupt | --update) mode=${1#--}; shift; [ $# = 2 ] || usage ;;
@@ -6343,7 +6376,14 @@ refused() {
 # The install image: build/stick's layout, then a boot to the installer on ttyS0 and on tty1.
 if [ "$mode" = install ]; then
 	img=$BUILDER$work/install.img
-	sh "$here/stick" "$release" "$img" || die "build/stick failed"
+	if [ -n "$image" ]; then
+		# The published artefact byte for byte, once its .sha256 matches.
+		[ "${image##*/}" = "convergent-$release.img.zst" ] || die "the image is not convergent-$release.img.zst"
+		image_sum "$image" || die "$image does not match its .sha256"
+		bld zstd -q -dc <"$image" >"$img" || die "cannot decompress $image"
+	else
+		sh "$here/stick" "$release" "$img" || die "build/stick failed"
+	fi
 	bld sgdisk -p "$work/install.img" >"$BUILDER$work/table"
 	[ "$(awk '/^Number/ {t = 1; next} t && NF {n++} END {print n + 0}' "$BUILDER$work/table")" = 3 ] || die 'the install image has not three partitions'
 	for p in 1:cv-inst-esp 2:cv-inst-root 3:cv-inst-data; do
@@ -6595,7 +6635,9 @@ EOF
 	step 'Remove the install stick after power-off, before booting\.' @off
 	install_run install
 	[ "$ended" = poweroff ] || die "the reinstall did not power off ($ended); see $log"
-	grep -q '^LUKS header backup: cv-luks-header-CVTARGET-' "$tlog" || die "no header backup; see $log"
+	grep -q '^LUKS header backup: cv-luks-header-CVTARGET-' "$tlog" &&
+		grep -q '^Restore it (RECOVERY 10): cryptsetup luksHeaderRestore /dev/disk/by-partlabel/cv-state --header-backup-file cv-luks-header-CVTARGET-' "$tlog" ||
+		die "no header backup or restore command; see $log"
 	mkdir -p "$BUILDER$work/bk"
 	mount -t vfat -o loop,ro,nodev,nosuid,noexec "$BUILDER$work/backup.img" "$BUILDER$work/bk"
 	set -- "$BUILDER$work"/bk/cv-luks-header-CVTARGET-*
