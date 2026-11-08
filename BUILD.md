@@ -155,8 +155,10 @@ zstd -T0 <out.img>
 ```
 
 `build/stick` makes the release's generic install image after `build/guests`; it reads no input
-and holds no owner, password or state. It checks the files against their manifests, then prints
-the image's SHA-256 and the `dd` command to write it. Three partitions, each as small as its content:
+and holds no owner, password or state. It checks the files against their manifests, the manifests'
+signatures when the release holds a release key, and the install UKI's kernel, initrds and root hash
+against slot A's, then prints the image's SHA-256 and the `dd` command to write it. Three
+partitions, each as small as its content:
 
 - **`cv-inst-esp`.** systemd-boot and `convergent-install.efi`, with no boot counter. That UKI is
   slot A's, booting `cv-inst-root` with `convergent.install=1`; the manifests ride in it as an

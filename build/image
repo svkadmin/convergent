@@ -324,12 +324,16 @@ for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard bo
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
 done
-# The install image's runlevel (initramfs convergent-install.sh): the console and the host firewall only.
+# The install image's runlevel (initramfs convergent-install.sh): the console and the host firewall, with
+# the hardening sysctls, lo and /run/utmp that boot would have given it.
 mkdir -p "$rl/install"
-for s in keymaps consolefont convergent-firewall; do
+for s in keymaps consolefont convergent-firewall sysctl loopback bootmisc; do
 	[ -e "$root/etc/init.d/$s" ] || die "no init script for $s"
 	ln -sfn "/etc/init.d/$s" "$rl/install/$s"
 done
+# Pressing I during a runlevel change must never offer a shell (the install boot and the laptop).
+[ "$(grep -c '^[[:space:]]*rc_interactive=' "$root/etc/rc.conf")" = 1 ] && grep -qx 'rc_interactive="NO"' "$root/etc/rc.conf" ||
+	die 'OpenRC interactive boot is not off'
 chmod 0755 "$root/usr/lib/convergent/installer" "$root/usr/lib/convergent/install-stub"
 
 # 2. Firmware: copy selected paths with links resolved before dropping other generations.

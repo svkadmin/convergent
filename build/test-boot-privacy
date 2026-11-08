@@ -1455,3 +1455,140 @@ for flag in 1 0; do
     esac
 done
 echo 'test-boot-privacy: install image boot hook passed'
+
+# build/image: the install runlevel gets what boot would have started for it; no interactive boot.
+sed -n "/^# The install image's runlevel/,/^chmod 0755 /p" "$repo/build/image" | sed '$d' >"$work/image-install"
+check_script "$work/image-install"
+[ "$(wc -l <"$work/image-install")" -lt 20 ] && grep -q rc_interactive "$work/image-install" || die 'install runlevel block moved'
+image_install() {   # rc.conf
+    rm -rf "$work/img"
+    mkdir -p "$work/img/etc/init.d" "$work/img/etc/runlevels"
+    for s in keymaps consolefont convergent-firewall sysctl loopback bootmisc usbguard incus; do : >"$work/img/etc/init.d/$s"; done
+    cp "$1" "$work/img/etc/rc.conf"
+    sh -eu -c 'root=$1 rl=$1/etc/runlevels; die() { echo "$*" >&2; exit 1; }; . "$2"' sh "$work/img" "$work/image-install"
+}
+image_install "$repo/rootfs/etc/rc.conf" || die 'install runlevel block failed'
+[ "$(ls "$work/img/etc/runlevels/install" | tr '\n' ' ')" = 'bootmisc consolefont convergent-firewall keymaps loopback sysctl ' ] ||
+    die 'install runlevel services'
+for s in bootmisc consolefont convergent-firewall keymaps loopback sysctl; do
+    [ "$(readlink "$work/img/etc/runlevels/install/$s")" = "/etc/init.d/$s" ] || die "install runlevel link $s"
+done
+for case in missing yes twice indented; do
+    case $case in
+    missing) sed '/^rc_interactive=/d' "$repo/rootfs/etc/rc.conf" ;;
+    yes) sed 's/^rc_interactive=.*/rc_interactive="YES"/' "$repo/rootfs/etc/rc.conf" ;;
+    twice) cat "$repo/rootfs/etc/rc.conf"; echo 'rc_interactive="YES"' ;;
+    indented) cat "$repo/rootfs/etc/rc.conf"; echo ' rc_interactive="YES"' ;;
+    esac >"$work/rc.conf"
+    if image_install "$work/rc.conf" 2>/dev/null; then die "image accepted rc.conf with interactive boot $case"; fi
+done
+echo 'test-boot-privacy: install runlevel and interactive boot passed'
+
+# The installer wrapper: Ctrl-C or Ctrl-\ stops the installer, never the 2 s pause (init's respawn limit).
+sed -e "s|/usr/lib/convergent/install-stub|sh $work/inst-stub|" -e "s|/sys/class/tty/console/active|$work/inst-active|" \
+    -e "s|>/dev/console|>>$work/inst-console|" "$repo/rootfs/usr/lib/convergent/installer" >"$work/installer"
+check_script "$work/installer"
+grep -q "^sh $work/inst-stub || status" "$work/installer" && grep -q "$work/inst-active" "$work/installer" || die 'installer stub call moved'
+if grep -q -e /dev/console -e /sys/ "$work/installer"; then die 'installer keeps a real path'; fi
+echo tty0 >"$work/inst-active"
+for sig in INT QUIT; do
+    # The signal, then again during the pause: an async list ignores SIGINT and SIGQUIT (once it has
+    # started), so its sender lives. bash survives SIGQUIT: the stub then ends by itself.
+    printf '(sleep 1; kill -%s 0; : >"%s") &\nsleep 0.3\nkill -%s 0\nexit 3\n' "$sig" "$work/inst-second" "$sig" >"$work/inst-stub"
+    rm -f "$work/inst-second"
+    start=$(date +%s%N)
+    # A session of its own (Ctrl-C's process group), the signals at their defaults whoever started this fixture.
+    (
+        cd "$work" &&
+            setsid -w perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec @ARGV or exit 1' sh "$work/installer" >"$work/inst-out" 2>&1 </dev/null
+    ) || :
+    elapsed=$((($(date +%s%N) - start) / 1000000))
+    grep -q "^The installer stopped (exit status [0-9]*); it starts again in 2 seconds\.$" "$work/inst-out" ||
+        die "installer: $sig skipped the message"
+    [ "$elapsed" -ge 1900 ] || die "installer: $sig cut the pause (${elapsed} ms)"
+    [ -e "$work/inst-second" ] || die "installer: no second $sig"
+done
+echo 'test-boot-privacy: installer wrapper signals passed'
+
+# build/stick: the install UKI's inputs are slot A's, and a release that trusts a key ships signed manifests.
+sed -n "/^# The install UKI's inputs are not in the manifest/,/^rm \"\$work\/a\.linux\"/p" "$repo/build/stick" >"$work/stick-inputs"
+check_script "$work/stick-inputs"
+[ "$(wc -l <"$work/stick-inputs")" -lt 20 ] && grep -q objcopy "$work/stick-inputs" || die 'stick input check moved'
+mkdir -p "$work/st/data"
+printf 'abcde' >"$work/st/microcode.cpio"
+printf 'ABCDEFG' >"$work/st/initramfs.img"
+printf 'kernel' >"$work/st/vmlinuz"
+h=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+stick_inputs() {   # manifest-lines cmdline-hash linux-section initrd-section
+    printf "release 42\\n$1" >"$work/st/manifest"
+    printf 'root=/dev/dm-0 dm-mod.create="vroot,,,ro,0 8 verity 1 PARTLABEL=cv-slot-a PARTLABEL=cv-slot-a 4096 4096 1 1 sha256 %s 00ff 2 restart_on_error" init=/sbin/init' \
+        "$2" >"$work/st/cmdline-a"
+    printf "$3" >"$work/st/sec.linux"
+    printf "$4" >"$work/st/sec.initrd"
+    sh -eu -c '
+        work=$1/st dir=$1/st inside=$1/st release=42
+        die() { echo "$*" >&2; exit 1; }
+        # objcopy with the sections this case gave the slot A UKI.
+        bld() {
+            [ "$1 $2 $4" = "objcopy --dump-section --dump-section" ] && [ "$6 $7" = "$dir/data/convergent-42-a.efi $dir/a.efi" ] || exit 97
+            cp "$dir/sec.linux" "${3#.linux=}" && cp "$dir/sec.initrd" "${5#.initrd=}" && : >"$7"
+        }
+        . "$2"
+        [ ! -e "$dir/a.linux" ] && [ ! -e "$dir/a.initrd" ] && [ ! -e "$dir/a.efi" ] || exit 97
+    ' sh "$work" "$work/stick-inputs"
+}
+good_initrd='abcde\000\000\000ABCDEFG\000'
+stick_inputs "roothash $h\\n" "$h" kernel "$good_initrd" || die 'stick refused slot A inputs'
+for case in hash twice short kernel unpadded tail initramfs; do
+    lines="roothash $h\\n" hash=$h linux=kernel initrd=$good_initrd
+    case $case in
+    hash) hash=1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ;;
+    twice) lines="$lines$lines" ;;
+    short) lines="roothash ${h%?}\\n" hash=${h%?} ;;
+    kernel) linux=kernei ;;
+    unpadded) initrd='abcdeABCDEFG\000\000\000\000' ;;
+    tail) initrd='abcde\000\000\000ABCDEFG' ;;
+    initramfs) initrd='abcde\000\000\000ABCDEFX\000' ;;
+    esac
+    if stick_inputs "$lines" "$hash" "$linux" "$initrd" 2>/dev/null; then die "stick accepted install UKI inputs: $case"; fi
+done
+sed -n '/^# A listing that succeeded, not a failed stat/,/^umount /p;/^# A release that trusts a key has every manifest/,/^fi$/p' "$repo/build/stick" >"$work/stick-sigs"
+check_script "$work/stick-sigs"
+[ "$(wc -l <"$work/stick-sigs")" -lt 20 ] && grep -q pkeyutl "$work/stick-sigs" && grep -q 'ls -A' "$work/stick-sigs" || die 'stick signature check moved'
+openssl genpkey -algorithm ed25519 -out "$work/st/key" 2>/dev/null
+openssl pkey -in "$work/st/key" -pubout -out "$work/st/key.pub"
+openssl genpkey -algorithm ed25519 -out "$work/st/other" 2>/dev/null
+stick_sigs() {   # case
+    rm -rf "$work/st/root" "$work/st/data" "$work/st/release.pub"
+    mkdir -p "$work/st/root/etc/convergent" "$work/st/data"
+    : >"$work/st/root/etc/convergent/update.conf"
+    for m in manifest guests.manifest; do
+        echo "release 42 $m" >"$work/st/data/$m"
+        openssl pkeyutl -sign -inkey "$work/st/key" -rawin -in "$work/st/data/$m" -out "$work/st/data/$m.sig"
+    done
+    case $1 in
+    keyless) rm "$work/st/data/manifest.sig" ;;
+    *) cp "$work/st/key.pub" "$work/st/root/etc/convergent/release.pub" ;;
+    esac
+    case $1 in
+    unsigned) rm "$work/st/data/guests.manifest.sig" ;;
+    other) openssl pkeyutl -sign -inkey "$work/st/other" -rawin -in "$work/st/data/guests.manifest" -out "$work/st/data/guests.manifest.sig" ;;
+    changed) echo extra >>"$work/st/data/manifest" ;;
+    unlisted) rm -r "$work/st/root/etc/convergent" ;;
+    esac
+    sh -eu -c '
+        work=$1/st manifests="manifest guests.manifest"
+        die() { echo "$*" >&2; exit 1; }
+        umount() { [ "$1" = "$work/root" ] || exit 97; }
+        . "$2"
+        echo "${key:-none}" >"$work/key-used"
+    ' sh "$work" "$work/stick-sigs"
+}
+stick_sigs keyless || die 'stick refused a release without a key'
+[ "$(cat "$work/st/key-used")" = none ] || die 'stick found a key in a release without one'
+stick_sigs signed || die 'stick refused signed manifests'
+[ "$(cat "$work/st/key-used")" = "$work/st/release.pub" ] && cmp -s "$work/st/release.pub" "$work/st/key.pub" || die 'stick lost the release key'
+for case in unsigned other changed unlisted; do
+    if stick_sigs "$case" 2>/dev/null; then die "stick accepted manifest signatures: $case"; fi
+done
+echo 'test-boot-privacy: install image inputs and signatures passed'

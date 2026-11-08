@@ -6172,8 +6172,11 @@ if [ "$mode" = install ]; then
 		grep -q "^Mounted: $path tmpfs " "$BUILDER$work/install-ttyS0.log" || die "$path is not tmpfs; see $log"
 	done
 	grep -q '^Manifests: .*guests\.manifest .*manifest ' "$BUILDER$work/install-ttyS0.log" || die "no embedded manifests; see $log"
-	if grep -q -e 'assphrase \[' -e ' is good' -e 'Convergent installer: running on' "$BUILDER$work/install-ttyS0.log"; then
-		die "the install image unlocked, blessed or put the installer elsewhere; see $log"
+	# The install runlevel's sysctl service ran (the kernel's kptr_restrict default is 0).
+	grep -qx 'Hardening: sysrq 0 kptr_restrict 2' "$BUILDER$work/install-ttyS0.log" || die "install image without its sysctls; see $log"
+	grep -qF 'Install image; the watchdog stays disarmed' "$BUILDER$work/install-ttyS0.log" || die "no disarmed watchdog line; see $log"
+	if grep -q -e 'assphrase \[' -e ' is good' -e 'Convergent installer: running on' -e 'Feeding the watchdog' "$BUILDER$work/install-ttyS0.log"; then
+		die "the install image unlocked, blessed, fed the watchdog or put the installer elsewhere; see $log"
 	fi
 	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 	run_vm install-tty1

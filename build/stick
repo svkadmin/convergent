@@ -88,6 +88,43 @@ done
 grep -E '^[0-9a-f]{64}  slot\.img$' "$dir/manifest" | (cd "$dir" && sha256sum -c --quiet -) || die "slot.img does not match the manifest"
 slot_bytes=$(stat -c %s "$dir/slot.img")
 [ $((slot_bytes % 4096)) = 0 ] || die "slot.img is not whole 4 KiB blocks"
+# The install UKI's inputs are not in the manifest: slot A's root hash, and slot A's kernel and initrds
+# (ukify pads each initrd to 4 bytes).
+roothash=$(awk '$1 == "roothash" && NF == 2 && length($2) == 64 && $2 !~ /[^0-9a-f]/ {n++; h = $2} END {if (n == 1) print h}' "$dir/manifest")
+[ -n "$roothash" ] && [ "$(grep -o ' sha256 [0-9a-f]* ' "$dir/cmdline-a")" = " sha256 $roothash " ] ||
+	die "cmdline-a does not carry the manifest's root hash"
+bld objcopy --dump-section .linux="$inside/a.linux" --dump-section .initrd="$inside/a.initrd" \
+	"$inside/data/convergent-$release-a.efi" "$inside/a.efi" || die "cannot read convergent-$release-a.efi"
+mc_bytes=$(stat -c %s "$dir/microcode.cpio")
+ir_bytes=$(stat -c %s "$dir/initramfs.img")
+mc_end=$(((mc_bytes + 3) / 4 * 4))
+cmp -s "$work/a.linux" "$dir/vmlinuz" && [ "$(stat -c %s "$work/a.initrd")" = $((mc_end + (ir_bytes + 3) / 4 * 4)) ] &&
+	cmp -s -n "$mc_bytes" "$work/a.initrd" "$dir/microcode.cpio" &&
+	cmp -s -n "$ir_bytes" -i "$mc_end:0" "$work/a.initrd" "$dir/initramfs.img" ||
+	die "vmlinuz, microcode.cpio or initramfs.img is not what convergent-$release-a.efi boots"
+rm "$work/a.linux" "$work/a.initrd" "$work/a.efi"
+
+# systemd-boot and the release key of the release itself.
+mount -t erofs -o ro,nodev,nosuid,noexec,loop "$dir/slot.img" "$work/root"
+mounted=$work/root
+cp "$work/root/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$work/systemd-boot.efi" || die "release has no systemd-boot"
+# A listing that succeeded, not a failed stat, says the release trusts no key.
+ls -A "$work/root/etc/convergent" >"$work/etc-convergent"
+key=
+if grep -qx release.pub "$work/etc-convergent"; then
+	cp "$work/root/etc/convergent/release.pub" "$work/release.pub"
+	key=$work/release.pub
+fi
+umount "$work/root"
+mounted=
+# A release that trusts a key has every manifest signed by it, checked before anything is packed.
+if [ -n "$key" ]; then
+	for m in $manifests; do
+		[ -f "$work/data/$m.sig" ] || die "$m is not signed"
+		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/data/$m" -sigfile "$work/data/$m.sig" >/dev/null ||
+			die "$m has an invalid signature"
+	done
+fi
 
 # The manifests as an extra initrd: the UKI, hence its digest, vouches for them.
 mkdir -p "$work/initrd/run/convergent-install-manifests"
@@ -109,13 +146,6 @@ bld ukify build --linux "$rel/vmlinuz" --initrd "$rel/microcode.cpio" --initrd "
 	--output "$inside/convergent-install.efi" >/dev/null
 bld ukify inspect "$inside/convergent-install.efi" >"$work/inspect" || die "invalid install UKI"
 grep -qF ' convergent.install=1 init=/sbin/init' "$work/inspect" || die "the install UKI lacks its command line"
-
-# systemd-boot of the release itself.
-mount -t erofs -o ro,nodev,nosuid,noexec,loop "$dir/slot.img" "$work/root"
-mounted=$work/root
-cp "$work/root/usr/lib/systemd/boot/efi/systemd-bootx64.efi" "$work/systemd-boot.efi" || die "release has no systemd-boot"
-umount "$work/root"
-mounted=
 
 bld mkfs.erofs --all-root "$inside/data.erofs" "$inside/data" >/dev/null
 data_bytes=$(stat -c %s "$work/data.erofs")
