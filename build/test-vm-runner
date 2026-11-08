@@ -157,6 +157,31 @@ for mode in guests-maint guests-update guests-topology; do
     )
 done
 [ "$(comm -12 "$fixture/steps-guests-update" "$fixture/steps-guests-topology" | tr '\n' ' ')" = 'update-done update-test ' ]
+# Half B resumes a browser migration the smoke test left and requires none of its journals before no-peer.
+script=$fixture/var-guests-topology/lib/convergent/test-release/update-test
+awk '/^cv_time topology-setup$/ {setup=NR} /^# End browser journals\.$/ {end=NR} /^cv_time firewall-no-peer$/ {nopeer=NR}
+    END {exit !(setup && end > setup && nopeer == end + 1)}' "$script" || { echo 'test-vm-runner: half B journal check misplaced' >&2; exit 1; }
+sed -n '/^# A browser migration the smoke test left unfinished/,/^# End browser journals\.$/p' "$script" |
+    sed "s|/var/log/|$fixture/|g" >"$fixture/journals"
+[ "$(grep -c 'update browser' "$fixture/journals")" = 1 ] || { echo 'test-vm-runner: half B browser resume not found' >&2; exit 1; }
+sh -n "$fixture/journals"
+for case in clean resumed stuck; do
+    rm -rf "$fixture/jstate"; mkdir "$fixture/jstate"; : >"$fixture/jcalls"; : >"$fixture/jbad"
+    [ "$case" = clean ] || mkdir "$fixture/jstate/browser.rename" "$fixture/jstate/profiles.before"
+    (
+        state=$fixture/jstate release=/var/lib/convergent/test-release
+        bad() { echo "$1" >>"$fixture/jbad"; }
+        sh() { echo "$*" >>"$fixture/jcalls"; [ "$case" = resumed ] || return 1; rm -rf "$state/browser.rename" "$state/profiles.before"; }
+        . "$fixture/journals" >/dev/null
+    )
+    resume='-x /usr/local/sbin/guests update browser /var/lib/convergent/test-release/guests/browser --trusted-local'
+    case $case in
+    clean) [ ! -s "$fixture/jcalls" ] && [ ! -s "$fixture/jbad" ] || exit 1 ;;
+    resumed) [ "$(cat "$fixture/jcalls")" = "$resume" ] && [ ! -s "$fixture/jbad" ] || exit 1 ;;
+    stuck) [ "$(cat "$fixture/jcalls")" = "$resume" ] && [ "$(wc -l <"$fixture/jbad")" = 3 ] || exit 1 ;;
+    esac
+done
+echo 'test-vm-runner: half B resumes a left browser migration before no-peer'
 # Together the halves keep every step the single guests-update mode ran (fix-019's update-test).
 for step in update-test firewall-pair-start handoff-recovery certificate-renewal certificate-clock \
     guests-start-stopped firewall-update firewall-update-roles wan-update wan-wifi-rollback wan-forced-stop \

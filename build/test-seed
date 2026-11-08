@@ -141,6 +141,53 @@ sed -n '/^start_stopped() {/,/^}/p' "$repo/tools/guests" >"$scratch/start-stoppe
     done
 )
 echo 'test-seed: apply starts a stopped wan or svc passed'
+# Incus remounts the pool with btrfs.mount_options: preseed carries nosuid, apply and init set it on an older pool.
+options=user_subvol_rm_allowed,nosuid,nodev,noatime
+grep -qx "      btrfs.mount_options: $options" "$repo/rootfs/usr/lib/convergent/incus/preseed.yaml" || die 'preseed pool lacks nosuid'
+[ "$(sed -n 's/^pool_options=//p' "$repo/tools/guests")" = "$options" ] || die 'guests pool options differ'
+sed -n '/^apply() {/,/^}/p' "$repo/tools/guests" |
+    awk '/^    pool_nosuid$/ && !nosuid {nosuid=NR} index($0, "maintenance_due || { start_stopped; return 0; }") {early=NR}
+        END {exit !(nosuid && early > nosuid)}' || die 'apply does not set the pool options first'
+sed -n '/^init() {/,/^}/p' "$repo/tools/guests" |
+    awk '/^    ic admin init --preseed / {preseed=NR} /^    pool_nosuid$/ {nosuid=NR} /^    init_done preseed$/ {done=NR}
+        END {exit !(preseed && nosuid == preseed + 1 && done == nosuid + 1)}' || die 'init does not set the pool options'
+sed -n '/^pool_nosuid() {/,/^}/p' "$repo/tools/guests" >"$scratch/pool-nosuid"
+[ "$(grep -c '^pool_nosuid() {$' "$scratch/pool-nosuid")" = 1 ] || die 'pool_nosuid not found'
+sh -n "$scratch/pool-nosuid"
+for scenario in default unset current unread refused; do
+    : >"$scratch/pool-calls"; rm -f "$scratch/pool-died"
+    status=0
+    (
+        pool_options=$options
+        . "$scratch/pool-nosuid"
+        die() { echo "$*" >"$scratch/pool-died"; exit 1; }
+        ic() {
+            echo "$*" >>"$scratch/pool-calls"
+            case $1 in
+            query)
+                [ "$*" = 'query /1.0/storage-pools/default' ] || exit 97
+                case $scenario in
+                current) printf '{"config":{"source":"/var/lib/incus-pool","btrfs.mount_options":"%s"}}\n' "$options" ;;
+                unset) echo '{"config":{"source":"/var/lib/incus-pool"}}' ;;
+                unread) return 1 ;;
+                *) echo '{"config":{"source":"/var/lib/incus-pool","btrfs.mount_options":"user_subvol_rm_allowed"}}' ;;
+                esac ;;
+            storage) [ "$scenario" != refused ] ;;
+            *) exit 97 ;;
+            esac
+        }
+        pool_nosuid
+    ) || status=$?
+    query='query /1.0/storage-pools/default' set="storage set default btrfs.mount_options=$options"
+    case $scenario in
+    current) [ "$status" = 0 ] && [ "$(cat "$scratch/pool-calls")" = "$query" ] || die 'pool options reset when current' ;;
+    refused)
+        [ "$status" = 1 ] || die 'refused pool options accepted'
+        grep -qx 'cannot mount the storage pool nosuid' "$scratch/pool-died" || die 'refused pool options not reported' ;;
+    *) [ "$status" = 0 ] && printf '%s\n' "$query" "$set" | cmp -s - "$scratch/pool-calls" || die "pool options not set ($scenario)" ;;
+    esac
+done
+echo 'test-seed: pool nosuid mount options passed'
 work=$scratch/work state=$scratch/state
 keys=$state/keys tls=$state/tls
 export work state keys tls
