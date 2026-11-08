@@ -306,9 +306,9 @@ acl=$root/etc/usbguard/IPCAccessControl.d
 # What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"
-rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd"
+rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd" "$rl/default/bluetooth"
 for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
-	default/cronie default/acpid default/dbus default/bluetooth default/seatd default/node_exporter default/lxcfs default/incus \
+	default/cronie default/acpid default/dbus default/seatd default/node_exporter default/lxcfs default/incus \
 	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net default/convergent-swap; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"
 	ln -sfn "/etc/init.d/${s#*/}" "$rl/$s"
@@ -454,8 +454,9 @@ bld dracut --quiet --force --no-hostonly --no-early-microcode --tmpdir /tmp --sy
 	--fwdir /image-root/usr/lib/firmware --install "$i915_fw" \
 	"$profiles/initramfs.img"
 printf '%s' "convergent.rescue=1 rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality audit=1 audit_backlog_limit=8192" \
-	" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off quiet" \
+	" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off rfkill.default_state=0 quiet" \
 	" vfio-pci.ids=$VFIO_IDS" >"$BUILDER$profiles/cmdline"
+grep -q ' rfkill\.default_state=0 ' "$BUILDER$profiles/cmdline" || die 'the rescue command line does not block radios'
 # Boot menu titles such as "SLOT A | Gentoo 0.1.0 - 6.18.57"; IMAGE_VERSION (the release id) orders them.
 osname=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$root/usr/lib/os-release")
 printf 'ID=convergent\nIMAGE_ID=zz-convergent-rescue\nIMAGE_VERSION=%s\nPRETTY_NAME="RESCUE | %s %s - %s"\n' \
@@ -528,8 +529,10 @@ for slot in a b; do
 	table="vroot,,,ro,0 $((blocks * 8)) verity 1 $part $part 4096 4096 $blocks $blocks sha256 $roothash $salt 2 restart_on_error restart_on_corruption"
 	printf '%s' "root=/dev/dm-0 rootfstype=erofs ro dm-mod.waitfor=$part dm-mod.create=\"$table\"" \
 		" convergent.release=$release rd.luks=0 rd.shell=0 rd.emergency=poweroff lockdown=confidentiality audit=1 audit_backlog_limit=8192" \
-		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off iTCO_wdt.heartbeat=180 fbcon=nodefer quiet" \
+		" intel_iommu=on iommu.strict=1 efi=disable_early_pci_dma kvm_intel.nested=0 init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 randomize_kstack_offset=on vsyscall=none debugfs=off rfkill.default_state=0 iTCO_wdt.heartbeat=180 fbcon=nodefer quiet" \
 		" vfio-pci.ids=$VFIO_IDS init=/sbin/init" >"$out/cmdline-$slot"
+	# Every radio registers soft-blocked; sys bluetooth on unblocks Bluetooth until off or reboot.
+	grep -q ' rfkill\.default_state=0 ' "$out/cmdline-$slot" || die "the slot $slot command line does not block radios"
 	# init= last: dracut hands init every bare word after it, and without it every bare word on
 	# the line, so the "1" in the verity table would make sysvinit start in runlevel 1.
 	# IMAGE_VERSION orders the boot menu by release, whatever Gentoo's VERSION_ID does.

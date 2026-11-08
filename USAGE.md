@@ -296,6 +296,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `RM:on/off/?` | Remmina running, stopped or unknown; stale status is unknown | `sys remote status`, `sys remote close` |
 | `PORTAL` | portal mode on (orange) | `sys portal off` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
+| `BT` | a Bluetooth radio is unblocked and can transmit (orange); hidden while blocked | `sys bluetooth off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
 | `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 10 s), uptime, local date and time | `sys keyboard next` |
@@ -548,7 +549,9 @@ sudo ssh -F /etc/convergent/ssh_config wan 'check retry'
 
 ### Bluetooth
 
-Bluetooth starts off.
+Bluetooth starts off: every boot blocks the radio (rfkill) and leaves bluetoothd stopped.
+`sys bluetooth on` (sudo) unblocks it and starts bluetoothd until `sys bluetooth off` or the next
+reboot; the bar shows `BT` while the radio can transmit.
 
 1. Run `sys bluetooth on`.
 2. Run `sys bluetooth pair` in a terminal. It scans for 10 s and lists MAC and name.
@@ -558,7 +561,7 @@ Bluetooth starts off.
 A paired device is also trusted. `connect`, `disconnect` and `forget` pick from the current list;
 `sys bluetooth scan` refreshes it. Explicit MACs are validated. The picker is fzf in a terminal,
 otherwise bemenu; Escape cancels. `forget` asks `yes` before the selection. `sys bluetooth` shows
-power and known devices.
+the radio block first, then power and known devices.
 
 ### Serial console
 

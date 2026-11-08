@@ -1,23 +1,43 @@
 title=Bluetooth
 alias=bt
 actions='status	Show Bluetooth power and known devices	
-on	Turn Bluetooth on	
-off	Turn Bluetooth off	
+on	Unblock the radio and turn Bluetooth on until off or reboot	root
+off	Turn Bluetooth off and block the radio	root
 scan	Scan Bluetooth for 10 seconds	
 pair	Scan and pick a device to pair [MAC]	
 connect	Pick a device to connect [MAC]	
 disconnect	Pick a device to disconnect [MAC]	
 forget	Pick a device to forget [MAC]	confirm'
 
+# The kill switch first: a blocked radio cannot transmit, whatever bluetoothd says. Unreadable is unblocked.
+bluetooth_radio() {
+	radio=none
+	for r in /sys/class/rfkill/rfkill*; do
+		[ "$(cat "$r/type" 2>/dev/null)" = bluetooth ] || continue
+		if [ "$(cat "$r/soft" 2>/dev/null)" = 1 ] || [ "$(cat "$r/hard" 2>/dev/null)" = 1 ]; then
+			[ "$radio" != none ] || radio=blocked
+		else
+			radio=unblocked
+		fi
+	done
+}
 bluetooth_state() {
+	bluetooth_radio
+	[ "$radio" != blocked ] || { echo 'Bluetooth: off (radio blocked)'; return 0; }
 	value=$(timeout -k 1 10 bluetoothctl show 2>/dev/null) || { result=$?; echo 'Bluetooth: unknown'; return "$result"; }
 	value=$(printf '%s\n' "$value" | awk '$1 == "Powered:" {if ($2 == "yes") print "on"; else if ($2 == "no") print "off"; exit}')
 	printf 'Bluetooth: %s\n' "${value:-unknown}"
 }
 bluetooth_status() { noargs "$@"; page bluetooth_show; }
-bluetooth_show() { run timeout -k 1 10 bluetoothctl show && run timeout -k 1 10 bluetoothctl devices; }
-bluetooth_on() { noargs "$@"; run timeout -k 1 10 bluetoothctl power on; }
-bluetooth_off() { noargs "$@"; run timeout -k 1 10 bluetoothctl power off; }
+bluetooth_show() {
+	bluetooth_radio
+	printf 'Radio: %s\n' "$radio"
+	# bluetoothd is stopped while the radio is blocked.
+	[ "$radio" != blocked ] || return 0
+	run timeout -k 1 10 bluetoothctl show && run timeout -k 1 10 bluetoothctl devices
+}
+bluetooth_on() { noargs "$@"; run sudo /usr/local/sbin/devices bluetooth on; }
+bluetooth_off() { noargs "$@"; run sudo /usr/local/sbin/devices bluetooth off; }
 bluetooth_scan() {
 	noargs "$@"
 	reply=$(run timeout -k 1 15 bluetoothctl --timeout 10 scan on); result=$?

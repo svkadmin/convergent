@@ -5121,6 +5121,10 @@ confined() {
 	pids=$(pidof "$1") && [ -n "$pids" ] || return 1
 	for pid in $pids; do grep -qx "$1 ($2)" "/proc/$pid/attr/current" || return 1; done
 }
+# Every radio boots blocked and bluetoothd stays down until sys bluetooth on; started here for its checks.
+t grep -q ' rfkill\.default_state=0 ' /proc/cmdline
+t sh -c 'if pidof bluetoothd; then exit 1; fi'
+t rc-service bluetooth start
 # Read kernel modes without aa-status's Python dependency.
 for p in chronyd:enforce node_exporter:enforce bluetoothd:enforce way-secure:complain pipewire-pulse:enforce; do
 	t grep -qx "${p%%:*} (${p#*:})" /sys/kernel/security/apparmor/profiles
@@ -5142,8 +5146,14 @@ t timeout 10 dbus-send --system --print-reply --dest=org.bluez / org.freedesktop
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
-. /usr/lib/convergent/sys/20-bluetooth
+sed "s|/sys/class/rfkill/|$work/rfkill/|" /usr/lib/convergent/sys/20-bluetooth >"$work/module"
+grep -qF "$work/rfkill/rfkill*" "$work/module"
+. "$work/module"
 run() { "$@"; }
+sudo() {
+	printf 'sudo %s\n' "$*" >>"$work/calls"
+	[ "$fault" != sudo ] || return 124
+}
 noargs() { [ "$#" = 0 ]; }
 sway() { :; }
 mac() { [ "$1" = AA:BB:CC:DD:EE:FF ]; }
@@ -5185,17 +5195,31 @@ fault=none
 # Pairing itself needs a terminal; exercise its noninteractive trust step.
 bluetooth_device() { answer=AA:BB:CC:DD:EE:FF; }
 bluetooth_pair
-for call in show devices 'power on' 'power off' '--timeout 10 scan on' \
-	'connect AA:BB:CC:DD:EE:FF' 'disconnect AA:BB:CC:DD:EE:FF' \
+for call in show devices 'sudo /usr/local/sbin/devices bluetooth on' 'sudo /usr/local/sbin/devices bluetooth off' \
+	'--timeout 10 scan on' 'connect AA:BB:CC:DD:EE:FF' 'disconnect AA:BB:CC:DD:EE:FF' \
 	'remove AA:BB:CC:DD:EE:FF' 'trust AA:BB:CC:DD:EE:FF'; do
 	grep -qxF -- "$call" "$work/calls"
 done
+if grep -q '^power ' "$work/calls"; then exit 1; fi
 for action in state show on off scan pick pair; do
-	case $action in state|show) fault=show ;; on|off) fault=power ;; scan) fault=--timeout ;; pick) fault=devices ;; pair) fault=trust ;; esac
+	case $action in state|show) fault=show ;; on|off) fault=sudo ;; scan) fault=--timeout ;; pick) fault=devices ;; pair) fault=trust ;; esac
 	if "bluetooth_$action"; then exit 1; else [ "$?" = 124 ]; fi
 done
 fault=devices
 if bluetooth_show; then exit 1; else [ "$?" = 124 ]; fi
+# A blocked radio (soft or hard) is reported from rfkill alone: bluetoothd is stopped then.
+mkdir -p "$work/rfkill/rfkill0" "$work/rfkill/rfkill1"
+echo wlan >"$work/rfkill/rfkill0/type"; echo 0 >"$work/rfkill/rfkill0/soft"; echo 0 >"$work/rfkill/rfkill0/hard"
+echo bluetooth >"$work/rfkill/rfkill1/type"
+fault=show
+for block in 1:0 0:1; do
+	echo "${block%:*}" >"$work/rfkill/rfkill1/soft"; echo "${block#*:}" >"$work/rfkill/rfkill1/hard"
+	state=$(bluetooth_state); [ "$state" = 'Bluetooth: off (radio blocked)' ]
+	shown=$(bluetooth_show); [ "$shown" = 'Radio: blocked' ]
+done
+echo 0 >"$work/rfkill/rfkill1/hard"
+if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
+[ "$(bluetooth_show 2>/dev/null)" = 'Radio: unblocked' ]
 CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
@@ -5493,6 +5517,16 @@ for sample in fresh stale missing malformed recovered; do
 	esac
 	XDG_RUNTIME_DIR="$work" timeout 2 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
 	sed -n 3p "$work/out" | jq -er '.[].full_text' | grep -q "$expected"
+done
+# BT while a Bluetooth radio can transmit: not while soft-blocked, not without a radio.
+sed -i "s|^rfkill=/sys/class/rfkill$|rfkill=$work/rfkill|" "$work/bar"
+grep -qx "rfkill=$work/rfkill" "$work/bar"
+mkdir -p "$work/rfkill/rfkill0"
+echo bluetooth >"$work/rfkill/rfkill0/type"; echo 0 >"$work/rfkill/rfkill0/hard"
+for soft in 0 1 none; do
+	case $soft in none) rm -r "$work/rfkill/rfkill0" ;; *) echo "$soft" >"$work/rfkill/rfkill0/soft" ;; esac
+	XDG_RUNTIME_DIR="$work" timeout 2 sh "$work/bar" </dev/null >"$work/out" || [ "$?" = 124 ]
+	if sed -n 3p "$work/out" | jq -er '.[].full_text' | grep -qx BT; then [ "$soft" = 0 ]; else [ "$soft" != 0 ]; fi
 done
 # Sensors are read every 20 s, not every 5 s frame: a temperature change is not in the third frame yet.
 # The battery is read every frame: unplugging and low charge show in the next one.
