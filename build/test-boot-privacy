@@ -838,11 +838,11 @@ export work
 echo 'test-boot-privacy: camera passed'
 
 # Bluetooth: rfkill is the gate; off fails while a radio still reads unblocked, a failed on blocks again.
-sed -n '/^bluetooth() {/,/^}/p; /^bluetooth_blocked() {/,/^}/p; /^bluetooth_block() {/,/^}/p' "$repo/tools/devices" |
+sed -n '/^bluetooth() {/,/^}/p; /^bluetooth_radio() {/,/^}/p; /^bluetooth_blocked() {/,/^}/p; /^bluetooth_block() {/,/^}/p' "$repo/tools/devices" |
     sed -e "s|/sys/class/rfkill/|$work/bt/rfkill/|g" -e "s|/run/convergent-bluetooth|$work/bt/convergent-bluetooth|g" \
         -e 's/rc-service /rc_service /' >"$work/bt-functions"
 check_script "$work/bt-functions"
-[ "$(grep -c 'rc_service bluetooth' "$work/bt-functions")" = 2 ] || die 'bluetooth extraction'
+[ "$(grep -c 'rc_service bluetooth' "$work/bt-functions")" = 3 ] || die 'bluetooth extraction'
 mkdir -p "$work/bt/rfkill/rfkill0" "$work/bt/rfkill/rfkill1"
 echo wlan >"$work/bt/rfkill/rfkill0/type"; echo 0 >"$work/bt/rfkill/rfkill0/soft"
 echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1/soft"
@@ -874,7 +874,10 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
     bluetoothctl() {
         echo "bluetoothctl $*" >>"$b/calls"
         case $* in
-        show) shows=$((shows + 1)); [ "$adapter" = yes ] && [ "$shows" -ge 2 ] ;;
+        show)
+            shows=$((shows + 1))
+            [ "$adapter" != interrupt ] || sh -c 'kill -TERM "$PPID"'
+            [ "$adapter" = yes ] && [ "$shows" -ge 2 ] ;;
         'power on') ;;
         'power off') return 1 ;;
         *) exit 97 ;;
@@ -898,9 +901,26 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
     if (bluetooth on) 2>"$b/log"; then die 'Bluetooth on passed without an adapter'; fi
     grep -q 'no Bluetooth adapter; the radio is blocked again' "$b/log"
     [ "$(grep -c '^bluetoothctl show$' "$b/calls")" = 10 ]
-    [ "$(tail -n 1 "$b/calls")" = 'rfkill block bluetooth' ]
+    [ "$(tail -n 2 "$b/calls" | tr '\n' ,)" = 'rfkill block bluetooth,rc-service bluetooth stop,' ] ||
+        die 'a failed Bluetooth on left bluetoothd running'
     [ "$(cat "$b/rfkill/rfkill1/soft")" = 1 ]
     if (bluetooth on extra) 2>/dev/null; then die 'Bluetooth took an extra argument'; fi
+    # Interrupted during the adapter wait: blocked again, bluetoothd stopped.
+    : >"$b/calls"; adapter=interrupt shows=0
+    if (bluetooth on) 2>/dev/null; then die 'Bluetooth on passed when interrupted'; fi
+    [ "$(cat "$b/rfkill/rfkill1/soft")" = 1 ] || die 'an interrupted Bluetooth on left the radio unblocked'
+    expect 'rfkill unblock bluetooth' 'rc-service bluetooth start' 'bluetoothctl show' 'rfkill block bluetooth' 'rc-service bluetooth stop'
+    # No Bluetooth radio: on changes nothing.
+    echo wlan >"$b/rfkill/rfkill1/type"
+    if (bluetooth on) 2>"$b/log"; then die 'Bluetooth on passed without a radio'; fi
+    grep -q 'no Bluetooth radio' "$b/log" || die 'Bluetooth on without a radio'
+    [ ! -s "$b/calls" ] || die 'Bluetooth on acted without a radio'
+    echo bluetooth >"$b/rfkill/rfkill1/type"
+    # A radio that vanishes mid-loop counts as blocked.
+    mkdir "$b/rfkill/rfkill2"
+    (bluetooth off) || die 'a vanished radio failed Bluetooth off'
+    expect 'bluetoothctl power off' 'rfkill block bluetooth' 'rc-service bluetooth stop'
+    rmdir "$b/rfkill/rfkill2"
 )
 echo 'test-boot-privacy: bluetooth passed'
 
@@ -1118,6 +1138,28 @@ check_script "$work/host-wait"
         die "bridge waiter gave up wrongly: $(cat "$work/host-died")"
 )
 echo 'test-boot-privacy: host bridge waiter passed'
+
+# Platform Wi-Fi and WWAN switches are unblocked once the bridge is up; Bluetooth is not.
+sed -n '/^# rfkill.default_state=0 also blocks/,/^done$/p' "$repo/rootfs/usr/lib/convergent/incus/host-net" |
+    sed "s|/sys/class/rfkill/|$work/net-rfkill/|" >"$work/host-rfkill"
+check_script "$work/host-rfkill"
+grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extraction'
+(
+    die() { echo "$*" >"$work/host-rfkill-died"; exit 1; }
+    rfkill() { echo "rfkill $*" >>"$work/host-rfkill-calls"; [ "$refuse" = no ]; }
+    mkdir -p "$work/net-rfkill/rfkill0" "$work/net-rfkill/rfkill1" "$work/net-rfkill/rfkill2"
+    echo bluetooth >"$work/net-rfkill/rfkill0/type"
+    refuse=no
+    . "$work/host-rfkill"
+    [ ! -e "$work/host-rfkill-calls" ] || die 'unblocked with no Wi-Fi switch'
+    echo wlan >"$work/net-rfkill/rfkill1/type"; echo wwan >"$work/net-rfkill/rfkill2/type"
+    . "$work/host-rfkill"
+    [ "$(cat "$work/host-rfkill-calls")" = 'rfkill unblock wlan wwan' ] || die 'platform Wi-Fi switch not unblocked once'
+    refuse=yes
+    if (. "$work/host-rfkill"); then die 'a refused unblock passed'; fi
+    grep -qx 'cannot unblock the platform Wi-Fi switch' "$work/host-rfkill-died" || die 'refused unblock not named'
+)
+echo 'test-boot-privacy: platform Wi-Fi switch passed'
 
 # KVM halt polling follows the power source through set_file; a missing knob is skipped, a refused write fails.
 power=$repo/tools/power

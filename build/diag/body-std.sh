@@ -19,14 +19,16 @@ x free -m
 echo '## hardware (IDs and drivers only)'
 x lspci -nnk
 x lsusb -t
+x rfkill list
 echo '## USB authorization'
 for d in /sys/bus/usb/devices/*; do
 	[ -r "$d/authorized" ] || continue
-	for f in idVendor idProduct authorized authorized_default bConfigurationValue; do
+	for f in idVendor idProduct product authorized authorized_default bConfigurationValue; do
 		[ ! -r "$d/$f" ] || x cat "$d/$f"
 	done
 done
 x rc-service usbguard status
+x usbguard list-devices
 echo '## power policy'
 x cat /usr/lib/convergent/cpu-cap-khz
 x cat /run/convergent-power.profile
@@ -70,7 +72,7 @@ for f in /var/lib/convergent/crash/bert-*; do
 	x sh -c 'od -An -v -tu1 "$1" >"$2/bert" || exit; awk -f "$2/bert.awk" "$2/bert"' sh "$f" "$o"
 done
 echo '## kernel log (hardware errors and passthrough)'
-x sh -c 'dmesg >"$1/kernel" 2>&1; rc=$?; if [ "$rc" != 0 ]; then cat "$1/kernel"; else grep -aiE "bert:|hardware error|vfio|iommu|dmar|btrfs|usb .*(disconnect|reset)|xhci|thunderbolt|watchdog|acpi.*(error|bug)" "$1/kernel" | tail -n 300; fi; exit "$rc"' sh "$o"
+x sh -c 'dmesg >"$1/kernel" 2>&1; rc=$?; if [ "$rc" != 0 ]; then cat "$1/kernel"; else grep -aiE "bert:|hardware error|vfio|iommu|dmar|btrfs|usb .*(disconnect|reset)|xhci|thunderbolt|watchdog|acpi.*(error|bug)|bluetooth|usb 3-" "$1/kernel" | tail -n 300; fi; exit "$rc"' sh "$o"
 echo '## incus'
 x incus version
 x incus list -c ns -f csv

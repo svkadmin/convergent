@@ -32,8 +32,8 @@ bluetooth_status() { noargs "$@"; page bluetooth_show; }
 bluetooth_show() {
 	bluetooth_radio
 	printf 'Radio: %s\n' "$radio"
-	# bluetoothd is stopped while the radio is blocked.
-	[ "$radio" != blocked ] || return 0
+	# bluetoothd is stopped while the radio is blocked, and has no adapter without one.
+	case $radio in blocked|none) return 0 ;; esac
 	run timeout -k 1 10 bluetoothctl show && run timeout -k 1 10 bluetoothctl devices
 }
 bluetooth_on() { noargs "$@"; run sudo /usr/local/sbin/devices bluetooth on; }

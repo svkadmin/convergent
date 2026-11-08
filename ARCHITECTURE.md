@@ -830,8 +830,9 @@ their README describes the checks and collection boundaries.
   automatically.
 - Bluetooth starts disabled: `rfkill.default_state=0` blocks every host radio as it registers,
   bluetoothd is in no runlevel and `AutoEnable=false`; `devices bluetooth on|off` (root) unblocks
-  and starts it for the session, and off fails while rfkill still reads unblocked. A picker choice
-  must match an enumerated device.
+  and starts it for the session, and off fails while rfkill still reads unblocked. Radio keys have
+  no in-kernel effect (`CONFIG_RFKILL_INPUT` unset); host-net unblocks platform Wi-Fi switches for
+  wan. A picker choice must match an enumerated device.
 - A portal opens only under the browser lock, after all three guests closed stale rules. Closure
   retries every minute; cached remote state older than three minutes is refused; an unavailable
   `wan` or resolver closes every side on refresh.

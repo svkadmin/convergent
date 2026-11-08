@@ -389,6 +389,13 @@ if [ "${1:-}" = --install-options ]; then
 			grep -q "not built with: CONFIG_$symbol=y" "$work/kernel-error"
 		done
 	done
+	# The airplane key must not unblock radios in-kernel.
+	sed '/^# CONFIG_RFKILL_INPUT is not set$/d' "$here/kernel.config" >"$work/kernel.config"
+	echo CONFIG_RFKILL_INPUT=y >>"$work/kernel.config"
+	if (config=$work/kernel.config; . "$work/kernel-check") >"$work/kernel-error" 2>&1; then
+		die 'accepted CONFIG_RFKILL_INPUT=y'
+	fi
+	grep -q 'not built with: # CONFIG_RFKILL_INPUT is not set' "$work/kernel-error"
 	# USBGuard IPC stays root's: an IPCAccessControl.d file grants it whatever IPCAllowed* says.
 	sed -n "/^# USB decisions stay root's/,/IPCAccessControl.d files'\$/p" "$here/image" >"$work/usbguard-check"
 	grep -q 'IPCAccessControl.d files' "$work/usbguard-check"
@@ -5173,6 +5180,10 @@ bluetoothctl() {
 	[ "$fault" != "$1" ] || return 124
 	case $1 in show) echo 'Powered: yes' ;; devices) echo 'Device AA:BB:CC:DD:EE:FF Test' ;; esac
 }
+# An unblocked radio: bluetoothd is asked.
+mkdir -p "$work/rfkill/rfkill0" "$work/rfkill/rfkill1"
+echo wlan >"$work/rfkill/rfkill0/type"; echo 0 >"$work/rfkill/rfkill0/soft"; echo 0 >"$work/rfkill/rfkill0/hard"
+echo bluetooth >"$work/rfkill/rfkill1/type"; echo 0 >"$work/rfkill/rfkill1/soft"; echo 0 >"$work/rfkill/rfkill1/hard"
 fault=none
 [ "$(bluetooth_state)" = 'Bluetooth: on' ]
 bluetooth_show
@@ -5208,9 +5219,6 @@ done
 fault=devices
 if bluetooth_show; then exit 1; else [ "$?" = 124 ]; fi
 # A blocked radio (soft or hard) is reported from rfkill alone: bluetoothd is stopped then.
-mkdir -p "$work/rfkill/rfkill0" "$work/rfkill/rfkill1"
-echo wlan >"$work/rfkill/rfkill0/type"; echo 0 >"$work/rfkill/rfkill0/soft"; echo 0 >"$work/rfkill/rfkill0/hard"
-echo bluetooth >"$work/rfkill/rfkill1/type"
 fault=show
 for block in 1:0 0:1; do
 	echo "${block%:*}" >"$work/rfkill/rfkill1/soft"; echo "${block#*:}" >"$work/rfkill/rfkill1/hard"
@@ -5220,6 +5228,11 @@ done
 echo 0 >"$work/rfkill/rfkill1/hard"
 if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
 [ "$(bluetooth_show 2>/dev/null)" = 'Radio: unblocked' ]
+# No Bluetooth radio: status does not wait for bluetoothd.
+rm -r "$work/rfkill/rfkill1"
+: >"$work/calls"
+[ "$(bluetooth_show)" = 'Radio: none' ]
+[ ! -s "$work/calls" ]
 CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)

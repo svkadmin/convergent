@@ -551,7 +551,7 @@ sudo ssh -F /etc/convergent/ssh_config wan 'check retry'
 
 Bluetooth starts off: every boot blocks the radio (rfkill) and leaves bluetoothd stopped.
 `sys bluetooth on` (sudo) unblocks it and starts bluetoothd until `sys bluetooth off` or the next
-reboot; the bar shows `BT` while the radio can transmit.
+reboot; the bar shows `BT` while the radio can transmit. The airplane key does not unblock it.
 
 1. Run `sys bluetooth on`.
 2. Run `sys bluetooth pair` in a terminal. It scans for 10 s and lists MAC and name.

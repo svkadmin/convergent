@@ -282,6 +282,9 @@ bluetooth() {
 	exec 8>/run/convergent-bluetooth.lock
 	flock -x 8
 	if [ "$1" = on ]; then
+		bluetooth_radio || die 'no Bluetooth radio'
+		# Interrupted before power-on: block again.
+		trap "bluetooth_block 'interrupted'" INT TERM HUP
 		rfkill unblock bluetooth || bluetooth_block 'rfkill refused'
 		rc-service bluetooth start || bluetooth_block 'bluetoothd did not start'
 		# The adapter registers with bluetoothd after the unblock.
@@ -292,6 +295,7 @@ bluetooth() {
 			sleep 1
 		done
 		timeout -k 1 10 bluetoothctl power on || bluetooth_block 'the adapter did not power on'
+		trap - INT TERM HUP
 		return
 	fi
 	timeout -k 1 10 bluetoothctl power off >/dev/null 2>&1 || :
@@ -301,17 +305,25 @@ bluetooth() {
 	bluetooth_blocked || die 'a Bluetooth radio still reads unblocked'
 	[ -z "$failed" ] || die "$failed"
 }
+bluetooth_radio() {
+	for radio in /sys/class/rfkill/rfkill*; do
+		[ "$(cat "$radio/type" 2>/dev/null)" != bluetooth ] || return 0
+	done
+	return 1
+}
+# A radio that vanished is blocked.
 bluetooth_blocked() {
 	for radio in /sys/class/rfkill/rfkill*; do
 		[ -e "$radio" ] || continue
-		kind=$(cat "$radio/type") || return 1
+		kind=$(cat "$radio/type" 2>/dev/null) || continue
 		[ "$kind" = bluetooth ] || continue
 		[ "$(cat "$radio/soft")" = 1 ] || return 1
 	done
 }
-# A failed on leaves the radio blocked.
+# A failed on leaves the radio blocked and bluetoothd stopped.
 bluetooth_block() {
 	rfkill block bluetooth || :
+	rc-service bluetooth stop || :
 	die "$1; the radio is blocked again"
 }
 
