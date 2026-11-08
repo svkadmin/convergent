@@ -89,8 +89,8 @@ bytes_of() {
 		(p == "" || index(k, p) == 1) && (k ~ /^[^\/]+\/[0-9]+\/install\//) == (kind == "image") { s += $1 } END { print s + 0 }'
 }
 image_room() {
-	# The old images go only after latest moves: until then every image and the new one (in place of
-	# this release's own) count. Afterwards this channel's others are gone; other channels' stay.
+	# Latest's image goes only after latest moves: until then it, the other channels' and the new one (in
+	# place of this release's own) count. Afterwards this channel's others are gone; other channels' stay.
 	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/$release/" image) + img_new))
 	[ "$images" -le "$image_cap" ] ||
 		die "the install images would hold $((images / 1048576)) MiB, over the $((image_cap / 1048576)) MiB image cap"
@@ -108,7 +108,13 @@ image_kept() {
 		[ -n "$n" ] || continue
 		[ "$n" = "$(stat -c %s "$img/$f")" ] || die "published install/$f differs; use a new release ID"
 		case $f in
-		*.zst) ;;
+		*.zst)
+			# Same size is not same bytes: R2's ETag of a single PUT is the object's MD5.
+			hdr=$(s3 -I "$ep/$CHANNEL/$release/install/$f") || die "cannot read published install/$f"
+			tag=$(printf '%s\n' "$hdr" | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { gsub(/"/, "", $2); print tolower($2) }')
+			[ "${#tag}" = 32 ] && [ "$tag" = "$(md5sum <"$img/$f" | cut -d' ' -f1)" ] ||
+				die "published install/$f differs; use a new release ID"
+			;;
 		*)
 			s3 -o "$check" "$ep/$CHANNEL/$release/install/$f" || die "cannot read published install/$f"
 			cmp -s "$check" "$img/$f" || die "published install/$f differs; use a new release ID"
@@ -118,13 +124,19 @@ image_kept() {
 	done
 }
 image_prune() {
-	# Latest image only, once latest points past the others: never the one just published.
-	printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '{ k = substr($0, index($0, " ") + 1) }
-		index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r && p[2] == "install") print k }' |
-		while IFS= read -r k; do
-			s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
-			echo "publish: removed $k"
-		done
+	# Latest image only: never the one just published, nor release $1's (latest's, until it moves).
+	# What goes leaves $objects too.
+	marked=$(printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" -v l="${1:-}" '{ k = substr($0, index($0, " ") + 1); d = 0 }
+		index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); d = p[1] ~ /^[0-9]+$/ && p[1] != r && p[1] != l && p[2] == "install" }
+		{ print (d ? "D " k : "K " $0) }')
+	while IFS= read -r k; do
+		case $k in "D "*) ;; *) continue ;; esac
+		s3 -X DELETE "$ep/${k#D }" >/dev/null || die "cannot delete ${k#D }"
+		echo "publish: removed ${k#D }"
+	done <<-EOF
+	$marked
+	EOF
+	objects=$(printf '%s\n' "$marked" | sed -n 's/^K //p')
 }
 image_upload() {
 	for f in $image_files; do
@@ -158,7 +170,6 @@ objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = subst
 # Two budgets: the releases' (cap) and the install images' (image_cap).
 total=$(bytes_of '' release)
 images=$(bytes_of '' image)
-if [ -n "$img" ]; then image_room; fi
 new=0
 for f in $files latest latest.sig; do
 	n=$(stat -c %s "$dir/$f")
@@ -175,6 +186,8 @@ else
 	case $cur in *'returned error: 404'*) ;; *) die "cannot read the published latest: $cur" ;; esac
 fi
 [ -z "$latest" ] || expr "$release" '>=' "$latest" >/dev/null || die "release $release is older than the published $latest"
+# An image of neither latest nor this release was never advertised (a failed prune's): it goes first.
+if [ -n "$img" ]; then image_prune "$latest"; image_room; fi
 
 keys_of() { printf '%s\n' "$objects" | awk -v p="$CHANNEL/$1/" '{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 { print k }'; }
 if [ "$release" = "$latest" ]; then

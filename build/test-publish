@@ -95,7 +95,10 @@ sed -n '/^[[:space:]]*want=\$(for f in \$files/,/published file set differs/p' "
 sed -n '/^olds=\$(/,/sort -u -n)$/p' "$here/publish" >"$work/olds"
 [ "$(wc -l <"$work/retry-set")" = 2 ] && [ -s "$work/olds" ] || die 'release set checks moved'
 grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((total - $(size_of "$old" release)))' "$here/publish" &&
-    grep -q '^if \[ -n "\$img" \]; then image_room; fi$' "$here/publish" || die 'the release total counts install images'
+    grep -q '^if \[ -n "\$img" \]; then image_prune "\$latest"; image_room; fi$' "$here/publish" || die 'the release total counts install images'
+# Images of neither latest nor this release go before the image cap, which needs latest read first.
+awk '/^latest=$/ {l = NR} /^if \[ -n "\$img" \]; then image_prune "\$latest"; image_room; fi$/ {p = NR} /image_room/ {n++}
+    END {exit !(l && l < p && n == 2)}' "$here/publish" || die 'the image cap counts images that were never advertised'
 # A new release: image, latest, then the old images; a retry keeps an identical image and refuses another.
 awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.sig latest; do$/ {l = NR}
     /^if \[ -n "\$img" \]; then image_prune; fi$/ {p = NR} /^\t\timage_kept$/ {k = NR}
@@ -154,12 +157,22 @@ awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.
             [ "$2" = /dev/null ] || exit 97
             [ -z "${fail:-}" ] || return 1
             mkdir -p "${5%/*}"; cp "$4" "$5"; printf '%s\n' "${5#"$ep/"}" >>"$work/uploaded" ;;
-        -I) [ -f "$2" ] || return 1; printf 'HTTP/1.1 200 OK\r\ncontent-length: %s\r\n' "$(stat -c %s "$2")" ;;
+        -I) [ -f "$2" ] || return 1; printf 'HTTP/1.1 200 OK\r\ncontent-length: %s\r\nETag: "%s"\r\n' "$(stat -c %s "$2")" "$(md5sum <"$2" | cut -d' ' -f1)" ;;
         *) exit 97 ;;
         esac
     }
     listing() { objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done); }
     listing
+    : >"$work/deleted"
+    # A prune that failed after latest (41) moved left an orphan image: it goes before the cap check,
+    # which then counts only latest's, the other channels' and the new one.
+    put 700 beta/40/install/convergent-40.img.zst
+    listing
+    image_prune 41 >/dev/null
+    printf 'beta/40/install/convergent-40.img.zst\n' | cmp - "$work/deleted" || die 'not exactly the orphan image removed'
+    image_cap=$((5000 + img_new))
+    image_room
+    [ "$images" = $((2000 + img_new)) ] || die 'image total after the orphan'
     : >"$work/deleted"
     # A failed upload keeps the previous image; a good one removes nothing before latest moves.
     if (fail=1; image_upload) >/dev/null 2>&1; then die 'a failed image upload passed'; fi
@@ -190,6 +203,12 @@ awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.
     head -c 4000 /dev/urandom >"$img/$zst"
     image_sign
     kept_refused 'an advertised image with a rebuilt one'
+    # Only the image was published: a rebuilt one of the same size must not get its .sha256 beside it.
+    mv "$ep/beta/42/install/$zst.sha256" "$ep/beta/42/install/$zst.sha256.sig" "$work/other/"
+    listing
+    kept_refused 'a published image with a rebuilt one of the same size'
+    mv "$work/other/$zst.sha256" "$work/other/$zst.sha256.sig" "$ep/beta/42/install/"
+    listing
     cp "$work/saved-image/"* "$img/"
     printf x >>"$img/$zst"
     kept_refused 'an advertised image with a longer one'

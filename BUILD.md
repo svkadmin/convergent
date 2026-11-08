@@ -300,8 +300,9 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
   signature is required. Laptops never read `install/`.
 - **Order.** Signatures upload first; rerunning the publisher repairs an interrupted upload.
 - **Retention.** At most two releases per channel remain, under a 9 GiB cap for the releases (the free tier is 10 GB); the install image, once published, has its own budget on top, the part the owner pays for.
-  Only the latest image per channel stays: the channel's older images are removed once `latest`
-  points at the new release, so until then the cap counts them too. The images have a 6 GiB cap of
+  Only the latest image per channel stays: the image of the release `latest` names is removed once
+  `latest` points at the new release, so until then the cap counts it too; older images (a failed
+  removal's) go before the cap check. The images have a 6 GiB cap of
   their own, and publish reports both totals. A file over R2's 5 GiB single
   upload is refused; 0.1.6 would make an image of about 2.6 GiB.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
