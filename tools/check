@@ -13,9 +13,9 @@ die() { logger -p user.err -t check "$*" 2>/dev/null || :; echo "check: $*" >&2;
 bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
 # The same rule as the initramfs (convergent-state.sh) and tools/timezone.
 zone_valid() {
-    printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// {ok = 1}
+    printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// && !/^(localtime|posixrules|Factory)$/ {ok = 1}
         END {exit !(ok && n == 1)}' &&
-        [ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
+        [ ! -L "$2/$1" ] && [ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
 }
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 # Firewall stderr lands in the audited report: bounded and filtered.

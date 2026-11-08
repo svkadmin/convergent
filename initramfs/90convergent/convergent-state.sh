@@ -204,9 +204,9 @@ merge_serial_group || warn "state: could not grant the owner serial access"
 
 # The same rule as tools/timezone: a zone name under zoneinfo, never posix/ or right/, and a TZif file.
 zone_valid() {
-	printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// {ok = 1}
+	printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// && !/^(localtime|posixrules|Factory)$/ {ok = 1}
 		END {exit !(ok && n == 1)}' &&
-		[ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
+		[ ! -L "$2/$1" ] && [ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
 }
 # Zone rules come with each release: the owner's zone is copied again from this image's zoneinfo, before
 # the bind below. A first boot seeds both files from the image; a zone that is not installed keeps the copy.

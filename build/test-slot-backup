@@ -522,9 +522,12 @@ awk '/^refresh_localtime \|\|/ {r = NR} /^# Seed and bind the image.s writable \
     cp "$z/UTC" "$z/right/UTC"
     printf '# not a zone\n' >"$z/Europe/Notes"
     : >"$z/Empty"
+    # tzdata ships non-zone TZif files, and a distribution may link localtime back to /etc.
+    for f in localtime posixrules Factory; do cp "$z/UTC" "$z/$f"; done
+    ln -s UTC "$z/Link"
     for zone in Europe/Bratislava UTC Etc/GMT+1; do zone_valid "$zone" "$z" || die "refused $zone"; done
     for zone in '' Mars/Base ../etc /etc/passwd Europe/../UTC Europe//Bratislava Europe/ posix/Europe/Bratislava \
-        right/UTC Europe Europe/Notes Empty "$(printf 'UTC\nEurope/Bratislava')"; do
+        right/UTC Europe Europe/Notes Empty localtime posixrules Factory Link "$(printf 'UTC\nEurope/Bratislava')"; do
         if zone_valid "$zone" "$z"; then die "accepted zone: $zone"; fi
     done
 )
