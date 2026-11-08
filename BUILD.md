@@ -303,7 +303,8 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
   Only the latest image per channel stays: the image of the release `latest` names is removed once
   `latest` points at the new release, so until then the cap counts it too; older images (a failed
   removal's) go before the cap check. The images have a 6 GiB cap of
-  their own, and publish reports both totals. A file over R2's 5 GiB single
+  their own per channel, and publish reports both bucket totals. Once a channel holds an image,
+  publishing to it without an image directory is refused. A file over R2's 5 GiB single
   upload is refused; 0.1.6 would make an image of about 2.6 GiB.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
   including `latest` and its signature, and writes nothing if they match. New content or a
@@ -318,10 +319,11 @@ Publishing runs the advisory gate after the local checks and before any bucket a
 
 For laptops still on `bleeding-edge`, `beta.{key,pub}` must match `bleeding-edge.{key,pub}`.
 Keep both `r2-beta.env` and `r2-bleeding-edge.env`. Publish the same signed directory twice,
-without re-signing:
+without re-signing. The image goes to beta only; bleeding-edge holds none, so its publish takes no
+image directory:
 
 ```sh
-build/publish <release-dir>
+build/publish <release-dir> <image-dir>
 CHANNEL=bleeding-edge build/publish <release-dir>
 ```
 

@@ -105,6 +105,20 @@ awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.
     /^\t\tif \[ "\$kept" = 3 \]; then echo .*; else image_upload; fi$/ && NR == k + 1 {ku = NR} /^\t\timage_prune$/ && ku && NR == ku + 1 {kp = NR}
     /image_(upload|prune|kept)$|image_(upload|prune); fi$/ {n++}
     END {exit !(u && u < l && l < p && kp && n == 5)}' "$here/publish" || die 'a publish path skips the image or prunes it early'
+# A channel that holds an image refuses a publish without one, before latest is read or anything changes.
+sed -n '/^if \[ -z "\$img" \] && printf .*install\//,/^fi$/p' "$here/publish" >"$work/image-required"
+awk '/^if \[ -z "\$img" \] && printf .*install\// {r = NR} /^latest=$/ {l = NR}
+    END {exit !(r && r < l)}' "$here/publish" && [ "$(wc -l <"$work/image-required")" = 3 ] || die 'the image-required check moved'
+required() {
+    (die() { echo "$*" >&2; exit 1; }; CHANNEL=beta img=$1 objects=$2; . "$work/image-required") 2>"$work/image-log"
+}
+if required '' '10 beta/42/slot.img
+7 beta/41/install/convergent-41.img.zst'; then die 'published without an image over the channel image'; fi
+grep -q 'pass the image-dir' "$work/image-log" || die "no image-required message: $(cat "$work/image-log")"
+required "$work/image-dir" '7 beta/41/install/convergent-41.img.zst' || die 'refused a publish with its image'
+required '' '10 beta/42/slot.img
+7 bleeding-edge/41/install/convergent-41.img.zst
+5 beta/install/x' || die "refused a channel without an image (another channel's or no release's)"
 (
     die() { echo "$*" >&2; exit 1; }
     ep=$work/images pub=$work/pub CHANNEL=beta release=42
@@ -129,11 +143,11 @@ awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.
     objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done)
     image_local
     [ "$img_new" = $(($(cat "$img/$zst" "$img/$zst.sha256" "$img/$zst.sha256.sig" | wc -c))) ] || die 'image bytes'
-    # The releases' cap never counts an image; the image cap counts the other channels' and the new one.
+    # The releases' cap never counts an image; the image cap is per channel (bleeding-edge's 2000 apart).
     [ "$(bytes_of '' release)" = 1150 ] && [ "$(bytes_of '' image)" = 5010 ] && [ "$(size_of 41 release)" = 1000 ] &&
         [ "$(size_of 41 image)" = 3000 ] || die 'release and image totals are not apart'
     # Until latest moves, the previous image counts too (this release's own stale one does not).
-    image_cap=$((5000 + img_new))
+    image_cap=$((3000 + img_new))
     image_room
     [ "$images" = $((2000 + img_new)) ] || die 'image total'
     image_cap=$((image_cap - 1))
@@ -165,12 +179,12 @@ awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.
     listing
     : >"$work/deleted"
     # A prune that failed after latest (41) moved left an orphan image: it goes before the cap check,
-    # which then counts only latest's, the other channels' and the new one.
+    # which then counts only latest's and the new one.
     put 700 beta/40/install/convergent-40.img.zst
     listing
     image_prune 41 >/dev/null
     printf 'beta/40/install/convergent-40.img.zst\n' | cmp - "$work/deleted" || die 'not exactly the orphan image removed'
-    image_cap=$((5000 + img_new))
+    image_cap=$((3000 + img_new))
     image_room
     [ "$images" = $((2000 + img_new)) ] || die 'image total after the orphan'
     : >"$work/deleted"

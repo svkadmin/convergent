@@ -40,8 +40,9 @@ prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second
    ```
 
 2. Download that release's image, published beside it (the latest release's only), with its
-   checksum and signature, and check both with the same key. The checksum's first line is the
-   image's; its second ties it to the release's manifest:
+   checksum and signature, and check both with the same key. The checksum's first line must be the
+   hash of the very file you write (not of another file it names); its second ties it to the
+   release's manifest:
 
    ```sh
    for f in convergent-<release>.img.zst convergent-<release>.img.zst.sha256 convergent-<release>.img.zst.sha256.sig; do
@@ -49,7 +50,7 @@ prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second
    done
    openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in convergent-<release>.img.zst.sha256 \
        -sigfile convergent-<release>.img.zst.sha256.sig
-   head -n 1 convergent-<release>.img.zst.sha256 | sha256sum -c
+   [ "$(head -n 1 convergent-<release>.img.zst.sha256)" = "$(sha256sum convergent-<release>.img.zst)" ] && echo 'image: OK'
    ```
 
    Write it only when every check reports success.

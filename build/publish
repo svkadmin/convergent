@@ -5,7 +5,8 @@
 # and the guest files it lists; the bucket is public.
 #   CHANNEL=beta build/publish <release-dir> [image-dir]      override the build.conf default
 # With an image-dir, build/stick --release's image and its signed .sha256 then go to
-# <channel>/<release>/install/, the channel's only image, under image_cap apart from the releases' cap.
+# <channel>/<release>/install/, the channel's only image, under image_cap (per channel) apart from the releases'
+# cap. A channel that holds an image refuses a publish without one.
 set -eu
 export LC_ALL=C
 umask 077
@@ -89,11 +90,11 @@ bytes_of() {
 		(p == "" || index(k, p) == 1) && (k ~ /^[^\/]+\/[0-9]+\/install\//) == (kind == "image") { s += $1 } END { print s + 0 }'
 }
 image_room() {
-	# Latest's image goes only after latest moves: until then it, the other channels' and the new one (in
-	# place of this release's own) count. Afterwards this channel's others are gone; other channels' stay.
-	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/$release/" image) + img_new))
+	# The cap is per channel. Latest's image goes only after latest moves: until then it and the new one
+	# (in place of this release's own) count. The report is the bucket's, other channels' included.
+	images=$(($(bytes_of "$CHANNEL/" image) - $(bytes_of "$CHANNEL/$release/" image) + img_new))
 	[ "$images" -le "$image_cap" ] ||
-		die "the install images would hold $((images / 1048576)) MiB, over the $((image_cap / 1048576)) MiB image cap"
+		die "$CHANNEL's install images would hold $((images / 1048576)) MiB, over the $((image_cap / 1048576)) MiB image cap per channel"
 	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/" image) + img_new))
 }
 # A retry never replaces an advertised image: what is there must match; kept=3 when it is complete.
@@ -167,6 +168,10 @@ flock -n 9 || die "another publish is running"
 list=$(s3 "$ep?list-type=2&max-keys=1000") || die "cannot list the bucket"
 case $list in *'<IsTruncated>true<'*) die "more than 1000 objects in the bucket" ;; esac
 objects=$(printf '%s' "$list" | tr '<' '\n' | awk -F'>' '$1 == "Key" { k = substr($0, 5) } $1 == "Size" { print $2, k }')
+# Once the channel has an image, latest never moves without one: pass it, or remove install/ first.
+if [ -z "$img" ] && printf '%s\n' "$objects" | grep -Eq "^[0-9]+ $CHANNEL/[0-9]+/install/"; then
+	die "$CHANNEL holds an install image: pass the image-dir, or remove $CHANNEL/<release>/install/ first"
+fi
 # Two budgets: the releases' (cap) and the install images' (image_cap).
 total=$(bytes_of '' release)
 images=$(bytes_of '' image)
@@ -207,7 +212,7 @@ if [ "$release" = "$latest" ]; then
 		image_kept
 		if [ "$kept" = 3 ]; then echo "publish: $CHANNEL/$release/install/$zst is already published and identical"; else image_upload; fi
 		image_prune
-		echo "publish: $CHANNEL/$release/install/$zst; install images $((images / 1048576)) MiB of $((image_cap / 1048576))"
+		echo "publish: $CHANNEL/$release/install/$zst; install images $((images / 1048576)) MiB ($((image_cap / 1048576)) per channel)"
 	fi
 	exit 0
 fi
@@ -248,4 +253,4 @@ for f in latest.sig latest; do
 done
 # The previous image goes only now, so latest never points at a release without one.
 if [ -n "$img" ]; then image_prune; fi
-echo "publish: $CHANNEL/$release is latest; bucket: releases $(((total + new) / 1048576)) MiB of $((cap / 1048576)), install images $((images / 1048576)) MiB of $((image_cap / 1048576))"
+echo "publish: $CHANNEL/$release is latest; bucket: releases $(((total + new) / 1048576)) MiB of $((cap / 1048576)), install images $((images / 1048576)) MiB ($((image_cap / 1048576)) per channel)"

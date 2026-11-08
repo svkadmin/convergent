@@ -281,9 +281,10 @@ if [ "${1:-}" = --install-options ]; then
 		grep -qF 'LUKS passphrase must use printable ASCII (space through `~`)' "$here/../$doc"
 	done
 	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
-	# The owner takes <release> from the signed latest and checks the image line of its two-line .sha256.
+	# The owner takes <release> from the signed latest and compares the image line of its two-line .sha256
+	# with the hash of the file to be written (sha256sum -c would hash whichever file the line names).
 	grep -qF 'openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in latest -sigfile latest.sig &&' "$here/../USAGE.md" &&
-		grep -qF 'head -n 1 convergent-<release>.img.zst.sha256 | sha256sum -c' "$here/../USAGE.md" ||
+		grep -qF '[ "$(head -n 1 convergent-<release>.img.zst.sha256)" = "$(sha256sum convergent-<release>.img.zst)" ]' "$here/../USAGE.md" ||
 		die 'USAGE does not establish the current release or check the image line'
 	# The version lives in build.conf only.
 	if grep -Eiq '^#.*version.*[0-9]+\.[0-9]+\.[0-9]+' "$here/../config.example.yaml"; then die 'config.example.yaml names a version'; fi
