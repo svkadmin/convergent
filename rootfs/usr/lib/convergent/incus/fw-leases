@@ -8,9 +8,10 @@ lease_replaced() {
 }
 # Each mutation runs on the firewall under one lock and its own bound, shorter than the host's 120 s: a hold
 # or seed the host gave up on (ssh killed; the remote script runs on) ends there before a later resume, never
-# after it. The lock stays in perl, so a daemon started under it does not inherit it. The body is a ksh
+# after it. The lock stays in perl, so a daemon started under it does not inherit it. Not exec: OpenBSD's
+# timeout refuses to run as the session leader sshd makes of the command (setpgid EPERM). The body is a ksh
 # double-quoted string: no quote, and \$ for what the locked sh must expand.
-lease_guard='exec timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)"'
+lease_guard='timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)"'
 # A leases file's abandoned declarations, one line each (address and start): the heal's probe runs it on the
 # firewall (no quote in it: the remote ksh gets it single-quoted) and the seed runs it over what it wrote.
 lease_abandoned='/^lease /{a=$2; s=""} /^[ \t]*starts /{sub(/;$/, "", $4); s=$3 "/" $4} /^[ \t]*abandoned;/{print "abandoned", a, s}'
