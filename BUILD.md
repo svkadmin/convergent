@@ -168,9 +168,11 @@ partitions, each as small as its content:
   the guest files.
 
 The image boots to the installer on tty1 (`convergent.install.console=ttyS0` for a serial line),
-with tmpfs `/var`, `/home` and `/tmp`, no getty and no watchdog. Its installer is still a stub that
-shows the hardware and installs nothing. `convergent-install` on a running system asks the owner
-password and the LUKS passphrase, 12–256 bytes each. The
+with tmpfs `/var`, `/home` and `/tmp`, no getty and no watchdog. Its installer (`convergent-install
+--stick`) checks every file it uses against the manifests the install UKI carries, asks its questions
+([USAGE](USAGE.md#disk-image)), then installs the release and its guests. Both it and
+`convergent-install` on a running system ask the owner password and the LUKS passphrase, 12–256 bytes
+each. The
 LUKS passphrase must use printable ASCII (space through `~`).
 
 > [!NOTE]
@@ -522,7 +524,7 @@ at the same time. Every mode first runs `build/test-topology`, `build/test-lease
 | `build/test --rescue <release>` | standalone Rescue UKI with both slots empty | |
 | `build/test --corrupt <release>` | one flipped bit: verity refuses it, nothing is marked good | |
 | `build/test --desktop <release>` | Sway, bar and `sys`: session programs and config | |
-| `build/test --install <release>` | `build/stick`'s image: layout, then the installer on ttyS0 and tty1 | `build/guests` run |
+| `build/test --install <release>` | `build/stick`'s image: layout, tampered files, the installer's refusals, power loss and reinstall, a USB target, then the installed disk's first boot | `build/guests` run |
 | `build/test --fallback <good> <newer>` | broken newer slot: the good one returns | two releases |
 | `build/test --interrupt <good> <newer>` | update cut off half-way: still boots | two releases |
 | `build/test --update <good> <newer>` | signed slot write and reboot | two signed releases |

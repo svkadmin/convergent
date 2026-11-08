@@ -6,7 +6,7 @@
 #   build/test --rescue <release>       standalone rescue, empty slots, unlock and power off
 #   build/test --corrupt <release>
 #   build/test --desktop <release>      the session's programs, sway config, locale, bar and sys
-#   build/test --install <release>      build/stick's image: offline checks, then boots to the installer (ttyS0, tty1)
+#   build/test --install <release>      build/stick's image: offline checks, the installer through ttyS0, the installed disk
 #   build/test --fallback <good-release> <bad-release>
 #   build/test --interrupt <good-release> <new-release>
 #   build/test --update <old-release> <new-release>   signed slot writes and reboot
@@ -331,7 +331,7 @@ if [ "${1:-}" = --install-options ]; then
 	sh -n "$work/disk-check"
 	(
 	. "$work/disk-check"
-	disk=/dev/testdisk bootdisks=/dev/bootdisk image_install=
+	disk=/dev/testdisk bootdisks=/dev/bootdisk
 	# Only the block-device predicate is virtual; all other assertions are real.
 	is_block() { [ "$1" = "$disk" ] && [ "$fault" != nonblock ]; }
 	lsblk() {
@@ -356,21 +356,20 @@ if [ "${1:-}" = --install-options ]; then
 	for fault in safe loop nonblock partition boot readonly mounted swap holder child-holder type-probe ro-probe mount-probe holder-probe; do
 		rm -rf "$work/sys" "$work/erase"
 		mkdir -p "$work/sys/testdisk/holders" "$work/sys/testdisk1/holders"
-		bootdisks=/dev/bootdisk image_install=
+		bootdisks=/dev/bootdisk
 		case $fault in
-		loop) image_install=1 ;;
 		boot) bootdisks=$disk ;;
 		holder) touch "$work/sys/testdisk/holders/dm-0" ;;
 		child-holder) touch "$work/sys/testdisk1/holders/dm-0" ;;
 		esac
 		if (check_disk; touch "$work/erase") >"$work/disk-error" 2>&1; then
-			case $fault in safe|loop) ;; *) die "erase guard accepted $fault" ;; esac
+			case $fault in safe) ;; *) die "erase guard accepted $fault" ;; esac
 		else
-			case $fault in safe|loop) cat "$work/disk-error"; die "erase guard rejected $fault" ;; esac
+			case $fault in safe) cat "$work/disk-error"; die "erase guard rejected $fault" ;; esac
 			[ ! -e "$work/erase" ] || die "erased after $fault"
 			grep -q '^test: ' "$work/disk-error" || die "unexpected guard failure: $fault"
 		fi
-		case $fault in safe|loop) [ -f "$work/erase" ] ;; esac
+		case $fault in safe) [ -f "$work/erase" ] || exit 1 ;; esac
 	done
 	)
 	# SATA must be available before dm-mod.waitfor can enter userspace; the watchdog service reads sysfs.
@@ -446,58 +445,130 @@ if [ "${1:-}" = --install-options ]; then
 	grep -q 'keeps a USB network driver' "$work/drop-error"
 	)
 	for module in usbnet r8152; do grep -qx "install $module /bin/false" "$here/../rootfs/etc/modprobe.d/convergent.conf"; done
-	# Media must match the selected slot, including older releases.
-	sed -n '/^# Compare with the selected release/,/^fi$/p' "$here/../install/install" >"$work/topology-check"
-	[ -s "$work/topology-check" ]
-	sh -n "$work/topology-check"
-	mkdir -p "$work/image/etc/convergent" "$work/guests/fw" "$work/guests/wan"
-	CONVERGENT_INSTALL_GUESTS=$work/guests image_install=1
-	printf '%064d\n' 1 >"$work/image/etc/convergent/topology.sha256"
-	for kind in fw wan; do cp "$work/image/etc/convergent/topology.sha256" "$work/guests/$kind/topology.sha256"; done
-	. "$work/topology-check"
-	for guest in fw wan; do
-		printf '%064d\n' 2 >"$work/guests/$guest/topology.sha256"
-		if (. "$work/topology-check") 2>/dev/null; then die "accepted mismatched $guest topology"; fi
-		rm "$work/guests/$guest/topology.sha256"
-		if (. "$work/topology-check") 2>/dev/null; then die "accepted missing $guest topology"; fi
-		cp "$work/image/etc/convergent/topology.sha256" "$work/guests/$guest/topology.sha256"
+	# The installer's answers (options.sh): each refusal says why, and the installer asks again.
+	mkdir -p "$work/etc"
+	for f in passwd shadow group gshadow subuid subgid; do echo 'root:x:0:0::/root:/bin/sh' >"$work/etc/$f"; done
+	owner_valid owner "$work/etc" >/dev/null || die 'refused owner'
+	for bad in Root root 1owner 'own er' '' abcdefghijklmnopqrstuvwxyzabcdefg; do
+		if owner_valid "$bad" "$work/etc" >/dev/null; then die "accepted owner $bad"; fi
 	done
-	rm "$work/image/etc/convergent/topology.sha256"
-	if (. "$work/topology-check") 2>/dev/null; then die 'accepted missing host topology'; fi
-	(image_install=; . "$work/topology-check")
-	sed -n '/^secret()/,/^cr=/p' "$here/../install/install" >"$work/secret"
-	sh -n "$work/secret"
+	rm "$work/etc/gshadow"
+	if owner_valid owner "$work/etc" >/dev/null 2>&1; then die 'accepted an owner without reading every account file'; fi
+	secret_valid twelve-bytes >/dev/null || die 'refused 12 bytes'
+	for bad in elevenbytes "$(printf 'twelve-bytes\r')" "$(printf '%0257d' 0)"; do
+		if secret_valid "$bad" >/dev/null; then die "accepted secret of ${#bad} bytes"; fi
+	done
+	printf 'owner password' >"$work/password"
+	for good in ' ASCII ~ passphrase ' 'owner password.'; do luks_valid "$good" "$work/password" >/dev/null || die "refused LUKS $good"; done
+	for bytes in '\001' '\037' '\177' '\200' '\377' '\303\251'; do
+		badpass=$(printf 'passphrase-%b' "$bytes")
+		if luks_valid "$badpass" "$work/password" >"$work/error"; then die 'accepted untypeable LUKS passphrase'; fi
+		grep -q 'Use only printable ASCII' "$work/error"
+		# The desktop owner's password has no initramfs keymap restriction.
+		secret_valid "$badpass" >/dev/null || die 'refused a non-ASCII password'
+	done
+	if luks_valid 'owner password' "$work/password" >"$work/error"; then die 'accepted the password as LUKS passphrase'; fi
+	grep -q 'not the password' "$work/error"
+	if luks_valid 'other passphrase' "$work/missing" >/dev/null; then die 'accepted a passphrase it could not compare'; fi
+	# The same rules as build/image (layouts) and tools/timezone (zones).
+	sed -n '/^xkb_known() {/,/^}/p' "$here/../install/options.sh" >"$work/xkb-options"
+	sed -n '/^xkb_known() {/,/^}/p' "$here/image" | cmp -s - "$work/xkb-options" || die 'options.sh xkb_known differs from build/image'
+	sed -n '/^zone_valid() {/,/^}/p' "$here/../install/options.sh" >"$work/zone-options"
+	sed -n '/^zone_valid() {/,/^}/p' "$here/../tools/timezone" | cmp -s - "$work/zone-options" || die 'options.sh zone_valid differs from tools/timezone'
+	printf '! layout\n  us English (US)\n  sk Slovak\n  ru Russian\n! variant\n  qwerty sk: Slovak (QWERTY)\n' >"$work/evdev.lst"
+	for good in 'us,sk(qwerty),ru' sk us; do layouts_valid "$good" "$work/evdev.lst" >/dev/null || die "refused layouts $good"; done
+	for bad in zz '' 'us,' 'us,sk(qwertz)' 'US' 'us;sk' "$(printf 'us\nsk')"; do
+		if layouts_valid "$bad" "$work/evdev.lst" >/dev/null; then die "accepted layouts $bad"; fi
+	done
+	mkdir -p "$work/zi/Europe" "$work/zi/posix/Europe"
+	for z in UTC Europe/Bratislava posix/Europe/Bratislava; do printf 'TZif2...' >"$work/zi/$z"; done
+	printf 'not a zone' >"$work/zi/Mars"
+	for good in UTC Europe/Bratislava; do zone_valid "$good" "$work/zi" || die "refused zone $good"; done
+	for bad in Mars Mars/Base ../etc Europe posix/Europe/Bratislava '' Europe/../UTC; do
+		if zone_valid "$bad" "$work/zi"; then die "accepted zone $bad"; fi
+	done
+	# Wi-Fi: wan-wifi's rules, and a profile wan's carry-over check accepts (name and content).
+	for good in 'CV test' "$(printf 'Caf\303\251')" x; do
+		ssid_valid "$good" >/dev/null || die "refused SSID $good"
+	done
+	for bad in '' -net "$(printf '%033d' 0)" "$(printf 'cv\ttest')"; do
+		if ssid_valid "$bad" >/dev/null; then die "accepted SSID $bad"; fi
+	done
+	for good in '' eightchr "$(printf '%063d' 0)" 'a b~c!d#'; do wifi_pass_valid "$good" >/dev/null || die "refused Wi-Fi passphrase $good"; done
+	for bad in sevenby "$(printf '%064d' 0)" "$(printf 'pass\303\251word')"; do
+		rc=0; wifi_pass_valid "$bad" >/dev/null || rc=$?
+		[ "$rc" = 1 ] || die "accepted Wi-Fi passphrase $bad"
+	done
+	for odd in 'back\slash' ' leading space' 'trailing space '; do
+		rc=0; wifi_pass_valid "$odd" >/dev/null || rc=$?
+		[ "$rc" = 2 ] || die "stored an unstorable Wi-Fi passphrase: $odd"
+	done
+	[ "$(iwd_name 'CV test' psk)" = 'CV test.psk' ] && [ "$(iwd_name "$(printf 'Caf\303\251')" open)" = '=436166c3a9.open' ] &&
+		[ "$(iwd_name 'a/b' psk)" = '=612f62.psk' ] || die 'iwd file names'
+	sed -n '/^wan_profile_valid() {/,/^}/p; /^wan_profile_name() {/,/^}/p' "$here/../tools/guests" >"$work/wan-profile"
+	[ "$(grep -c '() {$' "$work/wan-profile")" = 2 ] || die 'wan profile checks moved'
+	(
+	. "$work/wan-profile"
+	for case in 'y:eightchr' 'n:eightchr' 'y:' 'n:'; do
+		hidden=${case%%:*} pass=${case#*:}
+		if [ -n "$pass" ]; then type=psk; else type=open; fi
+		for ssid in 'CV test' "$(printf 'Caf\303\251')"; do
+			name=$(iwd_name "$ssid" "$type")
+			iwd_profile "$hidden" "$pass" >"$work/$name"
+			wan_profile_name "$name" && wan_profile_valid "$work/$name" "$type" || die "wan refuses the installer's profile: $case $name"
+			[ "$hidden" = n ] || grep -qx 'Hidden=true' "$work/$name" || die 'hidden network without Hidden=true'
+		done
+	done
+	)
+	# The erase confirmation: the disk as typed, or ERASE and a serial only that disk has.
+	erase_ok /dev/sda /dev/sda S1 1 && erase_ok 'ERASE S1' /dev/sda S1 1 || die 'refused the erase confirmation'
+	for bad in '/dev/sda ' /dev/sdb 'ERASE S1' 'ERASE ' 'erase S1' yes ''; do
+		case $bad in 'ERASE S1') set -- S1 2 ;; 'ERASE ') set -- '' 1 ;; *) set -- S1 1 ;; esac
+		if erase_ok "$bad" /dev/sda "$@"; then die "accepted erase confirmation $bad ($*)"; fi
+	done
+	# The retype loop: a wrong answer erases nothing and shows the summary again; three end the installer.
+	sed -n '/^# 10\. The summary/,/^done$/p' "$here/../install/install" >"$work/confirm"
+	grep -q erase_ok "$work/confirm" && [ "$(wc -l <"$work/confirm")" -lt 30 ] || die 'erase confirmation loop moved'
+	sh -n "$work/confirm"
+	confirm() {   # answers...
+		printf '%s\n' "$@" >"$work/answers"
+		(
+		say() { printf '%s\n' "$*"; }
+		ask() { printf '%s\n' "$1"; IFS= read -r answer <&4 || die 'end of input'; }
+		disk_field() { echo 64G; }
+		release=42 typed=/dev/sda disk=/dev/sda serial=S1 shared=1 model=Disk esp_mib=1024 slot_mib=8192 state_mib=40000
+		state_size=auto swap=none owner=owner layouts=us zone=UTC ssid= hidden=n backup=
+		echo 'allow id 1:1' >"$work/usb.rules"
+		. "$work/confirm"
+		echo confirmed
+		) 4<"$work/answers" >"$work/confirm-out" 2>&1
+	}
+	confirm /dev/sda && [ "$(grep -c '^Summary:' "$work/confirm-out")" = 1 ] && grep -qx confirmed "$work/confirm-out" || die 'refused the typed disk'
+	confirm nope 'ERASE S1' && [ "$(grep -c '^Summary:' "$work/confirm-out")" = 2 ] && grep -qx 'Nothing was erased.' "$work/confirm-out" ||
+		die 'a wrong answer did not return to the summary'
+	if confirm nope 'ERASE S2' /dev/sdb /dev/sda; then die 'accepted a fourth try'; fi
+	[ "$(grep -c '^Nothing was erased\.$' "$work/confirm-out")" = 3 ] && grep -q 'nothing was erased' "$work/confirm-out" &&
+		! grep -qx confirmed "$work/confirm-out" || die 'three wrong answers did not end the installer'
+	if confirm; then die 'end of input confirmed the erase'; fi
+	# Typed twice with echo off: entries that differ are asked again.
+	sed -n '/^secret() {/,/^}/p' "$here/../install/install" >"$work/secret"
+	[ "$(wc -l <"$work/secret")" -lt 15 ] && grep -q 'The two entries differ' "$work/secret" || die 'secret entry moved'
+	(
 	. "$work/secret"
 	run() { "$@"; }
 	stty() { :; }
-	ask() { IFS= read -r answer <&4 || die 'terminal closed'; }
-	good=' ASCII ~ passphrase '
-	for bytes in '\001' '\037' '\177' '\200' '\377' '\303\251'; do
-		badpass=$(printf 'passphrase-%b' "$bytes")
-		printf '%s\n' "$badpass" >"$work/input"
-		if (image_install=1 tty_mode=; secret 'LUKS passphrase' 3<"$work/input") 2>"$work/error"; then
-			die 'accepted untypeable LUKS passphrase'
-		fi
-		grep -q 'Use only printable ASCII' "$work/error"
-		printf '%s\n' "$badpass" "$badpass" "$good" "$good" >"$work/input"
-		(image_install= tty_mode=saved; secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt";
-			[ "$pass" = "$good" ] && [ -z "$again" ]) || die 'LUKS retry failed'
-		grep -q 'Use only printable ASCII' "$work/prompt"
-	done
-	printf '%s\n' "$good" >"$work/input"
-	(image_install=1 tty_mode=; secret 'LUKS passphrase' 3<"$work/input"; [ "$pass" = "$good" ])
-	# build/stick at a terminal asks twice: a hidden typo must not reach the image.
-	printf '%s\n' "$good" "$good." >"$work/input"
-	if (image_install=1 tty_mode=saved; secret 'LUKS passphrase' 3<"$work/input") 2>"$work/error"; then
-		die 'accepted two different typed entries'
-	fi
-	grep -q 'the two entries differ' "$work/error"
-	printf '%s\n' "$good" "$good" >"$work/input"
-	(image_install=1 tty_mode=saved; secret 'LUKS passphrase' 3<"$work/input" 2>/dev/null;
-		[ "$pass" = "$good" ] && [ -z "$again" ]) || die 'refused two equal typed entries'
-	# The desktop owner's password has no initramfs keymap restriction.
-	printf '%s\n' "$badpass" >"$work/input"
-	(image_install=1 tty_mode=; secret 'Owner password' 3<"$work/input"; [ "$pass" = "$badpass" ])
+	say() { printf '%s\n' "$*" >&3; }
+	ask() { printf '%s' "$1" >&3; IFS= read -r answer <&4 || die 'end of input'; }
+	tty_mode=saved
+	printf '%s\n' 'one entry' 'one entry.' >"$work/input"
+	if secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt"; then die 'accepted two different entries'; fi
+	[ -z "$pass" ] && [ -z "$again" ] && grep -q 'The two entries differ' "$work/prompt" || die 'kept a mismatched entry'
+	printf '%s\n' ' same entry ' ' same entry ' >"$work/input"
+	secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt" && [ "$pass" = ' same entry ' ] && [ -z "$again" ] ||
+		die 'refused two equal entries'
+	printf '%s\n' 'only one' >"$work/input"
+	if (secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt") 2>/dev/null; then die 'end of input gave a secret'; fi
+	)
 	)
 	(
 	work=$(mktemp -d)
@@ -694,6 +765,7 @@ cleanup() {
 	# Reap QEMU through its driver before touching the disk or chroot mounts.
 	if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || :; wait "$driver" 2>/dev/null || :; fi
 	if mountpoint -q "$esp"; then umount "$esp" || :; fi
+	if mountpoint -q "$BUILDER$work/bk"; then umount "$BUILDER$work/bk" || :; fi
 	if mountpoint -q "$root"; then umount "$root" || :; fi
 	if mountpoint -q "$state"; then umount "$state" || :; fi
 	bld cryptsetup close "$map" 2>/dev/null || :
@@ -5870,7 +5942,7 @@ run_vm() {
 	goal=${1:-bless}
 	memory=4096 cpus=4
 	limit=300
-	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=23400 ;; guests-topology) memory=8192 cpus=8; limit=21600 ;; desktop | update | install | install-tty1) limit=600 ;; esac
+	case $goal in guests) memory=8192 cpus=8; limit=12600 ;; guests-maint) memory=8192 cpus=8; limit=19800 ;; online) memory=8192 cpus=8; limit=14400 ;; guests-update) memory=8192 cpus=8; limit=23400 ;; guests-topology) memory=8192 cpus=8; limit=21600 ;; desktop | update | install-tty1 | first-boot-dup) limit=600 ;; first-boot) limit=1200 ;; install) limit=3600 ;; esac
 	runs=$((runs + 1))
 	case $mode in fallback | interrupt)
 		# A retried crash must not consume an uncounted boot-counter step.
@@ -5898,17 +5970,32 @@ import json, os, re, select, signal, socket, subprocess, time
 work = os.environ["CVTEST_WORK"]
 run = os.environ["CVTEST_RUN"]
 goal = os.environ["CVTEST_GOAL"]
-guest_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update")
+guest_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update", "first-boot")
 drain_test = goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online")
-# The install image boots from a USB stick to the installer: on ttyS0 its last line; on tty1 the console's pointer.
+# The install image boots from a USB stick to the installer, answered through the console by a script.
 install_test = goal in ("install", "install-tty1")
+# The installed disk: its passphrases in turn, one per prompt; with a second cv-state disk it powers off.
+first_boot = goal in ("first-boot", "first-boot-dup")
 # The guest flows print two verdicts (smoke, then the update flow); both must be 0.
 markers = {"guests-maint": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "guests-update": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
-           "guests-topology": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"],
+           "guests-topology": [b"CV-GUESTS-RESULT", b"CV-UPDATE-RESULT"], "first-boot": [b"CV-INSTALLED-RESULT"],
            "online": [b"CV-GUESTS-RESULT", b"CV-ONLINE-RESULT"], "desktop": [b"CV-DESKTOP-RESULT"], "update": [b"CV-UPDATE-SIG-RESULT"]}.get(goal, [b"CV-GUESTS-RESULT"])
-install_markers = {"install": rb"(?:^|\n)This test build installs nothing\.", "install-tty1": rb"(?:^|\n)Convergent installer: running on tty1\r?\n"}
 verdicts = {}
 pw = os.environ["CVTEST_PASS"].encode() + b"\n"
+# Script lines: a prompt pattern, a tab, then =answer ({cap}: the pattern's group), @eof (Ctrl-D), @quit (the
+# test's end, or a power cut) or @off (the guest powers off). Each pattern is searched after the last match.
+script = []
+if install_test:
+    with open(f"{work}/script", "rb") as lines:
+        for line in lines.read().splitlines():
+            pattern, action = line.split(b"\t", 1)
+            script.append((re.compile(pattern), action))
+step, pos, due, captured, transcript = 0, 0, None, b"", b""
+passes, typed, pass_due = os.environ["CVTEST_PASS"].encode().split(b"\n"), 0, None
+extra = []
+if os.path.exists(f"{work}/qemu-extra"):
+    with open(f"{work}/qemu-extra") as lines:
+        extra = lines.read().splitlines()
 deadline = time.monotonic() + int(os.environ["CVTEST_TIMEOUT"])
 last_progress = time.monotonic()
 last_step = "boot"
@@ -5931,15 +6018,13 @@ qemu = subprocess.Popen([
     # its writes, so the crash modes test the same thing.
     "-qmp", f"unix:{path},server=on,wait=off",
     "-nographic", "-monitor", "none"] +
-    # The install image as a USB stick on xHCI, with a USB keyboard and a virtio screen for tty1.
-    (["-drive", f"file={work}/install.img,if=none,id=stick,format=raw,cache=unsafe", "-device", "qemu-xhci,id=xhci",
-      "-device", "usb-storage,bus=xhci.0,drive=stick,bootindex=0", "-device", "usb-kbd,bus=xhci.0",
-      "-vga", "none", "-device", "virtio-vga"] if install_test else
-     ["-drive", f"file={work}/disk.img,if=none,id=disk,format=raw,cache=unsafe", "-device", "virtio-blk-pci,drive=disk,bootindex=0"]) +
+    # The install image as a USB stick on xHCI (in qemu-extra, with the target disks), a USB keyboard and a virtio screen for tty1.
+    (["-device", "qemu-xhci,id=xhci", "-device", "usb-kbd,bus=xhci.0", "-vga", "none", "-device", "virtio-vga"] if install_test else
+     ["-drive", f"file={work}/disk.img,if=none,id=disk,format=raw,cache=unsafe", "-device", "virtio-blk-pci,drive=disk,bootindex=0"]) + extra +
     # Return each corrupt boot to the fallback counter checks.
     (["-no-reboot"] if goal == "bless" or drain_test or install_test else []) +
     # Keep the signed UKI intact; the stub appends the serial console through SMBIOS.
-    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue", "install-tty1") else []) +
+    (["-no-reboot", "-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200"] if goal in ("update", "rescue", "install-tty1") or first_boot else []) +
     (["-smbios", "type=11,value=io.systemd.stub.kernel-cmdline-extra=console=ttyS0,,115200 convergent.install.console=ttyS0"] if goal == "install" else []) +
     # Guest tests get a QEMU user-networking uplink, which the test bridges into wan as eth1.
     (["-netdev", "user,id=uplink", "-device", "virtio-net-pci,netdev=uplink,mac=52:54:00:c0:ff:ee,romfile="] if goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online") else ["-nic", "none"]),
@@ -6008,6 +6093,8 @@ try:
                 else:
                     log.write(chunk); log.flush()
                     timing += chunk
+                    if install_test or first_boot:
+                        transcript += chunk
                     while b"\n" in timing:
                         line, timing = timing.split(b"\n", 1)
                         if re.fullmatch(rb"CV-TIME [a-z0-9-]+ -?[0-9]+\r?", line):
@@ -6042,11 +6129,31 @@ try:
             if ended == "nested-crash":
                 break
             # A second after the prompt: under load a passphrase typed at once was lost.
-            if not sent and prompted is not None and time.monotonic() - prompted >= 1:
+            if not first_boot and not sent and prompted is not None and time.monotonic() - prompted >= 1:
                 qemu.stdin.write(pw); qemu.stdin.flush(); sent = True
+            if first_boot and pass_due is None and typed < len(passes) and len(re.findall(rb"assphrase \[[0-9]/3\]", transcript)) > typed:
+                pass_due = time.monotonic() + 1
+            if pass_due is not None and time.monotonic() >= pass_due:
+                qemu.stdin.write(passes[typed] + b"\n"); qemu.stdin.flush(); typed += 1; pass_due = None
+            # The script: each answer a second after its prompt; the end at once.
+            if install_test and step < len(script) and due is None:
+                match = script[step][0].search(transcript, pos)
+                if match:
+                    pos = match.end()
+                    captured = match[1] if match.re.groups else captured
+                    due = time.monotonic() + (0 if script[step][1] in (b"@quit", b"@off") else 1)
+            if due is not None and time.monotonic() >= due:
+                action = script[step][1]
+                if action == b"@eof":
+                    qemu.stdin.write(b"\x04"); qemu.stdin.flush()
+                elif action.startswith(b"="):
+                    qemu.stdin.write(action[1:].replace(b"{cap}", captured) + b"\n"); qemu.stdin.flush()
+                step += 1; due = None
             done = result is not None if guest_test else re.search(rb"(?:^|\n)(?:convergent: )?release [0-9]+ is good\r?\n", seen)
             if install_test:
-                done = re.search(install_markers[goal], seen)
+                done = step == len(script) and script[-1][1] == b"@quit"
+            if goal == "first-boot-dup":
+                done = False  # The initramfs refuses the second cv-state and powers off.
             if goal == "recovery":
                 done = done and continued
             if goal == "rescue" or drain_test:
@@ -6066,6 +6173,9 @@ try:
                 if drain_test and powered_off and not rebooted and drain_started is not None:
                     print(f"CV-TIME shutdown-poweroff-duration {int(time.monotonic() - drain_started)}", flush=True)
                     ended = f"{goal}-0" if result == 0 and drain_result == 0 else f"{goal}-1"
+        # Where a script stopped short: its step, counted from 1.
+        if install_test and step < len(script):
+            ended = f"{ended} at step {step + 1}"
 finally:
     if qemu.poll() is None:
         qemu.kill()
@@ -6157,33 +6267,297 @@ if [ "$mode" = install ]; then
 	budget=$((content + $(stat -c %s "$BUILDER$work/install.efi") + 100663296))
 	[ "$(stat -c %s "$img")" -le "$budget" ] || die "install image $(stat -c %s "$img") bytes exceeds its budget $budget"
 	echo "test: install image $(stat -c %s "$img") bytes, budget $budget"
-	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+	# The installer answered through the serial console. disk.img is the target (nvme, serial CVTARGET) with a
+	# sentinel table every refusal must leave; a FAT disk takes the header backup; second.img holds a cv-state.
+	truncate -s 64G "$disk"
+	bld sgdisk -n1:0:+1M -c1:cv-sentinel "$work/disk.img" >/dev/null
+	head -c 1048576 "$disk" >"$BUILDER$work/sentinel-head"
+	tail -c 1048576 "$disk" >"$BUILDER$work/sentinel-tail"
+	sentinel() { head -c 1048576 "$disk" | cmp -s - "$BUILDER$work/sentinel-head" && tail -c 1048576 "$disk" | cmp -s - "$BUILDER$work/sentinel-tail"; }
+	truncate -s 64M "$BUILDER$work/backup.img"
+	bld mkfs.vfat -n CVBACKUP "$work/backup.img" >/dev/null
+	truncate -s 1G "$BUILDER$work/second.img"
+	bld sgdisk -n1:0:0 -t1:8309 -c1:cv-state "$work/second.img" >/dev/null
+	drive() { printf '%s\n' -drive "file=$work/$1,if=none,id=$2,format=raw,cache=unsafe" -device "$3,drive=$2"; }
+	d_stick() { drive "$1" stick usb-storage,bus=xhci.0,bootindex=0,serial=CVSTICK; }
+	d_target() { drive disk.img target nvme,serial=CVTARGET; }
+	d_backup() { drive backup.img backup usb-storage,bus=xhci.0,serial=CVBACKUP; }
+	d_second() { drive second.img second virtio-blk-pci; }
+	step() { printf '%s\t%s\n' "$1" "$2" >>"$BUILDER$work/script"; }
+	install_run() {   # goal; qemu-extra and script written by the caller
+		cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+		deadline=$(($(date +%s) + 3600))
+		run_vm "$1"
+		tlog=$BUILDER$work/install-$runs.log
+		tr -d '\r' <"$log" >"$tlog"
+	}
+	hex() { od -An -tx1 -N8 /dev/urandom | tr -d ' \n'; }
+	pw=Pw-$(hex) luks="Lk $(hex)" wifi=Wf-$(hex)
 	runs=0 pass=no-unlock-on-the-install-image
-	deadline=$(($(date +%s) + 1200))
-	run_vm install
-	[ "$ended" = install ] || die "the install image did not reach the installer on ttyS0 ($ended); see $log"
-	tr -d '\r' <"$log" >"$BUILDER$work/install-ttyS0.log"
-	grep -qF "Convergent installer: release $release (" "$BUILDER$work/install-ttyS0.log" || die "no installer line; see $log"
-	awk '$1 == "Mounted:" && $2 == "/run/convergent-install" && $3 == "erofs" {
-		n = split($4, o, ","); for (i = 1; i <= n; i++) seen[o[i]] = 1
-		ok = seen["ro"] && seen["nodev"] && seen["nosuid"] && seen["noexec"]
-	} END {exit !ok}' "$BUILDER$work/install-ttyS0.log" || die "install data not mounted ro,nodev,nosuid,noexec; see $log"
-	for path in /var /home /tmp; do
-		grep -q "^Mounted: $path tmpfs " "$BUILDER$work/install-ttyS0.log" || die "$path is not tmpfs; see $log"
+	# Flip one byte the install boot never reads, found by a slice of the file it belongs to.
+	tamper() {   # copy partition reference
+		cp --reflink=auto "$img" "$BUILDER$work/$1"
+		loop=$(losetup -fP --show "$BUILDER$work/$1")
+		for i in 1 2 3 4 5 6 7 8 9 10; do [ -b "${loop}p3" ] && break; sleep 1; done
+		bld python3 - "${loop}p$2" "$3" <<'EOF' || die "cannot place the tamper in $1"
+import sys
+data = open(sys.argv[2], "rb").read()
+with open(sys.argv[1], "r+b", buffering=0) as dev:
+    # Eight places, each at another offset in its block: a plain EROFS cluster may be stored shifted.
+    for off in [(1 << 20) + i * ((1 << 16) + 512) for i in range(8)]:
+        needle, hits, base, tail = data[off:off + 512], [], 0, b""
+        dev.seek(0)
+        while True:
+            chunk = dev.read(1 << 26)
+            if not chunk:
+                break
+            buf = tail + chunk
+            i = buf.find(needle)
+            while i >= 0:
+                hits.append(base - len(tail) + i)
+                i = buf.find(needle, i + 1)
+            tail, base = buf[-511:], base + len(chunk)
+        if len(hits) == 1:
+            dev.seek(hits[0] + 100)
+            byte = dev.read(1)
+            dev.seek(hits[0] + 100)
+            dev.write(bytes([byte[0] ^ 1]))
+            sys.exit(0)
+sys.exit(1)
+EOF
+		detach
+	}
+	# A tampered slot.img (inside rescue.efi) and a tampered guest .zst are refused before the first question.
+	mkdir -p "$root"
+	mount -t erofs -o ro,loop "$BUILDER/releases/$release/slot.img" "$root"
+	tamper tamper-slot.img 2 "$work/root/usr/lib/convergent/rescue.efi"
+	umount "$root"
+	zst=$(awk 'length($1) == 64 && $2 ~ /\.zst$/ {print $2; exit}' "$BUILDER/releases/$release/guests.manifest")
+	[ -n "$zst" ] || die 'the guests manifest lists no .zst'
+	tamper tamper-zst.img 3 "/releases/$release/$zst"
+	for case in slot zst; do
+		{ d_stick "tamper-$case.img"; d_target; } >"$BUILDER$work/qemu-extra"
+		: >"$BUILDER$work/script"
+		case $case in
+		slot) step 'slot\.img on the stick does not match the manifest' @quit ;;
+		zst) step 'the guest files on the stick do not match guests\.manifest' @quit ;;
+		esac
+		install_run install
+		[ "$ended" = install ] || die "the installer did not refuse the tampered $case ($ended); see $log"
+		if grep -q -e 'continue anyway' -e 'Target disk' "$tlog"; then die "a question came before the tampered $case was refused; see $log"; fi
+		sentinel || die "the tampered $case run changed the target"
 	done
-	grep -q '^Manifests: .*guests\.manifest .*manifest ' "$BUILDER$work/install-ttyS0.log" || die "no embedded manifests; see $log"
-	# The install runlevel's sysctl service ran (the kernel's kptr_restrict default is 0).
-	grep -qx 'Hardening: sysrq 0 kptr_restrict 2' "$BUILDER$work/install-ttyS0.log" || die "install image without its sysctls; see $log"
-	grep -qF 'Install image; the watchdog stays disarmed' "$BUILDER$work/install-ttyS0.log" || die "no disarmed watchdog line; see $log"
-	if grep -q -e 'assphrase \[' -e ' is good' -e 'Convergent installer: running on' -e 'Feeding the watchdog' "$BUILDER$work/install-ttyS0.log"; then
-		die "the install image unlocked, blessed, fed the watchdog or put the installer elsewhere; see $log"
-	fi
-	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
-	run_vm install-tty1
+	rm "$BUILDER$work/tamper-slot.img" "$BUILDER$work/tamper-zst.img"
+	# tty1: the console says where the installer runs; the installer never writes to the serial line.
+	{ d_stick install.img; d_target; } >"$BUILDER$work/qemu-extra"
+	: >"$BUILDER$work/script"
+	step '(?:^|\n)Convergent installer: running on tty1\r?\n' @quit
+	install_run install-tty1
 	[ "$ended" = install-tty1 ] || die "the install image did not start the installer on tty1 ($ended); see $log"
-	if grep -q -e 'assphrase \[' -e 'Convergent installer: release' -e 'This test build' "$log"; then
+	if grep -q -e 'assphrase \[' -e 'Convergent installer: release' -e 'Hardware:' "$log"; then
 		die "the installer ran on the serial console, not tty1; see $log"
 	fi
+	gate='This hardware is not supported\. Type "continue anyway" to install all the same, or q to quit: '
+	target='Target disk (?:\[/dev/nvme0n1\]|\(its /dev path\)): '
+	answers() {   # owner to USB list: valid answers with defaults, the zone and Wi-Fi as given
+		step 'Owner login name: ' =owner
+		step 'Owner password: ' "=$pw"
+		step 'Repeat Owner password: ' "=$pw"
+		step 'LUKS passphrase: ' "=$luks"
+		step 'Repeat LUKS passphrase: ' "=$luks"
+		step 'Keyboard layouts \[us,sk\(qwerty\),ru\]: ' =
+		step 'Time zone, such as Europe/Bratislava \[UTC\]: ' "=$1"
+		if [ -n "$2" ]; then
+			step 'Join a Wi-Fi network for the first update\? \[y/N\]: ' =y
+			step 'Network name \(SSID\): ' "=$2"
+			step 'Is it a hidden network\? \[y/N\]: ' =y
+			step 'Wi-Fi passphrase \(Enter for an open network\): ' "=$wifi"
+			step 'Repeat Wi-Fi passphrase \(Enter for an open network\): ' "=$wifi"
+		else
+			step 'Join a Wi-Fi network for the first update\? \[y/N\]: ' =
+		fi
+		step 'then press Enter: ' =
+		step 'Enter keeps this list; r scans again: ' =
+	}
+	# A: the hardware gate, the stick's own path, a missing path, then a second disk with cv-state.
+	{ d_stick install.img; d_target; d_backup; d_second; } >"$BUILDER$work/qemu-extra"
+	: >"$BUILDER$work/script"
+	step "$gate" =yes
+	step "Type continue anyway, or q\\.\\r?\\n$gate" '=continue anyway'
+	step "(?s)\\n  (/dev/sd[a-z]+)  [^\\n]*\\(this stick\\)\\r?\\n.*?$target" '={cap}'
+	step "(?s)refusing the boot stick.*?$target" =/dev/nosuch
+	step "(?s)not a block device: /dev/nosuch.*?$target" =/dev/nvme0n1
+	step '/dev/vda holds a Convergent system: the installed laptop would not boot beside it' @quit
+	install_run install
+	[ "$ended" = install ] || die "the install image did not refuse the gate, the stick and the second cv-state disk ($ended); see $log"
+	sentinel || die 'the refusals changed the target'
+	grep -qF "Convergent installer: release $release (" "$tlog" || die "no installer line; see $log"
+	# The install runlevel's sysctl service ran (the kernel's kptr_restrict default is 0).
+	grep -qx 'Install boot: /var tmpfs, /home tmpfs, /tmp tmpfs; sysrq 0, kptr_restrict 2' "$tlog" ||
+		die "the install boot lacks its tmpfs mounts or sysctls; see $log"
+	grep -qF 'Install image; the watchdog stays disarmed' "$tlog" || die "no disarmed watchdog line; see $log"
+	if grep -q -e 'assphrase \[' -e ' is good' -e 'Convergent installer: running on' -e 'Feeding the watchdog' "$tlog"; then
+		die "the install image unlocked, blessed, fed the watchdog or put the installer elsewhere; see $log"
+	fi
+	# B: every refusal; Ctrl-D at the owner question starts again from the gate; three wrong retypes erase nothing.
+	{ d_stick install.img; d_target; d_backup; } >"$BUILDER$work/qemu-extra"
+	: >"$BUILDER$work/script"
+	step "$gate" '=continue anyway'
+	step "$target" =/dev/nvme0n1
+	step 'Owner login name: ' =Root
+	step '(?s)Use a lowercase login name.*?Owner login name: ' @eof
+	step "(?s)install: end of input.*?The installer stopped.*?$gate" '=continue anyway'
+	step "$target" =/dev/nvme0n1
+	step 'Owner login name: ' =root
+	step '(?s)root is an account of the system.*?Owner login name: ' =owner
+	step 'Owner password: ' =elevenbytes
+	step 'Repeat Owner password: ' =elevenbytes
+	step '(?s)Use at least 12 bytes\..*?Owner password: ' "=$pw"
+	step 'Repeat Owner password: ' "=$pw."
+	step '(?s)The two entries differ\..*?Owner password: ' "=$pw"
+	step 'Repeat Owner password: ' "=$pw"
+	nonascii=$(printf 'passphrase-\303\251-x')
+	step 'LUKS passphrase: ' "=$nonascii"
+	step 'Repeat LUKS passphrase: ' "=$nonascii"
+	step '(?s)Use only printable ASCII.*?LUKS passphrase: ' "=$pw"
+	step 'Repeat LUKS passphrase: ' "=$pw"
+	step '(?s)not the password\..*?LUKS passphrase: ' "=$luks"
+	step 'Repeat LUKS passphrase: ' "=$luks"
+	step 'Keyboard layouts \[us,sk\(qwerty\),ru\]: ' =zz
+	step '(?s)Not a list of installed layouts.*?Keyboard layouts \[us,sk\(qwerty\),ru\]: ' =
+	step 'Time zone, such as Europe/Bratislava \[UTC\]: ' =Mars/Base
+	step '(?s)Not an installed time zone: Mars/Base.*?\[UTC\]: ' =../etc
+	step '(?s)Not an installed time zone: \.\./etc.*?\[UTC\]: ' =Europe/Bratislava
+	step 'Join a Wi-Fi network for the first update\? \[y/N\]: ' =y
+	step 'Network name \(SSID\): ' '=CV test'
+	step 'Is it a hidden network\? \[y/N\]: ' =y
+	step 'Wi-Fi passphrase \(Enter for an open network\): ' =sevenby
+	step 'Repeat Wi-Fi passphrase \(Enter for an open network\): ' =sevenby
+	step '(?s)Use 8 to 63 characters.*?Wi-Fi passphrase \(Enter for an open network\): ' "=$wifi"
+	step 'Repeat Wi-Fi passphrase \(Enter for an open network\): ' "=$wifi"
+	step 'then press Enter: ' =
+	step '(?s)QEMU USB Keyboard.*?Enter keeps this list; r scans again: ' =
+	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =
+	step '(?s)Summary:.*?Owner owner; keyboard us,sk\(qwerty\),ru; time zone Europe/Bratislava.*?Wi-Fi CV test \(hidden\).*?Erase /dev/nvme0n1: type ' =nope
+	step '(?s)Nothing was erased\..*?Erase /dev/nvme0n1: type ' '=ERASE WRONGSERIAL'
+	step '(?s)Nothing was erased\..*?Erase /dev/nvme0n1: type ' =/dev/nvme0n2
+	step "(?s)nothing was erased.*?The installer stopped.*?$gate" @quit
+	install_run install
+	[ "$ended" = install ] || die "the installer's refusals failed ($ended); see $log"
+	sentinel || die 'the refusals or the wrong retypes changed the target'
+	# C: power loss after the wipe.
+	: >"$BUILDER$work/script"
+	step "$gate" '=continue anyway'
+	step "$target" =/dev/nvme0n1
+	answers UTC ''
+	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =
+	step 'Erase /dev/nvme0n1: type ' =/dev/nvme0n1
+	step 'Writing slot A\.' @quit
+	install_run install
+	[ "$ended" = install ] || die "the install did not reach the slot write ($ended); see $log"
+	bld sgdisk -i 2 "$work/disk.img" | grep -qx "Partition name: 'cv-slot-a'" || die 'the target was not repartitioned before the power cut'
+	# D: the reinstall over it, with the zone, a hidden Wi-Fi network, the header backup and ERASE <serial>.
+	: >"$BUILDER$work/script"
+	step "$gate" '=continue anyway'
+	step "$target" =/dev/nvme0n1
+	step '/dev/nvme0n1 holds a Convergent system\. Type REINSTALL /dev/nvme0n1 to replace it, or Enter to choose another disk: ' \
+		'=REINSTALL /dev/nvme0n1'
+	answers Europe/Bratislava 'CV test'
+	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =y
+	step '(?s)\n  (/dev/sd[a-z]+)  vfat  .*?Backup filesystem \(its /dev path\): ' '={cap}'
+	step 'Write the header backup to /dev/sd[a-z]+ on .*\? \[y/N\]: ' =y
+	step 'or ERASE followed by a space and serial CVTARGET: ' '=ERASE CVTARGET'
+	step 'Remove the install stick after power-off, before booting\.' @off
+	install_run install
+	[ "$ended" = poweroff ] || die "the reinstall did not power off ($ended); see $log"
+	grep -q '^LUKS header backup: cv-luks-header-CVTARGET-' "$tlog" || die "no header backup; see $log"
+	mkdir -p "$BUILDER$work/bk"
+	mount -t vfat -o loop,ro,nodev,nosuid,noexec "$BUILDER$work/backup.img" "$BUILDER$work/bk"
+	set -- "$BUILDER$work"/bk/cv-luks-header-CVTARGET-*
+	[ $# = 1 ] && [ -f "$1" ] && bld cryptsetup luksDump "$work/bk/${1##*/}" | grep -q '^Version:[[:space:]]*2$' ||
+		{ umount "$BUILDER$work/bk"; die 'the header backup is not one LUKS2 header'; }
+	umount "$BUILDER$work/bk"
+	# The installed state: no password or LUKS passphrase in any file; the iwd seed for the first update.
+	printf '%s\n' "$luks" >"$BUILDER$work/passphrase"
+	open_state ro
+	if grep -rqF -e "$pw" -e "$luks" "$state"; then die 'the password or the LUKS passphrase is in the installed state'; fi
+	seed="$state/var-$release/lib/convergent/install/iwd/CV test.psk"
+	grep -qx 'Hidden=true' "$seed" && grep -qxF "Passphrase=$wifi" "$seed" || die 'the Wi-Fi seed lacks Hidden=true or its passphrase'
+	close_state
+	# E: the installed disk alone: two wrong passphrases, then the right one; the @reboot check.
+	open_state rw
+	var=$state/var-$release
+	mkdir -p "$var/spool/cron/crontabs"
+	printf 'owner=owner\nzone=Europe/Bratislava\n' >"$var/lib/convergent/test-install"
+	cat >>"$var/lib/convergent/test-install" <<'EOF'
+PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+r=0
+bad() { echo "CV-INSTALLED failed: $1"; r=1; }
+awk -F: -v u="$owner" '$1 == u && $2 ~ /^\$y\$/ {ok = 1} END {exit !ok}' /etc/shadow || bad 'owner hash'
+awk -F: '$1 == "root" && $2 ~ /^!/ {ok = 1} END {exit !ok}' /etc/shadow || bad 'root is not locked'
+grep -q 'name "QEMU USB Keyboard"' /etc/usbguard/rules.conf || bad 'the keyboard is not allowed'
+if grep -q 'serial "CVSTICK"' /etc/usbguard/rules.conf; then bad 'the install stick is allowed'; fi
+[ "$(cat "/home/$owner/.config/sway/config.d/input")" = 'input type:keyboard xkb_variant ""
+input type:keyboard xkb_layout "us,sk,ru"
+input type:keyboard xkb_variant ",qwerty,"' ] || bad layouts
+[ "$(cat /etc/timezone)" = "$zone" ] && cmp -s "/usr/share/zoneinfo/$zone" /etc/localtime || bad 'time zone'
+case $(date +%Z) in CET | CEST) ;; *) bad 'the zone is not in effect' ;; esac
+grep -qx 'Hidden=true' '/var/lib/convergent/install/iwd/CV test.psk' || bad 'Wi-Fi seed'
+for g in fw wan svc browser; do
+	(cd "/var/lib/convergent/release-guests/guests/$g" && sha256sum -c --quiet SHA256SUMS) || bad "guest $g"
+done
+while [ ! -e /run/openrc/started/convergent-bless ]; do sleep 2; done
+echo "CV-INSTALLED-RESULT $r"
+EOF
+	cat >"$var/spool/cron/crontabs/root" <<'EOF'
+@reboot sh /var/lib/convergent/test-install >/dev/console 2>&1
+EOF
+	chown 0:0 "$var/spool/cron/crontabs/root"
+	chmod 0600 "$var/spool/cron/crontabs/root"
+	close_state
+	rm "$BUILDER$work/qemu-extra"
+	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+	pass="wrong-$(hex)
+wrong-$(hex)
+$luks"
+	deadline=$(($(date +%s) + 1200))
+	run_vm first-boot
+	[ "$ended" = first-boot-0 ] || die "the installed disk failed its first boot ($ended); CV-INSTALLED lines in $log"
+	grep -qF 'Passphrase [3/3]' "$log" && grep -qF "release $release is good" "$log" ||
+		die "the installed disk did not take the third passphrase and bless; see $log"
+	# F: beside a second disk with cv-state, the installed system refuses to boot.
+	d_second >"$BUILDER$work/qemu-extra"
+	cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
+	pass=$luks
+	deadline=$(($(date +%s) + 600))
+	run_vm first-boot-dup
+	[ "$ended" = poweroff ] && grep -qF 'more than one disk has a cv-state partition' "$log" && ! grep -q ' is good' "$log" ||
+		die "the installed disk booted beside a second cv-state ($ended); see $log"
+	# G: a USB disk as the target: its port stays allowed.
+	disk=$BUILDER$work/usbtarget.img
+	truncate -s 64G "$disk"
+	{ d_stick install.img; drive usbtarget.img target usb-storage,bus=xhci.0,serial=CVUSBTARGET; } >"$BUILDER$work/qemu-extra"
+	: >"$BUILDER$work/script"
+	pass=no-unlock-on-the-install-image
+	step "$gate" '=continue anyway'
+	step '(?s)\n  (/dev/sd[a-z]+)  [^\n]*  usb  serial CVUSBTARGET  .*?Target disk \(its /dev path\): ' '={cap}'
+	answers UTC ''
+	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =
+	step 'or ERASE followed by a space and serial CVUSBTARGET: ' '=ERASE CVUSBTARGET'
+	step 'Remove the install stick after power-off, before booting\.' @off
+	install_run install
+	[ "$ended" = poweroff ] || die "the USB target install did not power off ($ended); see $log"
+	grep -q '(the install target)$' "$tlog" || die "the USB list did not show the target's port; see $log"
+	open_state ro
+	grep -q 'serial "CVUSBTARGET"' "$state/etc/usbguard/rules.conf" && ! grep -q 'serial "CVSTICK"' "$state/etc/usbguard/rules.conf" ||
+		die 'the USB target is not allowed, or the stick is'
+	close_state
+	# The serial transcripts never carry the password or a passphrase.
+	for f in "$BUILDER$work"/install-*.log; do
+		for s in "$pw" "$luks" "$wifi"; do
+			if grep -aqF -- "$s" "$f"; then die "a password or passphrase reached the console: $f"; fi
+		done
+	done
 	cv_time finished
 	echo "test: install passed ($runs boots); image and consoles in $BUILDER$work"
 	exit 0

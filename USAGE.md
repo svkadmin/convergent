@@ -17,8 +17,13 @@ Hardware requirements: [README](README.md).
 ### Disk image
 
 The image is the release's generic install image: no owner account, password or state, only the
-release and its guests. It boots to the installer on the screen. In this build the installer only
-lists the hardware and what the image holds; it erases and installs nothing.
+release and its guests. It boots to the installer on the screen, which checks the image against its
+manifests, then asks everything before it erases anything: the hardware (outside the supported list,
+type `continue anyway`), the target disk, the owner name, password and LUKS passphrase (each twice),
+keyboard layouts, time zone, an optional Wi-Fi network, the USB devices to allow and an optional LUKS
+header backup. A summary follows; type the disk path again, or `ERASE` and its serial, to install.
+A disk that already holds Convergent asks for `REINSTALL <disk>`; another disk with Convergent must be
+detached. It copies the guests and powers off. Ctrl-D or a wrong answer three times starts it again.
 
 1. Identify the USB disk:
 
@@ -46,12 +51,11 @@ lists the hardware and what the image holds; it erases and installs nothing.
    convergent-install <release-dir>
    ```
 
-3. Choose the target: type its disk path again, or `ERASE` followed by a space and its serial.
-4. Enter the owner login name, unless the config file sets it.
-5. Enter the owner password and the LUKS passphrase, each twice.
-6. Wait for the installer to verify slot A, register a boot entry named after the release `NAME`
+3. Answer the install image's questions (the owner login name only when the config file does not
+   set it), then type the target's disk path again, or `ERASE` followed by a space and its serial.
+4. Wait for the installer to verify slot A, register a boot entry named after the release `NAME`
    and power off. Remove the USB disk.
-7. Guests are not copied. Put them at `/var/lib/convergent/release-guests/guests`, then run
+5. Guests are not copied. Put them at `/var/lib/convergent/release-guests/guests`, then run
    `sys guests setup`.
 
 The installer verifies the release signature with the booted key; `CONVERGENT_UNSIGNED=1` bypasses

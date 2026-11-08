@@ -121,7 +121,7 @@ mounted=
 if [ -n "$key" ]; then
 	for m in $manifests; do
 		[ -f "$work/data/$m.sig" ] || die "$m is not signed"
-		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/data/$m" -sigfile "$work/data/$m.sig" >/dev/null ||
+		bld openssl pkeyutl -verify -pubin -inkey "$inside/release.pub" -rawin -in "$inside/data/$m" -sigfile "$inside/data/$m.sig" >/dev/null ||
 			die "$m has an invalid signature"
 	done
 fi

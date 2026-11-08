@@ -1,6 +1,8 @@
 #!/bin/sh
 # ARCHITECTURE 7.1
-# CONVERGENT_UNSIGNED=1 sh install/install <release-dir>
+#   convergent-install --stick: the install image's installer (/usr/lib/convergent/installer starts it)
+#   CONVERGENT_UNSIGNED=1 convergent-install [--config <file>] <release-dir>
+# Every question comes before the first destructive command; secrets stay in 0600 files under /run.
 set -eu
 set +ax
 unset pass again answer
@@ -10,13 +12,17 @@ export LC_ALL=C
 die() { echo "install: $*" >&2; exit 1; }
 run() { "$@" || die "failed: $1"; }
 [ "$(id -u)" = 0 ] || die "run as root"
-input=/dev/null
-if [ "${1:-}" = --config ]; then
-	[ $# -ge 3 ] || die 'usage: install/install [--config <file>] <release-dir>'
+usage='usage: convergent-install --stick | [--config <file>] <release-dir>'
+input=/dev/null stick=
+case ${1:-} in
+--stick) [ $# = 1 ] || die "$usage"; stick=1 ;;
+--config)
+	[ $# = 3 ] || die "$usage"
 	input=$2; shift 2
 	[ -f "$input" ] || die "no config file: $input"
-fi
-[ $# = 1 ] || die 'usage: install/install [--config <file>] <release-dir>'
+	;;
+esac
+[ -n "$stick" ] || [ $# = 1 ] || die "$usage"
 here=$(cd "$(dirname "$0")" && pwd)
 reader=$here/../tools/config-get
 if [ ! -f "$reader" ]; then reader=$here/config-get; fi
@@ -25,35 +31,28 @@ options=$here/options.sh
 [ -f "$options" ] || options=/usr/lib/convergent/install-options.sh
 . "$options"
 cfg owner_login >/dev/null
-image_install=${CONVERGENT_INSTALL_DISK:-}
 for cmd in lsblk findmnt readlink blockdev sgdisk udevadm cryptsetup mkfs.vfat mkfs.btrfs \
 	btrfs losetup mount umount sha256sum stat awk sed grep cp cmp sync stty mktemp \
-	useradd groupadd usermod chpasswd dd head cut chmod chown mkdir rm mv cat sleep od tr; do
+	useradd groupadd usermod chpasswd dd head cut chmod chown mkdir rm mv cat sleep od tr \
+	efibootmgr poweroff usbguard date; do
 	command -v "$cmd" >/dev/null 2>&1 || die "missing tool: $cmd"
 done
-# Build mode accepts only whole loop devices; stdin is owner password, then LUKS passphrase.
-tty_mode=
-if [ -n "$image_install" ]; then
-	[ -b "$image_install" ] && [ "$(lsblk -dnro TYPE "$image_install")" = loop ] || die "build target must be a whole loop device"
-	[ -d "${CONVERGENT_INSTALL_GUESTS:-}" ] || die "set CONVERGENT_INSTALL_GUESTS to the guests directory"
-	exec 3<&0
-	exec </dev/null
-	if [ -t 3 ]; then tty_mode=$(stty -g <&3) || die "cannot read terminal settings"; fi
-else
-	for cmd in efibootmgr poweroff usbguard; do
-		command -v "$cmd" >/dev/null 2>&1 || die "missing tool: $cmd"
-	done
-	[ -d /sys/firmware/efi/efivars ] || die "boot the stick in UEFI mode"
-	exec 3<>/dev/tty || die "no terminal"
-	tty_mode=$(stty -g <&3) || die "cannot read terminal settings"
-fi
+[ -z "$stick" ] || command -v zstd >/dev/null 2>&1 || die "missing tool: zstd"
+[ -d /sys/firmware/efi/efivars ] || die "boot the stick in UEFI mode"
+exec 3<>/dev/tty || die "no terminal"
+tty_mode=$(stty -g <&3) || die "cannot read terminal settings"
 run ulimit -c 0
-work= loop= mapper= image_mounted= state_mounted= esp_mounted=
+work= loop= mapper= image_mounted= state_mounted= esp_mounted= backup_mounted= wiped= disk=
 
 cleanup() {
 	bad=0
 	if [ -n "$tty_mode" ]; then stty "$tty_mode" <&3 || echo 'install: cannot restore terminal settings' >&2; fi
 	pass= again= answer=
+	# The secrets first: a mount that stays must not keep them.
+	if [ -n "$work" ]; then rm -rf "$work/owner.pass" "$work/luks.key" "$work/iwd" || bad=1; fi
+	if [ -n "$backup_mounted" ]; then
+		if umount "$work/backup"; then backup_mounted=; else bad=1; fi
+	fi
 	if [ -n "$esp_mounted" ]; then
 		if umount "$work/esp"; then esp_mounted=; else bad=1; fi
 	fi
@@ -80,64 +79,40 @@ finish() {
 	# A second interrupt must not cut this short: it removes the owner's hash and the mappings.
 	trap '' HUP INT TERM
 	cleanup || { echo 'install: cleanup failed; inspect mounts and mappings' >&2; status=1; }
+	if [ "$status" != 0 ] && [ -n "$wiped" ]; then
+		echo "install: $disk was repartitioned and holds no working system; start the installer again" >&2
+	fi
 	[ "$status" = 0 ] || die "installation did not complete"
 }
 trap 'finish $?' 0
 trap 'die interrupted' HUP INT TERM
 
-ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "terminal closed"; }
+# End of input refuses: the install image's init starts the installer again.
+ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "end of input"; }
+say() { printf '%s\n' "$*" >&3; }
+# Typed twice with echo off; leaves it in $pass.
 secret() {
-	while :; do
-	if [ -n "$image_install" ]; then
-		# Echo off before the prompt: a fast sender would otherwise be shown.
-		if [ -n "$tty_mode" ]; then run stty -echo <&3; printf '%s: ' "$1" >&2; fi
-		IFS= read -r pass <&3 || [ -n "$pass" ] || die "missing $1 on stdin"
-		# Typed at a terminal: one hidden typo would lock the laptop, so ask twice. Piped stdin stays one line.
-		if [ -n "$tty_mode" ]; then
-			printf '\nRepeat %s: ' "$1" >&2
-			IFS= read -r again <&3 || :
-			run stty "$tty_mode" <&3; printf '\n' >&2
-			[ "$pass" = "$again" ] || die 'the two entries differ'
-			again=
-		fi
-		case $pass in *"$cr"*) die "the $1 has a carriage return (a Windows line ending)" ;; esac
-		[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
-		[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
-	else
 	run stty -echo <&3
 	ask "$1: "
 	pass=$answer
 	ask "
 Repeat $1: "
-	again=$answer
-	answer=
+	again=$answer answer=
 	run stty "$tty_mode" <&3
 	printf '\n' >&3
-	[ "$pass" = "$again" ] || die "the two entries differ"
-	case $pass in *"$cr"*) die "the $1 has a carriage return" ;; esac
-	[ "${#pass}" -ge 12 ] || die 'Use at least 12 bytes.'
-	[ "${#pass}" -le 256 ] || die 'Use at most 256 bytes.'
+	if [ "$pass" != "$again" ]; then pass= again=; say 'The two entries differ.'; return 1; fi
 	again=
-	fi
-	if [ "$1" = 'LUKS passphrase' ]; then
-		case $pass in *[!\ -~]*)
-			pass= again=
-			[ -z "$image_install" ] || die 'Use only printable ASCII for the LUKS passphrase (space through ~).'
-			echo 'Use only printable ASCII for the LUKS passphrase (space through ~).' >&3
-			continue
-			;;
-		esac
-	fi
-	break
+}
+yes_no() {   # prompt: 0 for y, 1 for n or Enter
+	while :; do
+		ask "$1 [y/N]: "
+		case $answer in y | Y) return 0 ;; '' | n | N) return 1 ;; *) say 'Answer y or n.' ;; esac
 	done
 }
-cr=$(printf '\r')
 
 # Parse only manifest fields; never source cmdline-*.
-dir=$(cd "$1" && pwd -P) || die "no release directory"
-[ -f "$dir/manifest" ] || die "no manifest"
-# Checked and used only as private copies: the source may change underneath.
 work=$(mktemp -d /run/cv-install.XXXXXX) || die "cannot make work directory"
+[ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
 run cp "$input" "$work/config.yaml"
 input=$work/config.yaml
 # Revalidate the exact copy that will be retained.
@@ -146,15 +121,45 @@ if ! grep -q '^owner_login *:' "$input"; then owner=; fi
 owner=${CONVERGENT_INSTALL_OWNER:-$owner}
 target=$(cfg install.disk)
 state_size=$(cfg install.state_size)
-[ -z "$image_install" ] || state_size=auto
 swap=$(cfg install.swap)
-cp "$dir/manifest" "$work/manifest" || die "cannot read manifest"
-# The booted Convergent system's release key; the build host's disk images pass CONVERGENT_UNSIGNED=1.
-if [ "${CONVERGENT_UNSIGNED:-}" != 1 ]; then
-	key=/etc/convergent/release.pub
-	[ -f "$key" ] || die "this system trusts no release key; CONVERGENT_UNSIGNED=1 installs an unsigned release"
-	openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/manifest" -sigfile "$dir/manifest.sig" >/dev/null 2>&1 ||
-		die "the manifest signature does not verify"
+if [ -n "$stick" ]; then
+	# The manifests the install UKI carries vouch for everything; the install data counts only through them
+	# and is never listed. The running root is slot.img's own (its root hash is checked below).
+	src=/run/convergent-install-manifests data=/run/convergent-install
+	say "Convergent installer: release $(cat /usr/lib/convergent/release) ($(cat /usr/lib/convergent/version))"
+	say "Install boot: /var $(findmnt -nro FSTYPE /var), /home $(findmnt -nro FSTYPE /home), /tmp $(findmnt -nro FSTYPE /tmp); sysrq $(cat /proc/sys/kernel/sysrq), kptr_restrict $(cat /proc/sys/kernel/kptr_restrict)"
+	findmnt -nro FSTYPE,OPTIONS "$data" | awk '{n = split($2, o, ","); for (i = 1; i <= n; i++) s[o[i]] = 1
+		exit !(NR == 1 && $1 == "erofs" && s["ro"] && s["nodev"] && s["nosuid"] && s["noexec"])}' ||
+		die "the install data is not mounted read-only, nodev, nosuid and noexec"
+	ls -A "$src" >"$work/carried" || die "the install image carries no manifests"
+	manifests=manifest
+	for m in guests.manifest remmina.manifest; do
+		if grep -qx "$m" "$work/carried"; then manifests="$manifests $m"; fi
+	done
+	grep -qx guests.manifest "$work/carried" || die "the install image carries no guests.manifest"
+	for m in $manifests; do
+		cp "$src/$m" "$work/$m" || die "cannot read $m"
+	done
+	# A release that trusts a key has every manifest signed (a listing that succeeded says it trusts none).
+	ls -A /etc/convergent >"$work/etc-convergent" || die "cannot list /etc/convergent"
+	if grep -qx release.pub "$work/etc-convergent"; then
+		for m in $manifests; do
+			openssl pkeyutl -verify -pubin -inkey /etc/convergent/release.pub -rawin -in "$work/$m" -sigfile "$src/$m.sig" >/dev/null 2>&1 ||
+				die "the $m signature does not verify"
+		done
+	fi
+else
+	dir=$(cd "$1" && pwd -P) || die "no release directory"
+	[ -f "$dir/manifest" ] || die "no manifest"
+	# Checked and used only as private copies: the source may change underneath.
+	cp "$dir/manifest" "$work/manifest" || die "cannot read manifest"
+	# The booted Convergent system's release key; the build host's disk images pass CONVERGENT_UNSIGNED=1.
+	if [ "${CONVERGENT_UNSIGNED:-}" != 1 ]; then
+		key=/etc/convergent/release.pub
+		[ -f "$key" ] || die "this system trusts no release key; CONVERGENT_UNSIGNED=1 installs an unsigned release"
+		openssl pkeyutl -verify -pubin -inkey "$key" -rawin -in "$work/manifest" -sigfile "$dir/manifest.sig" >/dev/null 2>&1 ||
+			die "the manifest signature does not verify"
+	fi
 fi
 release=$(awk '$1 == "release" { print $2 }' "$work/manifest") || die "cannot read manifest"
 case $release in '' | *[!0-9]*) die "the manifest names no release" ;; esac
@@ -173,14 +178,56 @@ awk -v r="$release" '
 	{ exit 1 }
 	END { if (release != 1 || kernel != 1 || root != 1 || n != 3) exit 1 }
 ' "$work/manifest" || die "malformed manifest"
-grep -E '^[0-9a-f]{64}  ' "$work/manifest" | (cd "$dir" && sha256sum -c --quiet -) ||
-	die "the release does not match its manifest"
-cp "$dir/slot.img" "$work/slot.img" || die "cannot read slot.img"
 sum=$(awk '$2 == "slot.img" && length($1) == 64 { print $1 }' "$work/manifest") || die "no slot checksum"
-[ "$(sha256sum <"$work/slot.img" | cut -d' ' -f1)" = "$sum" ] || die "slot.img does not match the manifest"
-size=$(stat -c %s "$work/slot.img") || die "cannot size slot.img"
+if [ -n "$stick" ]; then
+	# Guest files by their published paths, each with a size, and an unpacked size for each .zst.
+	for m in $manifests; do
+		[ "$m" != manifest ] || continue
+		awk -v r="$release" '
+			function ok(p) { return p ~ /^guests\/(fw|wan|svc|browser|remmina)\/([A-Za-z0-9._-]+|incus\/[A-Za-z0-9._-]+\.yaml)$/ && p !~ /\/\.\.?$/ }
+			$1 == "release" && NF == 2 { if ($2 != r || rel++) bad = 1; next }
+			$1 == "guest" && NF == 3 && $2 ~ /^(fw|wan|svc|browser|remmina)$/ && length($3) == 64 && $3 !~ /[^0-9a-f]/ { next }
+			($1 == "size" || $1 == "unpacked") && NF == 3 && $3 ~ /^[1-9][0-9]*$/ && ok($2) { if (seen[$1, $2]++) bad = 1; next }
+			length($1) == 64 && $1 !~ /[^0-9a-f]/ && NF == 2 && substr($0, 65, 2) == "  " && ok($2) { if (hash[$2]++) bad = 1; n++; next }
+			{ bad = 1 }
+			END {
+				for (p in hash) if (!seen["size", p] || (p ~ /\.zst$/ && !seen["unpacked", substr(p, 1, length(p) - 4)])) bad = 1
+				for (k in seen) { split(k, f, SUBSEP); if (!hash[f[2]] && !hash[f[2] ".zst"]) bad = 1 }
+				exit bad || rel != 1 || !n
+			}' "$work/$m" || die "malformed $m"
+	done
+	roothash=$(awk '$1 == "roothash" { print $2 }' "$work/manifest")
+	[ "$(grep -o ' sha256 [0-9a-f]* ' /proc/cmdline)" = " sha256 $roothash " ] || die "the running root is not this release's slot.img"
+	parts=$(lsblk -nrpo NAME,PARTLABEL) || die "cannot list partitions"
+	p2=$(printf '%s\n' "$parts" | awk '$2 == "cv-inst-root" {print $1; n++} END {exit n != 1}') ||
+		die "not exactly one partition labelled cv-inst-root; detach other install media"
+	p3=$(printf '%s\n' "$parts" | awk '$2 == "cv-inst-data" {print $1; n++} END {exit n != 1}') ||
+		die "not exactly one partition labelled cv-inst-data; detach other install media"
+	[ "$(findmnt -nro SOURCE "$data")" = "$p3" ] || die "the install data is not this stick's cv-inst-data"
+	size=$(awk '$1 == "size" && $2 == "slot.img" { print $3 }' "$work/manifest")
+	[ "$(blockdev --getsize64 "$p2")" -ge "$size" ] || die "cv-inst-root is smaller than slot.img"
+	say 'Checking the release on this stick against its manifests (a few minutes)...'
+	[ "$(head -c "$size" "$p2" | sha256sum | cut -d' ' -f1)" = "$sum" ] || die "slot.img on the stick does not match the manifest"
+	grep -E '^[0-9a-f]{64}  ' "$work/manifest" | grep -v '  slot\.img$' | (cd "$data" && sha256sum -c --quiet -) ||
+		die "the UKIs on the stick do not match the manifest"
+	for m in $manifests; do
+		[ "$m" != manifest ] || continue
+		grep -E '^[0-9a-f]{64}  guests/' "$work/$m" | (cd "$data" && sha256sum -c --quiet -) ||
+			die "the guest files on the stick do not match $m"
+	done
+	slotsrc=$p2
+	ukisrc=$data
+else
+	grep -E '^[0-9a-f]{64}  ' "$work/manifest" | (cd "$dir" && sha256sum -c --quiet -) ||
+		die "the release does not match its manifest"
+	cp "$dir/slot.img" "$work/slot.img" || die "cannot read slot.img"
+	[ "$(sha256sum <"$work/slot.img" | cut -d' ' -f1)" = "$sum" ] || die "slot.img does not match the manifest"
+	size=$(stat -c %s "$work/slot.img") || die "cannot size slot.img"
+	slotsrc=$work/slot.img
+	ukisrc=$dir
+fi
 [ "$size" -gt 0 ] && [ $((size % 4096)) = 0 ] || die "invalid slot.img size"
-cp "$dir/convergent-$release-a.efi" "$work/uki" || die "cannot read the UKI"
+cp "$ukisrc/convergent-$release-a.efi" "$work/uki" || die "cannot read the UKI"
 [ "$(sha256sum <"$work/uki" | cut -d" " -f1)" = "$(awk -v f="convergent-$release-a.efi" '$2 == f && length($1) == 64 { print $1 }' "$work/manifest")" ] ||
 	die "the UKI does not match the manifest"
 [ "$size" -le $((slot_mib * 1048576)) ] || die "slot.img exceeds the $slot_mib MiB slot"
@@ -220,36 +267,21 @@ pe "$work/uki" uki || die "invalid slot A UKI"
 boot_size=$(stat -Lc %s "$bootloader") || die "cannot size systemd-boot"
 uki_size=$(stat -Lc %s "$work/uki") || die "cannot size UKI"
 # Include the larger slot UKI when reserving space for both releases.
-other_uki_size=$(stat -Lc %s "$dir/convergent-$release-b.efi") || die "cannot size slot B UKI"
+other_uki_size=$(awk -v f="convergent-$release-b.efi" '$1 == "size" && $2 == f { print $3 }' "$work/manifest")
 [ "$uki_size" -ge "$other_uki_size" ] || uki_size=$other_uki_size
 
-# Resolve the live root's disks; refuse RAM/overlay roots.
-bootdisks=
-if [ -z "$image_install" ]; then
+# Resolve the live root's disks (and the install data's); refuse RAM/overlay roots.
 rootdev=$(findmnt -nro SOURCE /) || die "cannot identify the live root"
 rootdev=$(readlink -f "$rootdev") || die "cannot resolve the live root"
 [ -b "$rootdev" ] || die "the live root is not block-backed; cannot identify the stick"
-ancestry=$(lsblk -snrpo NAME,TYPE "$rootdev") || die "cannot trace the live root"
-bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" { print $1 }')
+ancestry=$(lsblk -snrpo NAME,TYPE "$rootdev" ${p3:+"$p3"}) || die "cannot trace the live root"
+bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" && !seen[$1]++ { print $1 }')
 [ -n "$bootdisks" ] || die "cannot identify the boot disk"
-[ "$(cat /sys/class/drm/renderD128/device/vendor)" = 0x8086 ] ||
-	die "/dev/dri/renderD128 must be the Intel render node"
-run lsblk -p -o NAME,SIZE,TYPE,MODEL,SERIAL,MOUNTPOINTS
-if [ "$target" = auto ]; then typed=$(install_target); else typed=$target; fi
-else
-	typed=$image_install
-fi
-case $typed in /dev/*) ;; *) die "enter an absolute /dev disk path" ;; esac
-disk=$(readlink -f "$typed") || die "cannot resolve target"
 
 check_disk() {
 	[ -b "$disk" ] || die "not a block device: $disk"
 	kind=$(lsblk -dnro TYPE "$disk") || die "cannot identify target"
-	if [ -n "$image_install" ]; then
-		[ "$kind" = loop ] || die "build target must be a whole loop device"
-	else
-		[ "$kind" = disk ] || die "target must be a whole physical disk"
-	fi
+	[ "$kind" = disk ] || die "target must be a whole physical disk"
 	for d in $bootdisks; do [ "$disk" != "$d" ] || die "refusing the boot stick"; done
 	ro=$(blockdev --getro "$disk") || die "cannot read target flags"
 	[ "$ro" = 0 ] || die "target is read-only"
@@ -261,16 +293,6 @@ check_disk() {
 			[ ! -e "$holder" ] || die "target has an active block-device holder"
 		done
 	done
-}
-check_disk
-identity=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk") || die "cannot identify target"
-diskseq=
-if [ -e "/sys/block/${disk##*/}/diskseq" ]; then
-	diskseq=$(cat "/sys/block/${disk##*/}/diskseq") || die "cannot read target diskseq"
-fi
-check_identity() {
-	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
-	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
 }
 # Replace this disk's earlier entries of the same label ($2: their partition GUIDs); others stay. A dd clone
 # shares the GUIDs, but firmware cannot tell such disks apart either.
@@ -286,32 +308,45 @@ boot_entry() {
 	for n in $stale; do efibootmgr -b "$n" -B >/dev/null || return; done
 	efibootmgr --create --disk "$disk" --part 1 --label "$1" --loader '\EFI\systemd\systemd-bootx64.efi' >/dev/null
 }
-serial=$(lsblk -dnro SERIAL "$disk") || die "cannot read target serial"
-disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
-minimum_mib=32768
-[ -z "$image_install" ] || minimum_mib=12288
-install_size "$disk_size" "$minimum_mib"
-printf 'Release %s; %s; ESP %s MiB; slots %s MiB each; state %s MiB (%s); swap %s.\n' \
-	"$release" "$disk" "$esp_mib" "$slot_mib" "$state_mib" "$state_size" "$swap"
-if [ -z "$image_install" ]; then
-ask "Type $typed again, or ERASE followed by a space and serial $serial: "
-if [ "$answer" != "$typed" ]; then
-	[ -n "$serial" ] && [ "$answer" = "ERASE $serial" ] || die "erase confirmation did not match"
-fi
-fi
+# The USB port a disk hangs off, or nothing for a disk elsewhere.
+usb_port() {
+	usb=$(readlink -f "/sys/class/block/${1##*/}/device") || return 1
+	while [ -n "$usb" ] && [ ! -f "$usb/idVendor" ]; do usb=${usb%/*}; done
+	[ -z "$usb" ] || printf '%s\n' "${usb##*/}"
+}
+# The whole disks: name, size, transport, serial, model (tab-separated; lsblk -P keeps empty fields).
+list_disks() {
+	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,SERIAL,MODEL >"$work/lsblk" || die "cannot list the disks"
+	awk '{
+		split("", v); line = $0
+		while (match(line, /^[A-Z:]+="[^"]*"/)) {
+			kv = substr(line, 1, RLENGTH); line = substr(line, RLENGTH + 2)
+			v[substr(kv, 1, index(kv, "=") - 1)] = substr(kv, index(kv, "=") + 2, length(kv) - index(kv, "=") - 2)
+		}
+		if (v["TYPE"] == "disk") print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" v["SERIAL"] "\t" v["MODEL"]
+	}' "$work/lsblk" >"$work/disks" || die "cannot read the disk list"
+}
+show_disks() {
+	awk -F '\t' -v boot=" $(printf '%s ' $bootdisks)" '{n[$4]++; line[NR] = $0} END {
+		for (i = 1; i <= NR; i++) {
+			split(line[i], f, "\t")
+			s = f[4] == "" ? "no serial" : n[f[4]] > 1 ? "serial " f[4] " (shared)" : "serial " f[4]
+			printf "  %s  %s  %s  %s  %s%s\n", f[1], f[2], f[3] == "" ? "-" : f[3], s, f[5], index(boot, " " f[1] " ") ? "  (this stick)" : ""
+		}
+	}' "$work/disks" >&3
+}
+disk_field() { awk -F '\t' -v d="$1" -v f="$2" '$1 == d {print $f}' "$work/disks"; }
 
-# Prepare account hashes in /run before erasing.
-[ "$(findmnt -nro FSTYPE -T /run)" = tmpfs ] || die "/run must be tmpfs"
 run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state"
-loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
-run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
-image_mounted=1
-# Compare with the selected release, not the builder's current topology.
-if [ -n "$image_install" ]; then
-	for kind in fw wan; do
-		cmp -s "$CONVERGENT_INSTALL_GUESTS/$kind/topology.sha256" "$work/image/etc/convergent/topology.sha256" ||
-			die "$kind image topology differs from host release"
-	done
+if [ -n "$stick" ]; then
+	# The running root, verity-checked against the manifest's root hash; a bind leaves out the tmpfs mounts.
+	run mount --bind / "$work/image"
+	image_mounted=1
+	run mount -o remount,bind,ro,nodev,nosuid,noexec "$work/image"
+else
+	loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
+	run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
+	image_mounted=1
 fi
 if [ "$state_size" != auto ]; then
 	[ -f "$work/image/usr/lib/convergent/install-options.sh" ] || die "release does not support bounded install.state_size"
@@ -339,16 +374,94 @@ for f in passwd shadow group gshadow subuid subgid; do
 	[ -f "$work/image/etc/$f" ] && [ ! -L "$work/image/etc/$f" ] || die "no regular image /etc/$f"
 	run cp -a "$work/image/etc/$f" "$work/accounts/etc/$f"
 done
-if [ -z "$owner" ]; then
-	# In image mode fd 3 carries the passwords.
-	[ -z "$image_install" ] || die "set the owner login in the config or CONVERGENT_INSTALL_OWNER"
-	printf 'Owner login name: ' >&2
-	IFS= read -r owner <&3 || die 'missing owner login'
+for f in localtime timezone usbguard/rules.conf; do
+	grep -qx "$f" "$work/image/usr/lib/convergent/etc-state" || die "/etc/$f is not state-bound"
+done
+# xkeyboard-config links X11/xkb absolutely: resolve it inside the image root.
+xkb=$(readlink "$work/image/usr/share/X11/xkb") || xkb=/usr/share/X11/xkb
+case $xkb in /*) ;; *) xkb=/usr/share/X11/$xkb ;; esac
+evdev=$work/image$xkb/rules/evdev.lst
+
+# 0. The hardware: outside the supported list, or without the Intel render node, only by typing it.
+vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) || vendor=
+product=$(cat /sys/class/dmi/id/product_name 2>/dev/null) || product=
+say "Hardware: ${vendor:-unknown} ${product:-unknown}"
+supported=
+if [ -n "$vendor" ] && [ -n "$product" ] && grep -qxF "$vendor|$product" "$work/image/usr/lib/convergent/install-hardware"; then
+	supported=1
 fi
-case $owner in '' | [!a-z_]* | *[!a-z0-9_-]*) die "use a lowercase login name" ;; esac
-[ "${#owner}" -le 32 ] || die "login name is too long"
-for f in passwd shadow group gshadow subuid subgid; do
-	if grep -q "^$owner:" "$work/accounts/etc/$f"; then die "account name already exists"; fi
+gpu=$(cat /sys/class/drm/renderD128/device/vendor 2>/dev/null) || gpu=
+if [ "$gpu" != 0x8086 ]; then
+	supported=
+	say 'No Intel render node (/dev/dri/renderD128): the desktop and the browsers need one.'
+fi
+while [ -z "$supported" ]; do
+	ask 'This hardware is not supported. Type "continue anyway" to install all the same, or q to quit: '
+	case $answer in
+	'continue anyway') break ;;
+	q) die 'stopped at the hardware check' ;;
+	*) say 'Type continue anyway, or q.' ;;
+	esac
+done
+
+# 1. The target: any whole disk but the stick's; one holding a Convergent system only when retyped.
+while :; do
+	list_disks
+	say 'Disks:'
+	show_disks
+	if [ "$target" = auto ]; then default=$( (install_target) 2>/dev/null) || default=; else default=$target; fi
+	if [ -n "$default" ]; then
+		ask "Target disk [$default]: "
+		typed=${answer:-$default}
+	else
+		ask 'Target disk (its /dev path): '
+		typed=$answer
+	fi
+	case $typed in /dev/?*) ;; *) say 'Enter an absolute /dev disk path.'; continue ;; esac
+	disk=$(readlink -f "$typed") || { say "Cannot resolve $typed."; continue; }
+	if ! msg=$( (check_disk) 2>&1); then say "$msg"; continue; fi
+	disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
+	if ! msg=$( (install_size "$disk_size" 32768) 2>&1); then say "$msg"; continue; fi
+	# Another disk with these labels would stop the installed system at boot (dm-mod.waitfor, cv-state).
+	other=
+	names=$(awk -F '\t' '{print $1}' "$work/disks")
+	for d in $names; do
+		[ "$d" != "$disk" ] || continue
+		case " $(printf '%s ' $bootdisks)" in *" $d "*) continue ;; esac
+		labels=$(lsblk -nrpo PARTLABEL "$d") || die "cannot read the partitions of $d"
+		if printf '%s\n' "$labels" | grep -qx -e cv-slot-a -e cv-slot-b -e cv-state; then
+			say "$d holds a Convergent system: the installed laptop would not boot beside it. Detach it, or choose it as the target."
+			other=1
+		fi
+	done
+	[ -z "$other" ] || continue
+	labels=$(lsblk -nrpo PARTLABEL "$disk") || die "cannot read the partitions of $disk"
+	if printf '%s\n' "$labels" | grep -qx -e cv-slot-a -e cv-slot-b -e cv-state; then
+		ask "$typed holds a Convergent system. Type REINSTALL $typed to replace it, or Enter to choose another disk: "
+		[ "$answer" = "REINSTALL $typed" ] || continue
+	fi
+	break
+done
+identity=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk") || die "cannot identify target"
+diskseq=
+if [ -e "/sys/block/${disk##*/}/diskseq" ]; then
+	diskseq=$(cat "/sys/block/${disk##*/}/diskseq") || die "cannot read target diskseq"
+fi
+check_identity() {
+	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
+	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
+}
+serial=$(disk_field "$disk" 4)
+shared=$(awk -F '\t' -v s="$serial" '$4 == s {n++} END {print n + 0}' "$work/disks")
+model=$(disk_field "$disk" 5)
+install_size "$disk_size" 32768
+
+# 2. The owner.
+while :; do
+	if [ -z "$owner" ]; then ask 'Owner login name: '; owner=$answer; fi
+	if msg=$(owner_valid "$owner" "$work/accounts/etc"); then break; fi
+	say "$msg"
+	owner=
 done
 printf 'CREATE_MAIL_SPOOL=no\n' >"$work/accounts/etc/default/useradd" || die "cannot write useradd defaults"
 # seatd uses seat; video may set the backlight; Gentoo udev gives serial devices to dialout.
@@ -361,9 +474,16 @@ run useradd -P "$work/accounts" -U -M -l -s /bin/sh -G wheel,seat,audio,video,di
 	-K SUB_UID_COUNT=65536 -K SUB_GID_COUNT=65536 "$owner"
 run usermod -P "$work/accounts" -L root
 
-secret 'Owner password'
+# 3. The password: hashed at once; the plain copy stays only to tell the LUKS passphrase apart.
+while :; do
+	secret 'Owner password' || continue
+	if msg=$(secret_valid "$pass"); then break; fi
+	say "$msg"
+	pass=
+done
 printf '%s:%s\n' "$owner" "$pass" | chpasswd -P "$work/accounts" -c YESCRYPT -s 5 ||
 	die "could not hash password with yescrypt"
+printf '%s' "$pass" >"$work/owner.pass" || die "cannot keep the password for the comparison"
 pass=
 awk -F: -v u="$owner" '$1 == u && $2 ~ /^\$y\$/ { ok=1 } END { exit !ok }' \
 	"$work/accounts/etc/shadow" || die "owner password is not yescrypt"
@@ -373,43 +493,148 @@ for f in subuid subgid; do
 done
 uid=$(awk -F: -v u="$owner" '$1 == u { print $3 }' "$work/accounts/etc/passwd")
 gid=$(awk -F: -v u="$owner" '$1 == u { print $4 }' "$work/accounts/etc/passwd")
-# Build media uses a class policy; physical installs exclude the boot stick.
-grep -qx usbguard/rules.conf "$work/image/usr/lib/convergent/etc-state" ||
-	die "USBGuard policy is not state-bound"
-if [ -n "$image_install" ]; then
-	cat >"$work/usb.rules" <<'EOF'
-# Regenerate on the laptop with only trusted devices attached, including this stick.
-allow with-interface match-all { 03:*:* 08:*:* }
-allow with-interface 09:*:*
-block
-EOF
-else
-: >"$work/stick-ports"
-for d in $bootdisks; do
-	usb=$(readlink -f "/sys/class/block/${d##*/}/device") || die "cannot trace stick USB path"
-	while [ -n "$usb" ] && [ ! -f "$usb/idVendor" ]; do usb=${usb%/*}; done
-	[ -f "$usb/idVendor" ] || die "boot disk is not USB: $d"
-	printf '%s\n' "${usb##*/}" >>"$work/stick-ports"
+
+# 4. The LUKS passphrase: the initramfs prompt types US ASCII.
+while :; do
+	secret 'LUKS passphrase' || continue
+	if msg=$(luks_valid "$pass" "$work/owner.pass"); then break; fi
+	say "$msg"
+	pass=
 done
-usbguard generate-policy -p >"$work/usb.all" || die "cannot generate USBGuard policy"
-awk '
-	NR == FNR { ports[$0]=0; next }
-	{
-		for (p in ports)
-			if (index($0, " via-port \"" p "\"")) { ports[p]++; next }
-		print
-	}
-	END { for (p in ports) if (!ports[p]) exit 1 }
-' "$work/stick-ports" "$work/usb.all" >"$work/usb.rules" || die "install stick missing from USB policy"
-[ -s "$work/usb.rules" ] || die "empty USBGuard policy"
-fi
-secret 'LUKS passphrase'
+printf '%s' "$pass" >"$work/luks.key" || die "cannot keep the LUKS passphrase"
+pass=
+run rm "$work/owner.pass"
+
+# 5. Keyboard layouts and 6. the time zone.
+while :; do
+	ask 'Keyboard layouts [us,sk(qwerty),ru]: '
+	layouts=${answer:-'us,sk(qwerty),ru'}
+	if msg=$(layouts_valid "$layouts" "$evdev"); then break; fi
+	say "$msg"
+done
+case $layouts in us | us,* | 'us('*) ;; *) say 'The LUKS prompt and the login screen use US keys whichever layout comes first.' ;; esac
+while :; do
+	ask 'Time zone, such as Europe/Bratislava [UTC]: '
+	zone=${answer:-UTC}
+	if zone_valid "$zone" "$work/image/usr/share/zoneinfo"; then break; fi
+	say "Not an installed time zone: $zone"
+done
+
+# 7. Wi-Fi for the first update: an iwd profile wan imports at the first guest setup.
+ssid= hidden=n
+while yes_no 'Join a Wi-Fi network for the first update?'; do
+	while :; do
+		ask 'Network name (SSID): '
+		ssid=$answer
+		if msg=$(ssid_valid "$ssid"); then break; fi
+		say "$msg"
+	done
+	if yes_no 'Is it a hidden network?'; then hidden=y; else hidden=n; fi
+	rc=0
+	while :; do
+		secret 'Wi-Fi passphrase (Enter for an open network)' || continue
+		rc=0; msg=$(wifi_pass_valid "$pass") || rc=$?
+		[ "$rc" = 1 ] || break
+		say "$msg"
+		pass=
+	done
+	if [ "$rc" = 2 ]; then say "$msg"; pass= ssid=; continue; fi
+	if [ -n "$pass" ]; then wifi_file=$(iwd_name "$ssid" psk); else wifi_file=$(iwd_name "$ssid" open); fi
+	run mkdir -p "$work/iwd"
+	iwd_profile "$hidden" "$pass" >"$work/iwd/$wifi_file" || die "cannot write the Wi-Fi profile"
+	pass=
+	break
+done
+
+# 8. USB devices: what is attached now stays allowed, but this stick; the target's own port is kept.
+stick_ports=
+for d in $bootdisks; do
+	port=$(usb_port "$d") || die "cannot trace stick USB path"
+	[ -n "$port" ] || die "boot disk is not USB: $d"
+	stick_ports="$stick_ports$port
+"
+done
+target_port=$(usb_port "$disk") || die "cannot trace the target's path"
+printf '%s' "$stick_ports" >"$work/stick-ports"
+while :; do
+	ask 'Attach everything you rely on (keyboard, mouse, dock, wired network adapter), then press Enter: '
+	usbguard generate-policy -p >"$work/usb.all" || die "cannot generate USBGuard policy"
+	awk '
+		NR == FNR { ports[$0]=0; next }
+		{
+			for (p in ports)
+				if (index($0, " via-port \"" p "\"")) { ports[p]++; next }
+			print
+		}
+		END { for (p in ports) if (!ports[p]) exit 1 }
+	' "$work/stick-ports" "$work/usb.all" >"$work/usb.rules" || die "install stick missing from USB policy"
+	[ -s "$work/usb.rules" ] || die "empty USBGuard policy"
+	[ -z "$target_port" ] || grep -qF " via-port \"$target_port\"" "$work/usb.rules" || die "the target disk is missing from the USB policy"
+	say 'USB devices the installed system allows (port, name):'
+	sed -n 's/.* name "\([^"]*\)".* via-port "\([^"]*\)".*/\2  \1/p' "$work/usb.rules" |
+		awk -v t="$target_port" '{print "  " $0 (t != "" && $1 == t ? "  (the install target)" : "")}' >&3
+	while :; do
+		ask 'Enter keeps this list; r scans again: '
+		case $answer in '' | r) break ;; *) say 'Press Enter, or type r.' ;; esac
+	done
+	[ "$answer" = r ] || break
+done
+
+# 9. A LUKS header backup at the end: a filesystem on another disk, never the stick or the target.
+backup=
+while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
+	: >"$work/backup-parts"
+	names=$(awk -F '\t' '{print $1}' "$work/disks")
+	for d in $names; do
+		[ "$d" != "$disk" ] || continue
+		case " $(printf '%s ' $bootdisks)" in *" $d "*) continue ;; esac
+		lsblk -nrpo NAME,TYPE,FSTYPE "$d" >"$work/parts" || die "cannot read the partitions of $d"
+		awk -v d="$d" '($2 == "part" || $2 == "disk") && ($3 == "vfat" || $3 == "exfat" || $3 == "ext4") {print $1, $3, d}' "$work/parts" >>"$work/backup-parts"
+	done
+	if [ ! -s "$work/backup-parts" ]; then say 'No FAT, exFAT or ext4 filesystem on another disk; attach one, then answer again.'; continue; fi
+	say 'Filesystems for the backup:'
+	while read -r part fs parent; do say "  $part  $fs  $(disk_field "$parent" 5)"; done <"$work/backup-parts"
+	ask 'Backup filesystem (its /dev path): '
+	line=$(awk -v p="$answer" '$1 == p' "$work/backup-parts")
+	[ -n "$line" ] || { say "Not one of the listed filesystems: $answer"; continue; }
+	set -- $line
+	say 'The backup opens this disk with the passphrase you just chose, even after you change it: keep it as safe.'
+	if yes_no "Write the header backup to $1 on $(disk_field "$3" 5)?"; then
+		backup=$1 backup_fs=$2 backup_disk=$3
+		backup_id=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk") || die "cannot identify $backup_disk"
+		break
+	fi
+done
+
+# 10. The summary, then the erase confirmation; a wrong answer erases nothing.
+tries=0
+while :; do
+	say ''
+	say 'Summary:'
+	say "  Release $release; target $typed: ${model:-no model}, $(disk_field "$disk" 2), ${serial:+serial }${serial:-no serial}"
+	say "  ESP $esp_mib MiB; slots $slot_mib MiB each; state $state_mib MiB ($state_size); swap $swap"
+	say "  Owner $owner; keyboard $layouts; time zone $zone"
+	if [ -n "$ssid" ]; then say "  Wi-Fi $ssid$( [ "$hidden" = n ] || echo ' (hidden)')"; else say '  Wi-Fi none'; fi
+	say "  USB devices allowed: $(grep -c '^allow' "$work/usb.rules")"
+	say "  LUKS header backup: ${backup:-no}"
+	if [ -n "$serial" ] && [ "$shared" = 1 ]; then
+		ask "Erase $typed: type $typed again, or ERASE followed by a space and serial $serial: "
+	else
+		ask "Erase $typed: type $typed again: "
+	fi
+	if erase_ok "$answer" "$typed" "$serial" "$shared"; then break; fi
+	say 'Nothing was erased.'
+	tries=$((tries + 1))
+	[ "$tries" -lt 3 ] || die 'the erase confirmation did not match three times; nothing was erased'
+done
 
 # Recheck target identity; use disk-local partition paths.
 check_disk
 check_identity
 # Earlier boot entries for this disk point at these partitions.
 old_guids=$(lsblk -nro PARTUUID "$disk") || die "cannot read partitions of $disk"
+say "Erasing $disk."
+wiped=1
 run sgdisk --zap-all "$disk"
 check_identity
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
@@ -426,22 +651,24 @@ for p in 1 2 3 4; do
 done
 esp=${prefix}1 slota=${prefix}2 slotb=${prefix}3 state=${prefix}4
 check_identity
-run dd if="$work/slot.img" of="$slota" bs=1M conv=fsync status=none
+say 'Writing slot A.'
+run dd if="$slotsrc" of="$slota" bs=1M iflag=count_bytes count="$size" conv=fsync status=none
 run blockdev --flushbufs "$slota"
 [ "$(head -c "$size" "$slota" | sha256sum | cut -d' ' -f1)" = "$sum" ] || die "slot A readback differs"
 check_identity
 run dd if=/dev/zero of="$slotb" bs=1M count="$slot_mib" conv=fsync status=none
 
 # Argon2id: 1 GiB, four passes, four lanes.
+say 'Encrypting the state partition.'
 check_identity
-printf '%s' "$pass" | cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
-	--pbkdf-memory 1048576 --pbkdf-force-iterations 4 --pbkdf-parallel 4 --key-file - "$state" ||
+cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id \
+	--pbkdf-memory 1048576 --pbkdf-force-iterations 4 --pbkdf-parallel 4 --key-file "$work/luks.key" "$state" ||
 	die "could not format LUKS"
 mapname=cv-install-$$
 [ ! -e "/dev/mapper/$mapname" ] || die "mapping already exists"
-printf '%s' "$pass" | cryptsetup open --type luks2 --key-file - "$state" "$mapname" || die "could not open LUKS"
+cryptsetup open --type luks2 --key-file "$work/luks.key" "$state" "$mapname" || die "could not open LUKS"
 mapper=$mapname
-pass=
+run rm "$work/luks.key"
 check_identity
 run mkfs.btrfs -q "/dev/mapper/$mapper"
 run mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec "/dev/mapper/$mapper" "$work/state"
@@ -451,8 +678,12 @@ run mkdir "$work/state/etc" "$work/state/home/$owner"
 for f in passwd shadow group gshadow subuid subgid; do
 	run cp -a "$work/accounts/etc/$f" "$work/state/etc/$f"
 done
+# The zone as sys time sets it: boot copies localtime again from the zone it names.
+run cp "$work/image/usr/share/zoneinfo/$zone" "$work/state/etc/localtime"
+printf '%s\n' "$zone" >"$work/state/etc/timezone" || die "cannot write the time zone"
 run chown 0:0 "$work/state/etc/"*
-run chmod 0644 "$work/state/etc/passwd" "$work/state/etc/group" "$work/state/etc/subuid" "$work/state/etc/subgid"
+run chmod 0644 "$work/state/etc/passwd" "$work/state/etc/group" "$work/state/etc/subuid" "$work/state/etc/subgid" \
+	"$work/state/etc/localtime" "$work/state/etc/timezone"
 # root:shadow 0640: the lock screen checks passwords through unix_chkpwd, which is setgid shadow.
 shadow_gid=$(awk -F: '$1 == "shadow" { print $3 }' "$work/state/etc/group") || shadow_gid=
 case $shadow_gid in '' | *[!0-9]*) die "no shadow group in the image" ;; esac
@@ -463,6 +694,12 @@ run mkdir "$work/state/etc/usbguard"
 run cp "$work/usb.rules" "$work/state/etc/usbguard/rules.conf"
 run chmod 0600 "$work/state/etc/usbguard/rules.conf"
 if [ -d "$work/image/etc/skel" ]; then run cp -a "$work/image/etc/skel/." "$work/state/home/$owner/"; fi
+# The layouts in sys keyboard's file.
+run mkdir -p "$work/state/home/$owner/.config/sway/config.d"
+printf 'input type:keyboard xkb_variant ""\ninput type:keyboard xkb_layout "%s"\ninput type:keyboard xkb_variant "%s"\n' \
+	"$(printf '%s\n' "$layouts" | sed 's/([^)]*)//g')" \
+	"$(printf '%s\n' "$layouts" | sed 's/[a-z][a-z]*\((\([^)]*\))\)\{0,1\}/\2/g')" >"$work/state/home/$owner/.config/sway/config.d/input" ||
+	die "cannot write the keyboard layouts"
 run chown -R "$uid:$gid" "$work/state/home/$owner"
 run chmod 0700 "$work/state/home/$owner"
 # Keep swap outside /var snapshots; retain only non-secret install inputs.
@@ -481,10 +718,38 @@ case $swap in
 		run btrfs filesystem mkswapfile --size "$((swap_mib * 1048576))" "$work/state/swap/swapfile"
 		;;
 esac
-# First boot records good/highest through the normal checks.
-if [ -n "$image_install" ]; then
-	run mkdir -p "$var/lib/convergent/release-guests/guests"
-	run cp -a "$CONVERGENT_INSTALL_GUESTS/." "$var/lib/convergent/release-guests/guests/"
+if [ -d "$work/iwd" ]; then
+	run mkdir -p "$var/lib/convergent/install/iwd"
+	run cp "$work/iwd/$wifi_file" "$var/lib/convergent/install/iwd/$wifi_file"
+fi
+# The guests as published: each copy checked again, each .zst unpacked to its size, then SHA256SUMS.
+if [ -n "$stick" ]; then
+	say 'Copying the guests.'
+	guests=$var/lib/convergent/release-guests
+	for m in $manifests; do
+		[ "$m" != manifest ] || continue
+		grep -E '^[0-9a-f]{64}  guests/' "$work/$m" >"$work/guest-files" || die "no guest files in $m"
+		while read -r hash path; do
+			run mkdir -p "$guests/${path%/*}"
+			cp "$data/$path" "$guests/$path" || die "cannot copy $path"
+			[ "$(sha256sum <"$guests/$path" | cut -d' ' -f1)" = "$hash" ] || die "$path changed on the stick"
+			case $path in
+			*.zst)
+				out=${path%.zst}
+				unpacked=$(awk -v p="$out" '$1 == "unpacked" && $2 == p { print $3 }' "$work/$m")
+				(rc=0; zstd -q -d --long=27 -c "$guests/$path" || rc=$?; echo "$rc" >"$work/unpack-status") |
+					head -c $((unpacked + 1)) >"$guests/$out"
+				[ "$(cat "$work/unpack-status")" = 0 ] && [ "$(stat -c %s "$guests/$out")" = "$unpacked" ] ||
+					die "$path does not unpack to its size"
+				run rm "$guests/$path"
+				;;
+			esac
+		done <"$work/guest-files"
+	done
+	for kind in fw wan svc browser remmina; do
+		[ -d "$guests/guests/$kind" ] || continue
+		(cd "$guests/guests/$kind" && sha256sum -c --quiet SHA256SUMS) || die "$kind guest files do not match SHA256SUMS"
+	done
 fi
 
 check_identity
@@ -511,18 +776,36 @@ run cmp -s "$work/uki" "$dst.new"
 run sync
 run mv "$dst.new" "$dst"
 run sync
-if [ -z "$image_install" ]; then
-	name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/usr/lib/os-release")
-	# EFI/BOOT/BOOTX64.EFI already boots it; a firmware that refuses the entry is not fatal.
-	boot_entry "${name:-Linux}" "$old_guids" ||
-		echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
+name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/usr/lib/os-release")
+# EFI/BOOT/BOOTX64.EFI already boots it; a firmware that refuses the entry is not fatal.
+boot_entry "${name:-Linux}" "$old_guids" ||
+	echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
+# The header backup, mounted only to write it; a failure leaves the installed system complete.
+saved=
+if [ -n "$backup" ]; then
+	file=cv-luks-header-$(printf '%s' "${serial:-noserial}" | tr -c 'A-Za-z0-9._-' _)-$(date -u +%Y%m%d-%H%M%S)
+	if [ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk")" = "$backup_id" ] && mkdir "$work/backup" &&
+		mount -t "$backup_fs" -o nodev,nosuid,noexec "$backup" "$work/backup"; then
+		backup_mounted=1
+		if cryptsetup luksHeaderBackup "$state" --header-backup-file "$work/backup/$file" && sync; then saved=$file; fi
+		run umount "$work/backup"
+		backup_mounted=
+	fi
 fi
 cleanup || die "could not close the installed system"
 printf 'Installed release %s on %s for %s.\nESP: %s MiB; slots: %s MiB each; encrypted state: %s MiB (%s); swap: %s.\n' \
 	"$release" "$disk" "$owner" "$esp_mib" "$slot_mib" "$state_mib" "$state_size" "$swap"
-if [ -n "$image_install" ]; then
-	printf 'Slot A verified, three boot tries; slot B empty. Guest images copied.\nThe first boot creates the guests (bar: SETUP).\nRegenerate /etc/usbguard/rules.conf on the laptop with only trusted devices attached, including this stick.\n'
-	exit 0
+if [ -n "$stick" ]; then
+	printf 'Slot A verified, three boot tries; slot B empty. Guests copied: the first boot creates them (bar: SETUP).\n'
+else
+	printf 'Slot A verified, three boot tries; slot B empty. First boot blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\n'
 fi
-printf 'Slot A verified, three boot tries; slot B empty. First boot blesses the release.\nHost only: the guests (wan, fw1, fw2, svc) are not installed yet.\nRemove the install stick after power-off, before booting.\n'
+if [ -n "$saved" ]; then
+	printf 'LUKS header backup: %s on %s. It keeps this passphrase valid for this disk.\n' "$saved" "$backup"
+elif [ -n "$backup" ]; then
+	printf 'install: the LUKS header backup on %s failed; the installed system is complete.\n' "$backup" >&2
+	printf "Press Enter to power off: " >&3
+	IFS= read -r answer <&3 || :
+fi
+printf 'Remove the install stick after power-off, before booting.\n'
 run poweroff

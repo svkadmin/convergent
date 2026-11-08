@@ -227,7 +227,7 @@ sed -n '/^# Mark bounded waits/,/^# End bounded waits/p' "$here/test" | sed '$d'
 echo 'test-vm-runner: timed firewall waits preserve replies and failures'
 for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to kill init'; do
     export signature
-    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update guests-topology online desktop update install install-tty1; do
+    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update guests-topology online desktop update install install-tty1 first-boot first-boot-dup; do
         goal=$mode
         case $mode in boot | fallback | interrupt | corrupt) goal=bless ;; esac
         export mode goal
@@ -291,30 +291,83 @@ for goal in ("guests-maint", "guests-update", "guests-topology"):
             assert state["result"] == want, (goal, guest, update, state["result"])
 print("test-vm-runner: both update halves and guests-maint require both verdicts")
 
-# The install image: the stub's last line on ttyS0, the console's pointer to tty1; never a look-alike.
-for goal, good, bad in (
-        ("install", [b"\r\nThis test build installs nothing. Press Ctrl-Alt-Del to restart.\r\n", b"This test build installs nothing."],
-         [b"echo This test build installs nothing.", b"\r\nThis test build installs", b"\r\nthis test build installs nothing."]),
-        ("install-tty1", [b"Convergent installer: running on tty1\r\n", b" * ok ]\r\nConvergent installer: running on tty1\n"],
-         [b"Convergent installer: running on tty10\r\n", b"Convergent installer: running on ttyS0\r\n",
-          b"xConvergent installer: running on tty1\r\n", b"Convergent installer: running on tty1"])):
-    state = dict(goal=goal, re=re)
-    exec(markers, state)
-    for seen in good:
-        assert re.search(state["install_markers"][goal], seen), (goal, seen)
-    for seen in bad:
-        assert not re.search(state["install_markers"][goal], seen), (goal, seen)
-start = source.index("            done = result is not None if guest_test else")
+# The install image: a script answers each prompt a second after it, in order, never an earlier look-alike.
+start = source.index("            # The script: each answer a second after its prompt; the end at once.")
+end = source.index("            done = result is not None if guest_test else", start)
+answer = textwrap.dedent(source[start:end])
+start = end
 end = source.index("            if goal == \"recovery\":", start)
 done = textwrap.dedent(source[start:end])
-for goal, seen, want in (("install", b"\r\nrelease 42 is good\r\n", False), ("install", b"\nThis test build installs nothing.", True),
-                         ("install-tty1", b"\r\nrelease 42 is good\r\n", False), ("bless", b"\nThis test build installs nothing.", False),
-                         ("bless", b"\r\nrelease 42 is good\r\n", True)):
-    state = dict(goal=goal, re=re, seen=seen, result=None, guest_test=False, install_test=goal.startswith("install"))
-    exec(markers, state)
+class Clock:
+    now = 0
+    def monotonic(self):
+        return self.now
+class Stdin:
+    def __init__(self):
+        self.sent = []
+    def write(self, data):
+        self.sent.append(data)
+    def flush(self):
+        pass
+class Qemu:
+    def __init__(self):
+        self.stdin = Stdin()
+def install_state(script):
+    clock = Clock()
+    state = dict(goal="install", re=re, time=clock, qemu=Qemu(), install_test=True, guest_test=False, result=None, seen=b"",
+                 step=0, pos=0, due=None, captured=b"", transcript=b"",
+                 script=[(re.compile(p), a) for p, a in script])
+    def run(chunk=b"", now=None):
+        if now is not None:
+            clock.now = now
+        state["transcript"] += chunk
+        exec(answer, state)
+        exec(done, state)
+        return state["qemu"].stdin.sent
+    return state, run
+state, run = install_state([(rb"Owner login name: ", b"=Root"), (rb"(?s)\n  (/dev/sd[a-z]+)  [^\n]*\(this stick\).*?Target: ", b"={cap}"),
+                            (rb"Owner login name: ", b"@eof"), (rb"stopped", b"@quit")])
+assert run(b"Owner login", 0) == []
+assert run(b" name: ", 0) == [] and state["due"] == 1
+assert run(now=0.9) == []
+assert run(now=1) == [b"Root\n"] and state["step"] == 1
+assert run(b"\r\n  /dev/sda  8G  usb  serial X  QEMU\r\n  /dev/sdb  8G  usb  serial S  QEMU  (this stick)\r\nTarget: ", 5) == [b"Root\n"]
+assert run(now=6) == [b"Root\n", b"/dev/sdb\n"]
+# The owner prompt printed before the target answer is not the next one.
+assert run(now=8) == [b"Root\n", b"/dev/sdb\n"] and state["due"] is None
+assert run(b"Owner login name: ", 9) and run(now=10)[-1] == b"\x04"
+assert not state["done"]
+# The end comes at once, without a second's wait or any input.
+assert run(b"The installer stopped", 11)[-1] == b"\x04"
+assert state["step"] == 4 and state["done"]
+for last, want in ((b"@off", False), (b"@quit", True)):
+    state, run = install_state([(rb"Remove the install stick", last)])
+    run(b"Remove the install stick", 0)
+    run(now=0)
+    assert state["step"] == 1 and bool(state["done"]) == want and state["qemu"].stdin.sent == [], last
+for goal, seen, want in (("bless", b"\nThis is good.", False), ("bless", b"\r\nrelease 42 is good\r\n", True),
+                         ("first-boot-dup", b"\r\nrelease 42 is good\r\n", False)):
+    state = dict(goal=goal, re=re, seen=seen, result=None, guest_test=False, install_test=False, step=0, script=[])
     exec(done, state)
     assert bool(state["done"]) == want, (goal, seen)
-print("test-vm-runner: the install boots end at their own markers, never at a bless")
+# The installed disk: one passphrase per prompt, in turn, a second after it.
+start = source.index("            if first_boot and pass_due is None")
+end = source.index("            # The script: each answer", start)
+passes = textwrap.dedent(source[start:end])
+clock = Clock()
+state = dict(re=re, time=clock, qemu=Qemu(), first_boot=True, pass_due=None, typed=0, transcript=b"", passes=[b"w1", b"w2", b"ok"])
+def feed(chunk, now):
+    clock.now = now
+    state["transcript"] += chunk
+    exec(passes, state)
+    return state["qemu"].stdin.sent
+assert feed(b"Passphrase [1/3]: ", 0) == []
+assert feed(b"", 1) == [b"w1\n"]
+assert feed(b"", 5) == [b"w1\n"]
+assert feed(b"\r\nPassphrase [2/3]: ", 6) == [b"w1\n"] and feed(b"", 7) == [b"w1\n", b"w2\n"]
+assert feed(b"\r\nPassphrase [3/3]: ", 8) == [b"w1\n", b"w2\n"] and feed(b"", 9) == [b"w1\n", b"w2\n", b"ok\n"]
+assert feed(b"\r\nPassphrase [3/3]: ", 20) == [b"w1\n", b"w2\n", b"ok\n"] and feed(b"", 30) == [b"w1\n", b"w2\n", b"ok\n"]
+print("test-vm-runner: install scripts answer in order after each prompt; first boots type each passphrase once")
 
 # Use host monotonic time, never the guest's elapsed field or ordinary console output.
 start = source.index("                    timing += chunk")
@@ -334,7 +387,7 @@ class Clock:
 for goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online", "desktop", "update", "bless"):
     clock = Clock()
     state = dict(time=clock, re=re, timing=b"", last_progress=0, last_step="boot",
-                 deadline=20000, ended="stopped", result=0, verdicts={b"result": 0},
+                 deadline=20000, ended="stopped", result=0, verdicts={b"result": 0}, install_test=False, first_boot=False, step=0, script=[],
                  drain_test=goal in ("guests", "guests-maint", "guests-update", "guests-topology", "online"),
                  print=lambda *args, **kwargs: None)
     def feed(chunk):
