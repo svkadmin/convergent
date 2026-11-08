@@ -504,6 +504,16 @@ Symptom: none; do this once the laptop is in daily use.
 
 Success: `luksDump` lists two keyslots, and the new passphrase unlocks at boot.
 
+The installer's backup, `cv-luks-header-<serial>-<date>`, belongs in your safe, not in the laptop
+bag: it unlocks with the passphrase of its time. Restore a damaged header from another Linux
+(recipe 9; the rescue entry needs a working header), with no other Convergent disk attached:
+```sh
+sudo cryptsetup luksHeaderRestore /dev/disk/by-partlabel/cv-state --header-backup-file cv-luks-header-<serial>-<date>
+```
+The restored header accepts the passphrase of the backup's time again: change it afterwards with
+`sudo cryptsetup luksChangeKey /dev/disk/by-partlabel/cv-state`, take a new backup (step 1) and let
+the checker take the header (step 2).
+
 ## 11. Start over
 
 Symptom: the laptop must be reinstalled from the disk image, or a lost management key (recipe 18)

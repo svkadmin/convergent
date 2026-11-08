@@ -1,6 +1,7 @@
 #!/bin/sh
 # sign: sign a release's manifest with the channel key (ARCHITECTURE section 6, step 7).
 #   build/sign <release-dir> [key]      key defaults to /etc/convergent/keys/<CHANNEL>.key
+#   build/sign --image <image-dir> <release-dir> [key]   only the install image's .sha256
 # Writes manifest.sig, packages.sig, guests.manifest.sig when present, latest and latest.sig. An
 # encrypted key (the offline stable key) asks for its passphrase.
 set -eu
@@ -8,7 +9,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/build.conf"
 die() { echo "sign: $*" >&2; exit 1; }
-[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: build/sign <release-dir> [key]"
+image=
+if [ "${1:-}" = --image ]; then
+	[ $# -ge 2 ] || die "usage: build/sign --image <image-dir> <release-dir> [key]"
+	image=$2
+	shift 2
+fi
+[ $# -ge 1 ] && [ $# -le 2 ] || die "usage: build/sign [--image <image-dir>] <release-dir> [key]"
 dir=$1
 key=${2:-/etc/convergent/keys/$CHANNEL.key}
 pub=/etc/convergent/keys/$CHANNEL.pub
@@ -19,6 +26,23 @@ release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
 [ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
 . "$here/release-check"
+# The install image is not in the manifest: its .sha256 (the file beside it, then this release's
+# manifest) is signed.
+if [ -n "$image" ]; then
+	f=$image/convergent-$release.img.zst.sha256
+	msum=$(sha256sum <"$dir/manifest" | cut -d' ' -f1)
+	awk -v f="convergent-$release.img.zst" -v m="$msum" '
+		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
+		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
+		END {exit bad || NR != 2}' "$f" && head -n 1 "$f" | (cd "$image" && sha256sum -c --quiet -) ||
+		die "the image does not match $f or the release's manifest"
+	openssl pkeyutl -sign -inkey "$key" -rawin -in "$f" -out "$f.sig.new" || die "signing ${f##*/} failed"
+	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$f" -sigfile "$f.sig.new" >/dev/null ||
+		die "the signature of ${f##*/} does not verify with $pub"
+	mv "$f.sig.new" "$f.sig"
+	echo "sign: the release $release image signed for $CHANNEL"
+	exit 0
+fi
 # What the signature vouches for: the manifest and the files it lists.
 for f in manifest guests.manifest remmina.manifest; do
 	[ -f "$dir/$f" ] || continue

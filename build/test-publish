@@ -36,7 +36,7 @@ for path in beta/latest beta/latest.sig beta/42/advisories.json beta/42/advisori
 done
 for publisher in publish advisories-publish; do
     if [ "$publisher" = publish ]; then
-        sed -n '/^for f in latest.sig latest; do/,/^echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        sed -n '/^for f in latest.sig latest; do/,/^done$/p' "$here/$publisher" >"$work/commit"
         document=$dir/latest remote=$ep/beta/latest
     else
         sed -n '/^[[:space:]]*for f in advisories.json.sig advisories.json; do/,/^[[:space:]]*echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
@@ -86,6 +86,210 @@ for publisher in publish advisories-publish; do
     done
     [ "$(find "$ep" -type f | wc -l)" -eq 4 ] || die 'publication added objects'
 done
+# The install image: a signed .sha256, its own budget, latest only; the releases' total and retry set without it.
+sed -n '/^zst=convergent-/p; /^image_files=/p; /^image_local() {$/,/^}$/p; /^bytes_of() {$/,/^}$/p; /^image_room() {$/,/^}$/p;
+    /^image_kept() {$/,/^}$/p; /^image_prune() {$/,/^}$/p; /^image_upload() {$/,/^}$/p; /^keys_of() /p; /^size_of() /p' "$here/publish" >"$work/image"
+[ "$(grep -c '^[a-z_]*() {$' "$work/image")" = 6 ] && [ "$(grep -c '^[a-z_]*() {' "$work/image")" = 8 ] &&
+    [ "$(grep -c '^zst=\|^image_files=' "$work/image")" = 2 ] || die 'image functions moved'
+sed -n '/^[[:space:]]*want=\$(for f in \$files/,/published file set differs/p' "$here/publish" >"$work/retry-set"
+sed -n '/^olds=\$(/,/sort -u -n)$/p' "$here/publish" >"$work/olds"
+[ "$(wc -l <"$work/retry-set")" = 2 ] && [ -s "$work/olds" ] || die 'release set checks moved'
+grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((total - $(size_of "$old" release)))' "$here/publish" &&
+    grep -q '^if \[ -n "\$img" \]; then image_prune "\$latest"; image_room; fi$' "$here/publish" || die 'the release total counts install images'
+# Images of neither latest nor this release go before the image cap, which needs latest read first.
+awk '/^latest=$/ {l = NR} /^if \[ -n "\$img" \]; then image_prune "\$latest"; image_room; fi$/ {p = NR} /image_room/ {n++}
+    END {exit !(l && l < p && n == 2)}' "$here/publish" || die 'the image cap counts images that were never advertised'
+# A new release: image, latest, then the old images; a retry keeps an identical image and refuses another.
+awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.sig latest; do$/ {l = NR}
+    /^if \[ -n "\$img" \]; then image_prune; fi$/ {p = NR} /^\t\timage_kept$/ {k = NR}
+    /^\t\tif \[ "\$kept" = 3 \]; then echo .*; else image_upload; fi$/ && NR == k + 1 {ku = NR} /^\t\timage_prune$/ && ku && NR == ku + 1 {kp = NR}
+    /image_(upload|prune|kept)$|image_(upload|prune); fi$/ {n++}
+    END {exit !(u && u < l && l < p && kp && n == 5)}' "$here/publish" || die 'a publish path skips the image or prunes it early'
+# A channel that holds an image refuses a publish without one, before latest is read or anything changes.
+sed -n '/^if \[ -z "\$img" \] && printf .*install\//,/^fi$/p' "$here/publish" >"$work/image-required"
+awk '/^if \[ -z "\$img" \] && printf .*install\// {r = NR} /^latest=$/ {l = NR}
+    END {exit !(r && r < l)}' "$here/publish" && [ "$(wc -l <"$work/image-required")" = 3 ] || die 'the image-required check moved'
+required() {
+    (die() { echo "$*" >&2; exit 1; }; CHANNEL=beta img=$1 objects=$2; . "$work/image-required") 2>"$work/image-log"
+}
+if required '' '10 beta/42/slot.img
+7 beta/41/install/convergent-41.img.zst'; then die 'published without an image over the channel image'; fi
+grep -q 'pass the image-dir' "$work/image-log" || die "no image-required message: $(cat "$work/image-log")"
+required "$work/image-dir" '7 beta/41/install/convergent-41.img.zst' || die 'refused a publish with its image'
+required '' '10 beta/42/slot.img
+7 bleeding-edge/41/install/convergent-41.img.zst
+5 beta/install/x' || die "refused a channel without an image (another channel's or no release's)"
+(
+    die() { echo "$*" >&2; exit 1; }
+    ep=$work/images pub=$work/pub CHANNEL=beta release=42
+    img=$work/image-dir dir=$work/image-release check=$work/check
+    . "$work/image"
+    mkdir -p "$img" "$dir" "$work/other" "$work/saved-image"
+    printf 'release 42\n' >"$dir/manifest"
+    # The image's .sha256: the image, then the release's manifest.
+    image_sign() {
+        { (cd "$img" && sha256sum "$zst"); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
+        openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    }
+    head -c 4000 /dev/urandom >"$img/$zst"
+    image_sign
+    put() { mkdir -p "$ep/${2%/*}"; head -c "$1" /dev/zero >"$ep/$2"; }
+    put 1000 beta/41/slot.img
+    put 100 beta/42/manifest
+    put 50 beta/latest
+    for f in convergent-41.img.zst convergent-41.img.zst.sha256 convergent-41.img.zst.sha256.sig; do put 1000 "beta/41/install/$f"; done
+    put 2000 bleeding-edge/41/install/convergent-41.img.zst
+    put 10 "beta/42/install/$zst"
+    objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done)
+    image_local
+    [ "$img_new" = $(($(cat "$img/$zst" "$img/$zst.sha256" "$img/$zst.sha256.sig" | wc -c))) ] || die 'image bytes'
+    # The releases' cap never counts an image; the image cap is per channel (bleeding-edge's 2000 apart).
+    [ "$(bytes_of '' release)" = 1150 ] && [ "$(bytes_of '' image)" = 5010 ] && [ "$(size_of 41 release)" = 1000 ] &&
+        [ "$(size_of 41 image)" = 3000 ] || die 'release and image totals are not apart'
+    # Until latest moves, the previous image counts too (this release's own stale one does not).
+    image_cap=$((3000 + img_new))
+    image_room
+    [ "$images" = $((2000 + img_new)) ] || die 'image total'
+    image_cap=$((image_cap - 1))
+    if (image_room) 2>"$work/image-log"; then die 'image over its cap while the previous image stays accepted'; fi
+    grep -q 'image cap' "$work/image-log" || die 'no image cap message'
+    # Retries compare the release files only; an image-only prefix is no old release.
+    files='slot.img manifest'
+    objects="$objects
+5 beta/42/slot.img
+5 beta/42/advisories.json"
+    (. "$work/retry-set") || die 'the retry set counted the image'
+    objects="$objects
+5 beta/40/install/convergent-40.img.zst"
+    . "$work/olds"
+    [ "$olds" = 41 ] || die "old releases: $olds"
+    s3() {
+        case $1 in
+        -X) [ "$2" = DELETE ] || exit 97; printf '%s\n' "${3#"$ep/"}" >>"$work/deleted"; rm "$3" ;;
+        -o)
+            if [ "$3" != -T ]; then [ "$2" = "$check" ] || exit 97; cp "$3" "$2"; return; fi
+            [ "$2" = /dev/null ] || exit 97
+            [ -z "${fail:-}" ] || return 1
+            mkdir -p "${5%/*}"; cp "$4" "$5"; printf '%s\n' "${5#"$ep/"}" >>"$work/uploaded" ;;
+        -I) [ -f "$2" ] || return 1; printf 'HTTP/1.1 200 OK\r\ncontent-length: %s\r\nETag: "%s"\r\n' "$(stat -c %s "$2")" "$(md5sum <"$2" | cut -d' ' -f1)" ;;
+        *) exit 97 ;;
+        esac
+    }
+    listing() { objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done); }
+    listing
+    : >"$work/deleted"
+    # A prune that failed after latest (41) moved left an orphan image: it goes before the cap check,
+    # which then counts only latest's and the new one.
+    put 700 beta/40/install/convergent-40.img.zst
+    listing
+    image_prune 41 >/dev/null
+    printf 'beta/40/install/convergent-40.img.zst\n' | cmp - "$work/deleted" || die 'not exactly the orphan image removed'
+    image_cap=$((3000 + img_new))
+    image_room
+    [ "$images" = $((2000 + img_new)) ] || die 'image total after the orphan'
+    : >"$work/deleted"
+    # A failed upload keeps the previous image; a good one removes nothing before latest moves.
+    if (fail=1; image_upload) >/dev/null 2>&1; then die 'a failed image upload passed'; fi
+    [ ! -s "$work/deleted" ] && [ -f "$ep/beta/41/install/convergent-41.img.zst" ] || die 'a failed image upload removed the previous image'
+    image_upload >/dev/null
+    [ ! -s "$work/deleted" ] || die 'the image upload removed an image'
+    printf 'beta/42/install/%s\n' $image_files | cmp - "$work/uploaded" || die 'image uploads'
+    for f in $image_files; do cmp "$img/$f" "$ep/beta/42/install/$f"; done
+    image_prune >/dev/null
+    printf 'beta/41/install/%s\n' convergent-41.img.zst convergent-41.img.zst.sha256 convergent-41.img.zst.sha256.sig | cmp - "$work/deleted" ||
+        die 'not exactly the previous image removed'
+    [ -f "$ep/bleeding-edge/41/install/convergent-41.img.zst" ] && [ -f "$ep/beta/41/slot.img" ] || die 'removed more than the image'
+    # A retry keeps an identical image, resumes an incomplete one and refuses to replace it.
+    listing
+    image_kept
+    [ "$kept" = 3 ] || die 'an identical published image was not kept'
+    mv "$ep/beta/42/install/$zst.sha256" "$work/other/remote-sum"
+    listing
+    image_kept
+    [ "$kept" = 2 ] || die 'an incomplete published image was kept'
+    mv "$work/other/remote-sum" "$ep/beta/42/install/$zst.sha256"
+    listing
+    cp "$img/"* "$work/saved-image/"
+    kept_refused() {
+        if (image_kept) >/dev/null 2>"$work/image-log"; then die "a retry replaced $1"; fi
+        grep -q 'use a new release ID' "$work/image-log" || die "$1: $(cat "$work/image-log")"
+    }
+    head -c 4000 /dev/urandom >"$img/$zst"
+    image_sign
+    kept_refused 'an advertised image with a rebuilt one'
+    # Only the image was published: a rebuilt one of the same size must not get its .sha256 beside it.
+    mv "$ep/beta/42/install/$zst.sha256" "$ep/beta/42/install/$zst.sha256.sig" "$work/other/"
+    listing
+    kept_refused 'a published image with a rebuilt one of the same size'
+    mv "$work/other/$zst.sha256" "$work/other/$zst.sha256.sig" "$ep/beta/42/install/"
+    listing
+    cp "$work/saved-image/"* "$img/"
+    printf x >>"$img/$zst"
+    kept_refused 'an advertised image with a longer one'
+    cp "$work/saved-image/"* "$img/"
+    put 5 "beta/42/install/extra"
+    listing
+    kept_refused 'an install/ prefix holding another object'
+    rm "$ep/beta/42/install/extra"
+    # Refusals before any bucket access: no signature, another key, a changed image, another name, over 5 GiB.
+    refuse() {
+        if (image_local) >/dev/null 2>"$work/image-log"; then die "accepted $1"; fi
+        grep -q "$2" "$work/image-log" || die "$1: $(cat "$work/image-log")"
+    }
+    mv "$img/$zst.sha256.sig" "$work/other/sig"
+    refuse 'an unsigned image' 'missing'
+    openssl genpkey -algorithm ed25519 -out "$work/other/key"
+    openssl pkeyutl -sign -inkey "$work/other/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse 'another key' 'not signed with the beta key'
+    mv "$work/other/sig" "$img/$zst.sha256.sig"
+    image_local
+    printf x >>"$img/$zst"
+    refuse 'a changed image' 'does not match its .sha256'
+    cp "$work/saved-image/"* "$img/"
+    image_local
+    { (cd "$img" && sha256sum "$zst" | sed 's/convergent-42/convergent-43/'); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse 'a .sha256 of another file' 'does not match its .sha256'
+    # The signature binds this release: one line, or another release's manifest, is refused.
+    (cd "$img" && sha256sum "$zst" >"$zst.sha256")
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse 'a .sha256 without the manifest' "or the release's manifest"
+    { (cd "$img" && sha256sum "$zst"); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'; } >"$img/$zst.sha256"
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse "a .sha256 of another release's manifest" "or the release's manifest"
+    truncate -s 5G "$img/$zst"
+    refuse 'a 5 GiB image' "over R2's 5 GiB single upload"
+)
+# build/sign --image signs only a .sha256 that matches the image beside it.
+mkdir -p "$work/signer" "$work/signrel" "$work/signimg" "$work/keys"
+cp "$here/sign" "$work/signer/sign"
+printf 'CHANNEL=beta\n' >"$work/signer/build.conf"
+: >"$work/signer/release-check"
+sed -i "s|/etc/convergent/keys/|$work/keys/|g" "$work/signer/sign"
+grep -q "^key=.*$work/keys/" "$work/signer/sign" && grep -q "^pub=$work/keys/" "$work/signer/sign" || die 'sign key paths moved'
+cp "$work/key" "$work/keys/beta.key"
+cp "$work/pub" "$work/keys/beta.pub"
+printf 'release 42\n' >"$work/signrel/manifest"
+printf 'image\n' >"$work/signimg/convergent-42.img.zst"
+# Without the release's manifest as its second line, or with another release's, nothing is signed.
+(cd "$work/signimg" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 without the manifest'; fi
+printf 'release 41\n' | sha256sum | sed 's/-$/manifest/' >>"$work/signimg/convergent-42.img.zst.sha256"
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die "signed a .sha256 of another release's manifest"; fi
+[ ! -e "$work/signimg/convergent-42.img.zst.sha256.sig" ] || die 'a refused .sha256 has a signature'
+{ (cd "$work/signimg" && sha256sum convergent-42.img.zst); (cd "$work/signrel" && sha256sum manifest); } >"$work/signimg/convergent-42.img.zst.sha256"
+sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null
+openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$work/signimg/convergent-42.img.zst.sha256" \
+    -sigfile "$work/signimg/convergent-42.img.zst.sha256.sig" >/dev/null || die 'sign --image signed nothing valid'
+[ ! -e "$work/signrel/latest" ] || die 'sign --image re-signed the release'
+rm "$work/signimg/convergent-42.img.zst.sha256.sig"
+printf 'other\n' >"$work/signimg/convergent-42.img.zst"
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 the image does not match'; fi
+[ ! -e "$work/signimg/convergent-42.img.zst.sha256.sig" ] || die 'a refused image has a signature'
+# The readers ignore install/ objects.
+mkdir -p "$ep/beta/42/install" "$ep/beta/41/install"
+cp "$work/images/beta/42/install/"* "$ep/beta/42/install/"
+printf 'image\n' >"$ep/beta/41/install/convergent-41.img.zst"
 get() {
     output= code=
     while [ "$#" -gt 1 ]; do
@@ -187,6 +391,7 @@ if command -v python3 >/dev/null 2>&1; then
             for manifest in manifest guests.manifest remmina.manifest; do
                 printf '<Contents><Key>beta/%s/%s</Key></Contents>' "$id" "$manifest"
             done
+            printf '<Contents><Key>beta/%s/install/convergent-%s.img.zst</Key></Contents>' "$id" "$id"
             printf '</ListBucketResult>\n'
         } >"$work/list.xml"
         case $id in
@@ -232,4 +437,4 @@ mkdir "$cache"
 fetch feed.json https://fixture/feed.json
 [ "$(cat "$cache/feed.json")" = feed ]
 [ ! -e "$work/feed.json.failed" ]
-echo 'test-publish: original layout, interrupted pairs, recovery, readers, Remmina, clone deadline and retries passed'
+echo 'test-publish: original layout, interrupted pairs, recovery, install image, readers, Remmina, clone deadline and retries passed'

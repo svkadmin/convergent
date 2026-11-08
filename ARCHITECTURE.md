@@ -523,8 +523,9 @@ is built into the kernel.
 ### 7.1 Install
 
 The installer partitions and encrypts state, writes slot A, installs systemd-boot with the UKI and
-the removable path, registers a boot entry for a physical install and creates the owner. A disk
-image also carries the guests, so setup needs no network. Swap starts before Incus; disk swap mounts
+the removable path, registers a boot entry for a physical install and creates the owner. The install image's
+installer also copies the guests, so setup needs no network; it trusts only the manifests its UKI
+carries, never lists the install data, and leaves the Wi-Fi network it asked for to `guests init`. Swap starts before Incus; disk swap mounts
 its subvolume at `/var/lib/convergent/swap`. Planned: firmware key and option-ROM enrolment.
 Commands: [USAGE, Install](USAGE.md#install).
 
@@ -970,7 +971,7 @@ Root-owned lock files under `/run/convergent`; the holder serializes the work li
 | portage/ | profile, sets, flags, patches and overlay |
 | rootfs/ | host configuration, `/usr/lib/convergent/sys` actions, health checks and lifecycle helpers |
 | initramfs/ | unlock, state, recovery and standalone rescue modules |
-| install/install | physical and disk-image installer, shipped as `convergent-install` |
+| install/install | the install image's installer and the one for a release directory, shipped as `convergent-install` |
 | tools/ | the runtime commands of section 12 |
 | guests/ | OpenBSD fw; Alpine wan, svc, browser and remmina builds and configuration |
 

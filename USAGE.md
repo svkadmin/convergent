@@ -17,21 +17,56 @@ Hardware requirements: [README](README.md).
 ### Disk image
 
 The image is the release's generic install image: no owner account, password or state, only the
-release and its guests. It boots to the installer on the screen. In this build the installer only
-lists the hardware and what the image holds; it erases and installs nothing.
+release and its guests. It boots to the installer on the screen, which checks the image against its
+manifests, then asks everything before it erases anything: the hardware (outside the supported list,
+type `continue anyway`), the target disk, the owner name, password and LUKS passphrase (each twice),
+keyboard layouts, time zone, an optional Wi-Fi network, the USB devices to allow and an optional LUKS
+header backup. A summary follows; type the disk path again, or `ERASE` and its serial, to install.
+A disk that already holds Convergent asks for `REINSTALL <disk>`; another disk with Convergent must be
+detached. It copies the guests and powers off. Ctrl-D or a wrong answer three times starts it again.
+The Wi-Fi passphrase waits in the encrypted `/var` until the first guest setup moves it into wan. The
+header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk. At the end it
+prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup)).
 
-1. Identify the USB disk:
+1. Find the channel's current release in its signed `latest`, checked with the channel's public key
+   (`/etc/convergent/release.pub` on a Convergent laptop, `/etc/convergent/keys/<channel>.pub` on the
+   build host). The number it prints is `<release>` below; an older release's image is not current:
+
+   ```sh
+   curl -fO "<public URL>/<channel>/latest"
+   curl -fO "<public URL>/<channel>/latest.sig"
+   openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in latest -sigfile latest.sig &&
+       awk '$1 == "release" {print $2}' latest
+   ```
+
+2. Download that release's image, published beside it (the latest release's only), with its
+   checksum and signature, and check both with the same key. The checksum's first line must be the
+   hash of the very file you write (not of another file it names); its second ties it to the
+   release's manifest:
+
+   ```sh
+   for f in convergent-<release>.img.zst convergent-<release>.img.zst.sha256 convergent-<release>.img.zst.sha256.sig; do
+       curl -fO "<public URL>/<channel>/<release>/install/$f"
+   done
+   openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in convergent-<release>.img.zst.sha256 \
+       -sigfile convergent-<release>.img.zst.sha256.sig
+   [ "$(head -n 1 convergent-<release>.img.zst.sha256)" = "$(sha256sum convergent-<release>.img.zst)" ] && echo 'image: OK'
+   ```
+
+   Write it only when every check reports success.
+
+3. Identify the USB disk:
 
    ```sh
    lsblk -o NAME,SIZE,MODEL,TRAN
    ```
 
-2. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
+4. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
    logical sectors:
 
    ```sh
    if [ "$(sudo blockdev --getss /dev/sdX)" = 512 ]; then
-       zstd -dc <out.img>.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
+       zstd -dc convergent-<release>.img.zst | sudo dd of=/dev/sdX bs=4M iflag=fullblock oflag=direct conv=fsync status=progress
    else
        echo 'Image writing requires 512-byte logical sectors; target refused.' >&2
    fi
@@ -46,12 +81,11 @@ lists the hardware and what the image holds; it erases and installs nothing.
    convergent-install <release-dir>
    ```
 
-3. Choose the target: type its disk path again, or `ERASE` followed by a space and its serial.
-4. Enter the owner login name, unless the config file sets it.
-5. Enter the owner password and the LUKS passphrase, each twice.
-6. Wait for the installer to verify slot A, register a boot entry named after the release `NAME`
+3. Answer the install image's questions (the owner login name only when the config file does not
+   set it), then type the target's disk path again, or `ERASE` followed by a space and its serial.
+4. Wait for the installer to verify slot A, register a boot entry named after the release `NAME`
    and power off. Remove the USB disk.
-7. Guests are not copied. Put them at `/var/lib/convergent/release-guests/guests`, then run
+5. Guests are not copied. Put them at `/var/lib/convergent/release-guests/guests`, then run
    `sys guests setup`.
 
 The installer verifies the release signature with the booted key; `CONVERGENT_UNSIGNED=1` bypasses

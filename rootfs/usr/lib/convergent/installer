@@ -14,7 +14,7 @@ case $tty:" $active " in tty[1-9]*:*" tty0 "*) here=1 ;; esac
 # an ignore, so the installer gets the signals' defaults.
 trap : INT QUIT
 status=0
-/usr/lib/convergent/install-stub || status=$?
+/usr/local/sbin/convergent-install --stick || status=$?
 trap '' INT QUIT
 printf '\nThe installer stopped (exit status %s); it starts again in 2 seconds.\n' "$status"
 sleep 2

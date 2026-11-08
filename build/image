@@ -334,7 +334,7 @@ done
 # Pressing I during a runlevel change must never offer a shell (the install boot and the laptop).
 [ "$(grep -c '^[[:space:]]*rc_interactive=' "$root/etc/rc.conf")" = 1 ] && grep -qx 'rc_interactive="NO"' "$root/etc/rc.conf" ||
 	die 'OpenRC interactive boot is not off'
-chmod 0755 "$root/usr/lib/convergent/installer" "$root/usr/lib/convergent/install-stub"
+chmod 0755 "$root/usr/lib/convergent/installer"
 
 # 2. Firmware: copy selected paths with links resolved before dropping other generations.
 mkdir -p "$out/firmware"

@@ -1630,10 +1630,10 @@ done
 echo 'test-boot-privacy: install runlevel and interactive boot passed'
 
 # The installer wrapper: Ctrl-C or Ctrl-\ stops the installer, never the 2 s pause (init's respawn limit).
-sed -e "s|/usr/lib/convergent/install-stub|sh $work/inst-stub|" -e "s|/sys/class/tty/console/active|$work/inst-active|" \
+sed -e "s|/usr/local/sbin/convergent-install --stick|sh $work/inst-stub|" -e "s|/sys/class/tty/console/active|$work/inst-active|" \
     -e "s|>/dev/console|>>$work/inst-console|" "$repo/rootfs/usr/lib/convergent/installer" >"$work/installer"
 check_script "$work/installer"
-grep -q "^sh $work/inst-stub || status" "$work/installer" && grep -q "$work/inst-active" "$work/installer" || die 'installer stub call moved'
+grep -q "^sh $work/inst-stub || status" "$work/installer" && grep -q "$work/inst-active" "$work/installer" || die 'installer call moved'
 if grep -q -e /dev/console -e /sys/ "$work/installer"; then die 'installer keeps a real path'; fi
 echo tty0 >"$work/inst-active"
 for sig in INT QUIT; do
@@ -1699,7 +1699,7 @@ for case in hash twice short kernel unpadded tail initramfs; do
 done
 sed -n '/^# A listing that succeeded, not a failed stat/,/^umount /p;/^# A release that trusts a key has every manifest/,/^fi$/p' "$repo/build/stick" >"$work/stick-sigs"
 check_script "$work/stick-sigs"
-[ "$(wc -l <"$work/stick-sigs")" -lt 20 ] && grep -q pkeyutl "$work/stick-sigs" && grep -q 'ls -A' "$work/stick-sigs" || die 'stick signature check moved'
+[ "$(wc -l <"$work/stick-sigs")" -lt 20 ] && grep -q 'bld openssl pkeyutl' "$work/stick-sigs" && grep -q 'ls -A' "$work/stick-sigs" || die 'stick signature check moved'
 openssl genpkey -algorithm ed25519 -out "$work/st/key" 2>/dev/null
 openssl pkey -in "$work/st/key" -pubout -out "$work/st/key.pub"
 openssl genpkey -algorithm ed25519 -out "$work/st/other" 2>/dev/null
@@ -1722,8 +1722,9 @@ stick_sigs() {   # case
     unlisted) rm -r "$work/st/root/etc/convergent" ;;
     esac
     sh -eu -c '
-        work=$1/st manifests="manifest guests.manifest"
+        work=$1/st inside=$1/st manifests="manifest guests.manifest"
         die() { echo "$*" >&2; exit 1; }
+        bld() { [ "$1" = openssl ] || exit 97; "$@"; }
         umount() { [ "$1" = "$work/root" ] || exit 97; }
         . "$2"
         echo "${key:-none}" >"$work/key-used"
