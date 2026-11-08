@@ -11,6 +11,12 @@ list=/usr/lib/convergent/etc-state
 work=
 die() { logger -p user.err -t check "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
 bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+# The same rule as the initramfs (convergent-state.sh) and tools/timezone.
+zone_valid() {
+    printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// {ok = 1}
+        END {exit !(ok && n == 1)}' &&
+        [ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
+}
 # Lock fds closed: a shared SSH connection outlives this run and would keep them held.
 # Firewall stderr lands in the audited report: bounded and filtered.
 rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&- 7>&-; }
@@ -575,6 +581,12 @@ fi
 # the user, the lock prefix and that the line changed.
 while IFS= read -r entry; do
     case $entry in ''|'#'*) continue ;; esac
+    # The time zone is an owner setting (sys time set): no baseline, checked against its zoneinfo below.
+    case $entry in localtime|timezone)
+        [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry" 2>/dev/null)" = '644:0:0:regular file' ] ||
+            bad "/etc/$entry is not a regular root 0644 file"
+        continue ;;
+    esac
     case $entry in
     shadow|gshadow) mask='/^(--- |\+\+\+ )/!s/^([-+ ][^:]*):(!*\*?)[^:!*][^:]*/\1:\2<hash>/' ;;
     *) mask= ;;
@@ -585,6 +597,8 @@ while IFS= read -r entry; do
     [ -e "$baseline/etc/$entry" ] && [ -e "/etc/$entry" ] || bad "missing /etc/$entry or accepted copy"
     [ "$(stat -c '%a:%u:%g:%F' "/etc/$entry")" = "$(stat -c '%a:%u:%g:%F' "$baseline/etc/$entry" 2>/dev/null)" ] || bad "/etc/$entry metadata changed"
 done <"$list"
+zone=$(cat "/etc/timezone" 2>/dev/null) && zone_valid "$zone" "/usr/share/zoneinfo" &&
+    cmp -s "/usr/share/zoneinfo/$zone" "/etc/localtime" || bad '/etc/localtime is not the zoneinfo of the zone in /etc/timezone'
 for inventory in autostart suid incus browser-tmp remmina-profile; do
     accepted=$baseline/$inventory
     if [ "$inventory" = incus ]; then

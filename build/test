@@ -897,6 +897,7 @@ if [ -f "$update/written" ]; then
 	printf '%s\n' "$status" | grep -qx "slot b  $new  good" || { echo 'CV-UPDATE failed: slot b good'; r=1; }
 	printf '%s\n' "$status" | grep -qx "good    $new" || { echo 'CV-UPDATE failed: good new release'; r=1; }
 	# The zone stays through the etc-state seed; boot copied localtime again from this release's zoneinfo.
+	zone=$(cat "$update/zone") || { echo 'CV-UPDATE failed: no zone from the old release'; r=1; }
 	[ "$(cat /etc/timezone)" = "$zone" ] && [ ! -L /etc/localtime ] && mountpoint -q /etc/localtime &&
 		cmp -s "/usr/share/zoneinfo/$zone" /etc/localtime || { echo 'CV-UPDATE failed: time zone'; r=1; }
 	sync
@@ -914,6 +915,15 @@ refuse() {
 		else echo CV-SIG "$1" WRONG-REASON; r=1; fi
 	fi
 }
+# The owner's zone, not the build's (both releases share it), must survive the state copy; an older
+# release without the helper keeps the build's.
+if [ -x /usr/local/sbin/timezone ]; then
+	owner_zone=Europe/Bratislava
+	[ "$zone" != "$owner_zone" ] || owner_zone=UTC
+	if timezone set "$owner_zone" && [ "$(cat /etc/timezone)" = "$owner_zone" ]; then zone=$owner_zone
+	else echo 'CV-UPDATE failed: timezone set'; r=1; fi
+fi
+echo "$zone" >"$update/zone" || r=1
 # A stale copy of the zone's rules (an older release binds none): the new release's boot replaces it.
 if mountpoint -q /etc/localtime; then printf '\n' >>/etc/localtime || r=1; fi
 refuse unsigned 'the release is not signed'

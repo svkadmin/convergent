@@ -811,7 +811,9 @@ profiles, the writable `etc` files, the autostart and SUID inventories, VFIO and
 and CARP against an accepted release; upstream connectivity is out of scope. Results feed
 `CheckerFailed` and `CheckerStale`. The autostart scan gives up after 120 s and reads at most 64 MiB
 of each owner file; a larger file is inventoried by size and times, except Sway and i3 configs, which
-fail the scan. Account diffs in the report mask password hashes. A deleted or renamed autostart
+fail the scan. Account diffs in the report mask password hashes. The time zone is the owner's and
+has no baseline: `localtime` and `timezone` must be root 0644 files, the zone an installed one and
+`localtime` its zoneinfo. A deleted or renamed autostart
 guest gets a scan within minutes. Accepting a baseline:
 [USAGE, Accept the new baseline](USAGE.md#accept-the-new-baseline). Generators in
 `guests/svc/dashboards` write the shipped JSON to `guests/svc/rootfs/usr/share/grafana/dashboards`;

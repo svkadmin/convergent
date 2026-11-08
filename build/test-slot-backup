@@ -599,7 +599,7 @@ for fault in none bind; do
     sh -eu "$work/helper-run" "$work" "$fault" >"$work/tz/out" 2>&1 || code=$?
     cmp "$work/tz/root/usr/share/zoneinfo/Europe/Bratislava" "$work/tz/state/etc/localtime" &&
         [ "$(cat "$work/tz/state/etc/timezone")" = Europe/Bratislava ] || die "timezone $fault: state files"
-    [ "$(stat -c %a:%a "$work/tz/state/etc/localtime" "$work/tz/state/etc/timezone")" = 644:644 ] || die "timezone $fault: modes"
+    [ "$(stat -c %a "$work/tz/state/etc/localtime" "$work/tz/state/etc/timezone" | tr '\n' :)" = 644:644: ] || die "timezone $fault: modes"
     [ -z "$(find "$work/tz/state/etc" -name '.*.new')" ] && [ -z "$(find "$work/tz" -name 'stm.*')" ] ||
         die "timezone $fault: scratch left"
     [ -z "$(find "$work/tz/etc" -name '*.unbound')" ] || die "timezone $fault: /etc left unbound"

@@ -63,10 +63,10 @@ sh -n "$scratch/wan-seed"
     # No installer directory: nothing to do.
     wan_seed
     [ ! -e "$work/events" ] || exit 1
-    mkdir -p "$seed" "$scratch/expected"
-    printf '[Security]\nPassphrase=convergent-test-only\n[Settings]\nHidden=true\n' >"$scratch/expected/CV test.psk"
-    printf '[Settings]\nAutoConnect=true\n' >"$scratch/expected/=43562074657374.open"
-    cp "$scratch/expected"/* "$seed/"
+    mkdir -p "$seed" "$scratch/seed-expected"
+    printf '[Security]\nPassphrase=convergent-test-only\n[Settings]\nHidden=true\n' >"$scratch/seed-expected/CV test.psk"
+    printf '[Settings]\nAutoConnect=true\n' >"$scratch/seed-expected/=43562074657374.open"
+    cp "$scratch/seed-expected"/* "$seed/"
     printf '[Security]\nPassphrase=convergent-test-only\n[IPv4]\nSendHostname=true\n' >"$seed/foreign.psk"
     printf '[Security]\nPassphrase=short\n' >"$seed/short.psk"
     cp "$seed/CV test.psk" "$seed/an-ssid-of-thirty-three-bytes-xyz.psk"
@@ -75,14 +75,14 @@ sh -n "$scratch/wan-seed"
     for fault in mount umount; do
         rm -rf "$work/root" "$work/events"
         if (wan_seed) 2>"$work/error"; then exit 1; fi
-        for f in "$scratch/expected"/*; do cmp "$f" "$seed/${f##*/}" || exit 1; done
+        for f in "$scratch/seed-expected"/*; do cmp "$f" "$seed/${f##*/}" || exit 1; done
     done
     fault=none
     rm -rf "$work/root" "$work/events" "$work/log"
     wan_seed 2>"$work/error"
     [ "$(cat "$work/events")" = "$(printf 'mount\numount')" ] || exit 1
     [ "$(ls -A "$work/root/var/lib/iwd" | wc -l)" = 2 ] || exit 1
-    for f in "$scratch/expected"/*; do
+    for f in "$scratch/seed-expected"/*; do
         cmp "$f" "$work/root/var/lib/iwd/${f##*/}" && [ "$(stat -c %a "$work/root/var/lib/iwd/${f##*/}")" = 600 ] || exit 1
         [ ! -e "$seed/${f##*/}" ] || exit 1
     done
