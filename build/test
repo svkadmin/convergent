@@ -4416,6 +4416,13 @@ fw_settled fw1 fw2 || { fw_diag; bad $LINENO; }
 # firewall update recorded them. Install this release's as install/install does.
 mkdir -p /var/lib/convergent/release-guests/guests &&
     cp -a "$release/guests/fw" /var/lib/convergent/release-guests/guests/ || bad $LINENO
+# A browser migration the smoke test left unfinished makes a firewall rebuild refuse: resume it as guests asks.
+if [ -e "$state/profiles.before" ] || [ -e "$state/browser.ready" ] || [ -e "$state/browser.rename" ]; then
+    sh -x /usr/local/sbin/guests update browser "$release/guests/browser" --trusted-local 2>/var/log/guests-update-browser-topology.log ||
+        { tail -n 20 /var/log/guests-update-browser-topology.log; bad $LINENO; }
+fi
+for journal in profiles.before browser.ready browser.rename; do [ ! -e "$state/$journal" ] || bad $LINENO; done
+# End browser journals.
 cv_time firewall-no-peer
 (
 bad() { echo "CV-UPDATE-FAIL line $1"; exit 1; }

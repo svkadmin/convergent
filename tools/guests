@@ -11,6 +11,7 @@ keys=/var/lib/convergent/ssh
 tls=$state/tls
 conf=/etc/convergent/ssh_config
 pool=/var/lib/incus/storage-pools/default
+pool_options=user_subvol_rm_allowed,nosuid,nodev,noatime
 boot_timeout=${GUEST_BOOT_TIMEOUT:-900}
 work= loop= mounted= pending= demoted= starting= probes= initializing=
 applying= recovering= rebuilding= polling= manual_stage= browser_locked= frozen=
@@ -989,6 +990,12 @@ volume_create() {
     fi
     init_done "volume-$1"
 }
+# Incus remounts the pool with its btrfs.mount_options, dropping the source's nosuid; a 0.1.6 pool has the default.
+pool_nosuid() {
+    ic query /1.0/storage-pools/default |
+        jq -e --arg o "$pool_options" '.config["btrfs.mount_options"] == $o' >/dev/null && return 0
+    ic storage set default btrfs.mount_options="$pool_options" || die 'cannot mount the storage pool nosuid'
+}
 profile() {
     ic profile list --format json | jq -e --arg n "$1" '.[] | select(.name == $n)' >/dev/null || ic profile create "$1"
     ic profile edit "$1" <"$2"
@@ -1076,7 +1083,7 @@ browser_migrate() {
     for node in def int; do
         jq -e --arg n "$node" 'any(.[]; .name == $n)' "$work/browsers" >/dev/null || continue
         if running "$node"; then stop_guest "$node"; fi
-        ic profile assign "$node" "browser-base,browser-$node"
+        ic profile assign "$node" browser-base "browser-$node"
     done
     # Reap the retired ephemeral role before removing its unused profile.
     if jq -e 'any(.[]; .name == "portal" and .ephemeral and .profiles == ["browser-base", "browser-portal"])' "$work/browsers" >/dev/null; then
@@ -1565,6 +1572,7 @@ init() {
     [ ! -f "$state/pending" ] || { pending=1; rollback; }
     btrfs subvolume show /var/lib/incus-pool >/dev/null || die 'installer must create /var/lib/incus-pool on Btrfs'
     ic admin init --preseed <"$lib/preseed.yaml"
+    pool_nosuid
     init_done preseed
     if [ ! -f "$state/init/server" ]; then
         init_server
@@ -1886,6 +1894,7 @@ apply() {
     update_status running
     good_slot
     [ -f "$state/initialized" ] || die 'init has not completed'
+    pool_nosuid
     # Reconcile even when no guest images or certificates are due.
     /usr/local/sbin/incus-ui --reconcile 9>&- 8>&- 7>&- 6>&-
     incus_ui_config
