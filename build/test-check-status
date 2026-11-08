@@ -157,11 +157,23 @@ printf 'include /etc/sway/config\n' >"$owner/.config/sway/config"
 )
 echo 'check: the autostart scan inventories oversized files, fails oversized includes at once and a hang at its deadline'
 # Account diffs keep the user and the change, never a hash; other entries stay verbatim.
-sed -n '/^# Keep diffs private/,/^done <"\$list"$/p' "$repo/tools/check" | sed "s|\"/etc/|\"$work/etc/|g" >"$work/etc-diff"
+sed -n '/^# Keep diffs private/,/zone in \/etc\/timezone.$/p' "$repo/tools/check" |
+    sed -e "s|\"/etc/|\"$work/etc/|g" -e "s|\"/usr/share/zoneinfo|\"$work/zoneinfo|g" >"$work/etc-diff"
 [ -s "$work/etc-diff" ]; sh -n "$work/etc-diff"
-if grep -q '"/etc/' "$work/etc-diff"; then exit 1; fi
-mkdir -p "$work/etc" "$work/accepted/etc" "$work/diff-run"
-printf 'shadow\npasswd\ngshadow\n' >"$work/etc-list"
+if grep -q '"/etc/\|"/usr/' "$work/etc-diff"; then exit 1; fi
+[ "$(grep -c "$work/zoneinfo" "$work/etc-diff")" = 2 ]
+sed -n '/^zone_valid() {/,/^}/p' "$repo/tools/check" >"$work/zone-check"
+sed -n '/^zone_valid() {/,/^}/p' "$repo/initramfs/90convergent/convergent-state.sh" | expand -t 4 | cmp - "$work/zone-check"
+mkdir -p "$work/etc" "$work/accepted/etc" "$work/diff-run" "$work/zoneinfo/Europe"
+printf 'TZif2 bratislava\n' >"$work/zoneinfo/Europe/Bratislava"
+printf 'TZif2 utc\n' >"$work/zoneinfo/UTC"
+printf 'shadow\npasswd\ngshadow\nlocaltime\ntimezone\n' >"$work/etc-list"
+# The zone differs from the accepted one (sys time set): no finding.
+echo UTC >"$work/accepted/etc/timezone"
+cp "$work/zoneinfo/UTC" "$work/accepted/etc/localtime"
+echo Europe/Bratislava >"$work/etc/timezone"
+cp "$work/zoneinfo/Europe/Bratislava" "$work/etc/localtime"
+chmod 644 "$work/etc/timezone" "$work/etc/localtime"
 printf 'root:*:19000:0:::::\nowner:$y$j9T$oldsalt$oldhash:19000:0:99999:7:::\nlocked:!$y$j9T$ls$lh:19000::::::\nstarred:*$y$j9T$ss$sh:19000::::::\nbin:!:19000::::::\n' >"$work/accepted/etc/shadow"
 sed 's/^owner:[^:]*:19000:/owner:$y$j9T$newsalt$newhash:19001:/' "$work/accepted/etc/shadow" >"$work/etc/shadow"
 printf 'owner:x:1000:1000::/home/owner:/bin/sh\n' >"$work/accepted/etc/passwd"
@@ -174,6 +186,7 @@ chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow" "$work/etc/gshadow" "$w
     fixture=$work
     work=$fixture/diff-run baseline=$fixture/accepted list=$fixture/etc-list ok=1
     bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+    . "$fixture/zone-check"
     . "$fixture/etc-diff"
     [ "$ok" = 0 ]
     report=$work/report
@@ -192,6 +205,33 @@ chmod 600 "$work/etc/shadow" "$work/accepted/etc/shadow" "$work/etc/gshadow" "$w
     grep -qxF -- '+owner:x:1000:1000::/home/owner:/bin/zsh' "$report"
     grep -qx "FAIL $fixture/etc/shadow differs from last acceptance" "$report"
     grep -qx "FAIL $fixture/etc/passwd differs from last acceptance" "$report"
+    if grep -q 'timezone\|localtime' "$report"; then exit 1; fi
 )
 echo 'check: account diffs mask password hashes and keep the user and the change'
+# The zone needs no acceptance, but a root 0644 file each, an installed zone and its copy in localtime.
+printf 'localtime\ntimezone\n' >"$work/etc-list"
+zone_case() {
+    (
+        fixture=$work
+        work=$fixture/diff-run baseline=$fixture/accepted list=$fixture/etc-list ok=1
+        rm -f "$work/report"
+        bad() { ok=0; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+        . "$fixture/zone-check"
+        . "$fixture/etc-diff"
+        case $1 in
+        ok) [ "$ok" = 1 ] && [ ! -e "$work/report" ] || exit 1 ;;
+        mode) [ "$ok" = 0 ] && grep -qx "FAIL $fixture/etc/$2 is not a regular root 0644 file" "$work/report" || exit 1 ;;
+        zone) [ "$ok" = 0 ] && grep -qx 'FAIL /etc/localtime is not the zoneinfo of the zone in /etc/timezone' "$work/report" || exit 1 ;;
+        esac
+    )
+}
+zone_case ok
+chmod 664 "$work/etc/timezone"; zone_case mode timezone; chmod 644 "$work/etc/timezone"
+mv "$work/etc/localtime" "$work/localtime"; ln -s "$work/localtime" "$work/etc/localtime"; zone_case mode localtime
+rm "$work/etc/localtime"; mv "$work/localtime" "$work/etc/localtime"; zone_case ok
+cp "$work/zoneinfo/UTC" "$work/etc/localtime"; zone_case zone
+cp "$work/zoneinfo/Europe/Bratislava" "$work/etc/localtime"
+for z in Mars/Base ../zoneinfo/UTC posix/UTC Europe; do echo "$z" >"$work/etc/timezone"; zone_case zone; done
+rm "$work/etc/timezone"; zone_case zone
+echo 'check: the time zone needs no acceptance; a non-root file, a bad zone or a stale localtime fails'
 

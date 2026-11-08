@@ -1,0 +1,10 @@
+title=Time
+actions='status	Show time zone and local time
+set	Set the time zone [ZONE, for example Europe/Bratislava]	root'
+
+time_state() { printf 'Time zone: %s\n' "$(cached /etc/timezone)"; }
+time_status() { noargs "$@"; time_state; date; }
+time_set() {
+	onearg 'Time zone (for example Europe/Bratislava)' "$@"; text_valid "$answer"
+	run sudo /usr/local/sbin/timezone set "$answer"
+}

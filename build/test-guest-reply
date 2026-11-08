@@ -593,8 +593,8 @@ sed -n '/^attempts=0$/,/^done$/p; /^# Refuse argv-only guests /,/^if \[ -n "\$po
 [ "$(wc -l <"$scratch/probe-calls")" = 4 ] && [ ! -s "$scratch/output" ] || exit 1
 [ "$(grep -cx 'err]52;c;eA==' "$scratch/error")" = 4 ] || exit 1; shown "$scratch/error" 'browser probes'
 # A wan replacement carries only short iwd profiles with what iwd writes; the rest stays behind.
-sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p' "$repo/tools/guests" >"$scratch/wan"
-[ "$(grep -c '^wan_[a-z]*() [{(]$' "$scratch/wan")" = 3 ]; sh -n "$scratch/wan"
+sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p' "$repo/tools/guests" >"$scratch/wan"
+[ "$(grep -c '^wan_[a-z_]*() [{(]$' "$scratch/wan")" = 4 ]; sh -n "$scratch/wan"
 (
     LC_ALL=C; export LC_ALL
     . "$scratch/wan"

@@ -41,6 +41,60 @@ grep -qx 'done' "$scratch/setup-status"
 [ "$(wc -l <"$scratch/setup-state/events")" = 2 ]
 if sh -eu "$scratch/setup" "$scratch/setup-state" 0; then die 'accepted initialized setup'; fi
 echo 'test-seed: setup pruning failure and retry passed'
+# The installer's Wi-Fi profile reaches the new wan's disk right after wan is created, before it first starts,
+# through the carry-over checks; only what was written there is removed, the rest stays and warns.
+awk '/^    init_guest wan --vm --profile wan$/ {n = NR} n && NR == n + 1 {ok = $0 == "    wan_seed"} END {exit !ok}' "$scratch/init" ||
+    die 'init does not import the installer Wi-Fi profile after creating wan'
+sed -n '/^wan_profile_valid() {/,/^}/p; /^wan_profile_name() {/,/^}/p; /^wan_seed() {/,/^}/p' "$repo/tools/guests" |
+    sed "s|=/var/lib/convergent/install/iwd$|=$scratch/install/iwd|" >"$scratch/wan-seed"
+[ "$(grep -c '^wan_[a-z_]*() {$' "$scratch/wan-seed")" = 3 ] && grep -q "=$scratch/install/iwd\$" "$scratch/wan-seed" ||
+    die 'wan seed functions not found'
+sh -n "$scratch/wan-seed"
+(
+    LC_ALL=C; export LC_ALL
+    . "$scratch/wan-seed"
+    work=$scratch/seed-work seed=$scratch/install/iwd fault=none
+    mkdir -p "$work"
+    die() { echo "die $*" >&2; exit 1; }
+    logger() { echo "logger $*" >>"$work/log"; }
+    sync() { :; }
+    wan_mount() { echo mount >>"$work/events"; [ "$fault" != mount ] || return 1; mkdir -p "$work/root"; }
+    unmount_root() { echo umount >>"$work/events"; [ "$fault" != umount ]; }
+    # No installer directory: nothing to do.
+    wan_seed
+    [ ! -e "$work/events" ] || exit 1
+    mkdir -p "$seed" "$scratch/seed-expected"
+    printf '[Security]\nPassphrase=convergent-test-only\n[Settings]\nHidden=true\n' >"$scratch/seed-expected/CV test.psk"
+    printf '[Settings]\nAutoConnect=true\n' >"$scratch/seed-expected/=43562074657374.open"
+    cp "$scratch/seed-expected"/* "$seed/"
+    printf '[Security]\nPassphrase=convergent-test-only\n[IPv4]\nSendHostname=true\n' >"$seed/foreign.psk"
+    printf '[Security]\nPassphrase=short\n' >"$seed/short.psk"
+    cp "$seed/CV test.psk" "$seed/an-ssid-of-thirty-three-bytes-xyz.psk"
+    cp "$seed/CV test.psk" "$seed/notes.txt"
+    ln -s "CV test.psk" "$seed/link.psk"
+    for fault in mount umount; do
+        rm -rf "$work/root" "$work/events"
+        if (wan_seed) 2>"$work/error"; then exit 1; fi
+        for f in "$scratch/seed-expected"/*; do cmp "$f" "$seed/${f##*/}" || exit 1; done
+    done
+    fault=none
+    rm -rf "$work/root" "$work/events" "$work/log"
+    wan_seed 2>"$work/error"
+    [ "$(cat "$work/events")" = "$(printf 'mount\numount')" ] || exit 1
+    [ "$(ls -A "$work/root/var/lib/iwd" | wc -l)" = 2 ] || exit 1
+    for f in "$scratch/seed-expected"/*; do
+        cmp "$f" "$work/root/var/lib/iwd/${f##*/}" && [ "$(stat -c %a "$work/root/var/lib/iwd/${f##*/}")" = 600 ] || exit 1
+        [ ! -e "$seed/${f##*/}" ] || exit 1
+    done
+    [ "$(ls -A "$seed" | wc -l)" = 5 ] || exit 1
+    [ "$(grep -c 'was not imported: unexpected name or content$' "$work/error")" = 5 ] || exit 1
+    [ "$(grep -c 'not imported' "$work/log")" = 5 ] || exit 1
+    # What failed the checks never reaches the disk.
+    rm -f "$work/events"
+    wan_seed 2>/dev/null
+    [ ! -e "$work/events" ] || exit 1
+) || die 'installer Wi-Fi profile import'
+echo 'test-seed: the installer Wi-Fi profile reaches wan through the carry-over checks'
 # A full apply must update WAN before using its CA deployment command.
 sed -n '/^        # Apply deploys/,/^        ;;/p' "$repo/tools/guests" | sed '1d;$d' >"$scratch/apply-order"
 [ -s "$scratch/apply-order" ]

@@ -461,8 +461,10 @@ of slot corruption but unauthenticated.
 
 ### 5.3 What is writable
 
-The verified `usr` and `etc` have eight state-bound exceptions: `machine-id`, `passwd`, `shadow`,
-`group`, `gshadow`, `subuid`, `subgid` and `usbguard/rules.conf`. Incus and the guest SSH keys live
+The verified `usr` and `etc` have ten state-bound exceptions: `machine-id`, `passwd`, `shadow`,
+`group`, `gshadow`, `subuid`, `subgid`, `usbguard/rules.conf`, `localtime` and `timezone`. `localtime`
+is a copy, not a link; each boot copies it again from the release's zoneinfo for the zone `timezone`
+names, so zone rules follow updates. Incus and the guest SSH keys live
 in `var/lib`. `home`, the `etc` files and the pool are shared by both slots; `var` is per release.
 Persistence boundaries: section 10.
 
@@ -809,7 +811,9 @@ profiles, the writable `etc` files, the autostart and SUID inventories, VFIO and
 and CARP against an accepted release; upstream connectivity is out of scope. Results feed
 `CheckerFailed` and `CheckerStale`. The autostart scan gives up after 120 s and reads at most 64 MiB
 of each owner file; a larger file is inventoried by size and times, except Sway and i3 configs, which
-fail the scan. Account diffs in the report mask password hashes. A deleted or renamed autostart
+fail the scan. Account diffs in the report mask password hashes. The time zone is the owner's and
+has no baseline: `localtime` and `timezone` must be root 0644 files, the zone an installed one and
+`localtime` its zoneinfo. A deleted or renamed autostart
 guest gets a scan within minutes. Accepting a baseline:
 [USAGE, Accept the new baseline](USAGE.md#accept-the-new-baseline). Generators in
 `guests/svc/dashboards` write the shipped JSON to `guests/svc/rootfs/usr/share/grafana/dashboards`;
@@ -927,7 +931,7 @@ host scripts and the bar target under 1 % of one core at idle; unmeasured.
 | `check`, `facts`, `observe`, `firewall-capture` | the checker, hardware and boot facts, monitoring, capture (section 8); the firewalls run `fw-facts` |
 | `sys`, `apps`, `notes`, `bar` | controls, launchers and status ([USAGE](USAGE.md)) |
 | `dns-push`, `portal`, `devices` | DNS activation, portal rules, device approval |
-| `account`, `power` | accounts, hardware choices |
+| `account`, `power`, `timezone` | accounts, hardware choices, the time zone |
 
 #### Locks
 

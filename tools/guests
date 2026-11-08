@@ -1214,9 +1214,21 @@ wan_extract() {
             continue
         fi
         [ ! -s "$work/wan-output" ] || die 'unexpected wan extraction output'
-        # The old wan never chooses what the new one parses: a short INI with what iwd keeps for the
-        # networks wan joins, or the profile stays behind (that network asks for its passphrase again).
-        if [ "$size" -gt 4096 ] || [ "$(LC_ALL=C tr -d '\n -~' <"$file" | wc -c)" != 0 ] || ! awk -v type="${name##*.}" '
+        # The profile stays behind otherwise (that network asks for its passphrase again).
+        if ! wan_profile_valid "$file" "${name##*.}"; then
+            logger -p user.warning -t guests 'wan: a Wi-Fi profile with unexpected content was not carried over' 2>/dev/null || :
+            echo "guests: wan Wi-Fi profile $name not carried over: unexpected content" >&2
+            rm "$file" || die 'cannot remove wan extraction scratch file'
+            continue
+        fi
+        install -m 600 -- "$file" "$work/iwd/$name" || die 'cannot save wan iwd profile'
+        rm "$file" || die 'cannot remove wan extraction scratch file'
+    done <"$work/wan-files"
+}
+# The old wan or the installer never chooses what the new wan parses: a short INI with what iwd keeps for
+# the networks wan joins. $1: the profile, $2: its type (the name's extension).
+wan_profile_valid() {
+    [ "$(stat -c %s "$1")" -le 4096 ] && [ "$(LC_ALL=C tr -d '\n -~' <"$1" | wc -c)" = 0 ] && awk -v type="$2" '
             $0 == "" {next}
             /^\[[A-Za-z]+\]$/ {
                 section = substr($0, 2, length($0) - 2)
@@ -1238,15 +1250,45 @@ wan_extract() {
                 else ok = 0
                 if (!ok) exit 1
             }
-        ' "$file"; then
-            logger -p user.warning -t guests 'wan: a Wi-Fi profile with unexpected content was not carried over' 2>/dev/null || :
-            echo "guests: wan Wi-Fi profile $name not carried over: unexpected content" >&2
-            rm "$file" || die 'cannot remove wan extraction scratch file'
-            continue
+        ' "$1"
+}
+# The names wan_extract carries over: SSID.psk|open|8021x, 1-32 printable bytes or =HEX.
+wan_profile_name() {
+    printf '%s\n' "$1" | awk '
+        {n++}
+        n > 1 || $0 ~ /[^ -~]/ || $0 !~ /\.(psk|open|8021x)$/ {bad = 1; exit}
+        {
+            ssid = $0; sub(/\.[^.]*$/, "", ssid)
+            if (substr(ssid, 1, 1) == "=") {
+                hex = substr(ssid, 2)
+                if (hex == "" || hex ~ /[^0-9a-fA-F]/ || length(hex) > 64 || length(hex) % 2) bad = 1
+            } else if (ssid == "" || length(ssid) > 32) bad = 1
+        }
+        END {exit bad || n != 1}'
+}
+# The installer's Wi-Fi network, for the first update: into the new wan's disk, through the carry-over
+# checks. Removed only once on that disk, so a rerun imports it again; one that fails them stays and warns.
+wan_seed() {
+    seed=/var/lib/convergent/install/iwd
+    [ -d "$seed" ] || return 0
+    rm -rf "$work/iwd-seed" && mkdir "$work/iwd-seed" || die 'cannot create wan seed scratch'
+    for file in "$seed"/*; do
+        [ -e "$file" ] || [ -L "$file" ] || continue
+        name=${file##*/}
+        if [ -f "$file" ] && [ ! -L "$file" ] && wan_profile_name "$name" && wan_profile_valid "$file" "${name##*.}"; then
+            install -m 600 -- "$file" "$work/iwd-seed/$name" || die 'cannot stage the installer Wi-Fi profile'
+        else
+            logger -p user.warning -t guests 'wan: an installer Wi-Fi profile was not imported' 2>/dev/null || :
+            echo "guests: an installer Wi-Fi profile in $seed was not imported: unexpected name or content" >&2
         fi
-        install -m 600 -- "$file" "$work/iwd/$name" || die 'cannot save wan iwd profile'
-        rm "$file" || die 'cannot remove wan extraction scratch file'
-    done <"$work/wan-files"
+    done
+    [ -n "$(ls -A "$work/iwd-seed")" ] || return 0
+    wan_mount || die 'cannot mount the wan disk for the installer Wi-Fi profile'
+    mkdir -p "$work/root/var/lib/iwd" && cp -a "$work/iwd-seed/." "$work/root/var/lib/iwd/" ||
+        die 'cannot write the installer Wi-Fi profile to wan'
+    unmount_root && sync || die 'cannot detach the wan disk'
+    for file in "$work/iwd-seed"/*; do rm -- "$seed/${file##*/}" || die 'cannot remove the imported installer Wi-Fi profile'; done
+    sync
 }
 # The caller confirms wan stopped and runs this in a subshell: every step checks its own status.
 wan_read() {
@@ -1727,6 +1769,7 @@ init() {
     work_profiles
     image_dir=$release/guests/wan
     init_guest wan --vm --profile wan
+    wan_seed
     radio
     image_dir=$release/guests/svc
     init_guest svc --profile svc
