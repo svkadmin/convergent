@@ -534,3 +534,7 @@ done
 grep -qx 'unbound wan_watch sshd dhcpd|set dhcpd flags -y vio1 -Y 100.80.0.18 vlan320' "$work/seed-no"
 grep -qx 'unbound wan_watch sshd|' "$work/seed-yes"
 echo 'test-leases: merge, interrupted checkpoint, replay and held seeding passed'
+# OpenBSD timeout(1) refuses to run as the session leader sshd makes of an exec'd command: the lease guard
+# stays a child of the remote shell.
+grep -q "^lease_guard='timeout -k 5 100 perl" "$repo/rootfs/usr/lib/convergent/incus/fw-leases" || die 'the lease guard must not exec timeout'
+echo 'test-leases: the lease guard runs timeout as a child of the remote shell'
