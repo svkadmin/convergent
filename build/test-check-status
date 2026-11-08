@@ -97,6 +97,56 @@ for tick in 1 2 3 4; do
     [ "$(stat -c %Y "$status/portal")" -gt "$previous" ]
 done
 echo 'check status: repeated expiry contention refreshes the portal sample'
+# wan-watch's pace: only the applied battery profile reaches the firewalls, and the word is written on change only.
+sed -n '/^    power=ac$/,/|| power=battery$/p' "$repo/tools/check" | sed "s|/run/convergent-power.profile|$work/power.profile|" >"$work/power-word"
+sed -n '/^            cmd=.*\/var\/run\/convergent-power/p' "$repo/tools/check" | sed "s|/var/run/convergent-power|$work/fw-power|g" >"$work/power-cmd"
+for part in power-word power-cmd; do [ -s "$work/$part" ]; sh -n "$work/$part"; done
+grep -q "$work/power.profile" "$work/power-word" && [ "$(grep -c "$work/fw-power" "$work/power-cmd")" = 1 ] || exit 1
+(
+    carp() { . "$work/power-word"; . "$work/power-cmd"; sh -c "ifconfig() { echo \"carp \$*\"; }; $cmd"; }
+    [ "$(carp)" = 'carp carp' ] && [ "$(cat "$work/fw-power")" = ac ] || exit 1
+    for profile in battery ac unknown battery; do
+        echo "$profile" >"$work/power.profile"
+        [ "$(carp)" = 'carp carp' ]
+        case $profile in battery) [ "$(cat "$work/fw-power")" = battery ] ;; *) [ "$(cat "$work/fw-power")" = ac ] ;; esac
+    done
+    touch -t 200001010000 "$work/fw-power"
+    carp >/dev/null
+    [ "$(stat -c %Y "$work/fw-power")" = "$(date -d 2000-01-01T00:00 +%s)" ]
+)
+echo 'check status: the firewalls learn the battery profile, written only on change'
+# check auto on battery: the work gate's SSH runs on even minutes; odd ones keep its last report line.
+sed -n '/^    # On battery its SSH sessions/,/^    exec 8>&-$/p' "$repo/tools/check" |
+    sed -e "s|/run/convergent-power.profile|$work/power.profile|" -e "s|/run/convergent/|$work/run/|g" >"$work/gate-minute"
+[ -s "$work/gate-minute" ]; sh -n "$work/gate-minute"
+grep -q "$work/run/.firewall-heal" "$work/gate-minute" && grep -q "$work/power.profile" "$work/gate-minute" || exit 1
+(
+    state=$work/state
+    mkdir -p "$state" "$work/run"
+    flock() { [ "$*" = '-s -n 8' ] || exit 97; }
+    sh() { [ "$1" = /usr/lib/convergent/incus/work-gate ] || exit 97; echo run >>"$work/gate-runs"; [ "$gate_ok" = 1 ]; }
+    date() { [ "$*" = +%M ] || exit 97; echo "$minute"; }
+    gate() { : >"$work/gate-runs"; : >"$work/run/.firewall-heal"; . "$work/gate-minute"; }
+    echo 'SELF-HEAL work access closed: topology mismatch' >"$state/firewall-heal"
+    gate_ok=1
+    for c in ac:07:1 battery:08:1 battery:00:1 battery:07:0 battery:59:0 unknown:07:1; do
+        echo "${c%%:*}" >"$work/power.profile"
+        minute=$(echo "$c" | cut -d: -f2)
+        gate
+        [ "$(wc -l <"$work/gate-runs")" = "${c##*:}" ] || { echo "work gate runs on $c" >&2; exit 1; }
+    done
+    echo battery >"$work/power.profile"
+    minute=09; gate
+    grep -qx 'SELF-HEAL work access closed: topology mismatch' "$work/run/.firewall-heal"
+    minute=10; gate
+    [ ! -s "$work/run/.firewall-heal" ]
+    gate_ok=0; gate
+    grep -qx 'SELF-HEAL work access closed: topology mismatch' "$work/run/.firewall-heal"
+    rm "$work/power.profile"
+    minute=07 gate_ok=1; gate
+    [ "$(wc -l <"$work/gate-runs")" = 1 ]
+)
+echo 'check auto: on battery the work gate runs every other minute and keeps its last verdict between'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.
 sed -n '/^autostart() {/,/^}/p' "$repo/tools/check" | sed "s|\([ #]\)/home\([ /]\)|\1$work/home\2|g" >"$work/autostart"
 [ -s "$work/autostart" ]; sh -n "$work/autostart"

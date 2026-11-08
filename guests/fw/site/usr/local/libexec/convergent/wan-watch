@@ -71,5 +71,10 @@ while :; do
 		logger -t wan-watch "wanwatch $op $step" || :
 	fi
 	# After a first loss, the next round runs at once; a good round's probes took 0.6 s of its second.
-	if [ "$good" -ne 0 ]; then sleep 0.4; elif [ "$lost" != 1 ]; then sleep 1; fi
+	# On battery (the host's check status writes the word; boot clears /var/run) WAN probes run every 5 s.
+	power=
+	read -r power 2>/dev/null </var/run/convergent-power || :
+	good_pause=0.4 lost_pause=1
+	[ "$power" != battery ] || [ "$local_ok" = 0 ] || good_pause=4.4 lost_pause=5
+	if [ "$good" -ne 0 ]; then sleep "$good_pause"; elif [ "$lost" != 1 ]; then sleep "$lost_pause"; fi
 done

@@ -120,6 +120,9 @@ if [ "${1:-}:$#" = status:1 ]; then
     exec 8>/run/convergent/portal.lock
     exec 7>/run/convergent/guests.lock
     umask 022
+    # wan-watch paces its probes by the applied profile; a fixed word, written only on change.
+    power=ac
+    [ "$(cat /run/convergent-power.profile 2>/dev/null)" != battery ] || power=battery
     portal_locked=0
     # guests holds the portal lock through whole applies and rebuilds: never wait that out.
     if flock -s -n 7; then exec 7>&-; flock -w 30 8 && portal_locked=1
@@ -138,7 +141,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     for node in fw1 fw2; do
         (
             echo unknown >"$status/.portal-$node"
-            cmd='ifconfig carp'
+            cmd="[ \"\$(cat /var/run/convergent-power 2>/dev/null)\" = $power ] || echo $power >/var/run/convergent-power; ifconfig carp"
             if [ "$portal_locked" = 1 ]; then
                 cmd="$cmd"'; if dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show); then
                     if [ -n "$dns$lan" ]; then echo "portal on"; else echo "portal off"; fi
@@ -255,8 +258,15 @@ if [ "${1:-}" = auto ]; then (
     firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
     wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
+    # On battery its SSH sessions run on even minutes; odd ones keep the gate and its last report line.
+    gate_minute=1
+    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ]; then
+        case $(date +%M) in *[13579]) gate_minute=0 ;; esac
+    fi
     exec 8>/run/convergent/guests.lock
-    if flock -s -n 8; then
+    if [ "$gate_minute" = 0 ]; then
+        grep '^SELF-HEAL work access ' "$state/firewall-heal" >>/run/convergent/.firewall-heal 2>/dev/null || :
+    elif flock -s -n 8; then
         sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>/run/convergent/.firewall-heal
     else echo 'SELF-HEAL work access left as is: a guest operation is running' >>/run/convergent/.firewall-heal; fi
     exec 8>&-

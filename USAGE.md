@@ -959,10 +959,13 @@ menu ([RECOVERY](RECOVERY.md#recovery-boot-menu)).
 | `sys power charge 80` | charge ends at 80 %, starts at 75 %, where supported; range 55–100 |
 | `sys power charge off` | restores 100/95 and Standard; with no choice the firmware's charge mode stays |
 | `sys power thermal quiet\|balanced\|performance` | selects a firmware profile; firmware controls the fans |
-| `sys power status` | the applied profile, sensors, unsupported thresholds and available choices |
+| `sys power status` | the applied profile, energy preference, ASPM policy, sensors, unsupported thresholds and available choices |
 
 Boot and AC events also apply the power profile. AC uses `balance_performance`, battery uses
-`power`; both apply `cpu_cap_khz` (default none). A manual choice lasts until the power source
+`balance_power`; both apply `cpu_cap_khz` (default none). Battery also sets PCIe ASPM `powersave`
+and runtime PM `auto` on idle Intel platform devices and an NVMe without Convergent's partitions (AC
+restores the kernel defaults); the firewalls probe `wan` every 5 s instead of every second (demotion
+within 10 s) and the work gate runs every 2 minutes, while self-heal keeps its minute. A manual choice lasts until the power source
 changes; other supply events (a USB-C dock) keep it. A new manual choice that failed to apply is not
 kept; a kept one that fails on a later event is retried. Only changes and failures are logged; an
 invalid saved charge or thermal choice is skipped with one warning a boot.

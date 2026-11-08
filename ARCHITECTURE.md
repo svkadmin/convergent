@@ -325,6 +325,7 @@ The pair: the lower advskew plus demotion wins every segment; preempt keeps the 
 | fw1 reseeded during its replacement (group `upgrade`) | +128 | the handoff is released |
 
 A `wan-watch` round is three pings to `wan` 300 ms apart, bounded to one second; any reply passes.
+On the battery profile (written by `check status`) rounds start every 5 s; two lost rounds still demote.
 The `wanwatch` counter survives a service restart. Failover takes about three seconds and moves the
 gateways, DNS and the synchronized state table; `wan` keeps NAT and the upstream address. Both
 firewalls down stops routing; same-VLAN work traffic stays local. `wan` is a single point of
@@ -902,7 +903,8 @@ The bar caches release, layout and sensor data; status probes serialize `wan` SS
 worker per guest. `wan`'s three sequential requests share 25 s plus kill grace, over 60 s SSH
 multiplexing. A portal read waits up to 30 s for `portal.lock`, none while a guests run holds the
 guests lock; longer contention lets the previous sample age out, and a failed query yields unknown.
-Safety probes keep their failover timing. No wattage or runtime saving is established. Sampling:
+Safety probes keep their failover timing on AC; on battery `wan-watch` probes every 5 s and the work
+gate runs every other minute, while self-heal keeps its minute. No wattage or runtime saving is established. Sampling:
 section 8 and [USAGE, The bar](USAGE.md#the-bar).
 
 ### 11.2 Proposals, not enabled
@@ -910,13 +912,13 @@ section 8 and [USAGE, The bar](USAGE.md#the-bar).
 | Proposal | Not enabled because |
 |---|---|
 | USB autosuspend | needs device and composite allowlists that keep HID, audio, uplinks and storage |
-| ASPM, NVMe APST, SATA link PM, HDA savings | untested for latency and reliability; never forced |
+| ASPM on AC, NVMe APST, SATA link PM, HDA savings | untested for latency and reliability; never forced |
 | Disable the NMI watchdog | hard-lockup diagnostics would be lost |
 | Longer dirty writeback | more state and logs lost on power loss |
 | KSM across the firewalls | deduplication side channels and scanning cost |
 | Smaller limits, zram by default | pressure and compression cost unmeasured; zram stays opt-in |
 
-Hardening, probe timing and retention are not relaxed. A measurement compares battery energy at
+Hardening and retention are not relaxed; probe timing only on battery (11.1). A measurement compares battery energy at
 the same brightness, radio and workload, plus CPU time, context switches, idle residency and SSH and
 log counts.
 

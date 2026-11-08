@@ -185,8 +185,9 @@ sed -n '/^while :; do$/,/^[[:space:]]*# Reuse this round/p' "$fw/usr/local/libex
     sed '1d;$d' >"$work/wan-round"
 check_script "$work/wan-round"
 sed -n '/^[[:space:]]*# After a first loss/,/^done$/p' "$fw/usr/local/libexec/convergent/wan-watch" |
-    sed '1d;$d' >"$work/wan-pace"
+    sed "1d;\$d; s|/var/run/convergent-power|$work/fw-power|" >"$work/wan-pace"
 check_script "$work/wan-pace"
+grep -q "$work/fw-power" "$work/wan-pace" || die 'wan-watch power path not replaced'
 sed -n '/^[[:space:]]*# Reuse this round/,/^[[:space:]]*if \[ "\$want" != "\$owned" \]; then$/p' "$fw/usr/local/libexec/convergent/wan-watch" |
     sed "1d;\$d; s|/var/node_exporter/textfile|$work/textfile|; s|/usr/local/libexec/convergent/wan-probe.awk|$fw/usr/local/libexec/convergent/wan-probe.awk|" >"$work/wan-publish"
 check_script "$work/wan-publish"
@@ -252,6 +253,21 @@ mkdir "$work/textfile"
     wan_up=0; round; round
     forward=0; round
     printf '0.4\n0.4\n1\n1\n' | cmp - "$work/wan-sleeps" || die 'wan-watch rounds are not paced'
+    # On battery the same rounds probe every 5 s, demoting after the same two losses; local failures keep 1 s.
+    : >"$work/wan-sleeps"
+    echo battery >"$work/fw-power"
+    owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1 wan_up=1
+    round; round
+    wan_up=0; round; [ "$owned" = 0 ]; round; [ "$owned" = 128 ] || die 'battery pace changed the two-loss rule'
+    forward=0; round
+    printf '4.4\n4.4\n5\n1\n' | cmp - "$work/wan-sleeps" || die 'wan-watch battery rounds are not paced'
+    # Any other word is AC.
+    : >"$work/wan-sleeps"
+    echo batteryx >"$work/fw-power"
+    owned=0 good=3 lost=0 dns_lost=0 dns=up forward=1 wan_up=1
+    round
+    printf '0.4\n' | cmp - "$work/wan-sleeps" || die 'wan-watch paced an unknown power word as battery'
+    rm "$work/fw-power"
     # A round without a probe publishes a local fault, never a failed transit probe.
     prom=$work/textfile/wan-watch.prom
     for c in local:0:- lost:1:0 up:1:1; do
@@ -1180,12 +1196,13 @@ echo 'test-boot-privacy: platform Wi-Fi switch passed'
 # KVM halt polling follows the power source through set_file; a missing knob is skipped, a refused write fails.
 power=$repo/tools/power
 sed -n '/^ac_epp=/p; /^bat_epp=/p; /^ac_halt_poll=/p; /^bat_halt_poll=/p
+    /^ac_aspm=/p; /^bat_aspm=/p; /^ac_runtime=/p; /^bat_runtime=/p
     /^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p; /^set_file() {/,/^}/p' "$power" >"$work/power-lib"
-sed -n '/^if \[ "\$src" = ac \]; then epp=/p; /^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns /p' "$power" |
+sed -n '/^if \[ "\$src" = ac \]; then epp=/p; /^else epp=\$bat_epp /p; /^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns /p' "$power" |
     sed "s|/sys/module/kvm/parameters/|$work/kvm/|" >"$work/power-halt"
 check_script "$work/power-lib"
 check_script "$work/power-halt"
-[ "$(grep -c "$work/kvm/halt_poll_ns" "$work/power-halt")" = 1 ] && [ "$(wc -l <"$work/power-halt")" = 2 ] ||
+[ "$(grep -c "$work/kvm/halt_poll_ns" "$work/power-halt")" = 1 ] && [ "$(wc -l <"$work/power-halt")" = 3 ] ||
     die 'halt polling extraction'
 # After the CPU profile is published: a refused knob must not turn the profile unknown.
 awk '/^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns / {knob = NR}
@@ -1218,6 +1235,92 @@ awk '/^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns / {knob = NR}
     [ "$rc" = 1 ] || die 'refused halt polling write passed'
 )
 echo 'test-boot-privacy: KVM halt polling passed'
+
+# Battery: ASPM powersave and runtime PM auto for the listed functions, the kernel defaults on AC. The system's
+# NVMe, unlisted, other-vendor and vfio-pci functions stay on; without a partition list every NVMe stays on.
+sed -n '/^set_aspm() {/,/^}/p; /^runtime_pm() {/,/^}/p' "$power" >"$work/power-pm-lib"
+sed -n '/^if \[ "\$src" = ac \]; then epp=/p; /^else epp=\$bat_epp /p; /^set_aspm "\$aspm"$/p; /^runtime_pm "\$runtime"$/p' "$power" >"$work/power-pm"
+check_script "$work/power-pm-lib"
+check_script "$work/power-pm"
+[ "$(wc -l <"$work/power-pm")" = 4 ] || die 'battery savings extraction'
+awk '/^set_file \/sys\/module\/kvm\/parameters\/halt_poll_ns / {knob = NR} /^runtime_pm "\$runtime"$/ {pm = NR}
+    END {exit !(knob && pm > knob)}' "$power" || die 'battery savings set before the profile is published'
+(
+    logger() { :; }
+    . "$work/power-lib"
+    . "$work/power-pm-lib"
+    cpu=$work/cpu aspm_policy=$work/aspm pci=$work/pci labels=$work/labels blocks=$work/block
+    # The kernel brackets the active policy; refuse=1 rejects it, as with ASPM disabled by the firmware.
+    # The redirection truncates a plain file, so a refusal writes back the default line sysfs would keep.
+    refuse=0
+    echo() {
+        case $1 in
+        default|performance|powersave|powersupersave)
+            [ "$refuse" = 0 ] || { printf '[default] performance powersave powersupersave\n'; return 1; }
+            line=
+            for a in default performance powersave powersupersave; do
+                [ "$a" != "$1" ] || a="[$a]"
+                line="$line${line:+ }$a"
+            done
+            printf '%s\n' "$line" ;;
+        *) printf '%s\n' "$*" ;;
+        esac
+    }
+    dev=$work/devices/pci0000:00
+    mkdir -p "$work/pci" "$work/labels" "$work/block" "$work/node" "$work/drivers/vfio-pci" "$work/drivers/nvme"
+    fn() {
+        mkdir -p "$dev/$1/power"
+        printf '%s\n' "$2" >"$dev/$1/vendor"; printf '%s\n' "$3" >"$dev/$1/class"; printf 'on\n' >"$dev/$1/power/control"
+        ln -s "$dev/$1" "$work/pci/$1"
+        [ -z "${4:-}" ] || ln -s "$work/drivers/$4" "$dev/$1/driver"
+    }
+    # NPU, GNA, ISH, DTT, KT and the unused NVMe; then a host bridge, the dGPU and a listed class on vfio-pci,
+    # a listed class from another vendor and the NVMe that holds cv-slot-a.
+    listed='0000:00:0b.0 0000:00:08.0 0000:00:12.0 0000:00:04.0 0000:00:16.3 0000:02:00.0'
+    kept='0000:00:00.0 0000:01:00.0 0000:00:15.0 0000:03:00.0 0000:04:00.0'
+    fn 0000:00:0b.0 0x8086 0x120000; fn 0000:00:08.0 0x8086 0x088000; fn 0000:00:12.0 0x8086 0x070000
+    fn 0000:00:04.0 0x8086 0x118000; fn 0000:00:16.3 0x8086 0x070002; fn 0000:02:00.0 0x1e0f 0x010802 nvme
+    fn 0000:00:00.0 0x8086 0x060000; fn 0000:01:00.0 0x10de 0x030000 vfio-pci; fn 0000:00:15.0 0x8086 0x118000 vfio-pci
+    fn 0000:03:00.0 0x10ec 0x070000; fn 0000:04:00.0 0x144d 0x010802 nvme
+    mkdir -p "$dev/0000:04:00.0/nvme/nvme1/nvme1n1/nvme1n1p2" "$dev/0000:00:14.0/usb3/3-1/host0/block/sda/sda3"
+    ln -s "$dev/0000:04:00.0/nvme/nvme1/nvme1n1/nvme1n1p2" "$work/block/nvme1n1p2"
+    ln -s "$dev/0000:00:14.0/usb3/3-1/host0/block/sda/sda3" "$work/block/sda3"
+    : >"$work/node/nvme1n1p2"; : >"$work/node/sda3"
+    ln -s "$work/node/nvme1n1p2" "$work/labels/cv-slot-a"; ln -s "$work/node/sda3" "$work/labels/cv-state"
+    pm() { for b in "$@"; do cat "$work/pci/$b/power/control"; done | tr '\n' ' '; }
+    apply() { src=$1 rc=0 changed=0; . "$work/power-pm" || :; }
+    printf '[default] performance powersave powersupersave\n' >"$work/aspm"
+    apply battery
+    [ "$rc:$changed:$(cat "$work/aspm")" = '0:1:default performance [powersave] powersupersave' ] || die "battery ASPM: $rc $changed"
+    [ "$(pm $listed)" = 'auto auto auto auto auto auto ' ] || die "battery runtime PM: $(pm $listed)"
+    [ "$(pm $kept)" = 'on on on on on ' ] || die "runtime PM changed a kept function: $(pm $kept)"
+    apply battery
+    [ "$rc:$changed" = 0:0 ] || die 'a repeated battery event wrote again'
+    apply ac
+    [ "$rc:$changed:$(cat "$work/aspm")" = '0:1:[default] performance powersave powersupersave' ] || die "AC ASPM: $rc $changed"
+    [ "$(pm $listed $kept)" = 'on on on on on on on on on on on ' ] || die "AC runtime PM: $(pm $listed $kept)"
+    # No cv-* label, or one whose block device cannot be resolved: no NVMe is proven not to be the system's.
+    mv "$work/labels" "$work/labels.all"; mkdir "$work/labels"
+    apply battery
+    [ "$rc:$(pm 0000:02:00.0 0000:04:00.0 0000:00:0b.0)" = '0:on on auto ' ] || die 'an NVMe left on without a partition list'
+    apply ac
+    rm -r "$work/labels"; mv "$work/labels.all" "$work/labels"
+    : >"$work/node/gone"; ln -s "$work/node/gone" "$work/labels/cv-slot-b"
+    apply battery
+    [ "$rc:$(pm 0000:02:00.0 0000:04:00.0)" = '0:on on ' ] || die 'an NVMe left on with an unresolved partition'
+    rm "$work/labels/cv-slot-b"
+    apply ac
+    # A function removed mid-loop is skipped; a refused policy fails the run; a missing policy file is skipped.
+    mkdir -p "$work/pci/0000:05:00.0/power"; printf 'on\n' >"$work/pci/0000:05:00.0/power/control"
+    refuse=1
+    apply battery 2>/dev/null
+    [ "$rc:$(cat "$work/aspm"):$(pm 0000:00:0b.0)" = '1:[default] performance powersave powersupersave:auto ' ] || die 'a refused ASPM policy passed'
+    refuse=0
+    rm "$work/aspm"
+    apply ac
+    [ "$rc:$(pm 0000:00:0b.0)" = '0:on ' ] && [ ! -e "$work/aspm" ] || die 'missing ASPM policy not skipped'
+)
+echo 'test-boot-privacy: battery ASPM and runtime PM passed'
 
 # Power choices: none leaves the firmware alone, an invalid one skips only itself, a new one is synced.
 sed -n '/^save_choice() {/,/^}/p; /^bad_choice() {/,/^}/p' "$power" |
@@ -1283,14 +1386,14 @@ grep -q "$work/power-run/convergent-power.manual" "$work/power-source" && [ "$(t
     }
     state() { echo "$(cat "$work/power-status") $(cat "$p/energy_performance_preference") $(cat "$run/convergent-power.profile")"; }
     fake=ac; profile battery
-    [ "$(state):$(cat "$run/convergent-power.source"):$(cat "$run/convergent-power.manual")" = '0 power battery:ac:battery' ] ||
+    [ "$(state):$(cat "$run/convergent-power.source"):$(cat "$run/convergent-power.manual")" = '0 balance_power battery:ac:battery' ] ||
         die 'manual profile not recorded'
     # A supply event on the same source applies it again.
     echo balance_performance >"$p/energy_performance_preference"
     profile
-    [ "$(state)" = '0 power battery' ] && [ -e "$run/convergent-power.manual" ] || die 'a supply event undid a manual profile'
+    [ "$(state)" = '0 balance_power battery' ] && [ -e "$run/convergent-power.manual" ] || die 'a supply event undid a manual profile'
     fake=battery; profile
-    [ "$(state)" = '0 power battery' ] && [ ! -e "$run/convergent-power.manual" ] || die 'a source change kept the manual profile'
+    [ "$(state)" = '0 balance_power battery' ] && [ ! -e "$run/convergent-power.manual" ] || die 'a source change kept the manual profile'
     fake=ac; profile
     [ "$(state)" = '0 balance_performance ac' ] || die 'automatic profile'
     # A manual profile the hardware refuses is not kept, nor the manual one before it.

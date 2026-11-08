@@ -7,13 +7,23 @@ umask 022
 ac_epp=balance_performance
 cap=0
 [ ! -f /usr/lib/convergent/cpu-cap-khz ] || read -r cap </usr/lib/convergent/cpu-cap-khz
-bat_epp=power
+# power capped the clock at 1.8 GHz on battery.
+bat_epp=balance_power
 # KVM halt polling: idle vCPUs spin up to 200 us (the default) on AC, never on battery.
 ac_halt_poll=200000
 bat_halt_poll=0
+# PCIe ASPM policy and device runtime PM: the kernel defaults on AC, savings on battery.
+ac_aspm=default
+bat_aspm=powersave
+ac_runtime=on
+bat_runtime=auto
 
 cpu=/sys/devices/system/cpu/cpufreq
 ps=/sys/class/power_supply
+aspm_policy=/sys/module/pcie_aspm/parameters/policy
+pci=/sys/bus/pci/devices
+labels=/dev/disk/by-partlabel
+blocks=/sys/class/block
 
 die() { logger -p user.err -t power "$*" 2>/dev/null || :; echo "power: $*" >&2; exit 1; }
 trap 'status=$?; [ "$status" = 0 ] || logger -p user.err -t power "handler failed (status $status)" 2>/dev/null || :' 0
@@ -92,6 +102,48 @@ set_limit() {
 		sleep 0.1
 	done
 	write_failed "$1" "$2" 'write accepted; effective limit still pending or constrained'
+}
+# The policy file lists every policy and brackets the active one.
+set_aspm() {
+	[ -e "$aspm_policy" ] || return 0
+	current=
+	read -r current 2>/dev/null <"$aspm_policy" || :
+	case " $current " in *" [$1] "*) return 0 ;; esac
+	if echo "$1" 2>/dev/null >"$aspm_policy"; then
+		changed=1
+		current=
+		read -r current 2>/dev/null <"$aspm_policy" || :
+		case " $current " in *" [$1] "*) ;; *) write_failed "$aspm_policy" "$1" 'readback mismatch' ;; esac
+	else
+		current=
+		read -r current 2>/dev/null <"$aspm_policy" || :
+		write_failed "$aspm_policy" "$1" 'write rejected'
+	fi
+}
+# By vendor:class, the Intel functions the kernel leaves on: NPU, GNA, ISH, DTT and PMT, KT; and an NVMe
+# that holds no cv-* partition (none listed: every NVMe stays). Never the dGPU or a vfio-pci device.
+runtime_pm() {
+	system=
+	for l in "$labels"/cv-*; do
+		[ -e "$l" ] || continue
+		node=$(readlink -e "$l") && dev=$(readlink -e "$blocks/${node##*/}") || { system=unknown; break; }
+		system="$system $dev"
+	done
+	for d in "$pci"/*; do
+		[ -e "$d/power/control" ] || continue
+		# A function removed mid-loop (a dock) is skipped.
+		read -r vendor 2>/dev/null <"$d/vendor" && read -r class 2>/dev/null <"$d/class" || continue
+		case $vendor:$class in
+		0x8086:0x120000 | 0x8086:0x088000 | 0x8086:0x070000 | 0x8086:0x118000 | 0x8086:0x070002) ;;
+		*:0x010802)
+			[ -n "$system" ] && [ "$system" != unknown ] && real=$(readlink -e "$d") || continue
+			case "$system " in *" $real/"*) continue ;; esac ;;
+		*) continue ;;
+		esac
+		driver=$(readlink "$d/driver" 2>/dev/null) || driver=
+		[ "${driver##*/}" != vfio-pci ] || continue
+		set_file "$d/power/control" "$1"
+	done
 }
 
 save_choice() {
@@ -186,7 +238,8 @@ charge|thermal)
 	exit 0 ;;
 *) echo 'usage: power [ac|battery|charge off|55-100|thermal quiet|balanced|performance]' >&2; exit 2 ;;
 esac
-if [ "$src" = ac ]; then epp=$ac_epp halt_poll=$ac_halt_poll; else epp=$bat_epp halt_poll=$bat_halt_poll; fi
+if [ "$src" = ac ]; then epp=$ac_epp halt_poll=$ac_halt_poll aspm=$ac_aspm runtime=$ac_runtime
+else epp=$bat_epp halt_poll=$bat_halt_poll aspm=$bat_aspm runtime=$bat_runtime; fi
 
 policies=0
 for p in "$cpu"/policy[0-9]*; do
@@ -218,6 +271,8 @@ if [ -n "$manual" ]; then
 fi
 
 set_file /sys/module/kvm/parameters/halt_poll_ns "$halt_poll"
+set_aspm "$aspm"
+runtime_pm "$runtime"
 # No charge choice leaves the firmware's charge mode, as no thermal choice leaves its profile.
 if [ -e /var/lib/convergent/power/charge ]; then
 	limit=
@@ -237,5 +292,5 @@ fi
 # Duplicate AC events need no log write; changes and failures still do.
 severity=user.notice
 [ "$rc" = 0 ] || severity=user.err
-[ "$changed:$rc" = 0:0 ] || logger -p "$severity" -t power "$src: energy preference $epp, clock cap $cap kHz, status $rc" 2>/dev/null || :
+[ "$changed:$rc" = 0:0 ] || logger -p "$severity" -t power "$src: energy preference $epp, clock cap $cap kHz, ASPM $aspm, runtime PM $runtime, status $rc" 2>/dev/null || :
 exit "$rc"
