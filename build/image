@@ -69,7 +69,11 @@ sh "$here/networks" host "$root"
 ! find "$root/etc" "$root/usr/local" ! -type l ! -perm -1000 -perm /022 | grep . || die 'group- or world-writable files in the image (above)'
 rm -f "$root/etc/convergent/config.yaml"
 [ -f "$root/usr/share/zoneinfo/$timezone" ] || die "timezone is not installed: $timezone"
-ln -sfn "../usr/share/zoneinfo/$timezone" "$root/etc/localtime"
+# A copy, not a link: the initramfs binds the state copy over it, and a bind follows links. Removed first, as
+# cp writes through a link; copied inside the image root, which resolves the zoneinfo's own links.
+rm -f "$root/etc/localtime"
+chroot "$root" cp "/usr/share/zoneinfo/$timezone" /etc/localtime
+chmod 0644 "$root/etc/localtime"
 printf '%s\n' "$timezone" >"$root/etc/timezone"
 printf 'hostname="%s"\n' "$hostname" >"$root/etc/conf.d/hostname"
 aliases=host

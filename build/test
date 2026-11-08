@@ -596,6 +596,12 @@ aaaa-0002'
 	[ -f "$root/etc/machine-id" ] && [ ! -s "$root/etc/machine-id" ] || die 'image ships a machine-id'
 	grep -qx 'owner:x:1000:1000::/home/owner:/bin/sh' "$root/etc/passwd" || die 'image etc-state seeding changed passwd'
 	[ -f "$root/etc/usbguard/rules.conf" ] || die 'image lacks a writable /etc entry'
+	# The state copy is bound over /etc/localtime, and a bind follows links: the image ships a copy.
+	grep -qx 'localtime' "$root/usr/lib/convergent/etc-state" && grep -qx 'timezone' "$root/usr/lib/convergent/etc-state" ||
+		die 'the time zone is not state-bound'
+	grep -qx 'chroot "$root" cp "/usr/share/zoneinfo/$timezone" /etc/localtime' "$here/image" ||
+		die 'the image does not copy its zoneinfo to /etc/localtime'
+	if grep -q 'ln .*etc/localtime' "$here/image"; then die 'the image links /etc/localtime'; fi
 	)
 	echo 'test: install options passed'
 	exit 0
@@ -863,6 +869,8 @@ inject_update() {
 	mount -t erofs -o ro "${loop}p2" "$root"
 	bld btrfs -q subvolume create "$work/state/var-$release"
 	cp -a "$root/var/." "$var/"
+	# The old release's build-time zone; the new one must keep it.
+	zone=$(cat "$root/etc/timezone")
 	umount "$root"
 	update="$var/lib/convergent/test-update"
 	mkdir -p "$update/good" "$update/unsigned" "$update/tampered" "$var/spool/cron/crontabs"
@@ -876,7 +884,7 @@ inject_update() {
 	bld openssl genpkey -algorithm ed25519 -out "$work/wrongkey.pem"
 	bld openssl pkeyutl -sign -rawin -inkey "$work/wrongkey.pem" \
 		-in "${update#"$BUILDER"}/wrongkey/manifest" -out "${update#"$BUILDER"}/wrongkey/manifest.sig"
-	printf 'old=%s\nnew=%s\n' "$release" "$other" >"$update/test"
+	printf 'old=%s\nnew=%s\nzone=%s\n' "$release" "$other" "$zone" >"$update/test"
 	cat >>"$update/test" <<'EOF'
 PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 unset CONVERGENT_UNSIGNED
@@ -888,6 +896,9 @@ if [ -f "$update/written" ]; then
 	printf '%s\n' "$status" | grep -qx "booted  $new  slot b" || { echo 'CV-UPDATE failed: booted new slot b'; r=1; }
 	printf '%s\n' "$status" | grep -qx "slot b  $new  good" || { echo 'CV-UPDATE failed: slot b good'; r=1; }
 	printf '%s\n' "$status" | grep -qx "good    $new" || { echo 'CV-UPDATE failed: good new release'; r=1; }
+	# The zone stays through the etc-state seed; boot copied localtime again from this release's zoneinfo.
+	[ "$(cat /etc/timezone)" = "$zone" ] && [ ! -L /etc/localtime ] && mountpoint -q /etc/localtime &&
+		cmp -s "/usr/share/zoneinfo/$zone" /etc/localtime || { echo 'CV-UPDATE failed: time zone'; r=1; }
 	sync
 	echo CV-UPDATE-SIG-RESULT "$r"
 	exit "$r"
@@ -903,6 +914,8 @@ refuse() {
 		else echo CV-SIG "$1" WRONG-REASON; r=1; fi
 	fi
 }
+# A stale copy of the zone's rules (an older release binds none): the new release's boot replaces it.
+if mountpoint -q /etc/localtime; then printf '\n' >>/etc/localtime || r=1; fi
 refuse unsigned 'the release is not signed'
 refuse tampered 'the manifest signature does not verify'
 refuse wrongkey 'the manifest signature does not verify'
@@ -927,6 +940,14 @@ EOF
 
 inject_guest_update() {
 	[ "$mode" != guests-update ] || cp -a "$broken" "$var/lib/convergent/test-release/broken-svc"
+	# The installer's Wi-Fi profiles: guests init imports them into wan, all but the refused one.
+	if [ "$mode" = guests-update ]; then
+		mkdir -p "$var/lib/convergent/install/iwd"
+		printf '[Security]\nPassphrase=convergent-test-only\n[Settings]\nAutoConnect=false\n' >"$var/lib/convergent/install/iwd/CV-test.psk"
+		printf '[Settings]\nAutoConnect=false\n' >"$var/lib/convergent/install/iwd/=43562074657374.open"
+		printf '[Security]\nPassphrase=short\n' >"$var/lib/convergent/install/iwd/CV-bad.psk"
+		chmod 600 "$var/lib/convergent/install/iwd/"*
+	fi
 	cat >"$var/lib/convergent/test-release/update-test" <<'EOF'
 #!/bin/sh
 set -u
@@ -2201,7 +2222,7 @@ sh -eu <<'GUEST_GUARDS' || bad $LINENO
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 die() { echo "$*" >&2; exit 1; }
-eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p' /usr/local/sbin/guests)"
+eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p' /usr/local/sbin/guests)"
 mkdir -p "$work/wan-read/out" "$work/iwd"
 setpriv() { shift 4; "$@"; }
 ulimit() { case "$*" in '-f 128'|'-f 2048') ;; *) return 1 ;; esac; }
@@ -3802,23 +3823,16 @@ wan_wifi() (
         n=0
         until "$@"; do [ "$n" -lt 30 ] || return 1; n=$((n + 1)); sleep 1; done
     }
-    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^wan_damaged() /p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
+    eval "$(sed -n '/^wan_mount() {/,/^}/p; /^wan_read() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p; /^wan_listing() {/,/^}/p; /^wan_debugfs() (/,/^)/p; /^wan_damaged() /p; /^unmount_root() {/,/^}/p' /usr/local/sbin/guests)"
     trap 'code=$?; unmount_root || exit 1; rm -rf "$work";
         running || ic start wan || code=1; ic config unset wan boot.autorestart || code=1; exit "$code"' 0
     trap 'exit 1' HUP INT TERM
     ic config set wan boot.autorestart=false
     ic stop wan --timeout 60 || ic stop wan --force
     [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]
-    if [ "$1" = seed ]; then
-        wan_mount
-        mkdir -p "$work/root/var/lib/iwd"
-        cp "$release/iwd/"* "$work/root/var/lib/iwd/"
-        chmod 600 "$work/root/var/lib/iwd/"*
-        unmount_root
-    else
-        wan_read
-        for file in "$release/iwd/"*; do cmp "$file" "$work/iwd/${file##*/}"; done
-    fi
+    wan_read
+    for file in "$release/iwd/"*; do cmp "$file" "$work/iwd/${file##*/}"; done
+    [ ! -e "$work/iwd/CV-bad.psk" ]
     ic start wan
     deadline=$(($(date +%s) + 600))
     until timeout 30 ssh -F /etc/convergent/ssh_config wan check >/dev/null 2>&1; do
@@ -3826,7 +3840,10 @@ wan_wifi() (
         sleep 5
     done
 )
-wan_wifi seed
+# guests init imported the installer's profiles into wan and removed them; the refused one stays.
+seed=/var/lib/convergent/install/iwd
+[ ! -e "$seed/CV-test.psk" ] && [ ! -e "$seed/=43562074657374.open" ] && [ -f "$seed/CV-bad.psk" ] || bad $LINENO
+wan_wifi check
 [ "$?" = 0 ] || bad $LINENO
 # wan must answer Incus's power button: a same-image replacement, no forced stop.
 sh -x /usr/local/sbin/guests update wan "$release/guests/wan" --trusted-local 2>/var/log/guests-update-wan.log
@@ -5300,6 +5317,30 @@ rm "$work/evdev.lst"
 : >"$work/calls"
 if (keyboard_set us); then exit 1; fi
 [ ! -s "$work/calls" ]
+CHECK
+t sh -eu <<'CHECK'
+# sys time set through the real root helper: both state files and binds, the zone in use; a refused name changes nothing.
+. /usr/lib/convergent/sys/52-time
+die() { echo "$*" >&2; exit 1; }
+run() { "$@"; }
+sudo() { "$@"; }
+onearg() { answer=$2; }
+text_valid() { :; }
+cached() { head -n 1 "$1"; }
+old=$(cat /etc/timezone)
+[ "$old" != Europe/Bratislava ]
+for bad in Mars/Base ../etc/passwd posix/UTC right/UTC Etc; do
+	if (time_set "$bad") 2>/dev/null; then exit 1; fi
+	[ "$(cat /etc/timezone)" = "$old" ]
+done
+time_set Europe/Bratislava
+[ "$(time_state)" = 'Time zone: Europe/Bratislava' ]
+mountpoint -q /etc/localtime && mountpoint -q /etc/timezone && [ ! -L /etc/localtime ]
+cmp /usr/share/zoneinfo/Europe/Bratislava /etc/localtime
+case $(env -u TZ date +%Z) in CET|CEST) ;; *) exit 1 ;; esac
+time_set "$old"
+[ "$(cat /etc/timezone)" = "$old" ]
+cmp "/usr/share/zoneinfo/$old" /etc/localtime
 CHECK
 t timeout -k 5 60 sh /var/lib/convergent/test-release/desktop-sockets
 # Keyboard changes refuse to run without the layout list.

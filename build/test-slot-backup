@@ -502,3 +502,114 @@ sh -n "$work/usb-mount"
     done
 )
 echo 'test-slot-backup: rescue USB mounts passed'
+
+# Time zone: one rule in the initramfs and the root helper; boot copies localtime again from the zone
+# in timezone before the binds, and keeps the copy when the zone is not an installed one.
+state_script=$repo/initramfs/90convergent/convergent-state.sh
+sed -n '/^zone_valid() {/,/^}/p' "$state_script" >"$work/zone-state"
+sed -n '/^zone_valid() {/,/^}/p' "$repo/tools/timezone" >"$work/zone-tool"
+[ -s "$work/zone-state" ] && cmp "$work/zone-state" "$work/zone-tool" || die 'the zone rules differ'
+awk '/^refresh_localtime \|\|/ {r = NR} /^# Seed and bind the image.s writable \/etc list\.$/ {b = NR} END {exit !(r && b && r < b)}' \
+    "$state_script" || die 'localtime is not refreshed before the binds'
+(
+    . "$work/zone-state"
+    z=$work/tz/zoneinfo
+    mkdir -p "$z/Europe" "$z/Etc" "$z/posix/Europe" "$z/right"
+    printf 'TZif2 bratislava\n' >"$z/Europe/Bratislava"
+    printf 'TZif2 utc\n' >"$z/UTC"
+    printf 'TZif2 gmt\n' >"$z/Etc/GMT+1"
+    cp "$z/Europe/Bratislava" "$z/posix/Europe/Bratislava"
+    cp "$z/UTC" "$z/right/UTC"
+    printf '# not a zone\n' >"$z/Europe/Notes"
+    : >"$z/Empty"
+    for zone in Europe/Bratislava UTC Etc/GMT+1; do zone_valid "$zone" "$z" || die "refused $zone"; done
+    for zone in '' Mars/Base ../etc /etc/passwd Europe/../UTC Europe//Bratislava Europe/ posix/Europe/Bratislava \
+        right/UTC Europe Europe/Notes Empty "$(printf 'UTC\nEurope/Bratislava')"; do
+        if zone_valid "$zone" "$z"; then die "accepted zone: $zone"; fi
+    done
+)
+sed -n '/^zone_valid() {/,/^}/p; /^refresh_localtime() {/,/^}/p; /^refresh_localtime ||/p' "$state_script" >"$work/refresh"
+[ "$(grep -c '^refresh_localtime' "$work/refresh")" = 2 ] || die 'missing localtime refresh'
+sh -n "$work/refresh"
+(
+    NEWROOT=$work/tz/root state=$work/tz/state
+    mkdir -p "$NEWROOT/usr/share/zoneinfo/Europe" "$state/etc"
+    printf 'TZif2 new rules\n' >"$NEWROOT/usr/share/zoneinfo/Europe/Bratislava"
+    warn() { echo "$*" >>"$work/tz/warn"; }
+    # A first boot after an update from a release without these files: the seed below brings both.
+    . "$work/refresh"
+    [ ! -e "$state/etc/localtime" ] && [ ! -e "$work/tz/warn" ] || die 'localtime refresh without a zone'
+    echo Europe/Bratislava >"$state/etc/timezone"
+    printf 'TZif2 old rules\n' >"$state/etc/localtime"
+    . "$work/refresh"
+    cmp "$NEWROOT/usr/share/zoneinfo/Europe/Bratislava" "$state/etc/localtime" || die 'localtime not refreshed'
+    [ "$(stat -c %a "$state/etc/localtime")" = 644 ] && [ ! -e "$work/tz/warn" ] || die 'refreshed localtime mode'
+    for zone in Mars/Base ../usr/share/zoneinfo/Europe/Bratislava; do
+        echo "$zone" >"$state/etc/timezone"
+        printf 'TZif2 kept\n' >"$state/etc/localtime"
+        rm -f "$work/tz/warn"
+        . "$work/refresh"
+        [ "$(cat "$state/etc/localtime")" = 'TZif2 kept' ] && grep -q 'old copy stays' "$work/tz/warn" ||
+            die "localtime replaced for zone $zone"
+    done
+    [ -z "$(find "$state/etc" -name '.localtime.*')" ] || die 'localtime scratch left behind'
+)
+# The root helper replaces both state files, then rebinds them; a rebind that fails gets the state copy back.
+sed -n '/^cleanup() {/,/^}/p; /^stm=\$(mktemp/,$p' "$repo/tools/timezone" |
+    sed -e "s|/run/timezone.XXXXXX|$work/tz/stm.XXXXXX|" -e "s|\"/usr/share/zoneinfo/|\"$work/tz/root/usr/share/zoneinfo/|" \
+        -e "s|\"/etc/\$f\"|\"$work/tz/etc/\$f\"|g" >"$work/helper"
+grep -q "$work/tz/stm" "$work/helper" && grep -q "$work/tz/root/usr/share/zoneinfo" "$work/helper" &&
+    [ "$(grep -c "$work/tz/etc/" "$work/helper")" = 3 ] || die 'timezone helper extraction'
+sh -n "$work/helper"
+# Its own process: errexit stops the helper as it would on the laptop (a caller's || turns it off).
+cat >"$work/helper-run" <<'RUN'
+work=$1 fault=$2 zone=Europe/Bratislava stm= mounted=
+die() { echo "timezone: $*" >&2; exit 1; }
+# The state volume is copied in at mount and back at unmount; "unbound": lazily unmounted, not bound again.
+mount() {
+    echo "mount $*" >>"$work/tz/calls"
+    case $1 in
+    -t) [ "$*" = "-t btrfs -o rw,subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state $stm" ] || exit 97
+        cp -a "$work/tz/state/etc" "$stm/" ;;
+    --bind)
+        [ "$2" = "$stm/etc/${3##*/}" ] || exit 97
+        if [ "$fault:${3##*/}" = bind:timezone ] && [ ! -e "$work/tz/failed" ]; then touch "$work/tz/failed"; return 1; fi
+        rm "$3.unbound" ;;
+    *) exit 97 ;;
+    esac
+}
+umount() {
+    echo "umount $*" >>"$work/tz/calls"
+    case $1 in
+    -l) touch "$2.unbound" ;;
+    *) [ "$1" = "$stm" ] || exit 97; rm -rf "$work/tz/state/etc" && cp -a "$stm/etc" "$work/tz/state/" && rm -rf "$stm/etc" ;;
+    esac
+}
+mountpoint() { [ "$1" = -q ] && [ ! -e "$2.unbound" ]; }
+sync() { :; }
+trap cleanup 0
+trap 'exit 1' HUP INT TERM
+RUN
+cat "$work/helper" >>"$work/helper-run"
+for fault in none bind; do
+    rm -rf "$work/tz/state" "$work/tz/etc" "$work/tz/calls" && mkdir -p "$work/tz/state/etc" "$work/tz/etc" || exit 1
+    printf 'TZif2 old\n' >"$work/tz/state/etc/localtime"
+    echo UTC >"$work/tz/state/etc/timezone"
+    code=0
+    sh -eu "$work/helper-run" "$work" "$fault" >"$work/tz/out" 2>&1 || code=$?
+    cmp "$work/tz/root/usr/share/zoneinfo/Europe/Bratislava" "$work/tz/state/etc/localtime" &&
+        [ "$(cat "$work/tz/state/etc/timezone")" = Europe/Bratislava ] || die "timezone $fault: state files"
+    [ "$(stat -c %a:%a "$work/tz/state/etc/localtime" "$work/tz/state/etc/timezone")" = 644:644 ] || die "timezone $fault: modes"
+    [ -z "$(find "$work/tz/state/etc" -name '.*.new')" ] && [ -z "$(find "$work/tz" -name 'stm.*')" ] ||
+        die "timezone $fault: scratch left"
+    [ -z "$(find "$work/tz/etc" -name '*.unbound')" ] || die "timezone $fault: /etc left unbound"
+    case $fault in
+    none) [ "$code" = 0 ] && grep -qx 'timezone: Europe/Bratislava; programs started from now on use it' "$work/tz/out" &&
+              [ "$(grep -c '^mount --bind ' "$work/tz/calls")" = 2 ] || die 'timezone helper failed' ;;
+    bind) [ "$code" = 1 ] && grep -qx 'timezone: cannot rebind /etc/timezone' "$work/tz/out" &&
+              [ "$(grep -c "^mount --bind .* $work/tz/etc/timezone\$" "$work/tz/calls")" = 2 ] ||
+              die 'timezone rebind failure not repaired' ;;
+    esac
+    rm -f "$work/tz/failed"
+done
+echo 'test-slot-backup: time zone rule, boot refresh and root helper passed'

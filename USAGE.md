@@ -259,6 +259,7 @@ status and commands on the right. The dashboard refreshes on entry; narrow panes
 | `display` (`disp`) | `status`, `bright N\|+N\|-N`, `set OUTPUT mode\|scale\|position\|enable\|disable [VALUE]` (15 s preview), `save`, `reset` *, `watch` (session hook) |
 | `keyboard` (`kb`) | `status`, `set LAYOUTS` (e.g. `us,sk(qwerty),ru`), `next` |
 | `touchpad` | `status`, `set OPTION VALUE` (apply and save) |
+| `time` | `status`, `set ZONE` (e.g. `Europe/Bratislava`; programs started afterwards use it, and it is kept across updates) |
 | `screenshot` (`shot`) | `area`, `screen` (save to `~/Pictures/screenshots` and copy to the clipboard) |
 | `browser` (`br`) | `status`, `def`, `tmp`, `int`, `incus`, `close def\|tmp\|int\|portal` (stops a frozen one) |
 | `remote` | `open`, `status`, `close` |

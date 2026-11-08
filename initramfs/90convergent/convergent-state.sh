@@ -202,6 +202,23 @@ merge_serial_group() {
 }
 merge_serial_group || warn "state: could not grant the owner serial access"
 
+# The same rule as tools/timezone: a zone name under zoneinfo, never posix/ or right/, and a TZif file.
+zone_valid() {
+	printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// {ok = 1}
+		END {exit !(ok && n == 1)}' &&
+		[ -f "$2/$1" ] && LC_ALL=C awk '{ok = substr($0, 1, 4) == "TZif"; exit} END {exit !ok}' "$2/$1"
+}
+# Zone rules come with each release: the owner's zone is copied again from this image's zoneinfo, before
+# the bind below. A first boot seeds both files from the image; a zone that is not installed keeps the copy.
+refresh_localtime() {
+	[ -f "$state/etc/timezone" ] || return 0
+	zone=$(cat "$state/etc/timezone") && zone_valid "$zone" "$NEWROOT/usr/share/zoneinfo" || return 1
+	tmp=$(mktemp "$state/etc/.localtime.XXXXXX") || return 1
+	cp "$NEWROOT/usr/share/zoneinfo/$zone" "$tmp" && chmod 0644 "$tmp" &&
+		sync && mv -f "$tmp" "$state/etc/localtime" && sync || { rm -f "$tmp"; return 1; }
+}
+refresh_localtime || warn "state: /etc/localtime not refreshed from the zone in /etc/timezone; the old copy stays"
+
 # Seed and bind the image's writable /etc list.
 while read -r entry; do
 	case $entry in '' | '#'*) continue ;; esac
