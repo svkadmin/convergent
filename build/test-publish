@@ -36,7 +36,7 @@ for path in beta/latest beta/latest.sig beta/42/advisories.json beta/42/advisori
 done
 for publisher in publish advisories-publish; do
     if [ "$publisher" = publish ]; then
-        sed -n '/^for f in latest.sig latest; do/,/^echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
+        sed -n '/^for f in latest.sig latest; do/,/^done$/p' "$here/$publisher" >"$work/commit"
         document=$dir/latest remote=$ep/beta/latest
     else
         sed -n '/^[[:space:]]*for f in advisories.json.sig advisories.json; do/,/^[[:space:]]*echo /p' "$here/$publisher" | sed '$d' >"$work/commit"
@@ -88,25 +88,34 @@ for publisher in publish advisories-publish; do
 done
 # The install image: a signed .sha256, its own budget, latest only; the releases' total and retry set without it.
 sed -n '/^zst=convergent-/p; /^image_files=/p; /^image_local() {$/,/^}$/p; /^bytes_of() {$/,/^}$/p; /^image_room() {$/,/^}$/p;
-    /^image_upload() {$/,/^}$/p; /^keys_of() /p; /^size_of() /p' "$here/publish" >"$work/image"
-[ "$(grep -c '^[a-z_]*() {$' "$work/image")" = 4 ] && [ "$(grep -c '^[a-z_]*() {' "$work/image")" = 6 ] &&
+    /^image_kept() {$/,/^}$/p; /^image_prune() {$/,/^}$/p; /^image_upload() {$/,/^}$/p; /^keys_of() /p; /^size_of() /p' "$here/publish" >"$work/image"
+[ "$(grep -c '^[a-z_]*() {$' "$work/image")" = 6 ] && [ "$(grep -c '^[a-z_]*() {' "$work/image")" = 8 ] &&
     [ "$(grep -c '^zst=\|^image_files=' "$work/image")" = 2 ] || die 'image functions moved'
 sed -n '/^[[:space:]]*want=\$(for f in \$files/,/published file set differs/p' "$here/publish" >"$work/retry-set"
 sed -n '/^olds=\$(/,/sort -u -n)$/p' "$here/publish" >"$work/olds"
 [ "$(wc -l <"$work/retry-set")" = 2 ] && [ -s "$work/olds" ] || die 'release set checks moved'
 grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((total - $(size_of "$old" release)))' "$here/publish" &&
     grep -q '^if \[ -n "\$img" \]; then image_room; fi$' "$here/publish" || die 'the release total counts install images'
-[ "$(grep -c '^[[:space:]]*if \[ -n "\$img" \]; then image_upload; fi$\|^[[:space:]]*image_upload$' "$here/publish")" = 2 ] ||
-    die 'a publish path skips the image'
+# A new release: image, latest, then the old images; a retry keeps an identical image and refuses another.
+awk '/^if \[ -n "\$img" \]; then image_upload; fi$/ {u = NR} /^for f in latest\.sig latest; do$/ {l = NR}
+    /^if \[ -n "\$img" \]; then image_prune; fi$/ {p = NR} /^\t\timage_kept$/ {k = NR}
+    /^\t\tif \[ "\$kept" = 3 \]; then echo .*; else image_upload; fi$/ && NR == k + 1 {ku = NR} /^\t\timage_prune$/ && ku && NR == ku + 1 {kp = NR}
+    /image_(upload|prune|kept)$|image_(upload|prune); fi$/ {n++}
+    END {exit !(u && u < l && l < p && kp && n == 5)}' "$here/publish" || die 'a publish path skips the image or prunes it early'
 (
     die() { echo "$*" >&2; exit 1; }
     ep=$work/images pub=$work/pub CHANNEL=beta release=42
-    img=$work/image-dir
+    img=$work/image-dir dir=$work/image-release check=$work/check
     . "$work/image"
-    mkdir -p "$img" "$work/other"
+    mkdir -p "$img" "$dir" "$work/other" "$work/saved-image"
+    printf 'release 42\n' >"$dir/manifest"
+    # The image's .sha256: the image, then the release's manifest.
+    image_sign() {
+        { (cd "$img" && sha256sum "$zst"); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
+        openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    }
     head -c 4000 /dev/urandom >"$img/$zst"
-    (cd "$img" && sha256sum "$zst" >"$zst.sha256")
-    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    image_sign
     put() { mkdir -p "$ep/${2%/*}"; head -c "$1" /dev/zero >"$ep/$2"; }
     put 1000 beta/41/slot.img
     put 100 beta/42/manifest
@@ -120,11 +129,12 @@ grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((t
     # The releases' cap never counts an image; the image cap counts the other channels' and the new one.
     [ "$(bytes_of '' release)" = 1150 ] && [ "$(bytes_of '' image)" = 5010 ] && [ "$(size_of 41 release)" = 1000 ] &&
         [ "$(size_of 41 image)" = 3000 ] || die 'release and image totals are not apart'
-    image_cap=$((2000 + img_new))
+    # Until latest moves, the previous image counts too (this release's own stale one does not).
+    image_cap=$((5000 + img_new))
     image_room
-    [ "$images" = "$image_cap" ] || die 'image total'
+    [ "$images" = $((2000 + img_new)) ] || die 'image total'
     image_cap=$((image_cap - 1))
-    if (image_room) 2>"$work/image-log"; then die 'image over its cap accepted'; fi
+    if (image_room) 2>"$work/image-log"; then die 'image over its cap while the previous image stays accepted'; fi
     grep -q 'image cap' "$work/image-log" || die 'no image cap message'
     # Retries compare the release files only; an image-only prefix is no old release.
     files='slot.img manifest'
@@ -139,18 +149,55 @@ grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((t
     s3() {
         case $1 in
         -X) [ "$2" = DELETE ] || exit 97; printf '%s\n' "${3#"$ep/"}" >>"$work/deleted"; rm "$3" ;;
-        -o) [ "$2:$3" = /dev/null:-T ] || exit 97; mkdir -p "${5%/*}"; cp "$4" "$5"; printf '%s\n' "${5#"$ep/"}" >>"$work/uploaded" ;;
+        -o)
+            if [ "$3" != -T ]; then [ "$2" = "$check" ] || exit 97; cp "$3" "$2"; return; fi
+            [ "$2" = /dev/null ] || exit 97
+            [ -z "${fail:-}" ] || return 1
+            mkdir -p "${5%/*}"; cp "$4" "$5"; printf '%s\n' "${5#"$ep/"}" >>"$work/uploaded" ;;
         -I) [ -f "$2" ] || return 1; printf 'HTTP/1.1 200 OK\r\ncontent-length: %s\r\n' "$(stat -c %s "$2")" ;;
         *) exit 97 ;;
         esac
     }
-    objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done)
+    listing() { objects=$(cd "$ep" && find . -type f | sed 's|^\./||' | sort | while IFS= read -r k; do printf '%s %s\n' "$(stat -c %s "$k")" "$k"; done); }
+    listing
+    : >"$work/deleted"
+    # A failed upload keeps the previous image; a good one removes nothing before latest moves.
+    if (fail=1; image_upload) >/dev/null 2>&1; then die 'a failed image upload passed'; fi
+    [ ! -s "$work/deleted" ] && [ -f "$ep/beta/41/install/convergent-41.img.zst" ] || die 'a failed image upload removed the previous image'
     image_upload >/dev/null
-    printf 'beta/41/install/%s\n' convergent-41.img.zst convergent-41.img.zst.sha256 convergent-41.img.zst.sha256.sig | cmp - "$work/deleted" ||
-        die 'not exactly the previous image removed'
+    [ ! -s "$work/deleted" ] || die 'the image upload removed an image'
     printf 'beta/42/install/%s\n' $image_files | cmp - "$work/uploaded" || die 'image uploads'
     for f in $image_files; do cmp "$img/$f" "$ep/beta/42/install/$f"; done
+    image_prune >/dev/null
+    printf 'beta/41/install/%s\n' convergent-41.img.zst convergent-41.img.zst.sha256 convergent-41.img.zst.sha256.sig | cmp - "$work/deleted" ||
+        die 'not exactly the previous image removed'
     [ -f "$ep/bleeding-edge/41/install/convergent-41.img.zst" ] && [ -f "$ep/beta/41/slot.img" ] || die 'removed more than the image'
+    # A retry keeps an identical image, resumes an incomplete one and refuses to replace it.
+    listing
+    image_kept
+    [ "$kept" = 3 ] || die 'an identical published image was not kept'
+    mv "$ep/beta/42/install/$zst.sha256" "$work/other/remote-sum"
+    listing
+    image_kept
+    [ "$kept" = 2 ] || die 'an incomplete published image was kept'
+    mv "$work/other/remote-sum" "$ep/beta/42/install/$zst.sha256"
+    listing
+    cp "$img/"* "$work/saved-image/"
+    kept_refused() {
+        if (image_kept) >/dev/null 2>"$work/image-log"; then die "a retry replaced $1"; fi
+        grep -q 'use a new release ID' "$work/image-log" || die "$1: $(cat "$work/image-log")"
+    }
+    head -c 4000 /dev/urandom >"$img/$zst"
+    image_sign
+    kept_refused 'an advertised image with a rebuilt one'
+    cp "$work/saved-image/"* "$img/"
+    printf x >>"$img/$zst"
+    kept_refused 'an advertised image with a longer one'
+    cp "$work/saved-image/"* "$img/"
+    put 5 "beta/42/install/extra"
+    listing
+    kept_refused 'an install/ prefix holding another object'
+    rm "$ep/beta/42/install/extra"
     # Refusals before any bucket access: no signature, another key, a changed image, another name, over 5 GiB.
     refuse() {
         if (image_local) >/dev/null 2>"$work/image-log"; then die "accepted $1"; fi
@@ -165,10 +212,18 @@ grep -qx "total=\$(bytes_of '' release)" "$here/publish" && grep -qF 'total=$((t
     image_local
     printf x >>"$img/$zst"
     refuse 'a changed image' 'does not match its .sha256'
-    (cd "$img" && sha256sum "$zst" | sed 's/convergent-42/convergent-43/' >"$work/other/sum")
-    cp "$work/other/sum" "$img/$zst.sha256"
+    cp "$work/saved-image/"* "$img/"
+    image_local
+    { (cd "$img" && sha256sum "$zst" | sed 's/convergent-42/convergent-43/'); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
     openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
     refuse 'a .sha256 of another file' 'does not match its .sha256'
+    # The signature binds this release: one line, or another release's manifest, is refused.
+    (cd "$img" && sha256sum "$zst" >"$zst.sha256")
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse 'a .sha256 without the manifest' "or the release's manifest"
+    { (cd "$img" && sha256sum "$zst"); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'; } >"$img/$zst.sha256"
+    openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
+    refuse "a .sha256 of another release's manifest" "or the release's manifest"
     truncate -s 5G "$img/$zst"
     refuse 'a 5 GiB image' "over R2's 5 GiB single upload"
 )
@@ -183,7 +238,13 @@ cp "$work/key" "$work/keys/beta.key"
 cp "$work/pub" "$work/keys/beta.pub"
 printf 'release 42\n' >"$work/signrel/manifest"
 printf 'image\n' >"$work/signimg/convergent-42.img.zst"
+# Without the release's manifest as its second line, or with another release's, nothing is signed.
 (cd "$work/signimg" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 without the manifest'; fi
+printf 'release 41\n' | sha256sum | sed 's/-$/manifest/' >>"$work/signimg/convergent-42.img.zst.sha256"
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die "signed a .sha256 of another release's manifest"; fi
+[ ! -e "$work/signimg/convergent-42.img.zst.sha256.sig" ] || die 'a refused .sha256 has a signature'
+{ (cd "$work/signimg" && sha256sum convergent-42.img.zst); (cd "$work/signrel" && sha256sum manifest); } >"$work/signimg/convergent-42.img.zst.sha256"
 sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null
 openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$work/signimg/convergent-42.img.zst.sha256" \
     -sigfile "$work/signimg/convergent-42.img.zst.sha256.sig" >/dev/null || die 'sign --image signed nothing valid'

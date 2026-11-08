@@ -157,7 +157,7 @@ build/stick <release> <out.img>                   # a raw image only
 
 `--release` writes `convergent-<release>.img.zst` (`zstd -6`) and its `.sha256` to `<out-dir>` and
 prints both sizes. The image is not in the manifest (it holds the manifests): the signed `.sha256`
-vouches for it. `build/stick` signs it when the channel key is on the build host; with an offline
+vouches for it, and its second line, the sha256 of the release's `manifest`, ties it to that release. `build/stick` signs it when the channel key is on the build host; with an offline
 key run `build/sign --image <out-dir> <release-dir> <key>`.
 
 `build/stick` makes the release's generic install image after `build/guests`; it reads no input
@@ -300,12 +300,13 @@ rebuild. Each slot and UKI needs exactly one hash and an accurate size.
   signature is required. Laptops never read `install/`.
 - **Order.** Signatures upload first; rerunning the publisher repairs an interrupted upload.
 - **Retention.** At most two releases per channel remain, under a 9 GiB cap for the releases (the free tier is 10 GB); the install image, once published, has its own budget on top, the part the owner pays for.
-  Only the latest image per channel stays: the channel's older images are removed first. The images
-  have a 6 GiB cap of their own, and publish reports both totals. A file over R2's 5 GiB single
+  Only the latest image per channel stays: the channel's older images are removed once `latest`
+  points at the new release, so until then the cap counts them too. The images have a 6 GiB cap of
+  their own, and publish reports both totals. A file over R2's 5 GiB single
   upload is refused; 0.1.6 would make an image of about 2.6 GiB.
 - **Immutability.** An advertised release is immutable. A retry compares the file set and bytes,
   including `latest` and its signature, and writes nothing if they match. New content or a
-  re-signed pointer needs a new release ID.
+  re-signed pointer needs a new release ID; so does a rebuilt install image once one is published.
 - **Space.** Retry comparisons download one file at a time; reserve space for the largest payload.
 - **Replay.** A replayed signed pointer can withhold releases; the laptop reports its age.
 

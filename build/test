@@ -265,10 +265,13 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	)
 	exec sh "$here/advisories" --selftest
 fi
-# A published install image: its .sha256 is one line naming the file beside it, and the file matches.
+# A published install image <image> <manifest>: its .sha256 names the file beside it, which matches, then
+# the manifest of the release it carries.
 image_sum() {
-	awk -v f="${1##*/}" '{if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $2 != f) bad = 1}
-		END {exit bad || NR != 1}' "$1.sha256" && (cd "$(dirname "$1")" && sha256sum -c --quiet "${1##*/}.sha256")
+	awk -v f="${1##*/}" -v m="$(sha256sum <"$2" | cut -d' ' -f1)" '
+		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
+		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
+		END {exit bad || NR != 2}' "$1.sha256" && head -n 1 "$1.sha256" | (cd "$(dirname "$1")" && sha256sum -c --quiet -)
 }
 if [ "${1:-}" = --install-options ]; then
 	[ $# = 1 ] || exit 1
@@ -278,6 +281,10 @@ if [ "${1:-}" = --install-options ]; then
 		grep -qF 'LUKS passphrase must use printable ASCII (space through `~`)' "$here/../$doc"
 	done
 	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
+	# The owner takes <release> from the signed latest and checks the image line of its two-line .sha256.
+	grep -qF 'openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in latest -sigfile latest.sig &&' "$here/../USAGE.md" &&
+		grep -qF 'head -n 1 convergent-<release>.img.zst.sha256 | sha256sum -c' "$here/../USAGE.md" ||
+		die 'USAGE does not establish the current release or check the image line'
 	# The version lives in build.conf only.
 	if grep -Eiq '^#.*version.*[0-9]+\.[0-9]+\.[0-9]+' "$here/../config.example.yaml"; then die 'config.example.yaml names a version'; fi
 	sh "$here/../tools/config-get" --selftest
@@ -811,19 +818,24 @@ aaaa-0002'
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' 0
 	# --install with a published image checks its .sha256 before using it.
-	f=$work/convergent-42.img.zst
+	f=$work/convergent-42.img.zst m=$work/manifest
 	printf 'image\n' >"$f"
-	(cd "$work" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
-	image_sum "$f" || die 'refused a matching image'
+	printf 'release 42\n' >"$m"
+	(cd "$work" && sha256sum convergent-42.img.zst manifest >convergent-42.img.zst.sha256)
+	image_sum "$f" "$m" || die 'refused a matching image'
 	printf 'other\n' >"$f"
-	if image_sum "$f" >/dev/null 2>&1; then die 'accepted an image that does not match its .sha256'; fi
-	(cd "$work" && sha256sum convergent-42.img.zst | sed 's/  / */' >convergent-42.img.zst.sha256)
-	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a binary-mode .sha256 line'; fi
-	(cd "$work" && cp convergent-42.img.zst convergent-43.img.zst && sha256sum convergent-43.img.zst >convergent-42.img.zst.sha256)
-	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a .sha256 naming another file'; fi
-	(cd "$work" && { sha256sum convergent-42.img.zst; sha256sum convergent-42.img.zst; } >convergent-42.img.zst.sha256)
-	if image_sum "$f" >/dev/null 2>&1; then die 'accepted a .sha256 of two lines'; fi
-	grep -q '^		image_sum "\$image" || die' "$here/test" || die 'the --install image check moved'
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted an image that does not match its .sha256'; fi
+	(cd "$work" && sha256sum convergent-42.img.zst manifest | sed 's/  / */' >convergent-42.img.zst.sha256)
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a binary-mode .sha256 line'; fi
+	(cd "$work" && cp convergent-42.img.zst convergent-43.img.zst && sha256sum convergent-43.img.zst manifest >convergent-42.img.zst.sha256)
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 naming another file'; fi
+	(cd "$work" && sha256sum convergent-42.img.zst convergent-42.img.zst >convergent-42.img.zst.sha256)
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 of two image lines'; fi
+	(cd "$work" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 without the manifest'; fi
+	{ (cd "$work" && sha256sum convergent-42.img.zst); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'; } >"$f.sha256"
+	if image_sum "$f" "$m" >/dev/null 2>&1; then die "accepted a .sha256 of another release's manifest"; fi
+	grep -q '^		image_sum "\$image" "\$BUILDER/releases/\$release/manifest" || die' "$here/test" || die 'the --install image check moved'
 	)
 	echo 'test: install options passed'
 	exit 0
@@ -6379,7 +6391,7 @@ if [ "$mode" = install ]; then
 	if [ -n "$image" ]; then
 		# The published artefact byte for byte, once its .sha256 matches.
 		[ "${image##*/}" = "convergent-$release.img.zst" ] || die "the image is not convergent-$release.img.zst"
-		image_sum "$image" || die "$image does not match its .sha256"
+		image_sum "$image" "$BUILDER/releases/$release/manifest" || die "$image does not match its .sha256 or release $release"
 		bld zstd -q -dc <"$image" >"$img" || die "cannot decompress $image"
 	else
 		sh "$here/stick" "$release" "$img" || die "build/stick failed"

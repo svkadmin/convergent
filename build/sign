@@ -26,12 +26,16 @@ release=$(awk '$1 == "release" { print $2 }' "$dir/manifest")
 case $release in '' | *[!0-9]* | 0?*) die "invalid release in $dir/manifest" ;; esac
 [ "${#release}" -le 12 ] || die "invalid release in $dir/manifest"
 . "$here/release-check"
-# The install image is not in the manifest: its .sha256 (one line naming the file beside it) is signed.
+# The install image is not in the manifest: its .sha256 (the file beside it, then this release's
+# manifest) is signed.
 if [ -n "$image" ]; then
 	f=$image/convergent-$release.img.zst.sha256
-	awk -v f="convergent-$release.img.zst" '{if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $2 != f) bad = 1}
-		END {exit bad || NR != 1}' "$f" && (cd "$image" && sha256sum -c --quiet "${f##*/}") ||
-		die "the image does not match $f"
+	msum=$(sha256sum <"$dir/manifest" | cut -d' ' -f1)
+	awk -v f="convergent-$release.img.zst" -v m="$msum" '
+		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
+		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
+		END {exit bad || NR != 2}' "$f" && head -n 1 "$f" | (cd "$image" && sha256sum -c --quiet -) ||
+		die "the image does not match $f or the release's manifest"
 	openssl pkeyutl -sign -inkey "$key" -rawin -in "$f" -out "$f.sig.new" || die "signing ${f##*/} failed"
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$f" -sigfile "$f.sig.new" >/dev/null ||
 		die "the signature of ${f##*/} does not verify with $pub"

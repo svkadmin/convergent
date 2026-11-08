@@ -28,9 +28,20 @@ The Wi-Fi passphrase waits in the encrypted `/var` until the first guest setup m
 header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk. At the end it
 prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup)).
 
-1. Download the channel's image, published beside its release (the latest release's only), with its
-   checksum and signature, and check both with the channel's public key (`/etc/convergent/release.pub`
-   on a Convergent laptop, `/etc/convergent/keys/<channel>.pub` on the build host):
+1. Find the channel's current release in its signed `latest`, checked with the channel's public key
+   (`/etc/convergent/release.pub` on a Convergent laptop, `/etc/convergent/keys/<channel>.pub` on the
+   build host). The number it prints is `<release>` below; an older release's image is not current:
+
+   ```sh
+   curl -fO "<public URL>/<channel>/latest"
+   curl -fO "<public URL>/<channel>/latest.sig"
+   openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in latest -sigfile latest.sig &&
+       awk '$1 == "release" {print $2}' latest
+   ```
+
+2. Download that release's image, published beside it (the latest release's only), with its
+   checksum and signature, and check both with the same key. The checksum's first line is the
+   image's; its second ties it to the release's manifest:
 
    ```sh
    for f in convergent-<release>.img.zst convergent-<release>.img.zst.sha256 convergent-<release>.img.zst.sha256.sig; do
@@ -38,18 +49,18 @@ prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second
    done
    openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in convergent-<release>.img.zst.sha256 \
        -sigfile convergent-<release>.img.zst.sha256.sig
-   sha256sum -c convergent-<release>.img.zst.sha256
+   head -n 1 convergent-<release>.img.zst.sha256 | sha256sum -c
    ```
 
-   Write it only when both report success.
+   Write it only when every check reports success.
 
-2. Identify the USB disk:
+3. Identify the USB disk:
 
    ```sh
    lsblk -o NAME,SIZE,MODEL,TRAN
    ```
 
-3. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
+4. Write the image, with `/dev/sdX` replaced by that disk. The guard refuses disks without 512-byte
    logical sectors:
 
    ```sh

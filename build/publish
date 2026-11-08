@@ -75,9 +75,13 @@ image_local() {
 	done
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$img/$zst.sha256" -sigfile "$img/$zst.sha256.sig" >/dev/null ||
 		die "$zst.sha256 is not signed with the $CHANNEL key"
-	awk -v f="$zst" '{if (NF != 2 || length($1) != 64 || $1 ~ /[^0-9a-f]/ || $2 != f) bad = 1}
-		END {exit bad || NR != 1}' "$img/$zst.sha256" && (cd "$img" && sha256sum -c --quiet "$zst.sha256") ||
-		die "$zst does not match its .sha256"
+	# Two lines: the image, then the manifest of the release it was built from.
+	msum=$(sha256sum <"$dir/manifest" | cut -d' ' -f1)
+	awk -v f="$zst" -v m="$msum" '
+		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
+		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
+		END {exit bad || NR != 2}' "$img/$zst.sha256" && head -n 1 "$img/$zst.sha256" | (cd "$img" && sha256sum -c --quiet -) ||
+		die "$zst does not match its .sha256 or the release's manifest"
 }
 # Bytes under prefix $1 ('' for the bucket) of the releases, or of the install images (<channel>/<n>/install/).
 bytes_of() {
@@ -85,19 +89,44 @@ bytes_of() {
 		(p == "" || index(k, p) == 1) && (k ~ /^[^\/]+\/[0-9]+\/install\//) == (kind == "image") { s += $1 } END { print s + 0 }'
 }
 image_room() {
-	# This channel's images make way for the new one; other channels' stay.
-	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/" image) + img_new))
+	# The old images go only after latest moves: until then every image and the new one (in place of
+	# this release's own) count. Afterwards this channel's others are gone; other channels' stay.
+	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/$release/" image) + img_new))
 	[ "$images" -le "$image_cap" ] ||
 		die "the install images would hold $((images / 1048576)) MiB, over the $((image_cap / 1048576)) MiB image cap"
+	images=$(($(bytes_of '' image) - $(bytes_of "$CHANNEL/" image) + img_new))
 }
-image_upload() {
-	# Latest image only: the channel's other images go first, never the one being uploaded.
+# A retry never replaces an advertised image: what is there must match; kept=3 when it is complete.
+image_kept() {
+	printf '%s\n' "$objects" | awk -v p="$CHANNEL/$release/install/" -v files="$image_files" '
+		BEGIN { n = split(files, f, " "); for (i = 1; i <= n; i++) ok[f[i]] = 1 }
+		{ k = substr($0, index($0, " ") + 1) } index(k, p) == 1 && !(substr(k, length(p) + 1) in ok) { bad = 1 }
+		END { exit bad }' || die "published install/ differs; use a new release ID"
+	kept=0
+	for f in $image_files; do
+		n=$(printf '%s\n' "$objects" | awk -v k="$CHANNEL/$release/install/$f" 'substr($0, index($0, " ") + 1) == k { print $1 }')
+		[ -n "$n" ] || continue
+		[ "$n" = "$(stat -c %s "$img/$f")" ] || die "published install/$f differs; use a new release ID"
+		case $f in
+		*.zst) ;;
+		*)
+			s3 -o "$check" "$ep/$CHANNEL/$release/install/$f" || die "cannot read published install/$f"
+			cmp -s "$check" "$img/$f" || die "published install/$f differs; use a new release ID"
+			;;
+		esac
+		kept=$((kept + 1))
+	done
+}
+image_prune() {
+	# Latest image only, once latest points past the others: never the one just published.
 	printf '%s\n' "$objects" | awk -v c="$CHANNEL/" -v r="$release" '{ k = substr($0, index($0, " ") + 1) }
 		index(k, c) == 1 { split(substr(k, length(c) + 1), p, "/"); if (p[1] ~ /^[0-9]+$/ && p[1] != r && p[2] == "install") print k }' |
 		while IFS= read -r k; do
 			s3 -X DELETE "$ep/$k" >/dev/null || die "cannot delete $k"
 			echo "publish: removed $k"
 		done
+}
+image_upload() {
 	for f in $image_files; do
 		s3 -o /dev/null -T "$img/$f" "$ep/$CHANNEL/$release/install/$f" || die "upload of install/$f failed"
 		got=$(s3 -I "$ep/$CHANNEL/$release/install/$f" | tr -d '\r' | awk -F': ' 'tolower($1) == "content-length" { print $2 }')
@@ -162,7 +191,9 @@ if [ "$release" = "$latest" ]; then
 	done
 	echo "publish: $CHANNEL/$release is already latest and identical"
 	if [ -n "$img" ]; then
-		image_upload
+		image_kept
+		if [ "$kept" = 3 ]; then echo "publish: $CHANNEL/$release/install/$zst is already published and identical"; else image_upload; fi
+		image_prune
 		echo "publish: $CHANNEL/$release/install/$zst; install images $((images / 1048576)) MiB of $((image_cap / 1048576))"
 	fi
 	exit 0
@@ -202,4 +233,6 @@ if [ -n "$img" ]; then image_upload; fi
 for f in latest.sig latest; do
 	s3 -o /dev/null -H 'Cache-Control: no-store' -T "$dir/$f" "$ep/$CHANNEL/$f" || die "could not update $f"
 done
+# The previous image goes only now, so latest never points at a release without one.
+if [ -n "$img" ]; then image_prune; fi
 echo "publish: $CHANNEL/$release is latest; bucket: releases $(((total + new) / 1048576)) MiB of $((cap / 1048576)), install images $((images / 1048576)) MiB of $((image_cap / 1048576))"

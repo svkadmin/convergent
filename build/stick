@@ -5,7 +5,8 @@
 #   p3 cv-inst-data: an EROFS of the release as published (manifests, both UKIs, guest files).
 # The install UKI boots p2 with convergent.install=1 and carries the manifests as an extra initrd.
 # stick --release <release-dir> <out-dir>: the published form, convergent-<release>.img.zst and its
-# .sha256 (signed by build/sign --image, here when the channel key is on this host).
+# .sha256 (signed by build/sign --image, here when the channel key is on this host); the .sha256's second
+# line is the sha256 of the release's manifest.
 set -eu
 set +ax
 umask 077
@@ -221,6 +222,9 @@ if [ -n "$zst" ]; then
 	bld zstd -q -T0 -6 -c <"$out" >"$zst" || die "zstd failed"
 	bld zstd -q -dc <"$zst" | cmp - "$out" || die "the compressed image differs"
 	(set -C; cd "$zdir" && sha256sum "${zst##*/}" >"${zst##*/}.sha256") || die "cannot write $zst.sha256"
+	# The second line binds the signature to the release the image carries, not only to its name.
+	msum=$(sha256sum <"$work/data/manifest" | cut -d' ' -f1)
+	[ "${#msum}" = 64 ] && printf '%s  manifest\n' "$msum" >>"$zst.sha256" || die "cannot write $zst.sha256"
 	printf 'Image: %s (%s bytes; %s bytes uncompressed)\n' "$zst" "$(stat -c %s "$zst")" "$(stat -c %s "$out")"
 	cat "$zst.sha256"
 	if [ -f "/etc/convergent/keys/$CHANNEL.key" ]; then "$here/sign" --image "$zdir" "$dir" || die "signing the image failed"; fi
