@@ -265,7 +265,7 @@ mv "$work/saved.keep" "$state/leases/saved"
 	leases_resume
 	[ "$(ls "$work"/script.* | wc -l)" = 6 ]
 	for script in "$work"/script.*; do
-		grep -qF 'exec timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)" "' "$script"
+		grep -qF 'timeout -k 5 100 perl -MFcntl=:flock -e "open(L, q{>>}, q{/var/run/convergent-leases.lock}) or exit 1; flock(L, LOCK_EX) or exit 1; exit(system(q{/bin/sh}, q{-ec}, shift @ARGV) ? 1 : 0)" "' "$script"
 	done
 	sed -e "s|/var/run/convergent-leases.lock|$work/lock|g" -e "s|/var/db/dhcpd.leases|$work/seeded|g" \
 		-e "s|/etc/convergent/dhcpd.flags|$work/flags|g" -e "s|/var/db/convergent-seeded|$work/marker|g" \
