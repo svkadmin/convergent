@@ -622,15 +622,15 @@ while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
 	[ -n "$line" ] || { say "Not one of the listed filesystems: $answer"; continue; }
 	set -- $line
 	say 'The backup opens this disk with the passphrase you just chose, even after you change it: keep it as safe.'
-	if yes_no "Write the header backup to $1 on $(disk_field "$3" 5)?"; then
-		backup=$1 backup_fs=$2 backup_disk=$3 backup_seq=
-		backup_id=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk") || die "cannot identify $backup_disk"
-		backup_part=$(lsblk -dno PKNAME,FSTYPE "$backup") || die "cannot identify $backup"
-		if [ -e "/sys/block/${backup_disk##*/}/diskseq" ]; then
-			backup_seq=$(cat "/sys/block/${backup_disk##*/}/diskseq") || die "cannot read the diskseq of $backup_disk"
-		fi
-		break
+	# The identity is taken before the confirmation, so the owner confirms the device that is checked later.
+	backup=$1 backup_fs=$2 backup_disk=$3 backup_seq=
+	backup_id=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk") || die "cannot identify $backup_disk"
+	backup_part=$(lsblk -dno PKNAME,FSTYPE "$backup") || die "cannot identify $backup"
+	if [ -e "/sys/block/${backup_disk##*/}/diskseq" ]; then
+		backup_seq=$(cat "/sys/block/${backup_disk##*/}/diskseq") || die "cannot read the diskseq of $backup_disk"
 	fi
+	if yes_no "Write the header backup to $1 on $3 $(lsblk -dno MODEL "$3" 2>/dev/null)?"; then break; fi
+	backup=
 done
 # Disks attached during question 9 count too.
 others_detached
@@ -657,9 +657,11 @@ while :; do
 	[ "$tries" -lt 3 ] || die 'the erase confirmation did not match three times; nothing was erased'
 done
 
-# Recheck target identity; use disk-local partition paths.
+# Recheck target identity; use disk-local partition paths. A Convergent disk attached at the summary refuses too.
 check_disk
 check_identity
+list_disks
+no_other 'Detach it and start again.' || die 'another disk holds a Convergent system; nothing was erased'
 # Earlier boot entries for this disk point at these partitions.
 old_guids=$(lsblk -nro PARTUUID "$disk") || die "cannot read partitions of $disk"
 say "Erasing $disk."
