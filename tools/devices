@@ -317,7 +317,7 @@ bluetooth_blocked() {
 		[ -e "$radio" ] || continue
 		kind=$(cat "$radio/type" 2>/dev/null) || continue
 		[ "$kind" = bluetooth ] || continue
-		[ "$(cat "$radio/soft")" = 1 ] || return 1
+		soft=$(cat "$radio/soft" 2>/dev/null) || continue; [ "$soft" = 1 ] || return 1
 	done
 }
 # A failed on leaves the radio blocked and bluetoothd stopped.
