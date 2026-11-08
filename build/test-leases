@@ -536,5 +536,5 @@ grep -qx 'unbound wan_watch sshd|' "$work/seed-yes"
 echo 'test-leases: merge, interrupted checkpoint, replay and held seeding passed'
 # OpenBSD timeout(1) refuses to run as the session leader sshd makes of an exec'd command: the lease guard
 # stays a child of the remote shell.
-grep -q "^lease_guard='timeout -k 5 100 perl" "$repo/rootfs/usr/lib/convergent/incus/fw-leases" || die 'the lease guard must not exec timeout'
+grep -q "^lease_guard='timeout -k 5 100 perl" "$lib/fw-leases" || { echo 'test-leases: the lease guard must not exec timeout' >&2; exit 1; }
 echo 'test-leases: the lease guard runs timeout as a child of the remote shell'
