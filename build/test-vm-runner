@@ -227,7 +227,7 @@ sed -n '/^# Mark bounded waits/,/^# End bounded waits/p' "$here/test" | sed '$d'
 echo 'test-vm-runner: timed firewall waits preserve replies and failures'
 for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to kill init'; do
     export signature
-    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update guests-topology online desktop update; do
+    for mode in boot fallback interrupt corrupt recovery rescue guests guests-maint guests-update guests-topology online desktop update install install-tty1; do
         goal=$mode
         case $mode in boot | fallback | interrupt | corrupt) goal=bless ;; esac
         export mode goal
@@ -290,6 +290,31 @@ for goal in ("guests-maint", "guests-update", "guests-topology"):
             want = None if guest is None or update is None else max(guest, update)
             assert state["result"] == want, (goal, guest, update, state["result"])
 print("test-vm-runner: both update halves and guests-maint require both verdicts")
+
+# The install image: the stub's last line on ttyS0, the console's pointer to tty1; never a look-alike.
+for goal, good, bad in (
+        ("install", [b"\r\nThis test build installs nothing. Press Ctrl-Alt-Del to restart.\r\n", b"This test build installs nothing."],
+         [b"echo This test build installs nothing.", b"\r\nThis test build installs", b"\r\nthis test build installs nothing."]),
+        ("install-tty1", [b"Convergent installer: running on tty1\r\n", b" * ok ]\r\nConvergent installer: running on tty1\n"],
+         [b"Convergent installer: running on tty10\r\n", b"Convergent installer: running on ttyS0\r\n",
+          b"xConvergent installer: running on tty1\r\n", b"Convergent installer: running on tty1"])):
+    state = dict(goal=goal, re=re)
+    exec(markers, state)
+    for seen in good:
+        assert re.search(state["install_markers"][goal], seen), (goal, seen)
+    for seen in bad:
+        assert not re.search(state["install_markers"][goal], seen), (goal, seen)
+start = source.index("            done = result is not None if guest_test else")
+end = source.index("            if goal == \"recovery\":", start)
+done = textwrap.dedent(source[start:end])
+for goal, seen, want in (("install", b"\r\nrelease 42 is good\r\n", False), ("install", b"\nThis test build installs nothing.", True),
+                         ("install-tty1", b"\r\nrelease 42 is good\r\n", False), ("bless", b"\nThis test build installs nothing.", False),
+                         ("bless", b"\r\nrelease 42 is good\r\n", True)):
+    state = dict(goal=goal, re=re, seen=seen, result=None, guest_test=False, install_test=goal.startswith("install"))
+    exec(markers, state)
+    exec(done, state)
+    assert bool(state["done"]) == want, (goal, seen)
+print("test-vm-runner: the install boots end at their own markers, never at a bless")
 
 # Use host monotonic time, never the guest's elapsed field or ordinary console output.
 start = source.index("                    timing += chunk")

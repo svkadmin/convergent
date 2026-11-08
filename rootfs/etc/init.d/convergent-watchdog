@@ -29,6 +29,11 @@ start() {
 		einfo "The release is already good; the watchdog stays disarmed"
 		return 0
 	fi
+	# The install image never blesses: a reset would cut the installer off. An unreadable line arms as before.
+	case " $(cat /proc/cmdline 2>/dev/null) " in *" convergent.install=1 "*)
+		einfo "Install image; the watchdog stays disarmed"
+		return 0 ;;
+	esac
 	ebegin "Feeding the watchdog"
 	# Feeds 30 s apart need the iTCO the initramfs armed at 180 s: another device (WDAT, 30 s by default)
 	# would reset a good boot.

@@ -20,5 +20,8 @@ install() {
 	inst_simple "$moddir/convergent-recovery.sh" /sbin/convergent-recovery
 	inst_simple "$moddir/recovery-lib.sh" /lib/convergent-recovery.sh
 	inst_simple "$moddir/unlock-state.sh" /lib/convergent-unlock.sh
-	if ! dracut_module_included convergent-rescue; then inst_hook pre-pivot 50 "$moddir/convergent-state.sh"; fi
+	if ! dracut_module_included convergent-rescue; then
+		inst_hook pre-pivot 49 "$moddir/convergent-install.sh"
+		inst_hook pre-pivot 50 "$moddir/convergent-state.sh"
+	fi
 }

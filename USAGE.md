@@ -16,9 +16,9 @@ Hardware requirements: [README](README.md).
 
 ### Disk image
 
-The default image is 30 GiB (32,212,254,720 bytes); some nominal 32 GB sticks are too small. It
-holds the owner account, the state partition and the guests; slot B is empty. Its state grows to
-fill the disk at unlock.
+The image is the release's generic install image: no owner account, password or state, only the
+release and its guests. It boots to the installer on the screen. In this build the installer only
+lists the hardware and what the image holds; it erases and installs nothing.
 
 1. Identify the USB disk:
 
@@ -36,9 +36,6 @@ fill the disk at unlock.
        echo 'Image writing requires 512-byte logical sectors; target refused.' >&2
    fi
    ```
-
-For a 4Kn internal disk, boot compatible USB media and use the installer
-([Internal disk](#internal-disk)).
 
 ### Internal disk
 
@@ -93,7 +90,7 @@ install:
 GPT, LUKS2, Btrfs, a 1 GiB ESP and two 8 GiB slots are fixed; `esp_mib`, `slot_mib` and
 `state_max_gib` are rejected. Validation and capacity checks run before partitioning: state needs
 32 GiB plus any state swap. OpenRC activates the generated swap settings; editing the reference
-YAML has no runtime effect. Disk image sizing: [BUILD](BUILD.md).
+YAML has no runtime effect. Building the disk image: [BUILD](BUILD.md).
 
 ### First boot
 
