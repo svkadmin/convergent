@@ -24,6 +24,8 @@ keyboard layouts, time zone, an optional Wi-Fi network, the USB devices to allow
 header backup. A summary follows; type the disk path again, or `ERASE` and its serial, to install.
 A disk that already holds Convergent asks for `REINSTALL <disk>`; another disk with Convergent must be
 detached. It copies the guests and powers off. Ctrl-D or a wrong answer three times starts it again.
+The Wi-Fi passphrase waits in the encrypted `/var` until the first guest setup moves it into wan. The
+header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk.
 
 1. Identify the USB disk:
 

@@ -569,6 +569,125 @@ if [ "${1:-}" = --install-options ]; then
 	printf '%s\n' 'only one' >"$work/input"
 	if (secret 'LUKS passphrase' 4<"$work/input" 3>"$work/prompt") 2>/dev/null; then die 'end of input gave a secret'; fi
 	)
+	# The install data: exactly one EROFS mount, ro, nodev, nosuid and noexec; an overmount refuses.
+	sed -n '/# One mount only: findmnt/,/die "the install data is not mounted/p' "$here/../install/install" >"$work/data-check"
+	[ "$(wc -l <"$work/data-check")" = 4 ] || die 'install data check moved'
+	sh -n "$work/data-check"
+	data_check() {   # findmnt lines
+		(
+		data=/inst
+		findmnt() { [ "$*" = '-nro FSTYPE,OPTIONS /inst' ] || exit 97; printf '%s' "$mounts"; }
+		mounts=$1
+		. "$work/data-check"
+		) 2>/dev/null
+	}
+	data_check 'erofs ro,nodev,nosuid,noexec,relatime' || die 'refused the install data mount'
+	for bad in 'erofs rw,nodev,nosuid,noexec' 'ext4 ro,nodev,nosuid,noexec' 'erofs ro,nodev,nosuid' '' \
+		"$(printf 'erofs ro,nodev,nosuid,noexec\ntmpfs rw,relatime')"; do
+		if data_check "$bad"; then die "accepted install data mount: $bad"; fi
+	done
+	# The release key comes from the verity root's /etc; without one the owner is told.
+	sed -n '/# A release that trusts a key has every manifest/,/^\tfi$/p' "$here/../install/install" >"$work/key-check"
+	grep -q 'accepted unsigned' "$work/key-check" && [ "$(wc -l <"$work/key-check")" -lt 12 ] || die 'manifest key check moved'
+	sh -n "$work/key-check"
+	key_check() {   # openssl status
+		(
+		say() { printf '%s\n' "$*"; }
+		openssl() { [ "$1:$5" = "pkeyutl:$work/image/etc/convergent/release.pub" ] || exit 97; return "$verify"; }
+		verify=$1 manifests='manifest guests.manifest' src=$work/src
+		. "$work/key-check"
+		echo checked
+		) >"$work/key-out" 2>&1
+	}
+	mkdir -p "$work/image/etc/convergent"
+	: >"$work/image/etc/convergent/release.pub"
+	key_check 0 && grep -qx checked "$work/key-out" && ! grep -q unsigned "$work/key-out" || die 'refused signed manifests'
+	if key_check 1; then die 'accepted a bad manifest signature'; fi
+	grep -q 'the manifest signature does not verify' "$work/key-out" || die 'no signature error'
+	rm "$work/image/etc/convergent/release.pub"
+	key_check 1 && grep -q 'WARNING: .*accepted unsigned' "$work/key-out" || die 'unsigned manifests without a warning'
+	rmdir "$work/image/etc/convergent"
+	if key_check 0; then die 'accepted manifests without a listing of the key directory'; fi
+	# Questions 8 and 9 attach disks: the backup list and the Convergent scan see them, and the backup
+	# filesystem is a USB or removable disk's, checked again by disk, diskseq, parent and type.
+	{
+		sed -n '/^disk_field() {/p; /^no_other() {/,/^}/p' "$here/../install/install"
+		sed -n '/^# 9\. A LUKS header backup/,/^# 10\. The summary/p' "$here/../install/install"
+	} | sed "s|/sys/block/|$work/sys/block/|g" >"$work/backup-q"
+	[ "$(grep -c '^[a-z_]*() {' "$work/backup-q")" = 4 ] && grep -q "$work/sys/block/" "$work/backup-q" || die 'backup question moved'
+	sh -n "$work/backup-q"
+	tab=$(printf '\t')
+	usb_disk() { printf '%s\n' "$1${tab}1G${tab}usb${tab}S-${1##*/}${tab}Stick ${1##*/}${tab}1"; }
+	{
+		usb_disk /dev/sda
+		printf '%s\n' "/dev/nvme0n1${tab}64G${tab}nvme${tab}T1${tab}Target${tab}0" "/dev/nvme1n1${tab}64G${tab}nvme${tab}T2${tab}Inner${tab}0"
+	} >"$work/disks.base"
+	backup_q() {   # answers (lines); disks.N is the Nth list, disks.end any later one
+		printf '%s\n' "$@" >"$work/answers"
+		cp "$work/disks.base" "$work/disks"
+		(
+		disk=/dev/nvme0n1 bootdisks=/dev/sda calls=0
+		say() { printf '%s\n' "$*"; }
+		ask() { printf '%s\n' "$1"; IFS= read -r answer <&4 || exit 96; }
+		yes_no() { printf '%s\n' "$1"; IFS= read -r answer <&4 || exit 96; [ "$answer" = y ]; }
+		list_disks() {
+			calls=$((calls + 1))
+			if [ -f "$work/disks.$calls" ]; then cp "$work/disks.$calls" "$work/disks"; else cp "$work/disks.end" "$work/disks"; fi
+		}
+		lsblk() {
+			case $1:$2 in
+			-nrpo:PARTLABEL) case $3 in /dev/sdd) printf '%s\n' cv-esp cv-slot-a cv-slot-b cv-state ;; *) echo ;; esac ;;
+			-nrpo:NAME,TYPE,FSTYPE)
+				case $3 in
+				/dev/sdc) echo '/dev/sdc disk vfat' ;;
+				/dev/nvme1n1) printf '%s\n' '/dev/nvme1n1 disk ' '/dev/nvme1n1p1 part vfat' ;;
+				*) echo "$3 disk " ;;
+				esac ;;
+			-dnbo:MAJ:MIN,SIZE,SERIAL) [ "$3" = /dev/sdc ] || exit 97; echo "8:32 1073741824 $serial" ;;
+			-dno:PKNAME,FSTYPE) [ "$3" = /dev/sdc ] || exit 97; echo " $fstype" ;;
+			*) exit 97 ;;
+			esac
+		}
+		serial=S-sdc fstype=vfat
+		. "$work/backup-q"
+		echo "backup=$backup"
+		[ -z "$backup" ] || {
+			backup_same || exit 95
+			fstype=ext4; if backup_same; then exit 94; fi; fstype=vfat
+			serial=OTHER; if backup_same; then exit 94; fi; serial=S-sdc
+			echo 8 >"$work/sys/block/sdc/diskseq"; if backup_same; then exit 94; fi
+			echo checked
+		}
+		) 4<"$work/answers" >"$work/backup-out" 2>&1
+	}
+	mkdir -p "$work/sys/block/sdc"
+	echo 7 >"$work/sys/block/sdc/diskseq"
+	# A USB disk attached after the first try; the inner NVMe's FAT is never offered.
+	cp "$work/disks.base" "$work/disks.1"
+	cp "$work/disks.base" "$work/disks.2"
+	{ cat "$work/disks.base"; usb_disk /dev/sdc; } >"$work/disks.end"
+	rc=0; backup_q y y /dev/sdc y || rc=$?
+	case $rc in
+	0) ;;
+	94) die 'the backup check accepted a changed disk, parent, type or diskseq' ;;
+	*) cat "$work/backup-out"; die "the backup question failed ($rc)" ;;
+	esac
+	[ "$(grep -c 'No FAT, exFAT or ext4 filesystem on another USB disk' "$work/backup-out")" = 1 ] &&
+		grep -qx 'backup=/dev/sdc' "$work/backup-out" && grep -qx checked "$work/backup-out" ||
+		{ cat "$work/backup-out"; die 'backup selection'; }
+	if grep -q nvme1n1p1 "$work/backup-out"; then die 'offered a filesystem on an internal disk'; fi
+	# A Convergent disk attached at question 8 (seen first), then one during question 9 (seen second).
+	for at in 1 2; do
+		rm -f "$work/disks.1" "$work/disks.2"
+		cp "$work/disks.base" "$work/disks.1"
+		{ cat "$work/disks.base"; usb_disk /dev/sdd; } >"$work/disks.$at"
+		cp "$work/disks.base" "$work/disks.end"
+		case $at in 1) set -- '' n ;; 2) set -- n '' ;; esac
+		backup_q "$@" || { cat "$work/backup-out"; die "the Convergent scan failed ($at)"; }
+		grep -q '^/dev/sdd holds a Convergent system: the installed laptop would not boot beside it\. Detach it\.$' "$work/backup-out" &&
+			grep -qx 'Press Enter once it is detached: ' "$work/backup-out" && grep -qx 'backup=' "$work/backup-out" ||
+			{ cat "$work/backup-out"; die "missed a Convergent disk attached later ($at)"; }
+	done
 	)
 	(
 	work=$(mktemp -d)
@@ -6284,10 +6403,12 @@ if [ "$mode" = install ]; then
 	d_backup() { drive backup.img backup usb-storage,bus=xhci.0,serial=CVBACKUP; }
 	d_second() { drive second.img second virtio-blk-pci; }
 	step() { printf '%s\t%s\n' "$1" "$2" >>"$BUILDER$work/script"; }
+	installs=
 	install_run() {   # goal; qemu-extra and script written by the caller
 		cp "$BUILDER/usr/share/edk2/OvmfX64/OVMF_VARS.fd" "$BUILDER$work/vars.fd"
 		deadline=$(($(date +%s) + 3600))
 		run_vm "$1"
+		installs="$installs $runs"
 		tlog=$BUILDER$work/install-$runs.log
 		tr -d '\r' <"$log" >"$tlog"
 	}
@@ -6383,7 +6504,8 @@ EOF
 	{ d_stick install.img; d_target; d_backup; d_second; } >"$BUILDER$work/qemu-extra"
 	: >"$BUILDER$work/script"
 	step "$gate" =yes
-	step "Type continue anyway, or q\\.\\r?\\n$gate" '=continue anyway'
+	step "Type continue anyway, or q\\.\\r?\\n$gate" =q
+	step "(?s)install: stopped at the hardware check.*?The installer stopped.*?$gate" '=continue anyway'
 	step "(?s)\\n  (/dev/sd[a-z]+)  [^\\n]*\\(this stick\\)\\r?\\n.*?$target" '={cap}'
 	step "(?s)refusing the boot stick.*?$target" =/dev/nosuch
 	step "(?s)not a block device: /dev/nosuch.*?$target" =/dev/nvme0n1
@@ -6456,12 +6578,15 @@ EOF
 	install_run install
 	[ "$ended" = install ] || die "the install did not reach the slot write ($ended); see $log"
 	bld sgdisk -i 2 "$work/disk.img" | grep -qx "Partition name: 'cv-slot-a'" || die 'the target was not repartitioned before the power cut'
-	# D: the reinstall over it, with the zone, a hidden Wi-Fi network, the header backup and ERASE <serial>.
+	# D: the reinstall over it (a wrong answer first asks for the target again), with the zone, a hidden Wi-Fi
+	# network, the header backup and ERASE <serial>.
 	: >"$BUILDER$work/script"
+	reinstall='/dev/nvme0n1 holds a Convergent system\. Type REINSTALL /dev/nvme0n1 to replace it, or Enter to choose another disk: '
 	step "$gate" '=continue anyway'
 	step "$target" =/dev/nvme0n1
-	step '/dev/nvme0n1 holds a Convergent system\. Type REINSTALL /dev/nvme0n1 to replace it, or Enter to choose another disk: ' \
-		'=REINSTALL /dev/nvme0n1'
+	step "$reinstall" '=reinstall /dev/nvme0n1'
+	step "(?s)\\nDisks:\\r?\\n.*?$target" =/dev/nvme0n1
+	step "$reinstall" '=REINSTALL /dev/nvme0n1'
 	answers Europe/Bratislava 'CV test'
 	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =y
 	step '(?s)\n  (/dev/sd[a-z]+)  vfat  .*?Backup filesystem \(its /dev path\): ' '={cap}'
@@ -6552,10 +6677,14 @@ $luks"
 	grep -q 'serial "CVUSBTARGET"' "$state/etc/usbguard/rules.conf" && ! grep -q 'serial "CVSTICK"' "$state/etc/usbguard/rules.conf" ||
 		die 'the USB target is not allowed, or the stick is'
 	close_state
-	# The serial transcripts never carry the password or a passphrase.
-	for f in "$BUILDER$work"/install-*.log; do
-		for s in "$pw" "$luks" "$wifi"; do
-			if grep -aqF -- "$s" "$f"; then die "a password or passphrase reached the console: $f"; fi
+	# The serial transcripts never carry the password or a passphrase: every boot try of every installer run.
+	for r in $installs; do
+		set -- "$BUILDER$work/console-$r-"*.log
+		[ -f "$1" ] || die "no console log of run $r"
+		for f do
+			for s in "$pw" "$luks" "$wifi"; do
+				if grep -aqF -- "$s" "$f"; then die "a password or passphrase reached the console: $f"; fi
+			done
 		done
 	done
 	cv_time finished

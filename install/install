@@ -128,9 +128,16 @@ if [ -n "$stick" ]; then
 	src=/run/convergent-install-manifests data=/run/convergent-install
 	say "Convergent installer: release $(cat /usr/lib/convergent/release) ($(cat /usr/lib/convergent/version))"
 	say "Install boot: /var $(findmnt -nro FSTYPE /var), /home $(findmnt -nro FSTYPE /home), /tmp $(findmnt -nro FSTYPE /tmp); sysrq $(cat /proc/sys/kernel/sysrq), kptr_restrict $(cat /proc/sys/kernel/kptr_restrict)"
+	# One mount only: findmnt lists stacked mounts oldest first, and the top one is what reads see.
 	findmnt -nro FSTYPE,OPTIONS "$data" | awk '{n = split($2, o, ","); for (i = 1; i <= n; i++) s[o[i]] = 1
-		exit !(NR == 1 && $1 == "erofs" && s["ro"] && s["nodev"] && s["nosuid"] && s["noexec"])}' ||
+		ok = $1 == "erofs" && s["ro"] && s["nodev"] && s["nosuid"] && s["noexec"]} END {exit !(NR == 1 && ok)}' ||
 		die "the install data is not mounted read-only, nodev, nosuid and noexec"
+	# The running root, verity-checked against the manifest's root hash below; a bind leaves out the tmpfs mounts
+	# and anything mounted over /etc.
+	run mkdir "$work/image"
+	run mount --bind / "$work/image"
+	image_mounted=1
+	run mount -o remount,bind,ro,nodev,nosuid,noexec "$work/image"
 	ls -A "$src" >"$work/carried" || die "the install image carries no manifests"
 	manifests=manifest
 	for m in guests.manifest remmina.manifest; do
@@ -141,12 +148,14 @@ if [ -n "$stick" ]; then
 		cp "$src/$m" "$work/$m" || die "cannot read $m"
 	done
 	# A release that trusts a key has every manifest signed (a listing that succeeded says it trusts none).
-	ls -A /etc/convergent >"$work/etc-convergent" || die "cannot list /etc/convergent"
+	ls -A "$work/image/etc/convergent" >"$work/etc-convergent" || die "cannot list the image's /etc/convergent"
 	if grep -qx release.pub "$work/etc-convergent"; then
 		for m in $manifests; do
-			openssl pkeyutl -verify -pubin -inkey /etc/convergent/release.pub -rawin -in "$work/$m" -sigfile "$src/$m.sig" >/dev/null 2>&1 ||
+			openssl pkeyutl -verify -pubin -inkey "$work/image/etc/convergent/release.pub" -rawin -in "$work/$m" -sigfile "$src/$m.sig" >/dev/null 2>&1 ||
 				die "the $m signature does not verify"
 		done
+	else
+		say 'WARNING: this release trusts no release key; its manifests are accepted unsigned.'
 	fi
 else
 	dir=$(cd "$1" && pwd -P) || die "no release directory"
@@ -314,16 +323,16 @@ usb_port() {
 	while [ -n "$usb" ] && [ ! -f "$usb/idVendor" ]; do usb=${usb%/*}; done
 	[ -z "$usb" ] || printf '%s\n' "${usb##*/}"
 }
-# The whole disks: name, size, transport, serial, model (tab-separated; lsblk -P keeps empty fields).
+# The whole disks: name, size, transport, serial, model, removable (tab-separated; lsblk -P keeps empty fields).
 list_disks() {
-	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,SERIAL,MODEL >"$work/lsblk" || die "cannot list the disks"
+	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,SERIAL,MODEL,RM >"$work/lsblk" || die "cannot list the disks"
 	awk '{
 		split("", v); line = $0
 		while (match(line, /^[A-Z:]+="[^"]*"/)) {
 			kv = substr(line, 1, RLENGTH); line = substr(line, RLENGTH + 2)
 			v[substr(kv, 1, index(kv, "=") - 1)] = substr(kv, index(kv, "=") + 2, length(kv) - index(kv, "=") - 2)
 		}
-		if (v["TYPE"] == "disk") print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" v["SERIAL"] "\t" v["MODEL"]
+		if (v["TYPE"] == "disk") print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" v["SERIAL"] "\t" v["MODEL"] "\t" v["RM"]
 	}' "$work/lsblk" >"$work/disks" || die "cannot read the disk list"
 }
 show_disks() {
@@ -336,14 +345,24 @@ show_disks() {
 	}' "$work/disks" >&3
 }
 disk_field() { awk -F '\t' -v d="$1" -v f="$2" '$1 == d {print $f}' "$work/disks"; }
+# Another disk with these labels would stop the installed system at boot (dm-mod.waitfor, cv-state).
+no_other() {   # what to do about it
+	other=
+	names=$(awk -F '\t' '{print $1}' "$work/disks")
+	for d in $names; do
+		[ "$d" != "$disk" ] || continue
+		case " $(printf '%s ' $bootdisks)" in *" $d "*) continue ;; esac
+		labels=$(lsblk -nrpo PARTLABEL "$d") || die "cannot read the partitions of $d"
+		if printf '%s\n' "$labels" | grep -qx -e cv-slot-a -e cv-slot-b -e cv-state; then
+			say "$d holds a Convergent system: the installed laptop would not boot beside it. $1"
+			other=1
+		fi
+	done
+	[ -z "$other" ]
+}
 
 run mkdir -p "$work/image" "$work/accounts/etc/default" "$work/esp" "$work/state"
-if [ -n "$stick" ]; then
-	# The running root, verity-checked against the manifest's root hash; a bind leaves out the tmpfs mounts.
-	run mount --bind / "$work/image"
-	image_mounted=1
-	run mount -o remount,bind,ro,nodev,nosuid,noexec "$work/image"
-else
+if [ -z "$stick" ]; then
 	loop=$(losetup --find --show --read-only "$work/slot.img") || die "cannot open image"
 	run mount -t erofs -o ro,nodev,nosuid,noexec "$loop" "$work/image"
 	image_mounted=1
@@ -422,19 +441,7 @@ while :; do
 	if ! msg=$( (check_disk) 2>&1); then say "$msg"; continue; fi
 	disk_size=$(blockdev --getsize64 "$disk") || die "cannot size target"
 	if ! msg=$( (install_size "$disk_size" 32768) 2>&1); then say "$msg"; continue; fi
-	# Another disk with these labels would stop the installed system at boot (dm-mod.waitfor, cv-state).
-	other=
-	names=$(awk -F '\t' '{print $1}' "$work/disks")
-	for d in $names; do
-		[ "$d" != "$disk" ] || continue
-		case " $(printf '%s ' $bootdisks)" in *" $d "*) continue ;; esac
-		labels=$(lsblk -nrpo PARTLABEL "$d") || die "cannot read the partitions of $d"
-		if printf '%s\n' "$labels" | grep -qx -e cv-slot-a -e cv-slot-b -e cv-state; then
-			say "$d holds a Convergent system: the installed laptop would not boot beside it. Detach it, or choose it as the target."
-			other=1
-		fi
-	done
-	[ -z "$other" ] || continue
+	no_other 'Detach it, or choose it as the target.' || continue
 	labels=$(lsblk -nrpo PARTLABEL "$disk") || die "cannot read the partitions of $disk"
 	if printf '%s\n' "$labels" | grep -qx -e cv-slot-a -e cv-slot-b -e cv-state; then
 		ask "$typed holds a Convergent system. Type REINSTALL $typed to replace it, or Enter to choose another disk: "
@@ -580,18 +587,34 @@ while :; do
 	[ "$answer" = r ] || break
 done
 
-# 9. A LUKS header backup at the end: a filesystem on another disk, never the stick or the target.
+# 9. A LUKS header backup at the end: a filesystem on another USB or removable disk, never the stick or the target.
+# The disks as they are now: question 8 asked to attach things.
+others_detached() {
+	list_disks
+	until no_other 'Detach it.'; do
+		ask 'Press Enter once it is detached: '
+		list_disks
+	done
+}
+others_detached
+# The backup filesystem as chosen: its disk, its parent and type.
+backup_same() {
+	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk")" = "$backup_id" ] &&
+		[ "$(lsblk -dno PKNAME,FSTYPE "$backup")" = "$backup_part" ] &&
+		{ [ -z "$backup_seq" ] || [ "$(cat "/sys/block/${backup_disk##*/}/diskseq")" = "$backup_seq" ]; }
+}
 backup=
 while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
+	list_disks
 	: >"$work/backup-parts"
-	names=$(awk -F '\t' '{print $1}' "$work/disks")
+	names=$(awk -F '\t' '$3 == "usb" || $6 == "1" {print $1}' "$work/disks")
 	for d in $names; do
 		[ "$d" != "$disk" ] || continue
 		case " $(printf '%s ' $bootdisks)" in *" $d "*) continue ;; esac
 		lsblk -nrpo NAME,TYPE,FSTYPE "$d" >"$work/parts" || die "cannot read the partitions of $d"
 		awk -v d="$d" '($2 == "part" || $2 == "disk") && ($3 == "vfat" || $3 == "exfat" || $3 == "ext4") {print $1, $3, d}' "$work/parts" >>"$work/backup-parts"
 	done
-	if [ ! -s "$work/backup-parts" ]; then say 'No FAT, exFAT or ext4 filesystem on another disk; attach one, then answer again.'; continue; fi
+	if [ ! -s "$work/backup-parts" ]; then say 'No FAT, exFAT or ext4 filesystem on another USB disk; attach one, then answer again.'; continue; fi
 	say 'Filesystems for the backup:'
 	while read -r part fs parent; do say "  $part  $fs  $(disk_field "$parent" 5)"; done <"$work/backup-parts"
 	ask 'Backup filesystem (its /dev path): '
@@ -600,11 +623,17 @@ while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
 	set -- $line
 	say 'The backup opens this disk with the passphrase you just chose, even after you change it: keep it as safe.'
 	if yes_no "Write the header backup to $1 on $(disk_field "$3" 5)?"; then
-		backup=$1 backup_fs=$2 backup_disk=$3
+		backup=$1 backup_fs=$2 backup_disk=$3 backup_seq=
 		backup_id=$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk") || die "cannot identify $backup_disk"
+		backup_part=$(lsblk -dno PKNAME,FSTYPE "$backup") || die "cannot identify $backup"
+		if [ -e "/sys/block/${backup_disk##*/}/diskseq" ]; then
+			backup_seq=$(cat "/sys/block/${backup_disk##*/}/diskseq") || die "cannot read the diskseq of $backup_disk"
+		fi
 		break
 	fi
 done
+# Disks attached during question 9 count too.
+others_detached
 
 # 10. The summary, then the erase confirmation; a wrong answer erases nothing.
 tries=0
@@ -702,7 +731,8 @@ printf 'input type:keyboard xkb_variant ""\ninput type:keyboard xkb_layout "%s"\
 	die "cannot write the keyboard layouts"
 run chown -R "$uid:$gid" "$work/state/home/$owner"
 run chmod 0700 "$work/state/home/$owner"
-# Keep swap outside /var snapshots; retain only non-secret install inputs.
+# Keep swap outside /var snapshots. The install inputs: the config (no secrets), and the Wi-Fi profile with its
+# passphrase until the first guest setup moves it into wan (an update before that snapshots it with /var).
 printf '%s\n' "$state_size" >"$work/state/install-state-size"
 var=$work/state/var-$release
 run btrfs -q subvolume create "$var"
@@ -784,7 +814,7 @@ boot_entry "${name:-Linux}" "$old_guids" ||
 saved=
 if [ -n "$backup" ]; then
 	file=cv-luks-header-$(printf '%s' "${serial:-noserial}" | tr -c 'A-Za-z0-9._-' _)-$(date -u +%Y%m%d-%H%M%S)
-	if [ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$backup_disk")" = "$backup_id" ] && mkdir "$work/backup" &&
+	if backup_same && mkdir "$work/backup" &&
 		mount -t "$backup_fs" -o nodev,nosuid,noexec "$backup" "$work/backup"; then
 		backup_mounted=1
 		if cryptsetup luksHeaderBackup "$state" --header-backup-file "$work/backup/$file" && sync; then saved=$file; fi
