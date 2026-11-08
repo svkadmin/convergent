@@ -120,7 +120,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     exec 8>/run/convergent/portal.lock
     exec 7>/run/convergent/guests.lock
     umask 022
-    # wan-watch paces its probes by the applied profile; a fixed word, written only on change.
+    # wan-watch paces its probes by the applied profile: a fixed word and the firewall's own time, which ages it.
     power=ac
     [ "$(cat /run/convergent-power.profile 2>/dev/null)" != battery ] || power=battery
     portal_locked=0
@@ -141,7 +141,7 @@ if [ "${1:-}:$#" = status:1 ]; then
     for node in fw1 fw2; do
         (
             echo unknown >"$status/.portal-$node"
-            cmd="[ \"\$(cat /var/run/convergent-power 2>/dev/null)\" = $power ] || echo $power >/var/run/convergent-power; ifconfig carp"
+            cmd="echo $power \$(date +%s) >/var/run/convergent-power; ifconfig carp"
             if [ "$portal_locked" = 1 ]; then
                 cmd="$cmd"'; if dns=$(pfctl -t portal_dns -T show) && lan=$(pfctl -t portal_lan -T show); then
                     if [ -n "$dns$lan" ]; then echo "portal on"; else echo "portal off"; fi
@@ -258,15 +258,23 @@ if [ "${1:-}" = auto ]; then (
     firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
     wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
-    # On battery its SSH sessions run on even minutes; odd ones keep the gate and its last report line.
-    gate_minute=1
-    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ]; then
-        case $(date +%M) in *[13579]) gate_minute=0 ;; esac
+    # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: no
+    # heal output this run, and the same CARP roles and uplink (check status) and wired outcome as it saw.
+    read -r gate_now gate_rest </proc/uptime
+    gate_now=${gate_now%.*}
+    gate_seen=$(cut -d' ' -f1-4 /run/convergent/status/topology 2>/dev/null) || gate_seen=
+    gate_wired=$(cat /run/convergent/wired-heal 2>/dev/null) || gate_wired=
+    gate_skip=0
+    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] && [ ! -s /run/convergent/.firewall-heal ] &&
+        [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
+        read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then
+        case $gate_at in '' | *[!0-9]* | 0?*) ;; *) gate_age=$((gate_now - gate_at)); [ "$gate_age" -lt 0 ] || [ "$gate_age" -ge 90 ] || gate_skip=1 ;; esac
     fi
     exec 8>/run/convergent/guests.lock
-    if [ "$gate_minute" = 0 ]; then
+    if [ "$gate_skip" = 1 ]; then
         grep '^SELF-HEAL work access ' "$state/firewall-heal" >>/run/convergent/.firewall-heal 2>/dev/null || :
     elif flock -s -n 8; then
+        printf '%s\n%s\n%s\n' "$gate_now" "$gate_seen" "$gate_wired" >/run/convergent/work-gate.last || :
         sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>/run/convergent/.firewall-heal
     else echo 'SELF-HEAL work access left as is: a guest operation is running' >>/run/convergent/.firewall-heal; fi
     exec 8>&-

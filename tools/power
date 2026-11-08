@@ -21,9 +21,13 @@ bat_runtime=auto
 cpu=/sys/devices/system/cpu/cpufreq
 ps=/sys/class/power_supply
 aspm_policy=/sys/module/pcie_aspm/parameters/policy
+aspm_refused=/run/convergent-power.aspm-refused
 pci=/sys/bus/pci/devices
 labels=/dev/disk/by-partlabel
 blocks=/sys/class/block
+devfs=/dev
+mounts=/proc/mounts
+swaps=/proc/swaps
 
 die() { logger -p user.err -t power "$*" 2>/dev/null || :; echo "power: $*" >&2; exit 1; }
 trap 'status=$?; [ "$status" = 0 ] || logger -p user.err -t power "handler failed (status $status)" 2>/dev/null || :' 0
@@ -114,14 +118,25 @@ set_aspm() {
 		current=
 		read -r current 2>/dev/null <"$aspm_policy" || :
 		case " $current " in *" [$1] "*) ;; *) write_failed "$aspm_policy" "$1" 'readback mismatch' ;; esac
-	else
-		current=
-		read -r current 2>/dev/null <"$aspm_policy" || :
-		write_failed "$aspm_policy" "$1" 'write rejected'
+	elif [ ! -e "$aspm_refused" ]; then
+		# Refused when the firmware withholds ASPM control (or pcie_aspm=off): unsupported, noted once a boot.
+		logger -p user.notice -t power "$aspm_policy: write refused; ASPM is not under OS control" 2>/dev/null || :
+		: >"$aspm_refused" || :
 	fi
 }
+# A block device's sysfs path and those under it (dm-crypt, LVM); status 1 when one does not resolve.
+backing() {
+	b=$(readlink -e "$blocks/$1") || return 1
+	printf ' %s' "$b"
+	for s in "$b"/slaves/*; do
+		[ -e "$s" ] || continue
+		backing "${s##*/}" || return 1
+	done
+}
 # By vendor:class, the Intel functions the kernel leaves on: NPU, GNA, ISH, DTT and PMT, KT; and an NVMe
-# that holds no cv-* partition (none listed: every NVMe stays). Never the dGPU or a vfio-pci device.
+# that holds no cv-* partition, mounted filesystem (the Incus pool among them) or active swap (no cv-*
+# partition listed: every NVMe stays). Never the dGPU or a vfio-pci device. The NVMe, KT, DTT and PMT
+# drivers hold their usage count, so the saving comes from NPU, GNA and ISH.
 runtime_pm() {
 	system=
 	for l in "$labels"/cv-*; do
@@ -129,6 +144,15 @@ runtime_pm() {
 		node=$(readlink -e "$l") && dev=$(readlink -e "$blocks/${node##*/}") || { system=unknown; break; }
 		system="$system $dev"
 	done
+	if [ -n "$system" ] && [ "$system" != unknown ]; then
+		for f in "$mounts" "$swaps"; do
+			while read -r src rest; do
+				case $src in "$devfs"/*) [ -e "$src" ] || continue ;; *) continue ;; esac
+				node=$(readlink -e "$src") && dev=$(backing "${node##*/}") || { system=unknown; break 2; }
+				system="$system$dev"
+			done <"$f" || { system=unknown; break; }
+		done
+	fi
 	for d in "$pci"/*; do
 		[ -e "$d/power/control" ] || continue
 		# A function removed mid-loop (a dock) is skipped.

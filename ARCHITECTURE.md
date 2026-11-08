@@ -325,7 +325,8 @@ The pair: the lower advskew plus demotion wins every segment; preempt keeps the 
 | fw1 reseeded during its replacement (group `upgrade`) | +128 | the handoff is released |
 
 A `wan-watch` round is three pings to `wan` 300 ms apart, bounded to one second; any reply passes.
-On the battery profile (written by `check status`) rounds start every 5 s; two lost rounds still demote.
+On the battery profile (written by `check status` with the firewall's time) good rounds start every 5 s
+while not demoted; two lost rounds still demote, and a word over 10 minutes old counts as AC.
 The `wanwatch` counter survives a service restart. Failover takes about three seconds and moves the
 gateways, DNS and the synchronized state table; `wan` keeps NAT and the upstream address. Both
 firewalls down stops routing; same-VLAN work traffic stays local. `wan` is a single point of
@@ -903,8 +904,9 @@ The bar caches release, layout and sensor data; status probes serialize `wan` SS
 worker per guest. `wan`'s three sequential requests share 25 s plus kill grace, over 60 s SSH
 multiplexing. A portal read waits up to 30 s for `portal.lock`, none while a guests run holds the
 guests lock; longer contention lets the previous sample age out, and a failed query yields unknown.
-Safety probes keep their failover timing on AC; on battery `wan-watch` probes every 5 s and the work
-gate runs every other minute, while self-heal keeps its minute. No wattage or runtime saving is established. Sampling:
+Safety probes keep their failover timing on AC; on battery `wan-watch` probes every 5 s and a work
+gate run under 90 s old stands while no heal acted and the CARP roles, uplink and wired outcome are
+unchanged; self-heal keeps its minute. No wattage or runtime saving is established. Sampling:
 section 8 and [USAGE, The bar](USAGE.md#the-bar).
 
 ### 11.2 Proposals, not enabled

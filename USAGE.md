@@ -963,9 +963,12 @@ menu ([RECOVERY](RECOVERY.md#recovery-boot-menu)).
 
 Boot and AC events also apply the power profile. AC uses `balance_performance`, battery uses
 `balance_power`; both apply `cpu_cap_khz` (default none). Battery also sets PCIe ASPM `powersave`
-and runtime PM `auto` on idle Intel platform devices and an NVMe without Convergent's partitions (AC
-restores the kernel defaults); the firewalls probe `wan` every 5 s instead of every second (demotion
-within 10 s) and the work gate runs every 2 minutes, while self-heal keeps its minute. A manual choice lasts until the power source
+and runtime PM `auto` on idle Intel platform devices and an NVMe without Convergent's partitions, a
+mounted filesystem or swap (AC restores the kernel defaults; the NPU, GNA and ISH save, the NVMe, KT,
+DTT and PMT drivers keep theirs awake; firmware that keeps ASPM control is noted once a boot); a
+healthy firewall probes `wan` every 5 s instead of every second (demotion within 10 s; demoted, or
+without word from the host for 10 minutes, every second) and the work gate's check is skipped for up
+to 90 s while self-heal, the firewall roles and the uplink are unchanged. A manual choice lasts until the power source
 changes; other supply events (a USB-C dock) keep it. A new manual choice that failed to apply is not
 kept; a kept one that fails on a later event is retried. Only changes and failures are logged; an
 invalid saved charge or thermal choice is skipped with one warning a boot.
