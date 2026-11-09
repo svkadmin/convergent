@@ -189,8 +189,15 @@ autorestart_clear() (
     [ ! -d "$state/fw.topology" ] || return 0
     # Once a read timed out on a frozen monitor, the listing would too (cleanup ignores INT); the next run clears.
     [ -z "$frozen" ] || return 1
-    # A killed shutdown drain leaves its holds in owner projects too, with the guest's own value saved beside them.
-    ic query '/1.0/instances?recursion=1&all-projects=true' >"$work/autorestart-instances" || return
+    # The guests' holds are in the default project. A killed shutdown drain leaves holds in owner projects too,
+    # with the guest's own value saved beside them; an owner VM whose monitor no longer answers holds that
+    # listing, and must not stop guests: those holds wait for a later run.
+    ic query '/1.0/instances?recursion=1&project=default' >"$work/autorestart-instances" || return
+    if ic query '/1.0/instances?recursion=1&all-projects=true' >"$work/autorestart-all" 2>/dev/null; then
+        mv "$work/autorestart-all" "$work/autorestart-instances" || return
+    else
+        echo 'guests: WARNING: the Incus listing of all projects did not answer (an owner VM may be frozen: kill its QEMU, qemu.pid under /run/incus); owner autorestart holds stay until a later run' >&2
+    fi
     jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") |
         "\(.project // "default") \(.name) \(.config["user.convergent.autorestart.old"] // "")"' \
         "$work/autorestart-instances" >"$work/autorestart" || return
@@ -1669,8 +1676,17 @@ rebuild() {
     fw_release
     retry pair fw1 fw2
     if [ "$1" = fw2 ]; then backup_soak; else soak fw1 fw2; fi
+    # A manual firewall update's open commit is finished here, not the update: its peer and the installed
+    # release record are that update's last steps.
+    update_open=
+    [ ! -f "$state/committed" ] || ! awk '$1 ~ /^fw[12]$/ && $2 !~ /-rebuild$/ {found=1} END {exit !found}' "$state/committed" ||
+        update_open=1
     commit_update
     echo "guests: rebuilt $1; fw1 MASTER / fw2 BACKUP on all registered segments"
+    if [ -n "$update_open" ]; then
+        echo 'guests: the firewall update that stopped is not finished: run it again so both firewalls and the installed release follow' >&2
+        logger -p user.warning -t guests "rebuild: $1 finished a firewall update's commit; the update itself must run again" 2>/dev/null || :
+    fi
 }
 
 init_server() {

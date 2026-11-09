@@ -2185,15 +2185,25 @@ timeout() {
     case "$*" in
     "-k 1 30 incus --force-local query /1.0/instances/$frozen_vm/state?project=default") return 124 ;;
     '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default')
+        case $frozen_vm in ''|owner) ;; *) return 124 ;; esac
+        echo '[{"name":"fw2","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
     '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
-        [ -z "$frozen_vm" ] || return 124
+        [ "$frozen_vm" != owner ] || return 124
         echo '[{"name":"fw2","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
     '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart') ;;
     *) return 1 ;;
     esac
 }
-for frozen_vm in '' fw2 wan unknown; do
+for frozen_vm in '' owner fw2 wan unknown; do
     : >"$work/ic-bounds"
+    if [ "$frozen_vm" = owner ]; then
+        autorestart_clear 2>"$work/err"
+        grep -qx -- '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' "$work/ic-bounds"
+        [ "$(wc -l <"$work/err")" = 1 ] && grep -q '^guests: WARNING: the Incus listing of all projects did not answer' "$work/err"
+        frozen=
+        continue
+    fi
     if [ -z "$frozen_vm" ]; then
         autorestart_clear
         grep -qx -- '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' "$work/ic-bounds"
@@ -2214,7 +2224,7 @@ touch "$work/state/guests/pending"
 if autorestart_clear 2>"$work/err"; then exit 1; fi
 grep -q "timed out; fw2's QEMU no longer answers Incus; kill the pid in /run/incus/fw2/qemu.pid, then rerun" "$work/err"
 rm "$work/state/guests/pending"
-if ic query '/1.0/instances?recursion=1&all-projects=true' >/dev/null 2>&1; then exit 1; fi
+if ic query '/1.0/instances?recursion=1&project=default' >/dev/null 2>&1; then exit 1; fi
 [ "$frozen" = 1 ]
 : >"$work/ic-bounds"
 if autorestart_clear; then exit 1; fi
@@ -2226,6 +2236,7 @@ timeout() {
     echo "$*" >>"$work/ic-bounds"
     case "$*" in
     '-k 1 30 incus --force-local query /1.0/instances/'*) echo '{"status":"Running"}' ;;
+    '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default') echo '[]' ;;
     '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
         echo '[{"name":"build","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"true"}},
             {"name":"vm","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}}]' ;;

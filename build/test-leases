@@ -577,20 +577,32 @@ done
     [ ! -e "$state/committed.stage" ] && [ ! -e "$state/committed" ] || exit 1
     rm -f "$state/updates"
 )
-# A killed shutdown drain leaves its holds in owner projects too: the clear lists every project.
+# A killed shutdown drain leaves its holds in owner projects too: the clear lists every project. An owner VM
+# that holds that listing does not stop it: the default project's hold still goes, with a warning.
 (
-    frozen=
+    frozen= owner_frozen=0
     ic() {
         case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
-        [ "$*" = 'query /1.0/instances?recursion=1&all-projects=true' ] || return 1
-        echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
-            {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]'
+        case $* in
+        'query /1.0/instances?recursion=1&project=default')
+            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+        'query /1.0/instances?recursion=1&all-projects=true')
+            [ "$owner_frozen" = 0 ] || return 124
+            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
+                {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+        *) return 1 ;;
+        esac
     }
     : >"$work/unsets"
     autorestart_clear
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
         '--project owner config unset work boot.autorestart user.convergent.autorestart' >"$work/expected-unsets"
     cmp "$work/expected-unsets" "$work/unsets"
+    owner_frozen=1
+    : >"$work/unsets"
+    autorestart_clear 2>"$work/err"
+    echo '--project default config unset fw2 boot.autorestart user.convergent.autorestart' | cmp - "$work/unsets"
+    grep -q '^guests: WARNING: the Incus listing of all projects did not answer' "$work/err"
 )
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
