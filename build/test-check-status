@@ -128,9 +128,12 @@ if grep -q '/proc/uptime' "$work/gate-minute"; then exit 1; fi
     sh() { [ "$1" = /usr/lib/convergent/incus/work-gate ] || exit 97; echo run >>"$work/gate-runs"; [ "$gate_ok" = 1 ]; }
     # Every run in an odd minute, as after a heal that crossed the minute.
     date() { echo 07; }
-    # $1: uptime, $2: this run's heal output; prints the gate runs.
+    # $1: uptime, $2: this run's heal output (default: both firewalls healthy, as a quiet heal reports); prints the gate runs.
+    quiet='SELF-HEAL fw1: master; peer fw2: backup; no restart
+SELF-HEAL fw2: backup; peer fw1: master; no restart
+'
     # The block ends by publishing the run's report: the heal output goes into that file, the run has a start.
-    gate() { echo "$1.42 7.00" >"$work/uptime"; : >"$work/gate-runs"; printf '%s' "${2:-}" >"$work/run/report"; report=$work/run/report run_now=$1; . "$work/gate-minute"; wc -l <"$work/gate-runs"; }
+    gate() { echo "$1.42 7.00" >"$work/uptime"; : >"$work/gate-runs"; printf '%s' "${2-$quiet}" >"$work/run/report"; report=$work/run/report run_now=$1; . "$work/gate-minute"; wc -l <"$work/gate-runs"; }
     closed='SELF-HEAL work access closed: topology mismatch'
     echo "$closed" >"$state/firewall-heal"
     echo 'uplink=eth wan=up fw1=master fw2=backup svc=up browsers=1 remote=off' >"$work/run/status/topology"
@@ -141,6 +144,9 @@ if grep -q '/proc/uptime' "$work/gate-minute"; then exit 1; fi
     [ "$(gate 1300)" = 0 ] && grep -qx "$closed" "$work/run/.firewall-heal" || exit 1
     # Heal output (a restart on an odd minute), a CARP or uplink change and a wired outcome change run it.
     [ "$(gate 1310 'SELF-HEAL fw1: restarted 5s ago; waiting for its boot
+')" = 1 ] || exit 1
+    [ "$(gate 1315 'SELF-HEAL fw1: master; peer fw2: unhealthy; no restart
+SELF-HEAL fw2: unhealthy for 60s; peer fw1: master; attempts 0/3 in the last hour
 ')" = 1 ] || exit 1
     echo 'uplink=eth wan=up fw1=backup fw2=master svc=up browsers=1 remote=off' >"$work/run/status/topology"
     [ "$(gate 1320)" = 1 ] || exit 1
@@ -169,6 +175,21 @@ if grep -q '/proc/uptime' "$work/gate-minute"; then exit 1; fi
     [ "$(sed -n 1p "$work/run/work-gate.last")" = 1430 ] || exit 1
     lock=0 gate_ok=0
     [ "$(gate 1540)" = 1 ] && grep -qx "$closed" "$work/run/.firewall-heal" || exit 1
+    # The heal's last event stays in every report until reboot: as the run before published it, it skips; a new
+    # one runs the gate.
+    gate_ok=1
+    ev='SELF-HEAL 2026-11-09T20:00:00Z fw2 allocates alone; work DHCP leases reconcile once both nodes answer'
+    [ "$(gate 1600 "$quiet$ev
+")$(gate 1610 "$quiet$ev
+")$(gate 1620 "${quiet}SELF-HEAL 2026-11-09T20:10:00Z fw1 restarted
+")" = 101 ] || exit 1
+    # Two masters (or two backups) are not a healthy pair: the gate runs.
+    [ "$(gate 1630 'SELF-HEAL fw1: master; peer fw2: master; no restart
+SELF-HEAL fw2: master; peer fw1: master; no restart
+')" = 1 ] || exit 1
+    [ "$(gate 1640 'SELF-HEAL fw1: backup; peer fw2: backup; no restart
+SELF-HEAL fw2: backup; peer fw1: backup; no restart
+')" = 1 ] || exit 1
 )
 echo 'check auto: on battery a work gate run under 90 s old stands while nothing changed'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.

@@ -16,5 +16,7 @@ trap : INT QUIT
 status=0
 /usr/local/sbin/convergent-install --stick || status=$?
 trap '' INT QUIT
+# A finished install has asked init to power off: no restart line under its last words.
+[ "$status" != 0 ] || exec sleep 600
 printf '\nThe installer stopped (exit status %s); it starts again in 2 seconds.\n' "$status"
 sleep 2

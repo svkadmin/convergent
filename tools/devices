@@ -106,16 +106,27 @@ wired() {
 		ic config device remove wan wired-uplink
 		;;
 	prune)
-		# After revoke or enrol: a role no allow rule names any more leaves wan (Incus ignores USBGuard).
+		# After revoke or enrol: a role no allow rule names any more leaves wan (Incus ignores USBGuard). With no
+		# role, a failed re-add's record (tools/check wired_heal) names the serial: it goes the same way.
 		[ $# = 1 ] || usage
-		[ "$role" != null ] || return 0
+		if [ "$role" = null ]; then
+			serial=$(sed -n 's/^failed //p' /run/convergent/wired-heal 2>/dev/null) || serial=
+			[ -n "$serial" ] || return 0
+			id=0bda:8153
+		else
+			id=$(printf '%s\n' "$role" | jq -r '"\(.vendorid // ""):\(.productid // "")"')
+			serial=$(printf '%s\n' "$role" | jq -r '.serial // ""')
+		fi
 		rules=$(usbguard list-rules) || die 'cannot read policy'
-		id=$(printf '%s\n' "$role" | jq -r '"\(.vendorid // ""):\(.productid // "")"')
-		serial=$(printf '%s\n' "$role" | jq -r '.serial // ""')
 		if printf '%s\n' "$rules" | id="$id" serial="$serial" awk '
 		$2 == "allow" && $3 == "id" && $4 == ENVIRON["id"] &&
 		index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
 		END {exit !n}'; then return 0; fi
+		if [ "$role" = null ]; then
+			rm -f /run/convergent/wired-strike /run/convergent/wired-heal
+			echo 'devices: no USB rule allows the wired uplink NIC any more; dropped its failed re-attach'
+			return 0
+		fi
 		ic config device remove wan wired-uplink
 		rm -f /run/convergent/wired-strike /run/convergent/wired-heal
 		echo 'devices: no USB rule allows the wired uplink NIC any more; removed its role from wan'

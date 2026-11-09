@@ -1027,6 +1027,19 @@ mkdir "$work/wired"
     (revoke 7) >"$w/out"
     [ "$(cat "$w/calls")" = "$removed" ] && [ "$(cat "$w/role")" = null ] || exit 1
     grep -q 'removed its role from wan' "$w/out" || exit 1
+    # With no role, a failed re-add's record goes with the NIC's last rule; revoking another device keeps it.
+    reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
+    (revoke 5) >"$w/out"
+    [ ! -s "$w/calls" ] && grep -qx 'failed S1' "$w/wired-heal" || exit 1
+    reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
+    (revoke 7) >"$w/out"
+    [ ! -s "$w/calls" ] && [ ! -e "$w/wired-heal" ] && grep -q 'dropped its failed re-attach' "$w/out" || exit 1
+    # No role and no record (the usual state): nothing to do, under errexit too.
+    reset; echo null >"$w/role"; rm -f "$w/wired-heal"
+    # Not in an || list, which would ignore errexit inside: a failed read must stop it before the marker.
+    rm -f "$w/pruned"
+    (set -e; wired prune; : >"$w/pruned") >"$w/out" 2>&1
+    [ -e "$w/pruned" ] && [ ! -s "$w/calls" ] && [ ! -s "$w/out" ] || exit 1
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do
@@ -1176,7 +1189,8 @@ check_script "$work/host-wait"
 )
 echo 'test-boot-privacy: host bridge waiter passed'
 
-# Platform Wi-Fi and WWAN switches are unblocked once the bridge is up; Bluetooth is not.
+# A blocked platform Wi-Fi or WWAN switch is unblocked once; an unblocked one (every minute's repair) and
+# Bluetooth are left alone.
 sed -n '/^# rfkill.default_state=0 also blocks/,/^done$/p' "$repo/rootfs/usr/lib/convergent/incus/host-net" |
     sed "s|/sys/class/rfkill/|$work/net-rfkill/|" >"$work/host-rfkill"
 check_script "$work/host-rfkill"
@@ -1185,11 +1199,15 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
     die() { echo "$*" >"$work/host-rfkill-died"; exit 1; }
     rfkill() { echo "rfkill $*" >>"$work/host-rfkill-calls"; [ "$refuse" = no ]; }
     mkdir -p "$work/net-rfkill/rfkill0" "$work/net-rfkill/rfkill1" "$work/net-rfkill/rfkill2"
-    echo bluetooth >"$work/net-rfkill/rfkill0/type"
+    echo bluetooth >"$work/net-rfkill/rfkill0/type"; echo 1 >"$work/net-rfkill/rfkill0/soft"
     refuse=no
     . "$work/host-rfkill"
     [ ! -e "$work/host-rfkill-calls" ] || die 'unblocked with no Wi-Fi switch'
     echo wlan >"$work/net-rfkill/rfkill1/type"; echo wwan >"$work/net-rfkill/rfkill2/type"
+    echo 0 >"$work/net-rfkill/rfkill1/soft"; echo 0 >"$work/net-rfkill/rfkill2/soft"
+    . "$work/host-rfkill"
+    [ ! -e "$work/host-rfkill-calls" ] || die 'unblocked switches that were not blocked'
+    echo 1 >"$work/net-rfkill/rfkill2/soft"
     . "$work/host-rfkill"
     [ "$(cat "$work/host-rfkill-calls")" = 'rfkill unblock wlan wwan' ] || die 'platform Wi-Fi switch not unblocked once'
     refuse=yes
@@ -1631,7 +1649,7 @@ echo 'test-boot-privacy: install runlevel and interactive boot passed'
 
 # The installer wrapper: Ctrl-C or Ctrl-\ stops the installer, never the 2 s pause (init's respawn limit).
 sed -e "s|/usr/local/sbin/convergent-install --stick|sh $work/inst-stub|" -e "s|/sys/class/tty/console/active|$work/inst-active|" \
-    -e "s|>/dev/console|>>$work/inst-console|" "$repo/rootfs/usr/lib/convergent/installer" >"$work/installer"
+    -e "s|>/dev/console|>>$work/inst-console|" -e 's|exec sleep 600$|exec sleep 0|' "$repo/rootfs/usr/lib/convergent/installer" >"$work/installer"
 check_script "$work/installer"
 grep -q "^sh $work/inst-stub || status" "$work/installer" && grep -q "$work/inst-active" "$work/installer" || die 'installer call moved'
 if grep -q -e /dev/console -e /sys/ "$work/installer"; then die 'installer keeps a real path'; fi
@@ -1653,6 +1671,11 @@ for sig in INT QUIT; do
     [ "$elapsed" -ge 1900 ] || die "installer: $sig cut the pause (${elapsed} ms)"
     [ -e "$work/inst-second" ] || die "installer: no second $sig"
 done
+# A finished install waits for the power-off without the restart line.
+grep -q '^\[ "\$status" != 0 \] || exec sleep 0$' "$work/installer" || die 'installer: the finished-install wait moved'
+printf 'exit 0\n' >"$work/inst-stub"
+(cd "$work" && sh "$work/installer" >"$work/inst-out" 2>&1 </dev/null) || die 'installer: a finished install failed'
+if grep -q 'The installer stopped' "$work/inst-out"; then die 'installer: restart line after a finished install'; fi
 echo 'test-boot-privacy: installer wrapper signals passed'
 
 # build/stick: the install UKI's inputs are slot A's, and a release that trusts a key ships signed manifests.

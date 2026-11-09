@@ -42,7 +42,7 @@ done
 exec 3<>/dev/tty || die "no terminal"
 tty_mode=$(stty -g <&3) || die "cannot read terminal settings"
 run ulimit -c 0
-work= loop= mapper= image_mounted= state_mounted= esp_mounted= backup_mounted= wiped= disk=
+work= loop= mapper= image_mounted= state_mounted= esp_mounted= backup_mounted= wiped= installed= disk=
 
 cleanup() {
 	bad=0
@@ -77,15 +77,20 @@ finish() {
 	status=$1
 	trap - 0
 	# A second interrupt must not cut this short: it removes the owner's hash and the mappings.
-	trap '' HUP INT TERM
+	trap '' HUP INT QUIT TERM
 	cleanup || { echo 'install: cleanup failed; inspect mounts and mappings' >&2; status=1; }
+	# Written and synced: a failure after that (the header backup, an interrupt, closing the mounts) leaves it whole.
+	if [ "$status" != 0 ] && [ -n "$installed" ]; then
+		die "$disk holds the installed system; only a step after it failed. Power off, then remove the stick before booting."
+	fi
 	if [ "$status" != 0 ] && [ -n "$wiped" ]; then
 		echo "install: $disk was repartitioned and holds no working system; start the installer again" >&2
 	fi
 	[ "$status" = 0 ] || die "installation did not complete"
 }
 trap 'finish $?' 0
-trap 'die interrupted' HUP INT TERM
+# QUIT too: the installer wrapper offers Ctrl-\ as a stop, and an uncaught one skips the cleanup.
+trap 'die interrupted' HUP INT QUIT TERM
 
 # End of input refuses: the install image's init starts the installer again.
 ask() { printf '%s' "$1" >&3; IFS= read -r answer <&3 || die "end of input"; }
@@ -185,7 +190,9 @@ awk -v r="$release" '
 		n++; next
 	}
 	{ exit 1 }
-	END { if (release != 1 || kernel != 1 || root != 1 || n != 3) exit 1 }
+	# The sizes are used below (the ESP reserve, the stick root): each must be there.
+	END { if (release != 1 || kernel != 1 || root != 1 || n != 3 || !sized["slot.img"] ||
+		!sized["convergent-" r "-a.efi"] || !sized["convergent-" r "-b.efi"]) exit 1 }
 ' "$work/manifest" || die "malformed manifest"
 sum=$(awk '$2 == "slot.img" && length($1) == 64 { print $1 }' "$work/manifest") || die "no slot checksum"
 if [ -n "$stick" ]; then
@@ -668,6 +675,9 @@ say "Erasing $disk."
 wiped=1
 run sgdisk --zap-all "$disk"
 check_identity
+# The old ESP began at 1 MiB, where the new one will: its boot sectors go before the new table exists, so no
+# interrupt from here on leaves the old loader reachable.
+run dd if=/dev/zero of="$disk" bs=1M seek=1 count=1 conv=fsync status=none
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:"$state_end" -t4:8309 -c4:cv-state "$disk"
 run blockdev --rereadpt "$disk"
@@ -682,6 +692,9 @@ for p in 1 2 3 4; do
 done
 esp=${prefix}1 slota=${prefix}2 slotb=${prefix}3 state=${prefix}4
 check_identity
+# The new ESP's own start too (an old one placed elsewhere): its FAT would boot whatever an interrupted install
+# left. Both boot sectors lie in the first MiB; mkfs.vfat writes the new one last.
+run dd if=/dev/zero of="$esp" bs=1M count=1 conv=fsync status=none
 say 'Writing slot A.'
 run dd if="$slotsrc" of="$slota" bs=1M iflag=count_bytes count="$size" conv=fsync status=none
 run blockdev --flushbufs "$slota"
@@ -812,6 +825,7 @@ name=$(sed -n "s/^NAME=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}$/\1/p" "$work/image/u
 # EFI/BOOT/BOOTX64.EFI already boots it; a firmware that refuses the entry is not fatal.
 boot_entry "${name:-Linux}" "$old_guids" ||
 	echo 'install: efibootmgr failed; the firmware boots the disk through EFI/BOOT/BOOTX64.EFI' >&2
+installed=1
 # The header backup, mounted only to write it; a failure leaves the installed system complete.
 saved=
 if [ -n "$backup" ]; then
@@ -820,8 +834,8 @@ if [ -n "$backup" ]; then
 		mount -t "$backup_fs" -o nodev,nosuid,noexec "$backup" "$work/backup"; then
 		backup_mounted=1
 		if cryptsetup luksHeaderBackup "$state" --header-backup-file "$work/backup/$file" && sync; then saved=$file; fi
-		run umount "$work/backup"
-		backup_mounted=
+		# Synced above: a stick still busy is detached lazily rather than failing a complete install.
+		if umount "$work/backup" || umount -l "$work/backup"; then backup_mounted=; fi
 	fi
 fi
 cleanup || die "could not close the installed system"

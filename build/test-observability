@@ -142,7 +142,7 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     usbguard() { [ "$*" = 'list-devices -a' ] || exit 97; [ "$guard" = up ] || return 1; cat "$w/allowed"; }
     heal_allowed() { [ "$inhibit" = 0 ]; }
     # held: wan takes the NIC while the heal waits for the lock.
-    flock() { [ "$*" = '-n 8' ] || exit 97; [ "$busy" = 0 ] || return 1; [ "$held" = 0 ] || driver usbfs; }
+    flock() { [ "$*" = '-n 8' ] || exit 97; [ "$busy" = 0 ] || return 1; [ "$withdraw" = 0 ] || rm -f "$outcome" "$strike"; [ "$held" = 0 ] || driver usbfs; }
     logger() { :; }
     bad() { echo "$*" >>"$w/bad"; }
     driver() { rm -f "$w/sys/1-2/1-2:1.0/driver"; [ -z "$1" ] || ln -s "$w/drivers/$1" "$w/sys/1-2/1-2:1.0/driver"; }
@@ -151,7 +151,7 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     reported() { rm -f "$w/bad"; (set +e; . "$work/wired-scan"); [ -s "$w/bad" ]; }
     is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ] || exit 1; }
     gone() { [ ! -e "$1" ] || exit 1; }
-    inhibit=0 busy=0 held=0 add=ok guard=up strike=$w/run/wired-strike outcome=$w/run/wired-heal
+    inhibit=0 busy=0 held=0 withdraw=0 add=ok guard=up strike=$w/run/wired-strike outcome=$w/run/wired-heal
     echo Running >"$w/status"; echo "$role" >"$w/role"; echo 1 >"$w/sys/1-2/authorized"
     printf '%s\n' "$allowed" >"$w/allowed"; : >"$w/calls"
     # Held: every interface on usbfs.
@@ -231,6 +231,22 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     guard=up; echo null >"$w/role"; : >"$w/calls"
     run 9000; is "$strike" 'S1 9000'; is "$w/calls" ''
     run 9060; is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; is "$w/role" "$role"
+    # Unplugged after such a failure, the record and its report outlive the loss; replugged, it is retried.
+    echo null >"$w/role"; echo 'failed S1' >"$outcome"; mv "$w/sys/1-2" "$w/unplugged"; : >"$w/calls"
+    run 9200; is "$outcome" 'failed S1'; gone "$strike"; is "$w/calls" ''
+    reported
+    mv "$w/unplugged" "$w/sys/1-2"; driver ''
+    run 9260; is "$strike" 'S1 9260'
+    run 9320; is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; is "$w/role" "$role"
+    # With its role in place an unplug ends the record, as before.
+    mv "$w/sys/1-2" "$w/unplugged"; run 9380; gone "$outcome"; gone "$strike"
+    if reported; then exit 1; fi
+    mv "$w/unplugged" "$w/sys/1-2"
+    # devices wired remove drops a failed re-add's record while the heal waits for the lock: nothing is added back.
+    echo null >"$w/role"; echo 'failed S1' >"$outcome"; driver ''; : >"$w/calls"
+    run 9500; is "$strike" 'S1 9500'
+    withdraw=1; run 9560; withdraw=0
+    is "$w/calls" ''; gone "$outcome"; is "$w/role" null
 )
 # The scan reports a work DHCP resume the heal could not do five runs in a row, per firewall; a garbled or
 # lower count is nothing.
