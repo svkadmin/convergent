@@ -1330,7 +1330,7 @@ wan_mount() {
     # A failed state query is no proof that QEMU has let go of the disk. A return, not an exit: a rollback in
     # cleanup calls this, and the rest of cleanup must still run.
     stopped wan || { fail 'refusing to mount the wan disk: wan is not stopped'; return 1; }
-    [ -f "$pool/virtual-machines/wan/root.img" ] || die 'unexpected Incus Btrfs VM disk layout'
+    [ -f "$pool/virtual-machines/wan/root.img" ] || { fail 'unexpected Incus Btrfs VM disk layout'; return 1; }
     mkdir -p "$work/root" || return
     loop=$(losetup --find --show --partscan "$pool/virtual-machines/wan/root.img") || return
     retry test -b "${loop}p2" || return

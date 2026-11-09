@@ -81,7 +81,7 @@ finish() {
 	cleanup || { echo 'install: cleanup failed; inspect mounts and mappings' >&2; status=1; }
 	# Written and synced: a failure after that (the header backup, an interrupt, closing the mounts) leaves it whole.
 	if [ "$status" != 0 ] && [ -n "$installed" ]; then
-		die "$disk holds the installed system; only a step after it failed. Remove the stick after power-off, before booting."
+		die "$disk holds the installed system; only a step after it failed. Power off, then remove the stick before booting."
 	fi
 	if [ "$status" != 0 ] && [ -n "$wiped" ]; then
 		echo "install: $disk was repartitioned and holds no working system; start the installer again" >&2
