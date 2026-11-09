@@ -1034,6 +1034,12 @@ mkdir "$work/wired"
     reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
     (revoke 7) >"$w/out"
     [ ! -s "$w/calls" ] && [ ! -e "$w/wired-heal" ] && grep -q 'dropped its failed re-attach' "$w/out" || exit 1
+    # No role and no record (the usual state): nothing to do, under errexit too.
+    reset; echo null >"$w/role"; rm -f "$w/wired-heal"
+    # Not in an || list, which would ignore errexit inside: a failed read must stop it before the marker.
+    rm -f "$w/pruned"
+    (set -e; wired prune; : >"$w/pruned") >"$w/out" 2>&1
+    [ -e "$w/pruned" ] && [ ! -s "$w/calls" ] && [ ! -s "$w/out" ] || exit 1
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do

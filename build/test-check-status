@@ -187,6 +187,9 @@ SELF-HEAL fw2: unhealthy for 60s; peer fw1: master; attempts 0/3 in the last hou
     [ "$(gate 1630 'SELF-HEAL fw1: master; peer fw2: master; no restart
 SELF-HEAL fw2: master; peer fw1: master; no restart
 ')" = 1 ] || exit 1
+    [ "$(gate 1640 'SELF-HEAL fw1: backup; peer fw2: backup; no restart
+SELF-HEAL fw2: backup; peer fw1: backup; no restart
+')" = 1 ] || exit 1
 )
 echo 'check auto: on battery a work gate run under 90 s old stands while nothing changed'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.

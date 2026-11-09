@@ -110,7 +110,7 @@ wired() {
 		# role, a failed re-add's record (tools/check wired_heal) names the serial: it goes the same way.
 		[ $# = 1 ] || usage
 		if [ "$role" = null ]; then
-			serial=$(sed -n 's/^failed //p' /run/convergent/wired-heal 2>/dev/null)
+			serial=$(sed -n 's/^failed //p' /run/convergent/wired-heal 2>/dev/null) || serial=
 			[ -n "$serial" ] || return 0
 			id=0bda:8153
 		else
