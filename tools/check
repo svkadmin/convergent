@@ -269,7 +269,8 @@ if [ "${1:-}" = auto ]; then (
     [ "$run_now" -gt "$published" ] || exit 0
     wired_heal >>"$report" 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>"$report"
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock. The
-    # shared hold is seconds long; a restart the heal decides meanwhile waits it out.
+    # shared hold lasts the reconcile (11 s a probe without an answer); a node restart the heal decides
+    # meanwhile waits it out for up to 20 s, a pair start does not.
     exec 8>/run/convergent/guests.lock
     if flock -s -n 8; then
         sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$report"
