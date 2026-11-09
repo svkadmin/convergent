@@ -175,6 +175,14 @@ SELF-HEAL fw2: unhealthy for 60s; peer fw1: master; attempts 0/3 in the last hou
     [ "$(sed -n 1p "$work/run/work-gate.last")" = 1430 ] || exit 1
     lock=0 gate_ok=0
     [ "$(gate 1540)" = 1 ] && grep -qx "$closed" "$work/run/.firewall-heal" || exit 1
+    # The heal's last event stays in every report until reboot: as the run before published it, it skips; a new
+    # one runs the gate.
+    gate_ok=1
+    ev='SELF-HEAL 2026-11-09T20:00:00Z fw2 allocates alone; work DHCP leases reconcile once both nodes answer'
+    [ "$(gate 1600 "$quiet$ev
+")$(gate 1610 "$quiet$ev
+")$(gate 1620 "${quiet}SELF-HEAL 2026-11-09T20:10:00Z fw1 restarted
+")" = 101 ] || exit 1
 )
 echo 'check auto: on battery a work gate run under 90 s old stands while nothing changed'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.

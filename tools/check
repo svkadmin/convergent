@@ -289,14 +289,17 @@ if [ "${1:-}" = auto ]; then (
     # shared hold lasts the reconcile (11 s a probe without an answer); a node restart the heal decides
     # meanwhile waits it out for up to 20 s, a pair start does not.
     # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: a heal
-    # that only saw both firewalls healthy, and the same CARP roles and uplink (check status) and wired outcome.
+    # that only saw both firewalls healthy (its last event, kept until reboot, as the run before published it),
+    # and the same CARP roles and uplink (check status) and wired outcome.
+    gate_event=$(grep -m 1 '^SELF-HEAL [0-9]' /run/convergent/.firewall-heal 2>/dev/null) || gate_event=
     read -r gate_now gate_rest </proc/uptime
     gate_now=${gate_now%.*}
     gate_seen=$(cut -d' ' -f1-4 /run/convergent/status/topology 2>/dev/null) || gate_seen=
     gate_wired=$(cat /run/convergent/wired-heal 2>/dev/null) || gate_wired=
     gate_skip=0
     if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] &&
-        awk '!/^SELF-HEAL fw[12]: (master|backup); peer fw[12]: (master|backup); no restart$/ {exit 1}' "$report" &&
+        awk -v event="$gate_event" '/^SELF-HEAL fw[12]: (master|backup); peer fw[12]: (master|backup); no restart$/ ||
+            (event != "" && $0 == event) {next} {exit 1}' "$report" &&
         [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
         read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then
         case $gate_at in '' | *[!0-9]* | 0?*) ;; *) gate_age=$((gate_now - gate_at)); [ "$gate_age" -lt 0 ] || [ "$gate_age" -ge 90 ] || gate_skip=1 ;; esac
