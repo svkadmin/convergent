@@ -2200,8 +2200,14 @@ for frozen_vm in '' owner fw2 wan unknown; do
     if [ "$frozen_vm" = owner ]; then
         autorestart_clear 2>"$work/err"
         grep -qx -- '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' "$work/ic-bounds"
-        [ "$(wc -l <"$work/err")" = 1 ] && grep -q '^guests: WARNING: the Incus listing of all projects did not answer' "$work/err"
-        frozen=
+        [ "$(wc -l <"$work/err")" = 1 ] || exit 1
+        grep -q '^guests: WARNING: the Incus listing of all projects timed out' "$work/err" || exit 1
+        # Cleanup's clear in the same run does not wait for that listing again, nor warn twice.
+        : >"$work/ic-bounds"
+        autorestart_clear 2>"$work/err"
+        if grep -q 'all-projects' "$work/ic-bounds"; then exit 1; fi
+        [ ! -s "$work/err" ] || exit 1
+        rm "$work/autorestart-all.failed"
         continue
     fi
     if [ -z "$frozen_vm" ]; then

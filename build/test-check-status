@@ -126,7 +126,7 @@ if grep -q '/proc/uptime' "$work/gate-minute"; then exit 1; fi
     lock=0
     flock() { [ "$*" = '-s -n 8' ] || exit 97; [ "$lock" = 0 ]; }
     # An open gate is an empty work_gate chain; a closed one holds its drop rule.
-    nft() { [ "$*" = 'list chain bridge host-l2 work_gate' ] || exit 97; [ "${gate_closed:-0}" = 0 ] || echo '		drop'; }
+    nft() { [ "$*" = 'list chain bridge host-l2 work_gate' ] || exit 97; [ "${nft_fail:-0}" = 0 ] || return 1; [ "${gate_closed:-0}" = 0 ] || echo '		drop'; }
     sh() { [ "$1" = /usr/lib/convergent/incus/work-gate ] || exit 97; echo run >>"$work/gate-runs"; [ "$gate_ok" = 1 ]; }
     # Every run in an odd minute, as after a heal that crossed the minute.
     date() { echo 07; }
@@ -197,6 +197,13 @@ SELF-HEAL fw2: backup; peer fw1: backup; no restart
     gate_closed=1
     [ "$(gate 1820)" = 1 ] || exit 1
     gate_closed=0
+    # A chain nft cannot read counts as closed: the gate runs.
+    nft_fail=1
+    [ "$(gate 1830)" = 1 ] || exit 1
+    nft_fail=0
+    # The mock's two states are work-gate's: a close adds the drop rule, an open flushes the chain.
+    grep -qx 'add rule bridge host-l2 work_gate drop' "$repo/rootfs/usr/lib/convergent/incus/work-gate" || exit 1
+    grep -qx 'nft flush chain bridge host-l2 work_gate' "$repo/rootfs/usr/lib/convergent/incus/work-gate" || exit 1
 )
 echo 'check auto: on battery a work gate run under 90 s old stands while nothing changed'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.

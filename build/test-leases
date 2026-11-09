@@ -602,7 +602,8 @@ done
     : >"$work/unsets"
     autorestart_clear 2>"$work/err"
     echo '--project default config unset fw2 boot.autorestart user.convergent.autorestart' | cmp - "$work/unsets"
-    grep -q '^guests: WARNING: the Incus listing of all projects did not answer' "$work/err"
+    grep -q '^guests: WARNING: the Incus listing of all projects timed out' "$work/err"
+    rm "$work/autorestart-all.failed"
 )
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
