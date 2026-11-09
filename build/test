@@ -3037,8 +3037,11 @@ cv_time firewall-self-heal
         [ ! -f /run/convergent/firewall-heal/fw2.restarted ] || read -r since </run/convergent/firewall-heal/fw2.restarted
         [ "$since" -ge "$broken_at" ]
     }
-    # The wall-clock minute of a heal record (uptime seconds), as cron counts them.
-    record_minute() { read -r rm_up rm_rest </proc/uptime; echo $((( $(date +%s) - (${rm_up%.*} - $1)) / 60)); }
+    # The wall-clock minute of a heal record (uptime seconds), as cron counts them: one base for every record, so
+    # two records are never shifted against each other; 2 s of slack for a record stamped on the tick itself,
+    # which the two truncations could place a second before it.
+    read -r rm_up rm_rest </proc/uptime; minute_base=$(($(date +%s) - ${rm_up%.*}))
+    record_minute() { echo $(((minute_base + $1 + 2) / 60)); }
     window=/run/convergent/firewall-heal/fw2 tries=0 windowed=
     until [ -n "$windowed" ]; do
         tries=$((tries + 1)); [ "$tries" -le 3 ]

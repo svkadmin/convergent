@@ -247,6 +247,7 @@ if [ "${1:-}" = auto ]; then (
     # own copy: one past its minute may still be writing when the next begins.
     report=$(mktemp /run/convergent/.firewall-heal.XXXXXX) || die 'cannot create self-heal report'
     trap 'rm -f "$report"' 0
+    read -r run_up run_rest </proc/uptime; run_now=${run_up%.*}
     firewall_heal >"$report" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$report"
     # The heal lock covers the heal alone. wired_heal and work-gate wait on guests (10 s a probe, 60 s for the
     # gate lock) and take the guests lock themselves before acting; held through them, a minute run that
@@ -255,15 +256,19 @@ if [ "${1:-}" = auto ]; then (
     # Past the heal one run at a time, in order: the next waits out the one before, so a report is published
     # whole and the newest last. One still waiting in its own next minute gives up; its observation is recorded.
     exec 7>/run/convergent/check-auto.lock
-    flock -w 90 7 || exit 0
+    flock -w 90 7 || { logger -t check 'self-heal report dropped: the minute run before still runs'; exit 0; }
+    # flock wakes waiters in no order: a run whose observation an already published one postdates stops here.
+    published=0; [ ! -f /run/convergent/.firewall-heal.stamp ] || read -r published </run/convergent/.firewall-heal.stamp
+    case $published in '' | *[!0-9]*) published=0 ;; esac
+    [ "$run_now" -gt "$published" ] || exit 0
     wired_heal >>"$report" 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>"$report"
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
     exec 8>/run/convergent/guests.lock
     if flock -s -n 8; then
         sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$report"
     else echo 'SELF-HEAL work access left as is: a guest operation is running' >>"$report"; fi
+    mv "$report" /run/convergent/.firewall-heal && echo "$run_now" >/run/convergent/.firewall-heal.stamp || die 'cannot publish self-heal report'
     exec 8>&-
-    mv "$report" /run/convergent/.firewall-heal || die 'cannot publish self-heal report'
     cmp -s /run/convergent/.firewall-heal "$state/firewall-heal" ||
         { cp /run/convergent/.firewall-heal "$state/.firewall-heal" && mv "$state/.firewall-heal" "$state/firewall-heal"; } ||
         die 'cannot publish self-heal report'
