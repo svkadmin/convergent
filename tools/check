@@ -290,7 +290,8 @@ if [ "${1:-}" = auto ]; then (
     # meanwhile waits it out for up to 20 s, a pair start does not.
     # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: a heal
     # that only saw both firewalls healthy (its last event, kept until reboot, as the run before published it),
-    # and the same CARP roles and uplink (check status) and wired outcome.
+    # and the same CARP roles and uplink (check status) and wired outcome; only an open gate: a closed one (a guests
+    # run's transient verdict) is checked again every minute, as on AC.
     gate_event=$(grep -m 1 '^SELF-HEAL [0-9]' /run/convergent/.firewall-heal 2>/dev/null) || gate_event=
     read -r gate_now gate_rest </proc/uptime
     gate_now=${gate_now%.*}
@@ -300,6 +301,7 @@ if [ "${1:-}" = auto ]; then (
     if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] &&
         awk -v event="$gate_event" '/^SELF-HEAL fw[12]: (master; peer fw[12]: backup|backup; peer fw[12]: master); no restart$/ ||
             (event != "" && $0 == event) {next} {exit 1}' "$report" &&
+        gate_rules=$(nft list chain bridge host-l2 work_gate 2>/dev/null) && ! printf '%s\n' "$gate_rules" | grep -qw drop &&
         [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
         read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then
         case $gate_at in '' | *[!0-9]* | 0?*) ;; *) gate_age=$((gate_now - gate_at)); [ "$gate_age" -lt 0 ] || [ "$gate_age" -ge 90 ] || gate_skip=1 ;; esac

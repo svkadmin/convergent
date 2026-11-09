@@ -125,6 +125,8 @@ if grep -q '/proc/uptime' "$work/gate-minute"; then exit 1; fi
     mkdir -p "$state" "$work/run/status"
     lock=0
     flock() { [ "$*" = '-s -n 8' ] || exit 97; [ "$lock" = 0 ]; }
+    # An open gate is an empty work_gate chain; a closed one holds its drop rule.
+    nft() { [ "$*" = 'list chain bridge host-l2 work_gate' ] || exit 97; [ "${gate_closed:-0}" = 0 ] || echo '		drop'; }
     sh() { [ "$1" = /usr/lib/convergent/incus/work-gate ] || exit 97; echo run >>"$work/gate-runs"; [ "$gate_ok" = 1 ]; }
     # Every run in an odd minute, as after a heal that crossed the minute.
     date() { echo 07; }
@@ -190,6 +192,11 @@ SELF-HEAL fw2: master; peer fw1: master; no restart
     [ "$(gate 1640 'SELF-HEAL fw1: backup; peer fw2: backup; no restart
 SELF-HEAL fw2: backup; peer fw1: backup; no restart
 ')" = 1 ] || exit 1
+    # A closed gate (a guests run's transient verdict) is checked again at once, however young the record.
+    [ "$(gate 1800)$(gate 1810)" = 10 ] || exit 1
+    gate_closed=1
+    [ "$(gate 1820)" = 1 ] || exit 1
+    gate_closed=0
 )
 echo 'check auto: on battery a work gate run under 90 s old stands while nothing changed'
 # The root autostart scan stays bounded: an oversized owner file fails at once, a hang at the deadline.
