@@ -163,13 +163,17 @@ for want in CONFIG_VLAN_8021Q=y CONFIG_BRIDGE=y CONFIG_BRIDGE_VLAN_FILTERING=y \
 	CONFIG_PSTORE=y CONFIG_EFI_VARS_PSTORE=y '# CONFIG_EFI_VARS_PSTORE_DEFAULT_DISABLE is not set' \
 	CONFIG_LOCK_DOWN_KERNEL_FORCE_CONFIDENTIALITY=y CONFIG_VFIO_PCI=y CONFIG_KVM_INTEL=y CONFIG_WATCHDOG_SYSFS=y \
 	'# CONFIG_KEXEC is not set' '# CONFIG_KEXEC_FILE is not set' '# CONFIG_HIBERNATION is not set' '# CONFIG_SUSPEND is not set' \
-	'# CONFIG_IWLWIFI is not set' '# CONFIG_DRM_NOUVEAU is not set' '# CONFIG_RFKILL_INPUT is not set'; do
+	'# CONFIG_IWLWIFI is not set' '# CONFIG_DRM_NOUVEAU is not set' '# CONFIG_RFKILL_INPUT is not set' \
+	'# CONFIG_IO_URING is not set'; do
 	grep -qxF "$want" "$config" || die "the kernel was not built with: $want (rebuild sys-kernel/gentoo-kernel)"
 done
 # Kconfig omits disabled symbols whose dependencies (such as Rust) are unavailable.
-for symbol in NOVA_CORE DRM_NOVA; do
+for symbol in NOVA_CORE DRM_NOVA BLK_DEV_UBLK; do
 	! grep -Eq "^CONFIG_${symbol}=[ym]$" "$config" || die "the kernel enables $symbol (rebuild sys-kernel/gentoo-kernel)"
 done
+# The kernel has no io_uring: a package that pulled liburing in would fail only on the laptop.
+[ -z "$(find "$root/usr/lib64" "$root/usr/lib" -maxdepth 1 -name 'liburing.so*' 2>/dev/null)" ] ||
+	die "the image ships liburing, but the kernel has no io_uring"
 # Keep the actual config for driver selection and release review.
 cp "$config" "$out/kernel.config"
 config="$out/kernel.config"

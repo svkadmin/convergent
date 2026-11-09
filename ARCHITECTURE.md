@@ -50,7 +50,7 @@ because Incus cannot combine VLANs with IP filtering. Addresses: section 4.1; fl
 |---|---|
 | Base | Gentoo hardened profile, OpenRC, glibc; systemd-utils supplies the boot tools |
 | Kernel | Gentoo kernel plus `build/kernel.config`: confidentiality lockdown, enforced module signatures with an ephemeral build key, built-in verity, EROFS, storage and KVM |
-| Not built in | kexec, suspend, hibernation and host Wi-Fi; unused protocols and buses are left out (`build/kernel.config`) |
+| Not built in | kexec, suspend, hibernation, io_uring and host Wi-Fi; unused protocols and buses are left out (`build/kernel.config`) |
 | Image trimming | Unused modules and filesystems removed or blocked; setuid only for sudo, su, passwd, unix_chkpwd and the D-Bus helper; no file capabilities |
 | Command line | `init_on_alloc`, `slab_nomerge`, page and stack randomization, no vsyscall or debugfs; `fbcon=nodefer` applies the console font at boot |
 | Kernel interfaces | Restricted ptrace, perf, BPF, pointers and dmesg; protected links and FIFOs; no TIOCSTI, line-discipline autoload, redirects, source routing or core dumps; strict reverse-path filtering |
