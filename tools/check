@@ -80,9 +80,11 @@ wired_heal() (
         echo 'SELF-HEAL wired uplink: wan does not hold the NIC; re-attaching next minute if that persists'
         exit 0
     fi
-    # Reads above run unlocked (a frozen wan stalls them); the change is re-checked under the lock.
+    # Reads above run unlocked (a frozen wan stalls them); the change is re-checked under the lock, the retried
+    # serial too: devices wired remove drops its record under that lock, and a stale one would add the role back.
     exec 8>/run/convergent/guests.lock
-    flock -n 8 && [ "$(wired_lost "$retry")" = "$serial" ] || exit 0
+    flock -n 8 && [ "$(sed -n 's/^failed //p' "$outcome" 2>/dev/null)" = "$retry" ] &&
+        [ "$(wired_lost "$retry")" = "$serial" ] || exit 0
     rm -f "$strike"
     # As firewall-heal, three an hour: each add leaves a usb-host qdev behind. Past that the scan alerts.
     attempts=/run/convergent/wired-attempts
