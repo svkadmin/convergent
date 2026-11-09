@@ -68,9 +68,12 @@ wired_heal() (
     now=${uptime%.*} was= at=
     [ ! -f "$strike" ] || read -r was at <"$strike"
     case $at in ''|*[!0-9]*) at=0 ;; esac
+    # A strike written seconds ago is the run before, still ending past its minute: not a second observation.
+    [ "$was" != "$serial" ] || [ "$now" -lt "$at" ] || [ "$((now - at))" -ge 30 ] ||
+        { echo 'SELF-HEAL wired uplink: wan does not hold the NIC; re-attaching next minute if that persists'; exit 0; }
     # A guest reconfiguring the NIC releases it for a moment: act on the second run in a row only.
     # As firewall-heal: two missed minutes break the row; one is a run that held the heal lock.
-    if [ "$was" != "$serial" ] || [ "$((now - at))" -gt 150 ]; then
+    if [ "$was" != "$serial" ] || [ "$now" -lt "$at" ] || [ "$((now - at))" -gt 150 ]; then
         echo "$serial $now" >"$strike"
         echo 'SELF-HEAL wired uplink: wan does not hold the NIC; re-attaching next minute if that persists'
         exit 0
@@ -254,10 +257,33 @@ if [ "${1:-}" = auto ]; then (
     exec 7>/run/convergent/firewall-heal.lock
     flock -n 7 || exit 0
     . /usr/lib/convergent/incus/firewall-heal
-    # Built on tmpfs: the audited reports are rewritten only when their content changes.
-    firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
-    wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
-    # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
+    # Built on tmpfs: the audited reports are rewritten only when their content changes. Each run writes its
+    # own copy: one past its minute may still be writing when the next begins.
+    report=$(mktemp /run/convergent/.firewall-heal.XXXXXX) || die 'cannot create self-heal report'
+    trap 'rm -f "$report"' 0
+    read -r run_up run_rest </proc/uptime; run_now=${run_up%.*}
+    firewall_heal >"$report" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$report"
+    # The heal lock covers the heal alone. wired_heal and work-gate wait on guests (10 s a probe, 60 s for the
+    # gate lock); wired_heal takes the guests lock itself before acting, work-gate runs under it shared. Held
+    # through them, a minute run that outlasted its minute cost the next heal observation, and one more miss
+    # broke the window.
+    exec 7>&-
+    # Past the heal one run at a time, in order: the next waits out the one before, so a report is published
+    # whole and the newest last. One that waits 90 s gives up; its observation is recorded.
+    exec 7>/run/convergent/check-auto.lock
+    flock -w 90 7 || { logger -t check 'self-heal report dropped: the minute run before still runs'; exit 0; }
+    # flock wakes waiters in no order: a run whose observation an already published one postdates stops here.
+    published=0; [ ! -f /run/convergent/.firewall-heal.stamp ] || read -r published </run/convergent/.firewall-heal.stamp
+    case $published in '' | *[!0-9]*) published=0 ;; esac
+    # A stamp from the future (a garbled file: /run is emptied at boot) would silence every run; a run whose heal
+    # restarted a node reaches this minutes after its start, so the bound is the clock now.
+    read -r stamp_up stamp_rest </proc/uptime
+    [ "$published" -le "$((${stamp_up%.*} + 300))" ] || published=0
+    [ "$run_now" -gt "$published" ] || exit 0
+    wired_heal >>"$report" 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>"$report"
+    # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock. The
+    # shared hold lasts the reconcile (11 s a probe without an answer); a node restart the heal decides
+    # meanwhile waits it out for up to 20 s, a pair start does not.
     # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: no
     # heal output this run, and the same CARP roles and uplink (check status) and wired outcome as it saw.
     read -r gate_now gate_rest </proc/uptime
@@ -265,18 +291,19 @@ if [ "${1:-}" = auto ]; then (
     gate_seen=$(cut -d' ' -f1-4 /run/convergent/status/topology 2>/dev/null) || gate_seen=
     gate_wired=$(cat /run/convergent/wired-heal 2>/dev/null) || gate_wired=
     gate_skip=0
-    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] && [ ! -s /run/convergent/.firewall-heal ] &&
+    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] && [ ! -s "$report" ] &&
         [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
         read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then
         case $gate_at in '' | *[!0-9]* | 0?*) ;; *) gate_age=$((gate_now - gate_at)); [ "$gate_age" -lt 0 ] || [ "$gate_age" -ge 90 ] || gate_skip=1 ;; esac
     fi
     exec 8>/run/convergent/guests.lock
     if [ "$gate_skip" = 1 ]; then
-        grep '^SELF-HEAL work access ' "$state/firewall-heal" >>/run/convergent/.firewall-heal 2>/dev/null || :
+        grep '^SELF-HEAL work access ' "$state/firewall-heal" >>"$report" 2>/dev/null || :
     elif flock -s -n 8; then
         printf '%s\n%s\n%s\n' "$gate_now" "$gate_seen" "$gate_wired" >/run/convergent/work-gate.last || :
-        sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>/run/convergent/.firewall-heal
-    else echo 'SELF-HEAL work access left as is: a guest operation is running' >>/run/convergent/.firewall-heal; fi
+        sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$report"
+    else echo 'SELF-HEAL work access left as is: a guest operation is running' >>"$report"; fi
+    mv "$report" /run/convergent/.firewall-heal && echo "$run_now" >/run/convergent/.firewall-heal.stamp || die 'cannot publish self-heal report'
     exec 8>&-
     cmp -s /run/convergent/.firewall-heal "$state/firewall-heal" ||
         { cp /run/convergent/.firewall-heal "$state/.firewall-heal" && mv "$state/.firewall-heal" "$state/firewall-heal"; } ||
