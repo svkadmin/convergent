@@ -24,13 +24,15 @@ rsh() { guest_stderr timeout 30 ssh -F /etc/convergent/ssh_config "$@" 9>&- 8>&-
 # serial, to no serial-pinned role: a replugged NIC stays off wan until the role is added again.
 # Prints the serial when its one present NIC is authorized, allowed by USBGuard and has an interface off
 # usbfs (wan's QEMU does not hold it); status 1 otherwise, 2 without such a role on a running wan or
-# without USBGuard's answer. $1: the serial of a re-add that failed, which left no role.
+# without USBGuard's answer. $1: the serial of a re-add that failed, which left no role; that retry's NIC
+# absent or not allowed is status 3, so its record outlives an unplug.
 wired_lost() (
     # 10 s: a late answer only defers the re-attach; 30 s with a firewall fault overran the minute run.
     serial=$(timeout -k 1 10 incus --force-local query '/1.0/instances/wan?project=default' 9>&- 8>&- 7>&- 2>/dev/null |
         jq -er 'select(.status == "Running") | .devices["wired-uplink"] | if . == null then "?" else
             select(del(.serial) == {type: "usb", vendorid: "0bda", productid: "8153", required: "false"}) | .serial end') || exit 2
-    [ "$serial" != '?' ] || serial=${1:-}
+    retrying=0
+    [ "$serial" != '?' ] || serial=${1:-} retrying=1
     case $serial in ''|*[!A-Za-z0-9_.:-]*) exit 2 ;; esac
     found=0 lost=0
     for d in /sys/bus/usb/devices/*; do
@@ -38,12 +40,12 @@ wired_lost() (
         found=$((found + 1))
         for i in "$d/${d##*/}":*; do [ ! -e "$i" ] || [ "$(basename "$(readlink "$i/driver")")" = usbfs ] || lost=1; done
     done
-    [ "$found:$lost" = 1:1 ] || exit 1
+    [ "$found:$lost" = 1:1 ] || exit "$((1 + 2 * retrying))"
     # No answer is not "NIC fine": it keeps the strike and the outcome.
     allowed=$(timeout -k 1 30 usbguard list-devices -a 9>&- 8>&- 7>&- 2>/dev/null) || exit 2
     printf '%s\n' "$allowed" | serial=$serial awk '
         $2 == "allow" && $3 == "id" && $4 == "0bda:8153" && index($0, " serial \"" ENVIRON["serial"] "\"") {n++}
-        END {exit n != 1}' || exit 1
+        END {exit n != 1}' || exit "$((1 + 2 * retrying))"
     echo "$serial"
 )
 # Minute self-heal: wired_lost in two runs in a row removes and re-adds that role under the guests
@@ -55,7 +57,7 @@ wired_heal() (
     # A failed re-add can leave no role: its serial, from the outcome, is what gets retried.
     retry=$(sed -n 's/^failed //p' "$outcome" 2>/dev/null)
     serial=$(wired_lost "$retry")
-    case $? in 0) ;; 1) rm -f "$strike" "$outcome"; exit 0 ;; *) exit 0 ;; esac
+    case $? in 0) ;; 1) rm -f "$strike" "$outcome"; exit 0 ;; 3) rm -f "$strike"; exit 0 ;; *) exit 0 ;; esac
     case $(cat "$outcome" 2>/dev/null) in
     '') ;;
     # A dock that drops the NIC again after a re-attach is a fresh loss; the hourly cap bounds it.
@@ -284,14 +286,15 @@ if [ "${1:-}" = auto ]; then (
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock. The
     # shared hold lasts the reconcile (11 s a probe without an answer); a node restart the heal decides
     # meanwhile waits it out for up to 20 s, a pair start does not.
-    # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: no
-    # heal output this run, and the same CARP roles and uplink (check status) and wired outcome as it saw.
+    # On battery a gate run under 90 s old keeps the gate and its last report line while nothing changed: a heal
+    # that only saw both firewalls healthy, and the same CARP roles and uplink (check status) and wired outcome.
     read -r gate_now gate_rest </proc/uptime
     gate_now=${gate_now%.*}
     gate_seen=$(cut -d' ' -f1-4 /run/convergent/status/topology 2>/dev/null) || gate_seen=
     gate_wired=$(cat /run/convergent/wired-heal 2>/dev/null) || gate_wired=
     gate_skip=0
-    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] && [ ! -s "$report" ] &&
+    if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] &&
+        awk '!/^SELF-HEAL fw[12]: (master|backup); peer fw[12]: (master|backup); no restart$/ {exit 1}' "$report" &&
         [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
         read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then
         case $gate_at in '' | *[!0-9]* | 0?*) ;; *) gate_age=$((gate_now - gate_at)); [ "$gate_age" -lt 0 ] || [ "$gate_age" -ge 90 ] || gate_skip=1 ;; esac

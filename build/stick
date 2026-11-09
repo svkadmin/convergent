@@ -94,7 +94,8 @@ for m in $manifests; do
 done
 for f in $files; do
 	[ "$f" != slot.img ] || continue
-	mkdir -p "$work/data/${f%/*}"
+	# The UKIs sit at the top: only a guest path has a directory to make.
+	case $f in */*) mkdir -p "$work/data/${f%/*}" ;; esac
 	cp "$dir/$f" "$work/data/$f"
 done
 # The copies are what the image carries: check them, and slot.img where it is read from.

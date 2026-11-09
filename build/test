@@ -69,6 +69,10 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 		if (. "$1") >"$work/log" 2>&1; then die "accepted $2"; fi
 		grep -q "$3" "$work/log" || { cat "$work/log" >&2; die "wrong refusal for $2"; }
 	}
+	# The installer uses the sizes: a manifest without one is refused.
+	grep -v '^size convergent-42-b\.efi ' "$dir/manifest" >"$work/manifest"
+	refuse "$work/manifest-check" 'a manifest without a UKI size' 'malformed manifest'
+	cp "$dir/manifest" "$work/manifest"
 	gate=$here/release-check
 	(. "$gate")
 	mkdir "$work/keys"

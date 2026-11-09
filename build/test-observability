@@ -231,6 +231,17 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     guard=up; echo null >"$w/role"; : >"$w/calls"
     run 9000; is "$strike" 'S1 9000'; is "$w/calls" ''
     run 9060; is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; is "$w/role" "$role"
+    # Unplugged after such a failure, the record and its report outlive the loss; replugged, it is retried.
+    echo null >"$w/role"; echo 'failed S1' >"$outcome"; mv "$w/sys/1-2" "$w/unplugged"; : >"$w/calls"
+    run 9200; is "$outcome" 'failed S1'; gone "$strike"; is "$w/calls" ''
+    reported
+    mv "$w/unplugged" "$w/sys/1-2"; driver ''
+    run 9260; is "$strike" 'S1 9260'
+    run 9320; is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; is "$w/role" "$role"
+    # With its role in place an unplug ends the record, as before.
+    mv "$w/sys/1-2" "$w/unplugged"; run 9380; gone "$outcome"; gone "$strike"
+    if reported; then exit 1; fi
+    mv "$w/unplugged" "$w/sys/1-2"
 )
 # The scan reports a work DHCP resume the heal could not do five runs in a row, per firewall; a garbled or
 # lower count is nothing.
