@@ -173,7 +173,8 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	for f in manifest guests.manifest latest; do
 		openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$dir/$f" -out "$dir/$f.sig"
 	done
-	ep=$work/bucket latest=42
+	# No install image here (test-publish covers one): the block reads img under set -u.
+	ep=$work/bucket latest=42 img=
 	mkdir -p "$ep/beta/42"
 	for f in $files; do cp "$dir/$f" "$ep/beta/42/$f"; done
 	cp "$dir/latest" "$dir/latest.sig" "$ep/beta/"
