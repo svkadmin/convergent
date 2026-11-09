@@ -4863,6 +4863,19 @@ for node in fw1 fw2 wan svc; do
 		    .["boot.autostart"] == "true" and .["boot.autorestart"] == "true"' >/dev/null ||
 		{ echo "CV-BOOT failed: $node autostart"; result=1; }
 done
+# The hourly dns-push auto's first push of a boot downloads the list; through the rig's user-mode uplink that
+# holds the push lock for minutes, and guests waits 120 s for it. Make that push now, before the browser flows.
+# auto exits 0 without pushing while the lock is held, and a stale-marked local push writes no stamp: wait for
+# the lock and retry until the stamp exists; a failed try waits for firewalls still relinking after init.
+. "$release/timing"
+cv_time dns-first-push
+n=0
+until [ -f /var/lib/convergent/dns/stamp ] || [ "$n" -ge 3 ]; do
+	n=$((n + 1))
+	(umask 077; flock -w 1200 /run/convergent/dns-push.lock true) || break
+	dns-push auto || { echo "CV-DNS push try $n failed"; sleep 60; }
+done
+[ -f /var/lib/convergent/dns/stamp ] || { echo 'CV-DNS first push failed'; result=1; }
 r=0; timeout -k 30 300 sh "$release/browser-test" || r=$?
 case $r in
 0) ;;
