@@ -361,7 +361,9 @@ firewall_heal() (
         [ "$((now - first))" -ge 180 ] && [ "$attempts" -lt 3 ] && [ "$peer_since" -gt 0 ] &&
             [ "$((now - peer_since))" -ge 50 ] || continue
         exec 8>/run/convergent/guests.lock
-        if ! flock -n 8; then
+        # A minute run reconciling the work gate holds this lock shared for seconds: waited out. A guest
+        # operation holds it far longer.
+        if ! flock -w 20 8; then
             echo "SELF-HEAL $node: restart inhibited by guests lock"
             exec 8>&-
             continue

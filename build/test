@@ -3042,7 +3042,7 @@ cv_time firewall-self-heal
     # which the two truncations could place a second before it.
     read -r rm_up rm_rest </proc/uptime; minute_base=$(($(date +%s) - ${rm_up%.*}))
     record_minute() { echo $(((minute_base + $1 + 2) / 60)); }
-    window=/run/convergent/firewall-heal/fw2 tries=0 windowed=
+    window=/run/convergent/firewall-heal/fw2 tries=0 late=0 windowed=
     until [ -n "$windowed" ]; do
         tries=$((tries + 1)); [ "$tries" -le 3 ]
         deadline=$(($(date +%s) + 300))
@@ -3057,8 +3057,11 @@ cv_time firewall-self-heal
         # Until 45 s past the minute after the record's, not this one's: a minute run that outlasted its minute
         # (it freed the lock only after the next tick) already cost the tick after its record; holding past this
         # minute's tick too would break the window for real. Past that moment already, the next record is waited for.
-        # A record in the minute's last seconds could count as the next minute's (the slack): the next record then.
-        [ "$(((minute_base + prev0) % 60))" -lt 57 ] || { exec 7>&-; sleep 60; continue; }
+        # A record in the minute's last seconds could count as the next minute's (the slack): the next record then,
+        # not as a failed try; a run that reaches the heal that late every minute is a finding of its own.
+        if [ "$(((minute_base + prev0) % 60))" -ge 57 ]; then
+            late=$((late + 1)); [ "$late" -le 5 ]; tries=$((tries - 1)); exec 7>&-; sleep 60; continue
+        fi
         hold_until=$((($(record_minute "$prev0") + 1) * 60 + 45))
         if [ "$hold_until" -le "$(date +%s)" ]; then exec 7>&-; sleep 60; continue; fi
         sleep "$((hold_until - $(date +%s)))" 7>&-
