@@ -168,7 +168,7 @@ for want in CONFIG_VLAN_8021Q=y CONFIG_BRIDGE=y CONFIG_BRIDGE_VLAN_FILTERING=y \
 	grep -qxF "$want" "$config" || die "the kernel was not built with: $want (rebuild sys-kernel/gentoo-kernel)"
 done
 # Kconfig omits disabled symbols whose dependencies (such as Rust) are unavailable.
-for symbol in NOVA_CORE DRM_NOVA; do
+for symbol in NOVA_CORE DRM_NOVA BLK_DEV_UBLK; do
 	! grep -Eq "^CONFIG_${symbol}=[ym]$" "$config" || die "the kernel enables $symbol (rebuild sys-kernel/gentoo-kernel)"
 done
 # Keep the actual config for driver selection and release review.
