@@ -162,6 +162,9 @@ grep -q '^wired_heal() ($' "$work/wired-functions"
     driver ''; run 1000
     is "$strike" 'S1 1000'; is "$w/calls" ''
     if reported; then exit 1; fi
+    # Seconds later: the run before, still ending; the strike stands and the loss is said again.
+    run 1010; is "$strike" 'S1 1000'; is "$w/calls" ''
+    grep -q 're-attaching next minute' "$w/out"; if reported; then exit 1; fi
     run 1060
     is "$w/calls" "$(printf 'remove\nadd')"; is "$outcome" 'healed S1'; gone "$strike"
     reported
