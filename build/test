@@ -3027,7 +3027,7 @@ cv_time firewall-self-heal
     read -r broken_at rest </proc/uptime; broken_at=${broken_at%.*}
     fwssh fw2 'rcctl stop unbound'
     # A minute run that finds the heal lock held skips its observation; fw2's 180 s window must survive it.
-    # check auto's own steps come before the lock: hold it 45 s past the minute. A slow fw1 answer drops
+    # check auto's own steps come before the lock: hold it until 45 s past the minute after the record's. A slow fw1 answer drops
     # the window on both codes: then once more.
     cv_time firewall-self-heal-window
     # A fw2 already slow to the heal's 10 s probe before the break has an older window: the heal may restart
@@ -3037,6 +3037,8 @@ cv_time firewall-self-heal
         [ ! -f /run/convergent/firewall-heal/fw2.restarted ] || read -r since </run/convergent/firewall-heal/fw2.restarted
         [ "$since" -ge "$broken_at" ]
     }
+    # The wall-clock minute of a heal record (uptime seconds), as cron counts them.
+    record_minute() { read -r rm_up rm_rest </proc/uptime; echo $((( $(date +%s) - (${rm_up%.*} - $1)) / 60)); }
     window=/run/convergent/firewall-heal/fw2 tries=0 windowed=
     until [ -n "$windowed" ]; do
         tries=$((tries + 1)); [ "$tries" -le 3 ]
@@ -3052,8 +3054,7 @@ cv_time firewall-self-heal
         # Until 45 s past the minute after the record's, not this one's: a minute run that outlasted its minute
         # (it freed the lock only after the next tick) already cost the tick after its record; holding past this
         # minute's tick too would break the window for real. Past that moment already, the next record is waited for.
-        read -r up rest </proc/uptime
-        hold_until=$((($(($(date +%s) - (${up%.*} - prev0))) / 60 + 1) * 60 + 45))
+        hold_until=$((($(record_minute "$prev0") + 1) * 60 + 45))
         if [ "$hold_until" -le "$(date +%s)" ]; then exec 7>&-; sleep 60; continue; fi
         sleep "$((hold_until - $(date +%s)))" 7>&-
         exec 7>&-
@@ -3066,7 +3067,9 @@ cv_time firewall-self-heal
         done
         if [ -f "$window" ]; then
             [ "$first1" = "$first0" ]
-            [ "$((prev1 - prev0))" -ge 100 ]
+            # Observed a tick later at least: its minute is two past the record's, however late in their minutes
+            # both runs reached the heal.
+            [ "$(($(record_minute "$prev1") - $(record_minute "$prev0")))" -ge 2 ]
             windowed=1
         else
             # Gone with a restart: the window reached 180 s without a reset.

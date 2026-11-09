@@ -59,6 +59,8 @@ wired_heal() (
     now=${uptime%.*} was= at=
     [ ! -f "$strike" ] || read -r was at <"$strike"
     case $at in ''|*[!0-9]*) at=0 ;; esac
+    # A strike written seconds ago is the run before, still ending past its minute: not a second observation.
+    [ "$was" != "$serial" ] || [ "$((now - at))" -ge 30 ] || exit 0
     # A guest reconfiguring the NIC releases it for a moment: act on the second run in a row only.
     # As firewall-heal: two missed minutes break the row; one is a run that held the heal lock.
     if [ "$was" != "$serial" ] || [ "$((now - at))" -gt 150 ]; then
@@ -241,19 +243,27 @@ if [ "${1:-}" = auto ]; then (
     exec 7>/run/convergent/firewall-heal.lock
     flock -n 7 || exit 0
     . /usr/lib/convergent/incus/firewall-heal
-    # Built on tmpfs: the audited reports are rewritten only when their content changes.
-    firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
+    # Built on tmpfs: the audited reports are rewritten only when their content changes. Each run writes its
+    # own copy: one past its minute may still be writing when the next begins.
+    report=$(mktemp /run/convergent/.firewall-heal.XXXXXX) || die 'cannot create self-heal report'
+    trap 'rm -f "$report"' 0
+    firewall_heal >"$report" 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>"$report"
     # The heal lock covers the heal alone. wired_heal and work-gate wait on guests (10 s a probe, 60 s for the
     # gate lock) and take the guests lock themselves before acting; held through them, a minute run that
     # outlasted its minute cost the next heal observation, and one more miss broke the window.
     exec 7>&-
-    wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
+    # Past the heal one run at a time, in order: the next waits out the one before, so a report is published
+    # whole and the newest last. One still waiting in its own next minute gives up; its observation is recorded.
+    exec 7>/run/convergent/check-auto.lock
+    flock -w 90 7 || exit 0
+    wired_heal >>"$report" 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>"$report"
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
     exec 8>/run/convergent/guests.lock
     if flock -s -n 8; then
-        sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>/run/convergent/.firewall-heal
-    else echo 'SELF-HEAL work access left as is: a guest operation is running' >>/run/convergent/.firewall-heal; fi
+        sh /usr/lib/convergent/incus/work-gate 9>&- 8>&- 7>&- || echo 'SELF-HEAL work access closed: topology mismatch' >>"$report"
+    else echo 'SELF-HEAL work access left as is: a guest operation is running' >>"$report"; fi
     exec 8>&-
+    mv "$report" /run/convergent/.firewall-heal || die 'cannot publish self-heal report'
     cmp -s /run/convergent/.firewall-heal "$state/firewall-heal" ||
         { cp /run/convergent/.firewall-heal "$state/.firewall-heal" && mv "$state/.firewall-heal" "$state/firewall-heal"; } ||
         die 'cannot publish self-heal report'

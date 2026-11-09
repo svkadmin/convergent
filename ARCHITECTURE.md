@@ -936,7 +936,8 @@ Root-owned lock files under `/run/convergent`; the holder serializes the work li
 | `browser/<role>.lock` | one session per browser role, `tmp` slot or Remmina |
 | `incus-ui.lock` | one Incus UI setup, rotation, revoke or cleanup |
 | `check.lock` | one checker scan at a time |
-| `firewall-heal.lock` | the minute self-heal |
+| `firewall-heal.lock` | the minute firewall self-heal |
+| `check-auto.lock` | the minute run past the heal (uplink heal, work gate, report), one at a time and in order |
 | `work-gate.lock` | one work-gate decision at a time |
 | `status/lock` | one bar status collection |
 | `facts.lock` | one `facts` run |
