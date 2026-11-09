@@ -243,6 +243,10 @@ if [ "${1:-}" = auto ]; then (
     . /usr/lib/convergent/incus/firewall-heal
     # Built on tmpfs: the audited reports are rewritten only when their content changes.
     firewall_heal >/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL failed: inspect syslog' >>/run/convergent/.firewall-heal
+    # The heal lock covers the heal alone. wired_heal and work-gate wait on guests (10 s a probe, 60 s for the
+    # gate lock) and take the guests lock themselves before acting; held through them, a minute run that
+    # outlasted its minute cost the next heal observation, and one more miss broke the window.
+    exec 7>&-
     wired_heal >>/run/convergent/.firewall-heal 2>&1 || echo 'SELF-HEAL wired uplink failed: inspect syslog' >>/run/convergent/.firewall-heal
     # A guest operation may have closed the gate on purpose: reconcile only while none holds the lock.
     exec 8>/run/convergent/guests.lock

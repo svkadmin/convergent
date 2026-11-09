@@ -3049,7 +3049,13 @@ cv_time firewall-self-heal
         exec 7>/run/convergent/firewall-heal.lock
         flock -w 120 7
         if ! read -r first0 prev0 peer0 <"$window"; then exec 7>&-; continue; fi
-        sleep "$((($(date +%s) / 60 + 1) * 60 + 45 - $(date +%s)))" 7>&-
+        # Until 45 s past the minute after the record's, not this one's: a minute run that outlasted its minute
+        # (it freed the lock only after the next tick) already cost the tick after its record; holding past this
+        # minute's tick too would break the window for real. Past that moment already, the next record is waited for.
+        read -r up rest </proc/uptime
+        hold_until=$((($(($(date +%s) - (${up%.*} - prev0))) / 60 + 1) * 60 + 45))
+        if [ "$hold_until" -le "$(date +%s)" ]; then exec 7>&-; sleep 60; continue; fi
+        sleep "$((hold_until - $(date +%s)))" 7>&-
         exec 7>&-
         deadline=$(($(date +%s) + 300))
         while :; do
