@@ -298,7 +298,7 @@ if [ "${1:-}" = auto ]; then (
     gate_wired=$(cat /run/convergent/wired-heal 2>/dev/null) || gate_wired=
     gate_skip=0
     if [ "$(cat /run/convergent-power.profile 2>/dev/null)" = battery ] &&
-        awk -v event="$gate_event" '/^SELF-HEAL fw[12]: (master|backup); peer fw[12]: (master|backup); no restart$/ ||
+        awk -v event="$gate_event" '/^SELF-HEAL fw[12]: (master; peer fw[12]: backup|backup; peer fw[12]: master); no restart$/ ||
             (event != "" && $0 == event) {next} {exit 1}' "$report" &&
         [ -n "$gate_seen" ] && [ "$(sed 1d /run/convergent/work-gate.last 2>/dev/null)" = "$(printf '%s\n%s' "$gate_seen" "$gate_wired")" ] &&
         read -r gate_at 2>/dev/null </run/convergent/work-gate.last; then

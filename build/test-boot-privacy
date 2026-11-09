@@ -1027,6 +1027,13 @@ mkdir "$work/wired"
     (revoke 7) >"$w/out"
     [ "$(cat "$w/calls")" = "$removed" ] && [ "$(cat "$w/role")" = null ] || exit 1
     grep -q 'removed its role from wan' "$w/out" || exit 1
+    # With no role, a failed re-add's record goes with the NIC's last rule; revoking another device keeps it.
+    reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
+    (revoke 5) >"$w/out"
+    [ ! -s "$w/calls" ] && grep -qx 'failed S1' "$w/wired-heal" || exit 1
+    reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
+    (revoke 7) >"$w/out"
+    [ ! -s "$w/calls" ] && [ ! -e "$w/wired-heal" ] && grep -q 'dropped its failed re-attach' "$w/out" || exit 1
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do

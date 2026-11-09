@@ -675,6 +675,9 @@ say "Erasing $disk."
 wiped=1
 run sgdisk --zap-all "$disk"
 check_identity
+# The old ESP began at 1 MiB, where the new one will: its boot sectors go before the new table exists, so no
+# interrupt from here on leaves the old loader reachable.
+run dd if=/dev/zero of="$disk" bs=1M seek=1 count=1 conv=fsync status=none
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:"$state_end" -t4:8309 -c4:cv-state "$disk"
 run blockdev --rereadpt "$disk"
@@ -689,8 +692,8 @@ for p in 1 2 3 4; do
 done
 esp=${prefix}1 slota=${prefix}2 slotb=${prefix}3 state=${prefix}4
 check_identity
-# The new ESP starts where an old one did: its FAT (loader and UKIs) would boot whatever an interrupted
-# install left. Both boot sectors lie in the first MiB; mkfs.vfat writes the new one last.
+# The new ESP's own start too (an old one placed elsewhere): its FAT would boot whatever an interrupted install
+# left. Both boot sectors lie in the first MiB; mkfs.vfat writes the new one last.
 run dd if=/dev/zero of="$esp" bs=1M count=1 conv=fsync status=none
 say 'Writing slot A.'
 run dd if="$slotsrc" of="$slota" bs=1M iflag=count_bytes count="$size" conv=fsync status=none
@@ -831,8 +834,8 @@ if [ -n "$backup" ]; then
 		mount -t "$backup_fs" -o nodev,nosuid,noexec "$backup" "$work/backup"; then
 		backup_mounted=1
 		if cryptsetup luksHeaderBackup "$state" --header-backup-file "$work/backup/$file" && sync; then saved=$file; fi
-		# Not run: a stick that will not unmount is cleanup's retry, not a failed install.
-		if umount "$work/backup"; then backup_mounted=; fi
+		# Synced above: a stick still busy is detached lazily rather than failing a complete install.
+		if umount "$work/backup" || umount -l "$work/backup"; then backup_mounted=; fi
 	fi
 fi
 cleanup || die "could not close the installed system"
