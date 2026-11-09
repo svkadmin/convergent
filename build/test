@@ -2197,6 +2197,7 @@ timeout() {
 }
 for frozen_vm in '' owner fw2 wan unknown; do
     : >"$work/ic-bounds"
+    rm -f "$work/autorestart-all.failed"
     if [ "$frozen_vm" = owner ]; then
         autorestart_clear 2>"$work/err"
         grep -qx -- '-k 1 120 incus --force-local --project default config unset fw2 boot.autorestart user.convergent.autorestart' "$work/ic-bounds"

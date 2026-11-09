@@ -198,8 +198,9 @@ SELF-HEAL fw2: backup; peer fw1: backup; no restart
     [ "$(gate 1820)" = 1 ] || exit 1
     gate_closed=0
     # A chain nft cannot read counts as closed: the gate runs.
+    [ "$(gate 1830)" = 0 ] || exit 1
     nft_fail=1
-    [ "$(gate 1830)" = 1 ] || exit 1
+    [ "$(gate 1840)" = 1 ] || exit 1
     nft_fail=0
     # The mock's two states are work-gate's: a close adds the drop rule, an open flushes the chain.
     grep -qx 'add rule bridge host-l2 work_gate drop' "$repo/rootfs/usr/lib/convergent/incus/work-gate" || exit 1
