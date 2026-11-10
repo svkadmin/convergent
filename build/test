@@ -5556,6 +5556,8 @@ for block in 1:0 0:1; do
 	shown=$(bluetooth_show); [ "$shown" = 'Radio: blocked' ]
 done
 # Actions on a blocked radio say so at once instead of waiting out bluetoothctl's bound.
+# The real bluetooth_device again: the trust step above replaced it.
+. "$work/module"
 : >"$work/calls"
 for action in scan 'device connect AA:BB:CC:DD:EE:FF' 'device connect'; do
 	if (bluetooth_$action) 2>"$work/err" </dev/null; then exit 1; else [ "$?" = 3 ]; fi
