@@ -248,7 +248,8 @@ groups:
         annotations: {summary: 'Checker missing or more than 36 hours since last run', dashboard: '/d/cv-monitoring'}
       - alert: RuleEvaluationUnhealthy
         expr: (cv_rules_healthy == 0) or absent(cv_rules_healthy)
-        for: 2m
+        # vmalert starts each group up to one interval late: the 5m groups' first evaluation, then observe and a scrape.
+        for: 10m
         labels: {severity: warning}
         annotations: {summary: 'Rule API reports failed, missing or stalled evaluations', dashboard: '/d/cv-monitoring'}
       - alert: ObservationStale

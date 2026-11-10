@@ -678,10 +678,12 @@ for sample in 0:set:none 1:set:failed 124:none:failed 75:none:none 75:garbled:no
     *) [ ! -e "$work/incus-ui-busy" ] ;;
     esac || exit 1
 done
-sed -n '/^close_session() {/,/^}/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/close/|g" >"$work/close-session"
-[ -s "$work/close-session" ]
+sed -n '/^tokens() {/,/^}/p; /^close_session() {/,/^}/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|$work/close/|g" >"$work/close-session"
+[ "$(grep -c '^tokens() {$\|^close_session() {$' "$work/close-session")" = 2 ]
 sh -n "$work/close-session"
-for sample in ok remove-fail stop-fail; do
+# A pending trust token is revoked with the session's certificate; a failure to list or revoke one still stops int.
+tok=0f3c2a1e-5b6d
+for sample in ok remove-fail stop-fail token token-fail list-fail none empty array; do
     rm -rf "$work/close"
     mkdir -p "$work/close/incus-ui"
     : >"$work/close-calls"
@@ -695,6 +697,16 @@ for sample in ok remove-fail stop-fail; do
             case $* in
             'config trust list --format json') echo '[{"name":"browser-int-ui","fingerprint":"aa"},{"name":"metrics","fingerprint":"bb"}]' ;;
             'config trust remove aa') [ "$sample" != remove-fail ] ;;
+            'query /1.0/operations?recursion=1&project=default')
+                case $sample in
+                token | token-fail) printf '%s\n' "{\"running\":[{\"id\":\"$tok\",\"class\":\"token\",\"status_code\":103},{\"id\":\"c0ffee-01\",\"class\":\"websocket\",\"status_code\":103}],\"success\":[{\"id\":\"c0ffee-02\",\"class\":\"token\",\"status_code\":200}]}" ;;
+                list-fail) return 1 ;;
+                none) echo null ;;
+                array) echo '[]' ;;
+                empty) ;;
+                *) echo '{}' ;;
+                esac ;;
+            "query -X DELETE /1.0/operations/$tok") [ "$sample" != token-fail ] ;;
             'query /1.0/instances?recursion=1&project=default') echo '[{"name":"int","status":"Running"}]' ;;
             'stop int --force') [ "$sample" != stop-fail ] ;;
             *) exit 97 ;;
@@ -703,10 +715,13 @@ for sample in ok remove-fail stop-fail; do
         . "$work/close-session"
         close_session
     ) || rc=$?
-    printf '%s\n' 'config trust list --format json' 'config trust remove aa' \
-        'query /1.0/instances?recursion=1&project=default' 'stop int --force' | cmp - "$work/close-calls"
+    {
+        printf '%s\n' 'config trust list --format json' 'config trust remove aa' 'query /1.0/operations?recursion=1&project=default'
+        case $sample in token | token-fail) echo "query -X DELETE /1.0/operations/$tok" ;; esac
+        printf '%s\n' 'query /1.0/instances?recursion=1&project=default' 'stop int --force'
+    } | cmp - "$work/close-calls"
     case $sample in
-    ok) [ "$rc" = 0 ] && [ ! -e "$work/close/incus-ui" ] ;;
+    ok | token | none) [ "$rc" = 0 ] && [ ! -e "$work/close/incus-ui" ] ;;
     *) [ "$rc" = 1 ] && [ -d "$work/close/incus-ui" ] ;;
     esac || exit 1
 done

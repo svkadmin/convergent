@@ -227,7 +227,10 @@ while read -r entry; do
 	dst="$state/etc/$entry"
 	if [ ! -e "$dst" ]; then
 		mkdir -p "${dst%/*}"
-		cp -a "$NEWROOT/etc/$entry" "$dst" ||
+		# Through a synced copy: a power cut must not leave a short file that is never seeded again.
+		tmp="${dst%/*}/.${dst##*/}.seed"
+		rm -rf "$tmp"
+		cp -a "$NEWROOT/etc/$entry" "$tmp" && sync && mv "$tmp" "$dst" && sync ||
 			die "state: /etc/$entry is missing from the image"
 	fi
 	mount --bind "$dst" "$NEWROOT/etc/$entry" ||

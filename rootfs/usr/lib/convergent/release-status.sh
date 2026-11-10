@@ -10,9 +10,9 @@ release_metrics() (
 	for f in "$cache"/*.json; do
 		[ -f "$f" ] || continue
 		floor=${f%.json}.generated
-		if [ ! -f "$floor" ]; then
-			jq -er '.generated' "$f" >"$floor.new"
-			mv "$floor.new" "$floor"
+		if [ ! -s "$floor" ]; then
+			# A cache a power cut damaged is skipped: the floor then reads as none below.
+			jq -er '.generated' "$f" >"$floor.new" && mv "$floor.new" "$floor" || rm -f "$floor.new"
 		fi
 	done
 	tmp=$(mktemp "$out/.release.XXXXXX")
@@ -28,6 +28,8 @@ release_metrics() (
 			f=$pointer/advisories.json
 			previous=0
 			if [ -f "$cache/$release.generated" ]; then previous=$(cat "$cache/$release.generated"); fi
+			# A floor a power cut left empty is none; --argjson would refuse every later status.
+			case $previous in '' | *[!0-9]* | 0?*) previous=0 ;; esac
 			if get --max-time 30 --max-filesize 1048576 -o "$f" "$url/$release/advisories.json" 2>/dev/null &&
 				get --max-time 30 --max-filesize 1024 -o "$f.sig" "$url/$release/advisories.json.sig" 2>/dev/null &&
 				verify "$f" &&

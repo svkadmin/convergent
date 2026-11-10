@@ -963,13 +963,45 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
 )
 echo 'test-boot-privacy: bluetooth passed'
 
+# The session watch: a closed Remote window (Cage gone) ends the session quietly; any other provider is a failure.
+# The loop whose first line is the kill -0 probe (cleanup's loop starts the same).
+awk 'prev ~ /^    for child in \$children; do$/ && /kill -0/ {copy = 1; print prev} copy {print} copy && /^    done$/ {exit} {prev = $0}' \
+    "$repo/tools/browser" >"$work/watch"
+[ "$(grep -c 'kill -0' "$work/watch")" = 1 ] && [ "$(grep -c '^    done$' "$work/watch")" = 1 ]
+check_script "$work/watch"
+for sample in remmina:cage remmina:audio def:cage; do
+    rc=0
+    (
+        role=${sample%:*} cage=101 children='101 102'
+        case ${sample#*:} in cage) dead=101 ;; *) dead=102 ;; esac
+        kill() { [ "$2" != "$dead" ]; }
+        wait() { return 0; }
+        logger() { :; }
+        die() { echo "die $*"; exit 1; }
+        . "$work/watch"
+        echo continued
+    ) >"$work/watch.out" || rc=$?
+    case $sample in
+    remmina:cage) [ "$rc" = 0 ] && [ ! -s "$work/watch.out" ] ;;
+    *) [ "$rc" = 1 ] && grep -qx 'die socket or audio provider exited' "$work/watch.out" ;;
+    esac || die "session watch: $sample"
+done
+# A window close often takes Cage and Remmina in one tick: past the loop, a dead Cage is still a normal close.
+awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage" 2>\/dev\/null; then$/ {copy = 1} copy {print} copy && /^fi$/ {exit}' \
+    "$repo/tools/browser" >"$work/after-watch"
+grep -qx '    exit 0' "$work/after-watch"
+awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage"/ {s = NR} /^wait "\$browser" \|\| \{$/ {w = NR} END {exit !(s && w && s < w)}' "$repo/tools/browser"
+echo 'test-boot-privacy: session watch passed'
+
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
 sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
-    sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" \
+    sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/var/lib/convergent/guests/initialized|$work/wired/initialized|g" \
         -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
 check_script "$work/wired-functions"
 grep -q 'wired prune' "$work/wired-functions"
+[ "$(grep -c "$work/wired/initialized" "$work/wired-functions")" = 2 ]
 mkdir "$work/wired"
+touch "$work/wired/initialized"
 (
     w=$work/wired
     . "$work/wired-functions"
@@ -1042,6 +1074,16 @@ mkdir "$work/wired"
     rm -f "$w/pruned"
     (set -e; wired prune; : >"$w/pruned") >"$w/out" 2>&1
     [ -e "$w/pruned" ] && [ ! -s "$w/calls" ] && [ ! -s "$w/out" ] || exit 1
+    # Before guests setup (no wan) enrol and revoke save the policy and check no role.
+    rm "$w/initialized"
+    reset
+    (revoke 7) >"$w/out"
+    [ ! -s "$w/calls" ] || exit 1
+    printf '%s\n' "$kbd" >"$w/generated"
+    reset
+    printf '%s\n' yes | (enrol) >"$w/out"
+    [ ! -s "$w/calls" ] || exit 1
+    touch "$w/initialized"
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do

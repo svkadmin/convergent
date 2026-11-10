@@ -88,6 +88,19 @@ status 1002 "$work/key"
 release_metrics 1
 grep -q 'cv_release_status_verified{role="latest",release="43"} 1$' "$work/metrics/release.prom"
 [ "$(cat "$work/cache/43.generated")" = 1002 ]
+# A floor a power cut left empty comes back from the cached status; replaying an older one stays refused.
+: >"$work/cache/43.generated"
+status 1001 "$work/key"
+release_metrics 1
+grep -q 'cv_release_status_verified{role="latest",release="43"} 0$' "$work/metrics/release.prom"
+[ "$(cat "$work/cache/43.generated")" = 1002 ]
+# With the cached status damaged too it is no floor: the next signed status is accepted and rewrites both.
+: >"$work/cache/43.generated"
+: >"$work/cache/43.json"
+status 1003 "$work/key"
+release_metrics 1
+grep -q 'cv_release_status_verified{role="latest",release="43"} 1$' "$work/metrics/release.prom"
+[ "$(cat "$work/cache/43.generated")" = 1003 ]
 # Without online updates, check marks status not applicable for the booted release only.
 sed -n '/^if \[ -z "\$usb" \] && { \[ ! -f "\$conf" \]/,/^fi$/p' "$repo/tools/fetch-release" |
     sed "s|/usr/lib/convergent/release-status.sh|$work/metrics.sh|" >"$work/offline"

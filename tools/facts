@@ -199,6 +199,8 @@ fact_certs() {
 	s=$(date -d "$e" +%s 2>/dev/null) || s=
 	if [ -n "$s" ]; then m "cv_certificate_not_after_seconds{certificate=\"incus-server\"} $s"; else bad "cannot read the certificate $cert"; fi
 	for certificate in ca server incus-client; do
+		# Before guests setup these do not exist yet; init refreshes daily when it ends.
+		[ -e "$sdir/guests/initialized" ] || break
 		file=/var/lib/convergent/guests/tls/$certificate.crt
 		if e=$(openssl x509 -noout -enddate -in "$file" 2>/dev/null); then
 			e=${e#notAfter=}
@@ -313,6 +315,7 @@ storage() {
 		m "cv_btrfs_scrub_missing_since_seconds $since"
 	fi
 	for volume in svc-metrics svc-logs svc-grafana; do
+		[ -e "$sdir/guests/initialized" ] || break
 		path=/var/lib/incus/storage-pools/default/custom/default_$volume
 		if id=$(btrfs inspect-internal rootid "$path" 2>/dev/null) && limits=$(btrfs qgroup show --raw -r "$path" 2>/dev/null); then
 			printf '%s\n' "$limits" | awk -v id="0/$id" -v volume="$volume" '

@@ -342,6 +342,9 @@ grep -qx ran "$work/facts-ran"
 # boot, after the host first synchronizes, bounded, and again only until it succeeded.
 grep -qx 'makestep 1.0 -1' "$repo/guests/wan/rootfs/etc/chrony/chrony.conf"
 sed -n '/^nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	fw_ntpd'
+# Guest certificates and svc volumes wait for guests setup; init publishes them when it ends.
+[ "$(grep -c '^		\[ -e "\$sdir/guests/initialized" \] || break$' "$repo/tools/facts")" = 2 ]
+grep -qx '    (timeout -k 5 300 /usr/local/sbin/facts daily; timeout -k 5 300 /usr/local/sbin/facts auto) >/dev/null 2>&1 </dev/null 9>&- 8>&- 7>&- 6>&- &' "$repo/tools/guests"
 sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
 [ -s "$work/fw-ntpd" ]; sh -n "$work/fw-ntpd"
 (
@@ -658,6 +661,10 @@ sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage 
 [ -s "$work/volumes" ]
 sh -n "$work/volumes"
 (
+    # Guests set up: the volumes are read.
+    sdir=$work/volumes-state
+    mkdir -p "$sdir/guests"
+    touch "$sdir/guests/initialized"
     bad() { ok=0; }
     btrfs() {
         case $* in
@@ -690,6 +697,12 @@ sh -n "$work/volumes"
             ;;
         esac
     done
+    # Before guests setup nothing is read and nothing fails.
+    rm "$sdir/guests/initialized"
+    used=850 limit=1000 ok=1 sample=low
+    : >"$buf"
+    . "$work/volumes"
+    [ "$ok" = 1 ] && [ ! -s "$buf" ]
 )
 sed -n '/- alert: VolumeQuotaHigh/{n;p;n;p;}' \
     "$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml" >"$work/quota-rule"

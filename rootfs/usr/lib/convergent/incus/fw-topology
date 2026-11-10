@@ -49,10 +49,10 @@ topology_finish() {
     if [ -n "$redo" ]; then
         (rebuilding=$redo; leases_hold) || return
         for node in $redo; do
-            stopped "$node" || locked force_stop "$node" || return
-            seed_remove "$node" || return
-            rebuild_root "$node" "$(cat "$state/fw.topology/$node.new")" || return
-            seed_start "$node" || return
+            # A redo that fails resumes every reachable allocator, as a finished one does (its seed carries the checkpoint).
+            { { stopped "$node" || locked force_stop "$node"; } && seed_remove "$node" &&
+                rebuild_root "$node" "$(cat "$state/fw.topology/$node.new")" && seed_start "$node"; } ||
+                { leases_resume || :; return 1; }
         done
         leases_resume || return
     fi

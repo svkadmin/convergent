@@ -662,8 +662,9 @@ policy reload is `/usr/local/libexec/convergent/fw-pf-reload`; a failed load lea
 1. Run `sys fw maintenance`. It checks coherent roles, PF, pfsync defer, Unbound and local DNS,
    asks before demoting the `MASTER`, then verifies that the peer took over fully.
 2. Do the maintenance.
-3. Run `sys fw undo`. Both firewalls must be healthy. Success: `fw1` is `MASTER` and `fw2` is
-   `BACKUP` on every registered segment.
+3. Run `sys fw undo`. Success: `fw1` is `MASTER` and `fw2` is `BACKUP` on every registered
+   segment. The firewall in maintenance must be healthy while its peer is; with a broken peer, undo
+   releases it anyway, so it takes over and the self-heal or `sys fw rebuild` can reach the peer.
 
 A failure or interruption after the demotion undoes it. One while the demotion is uncertain keeps
 the journal: run `sys fw undo`. If the peer then loses its WAN probes, it demotes equally, and
@@ -684,7 +685,8 @@ installed images and seed. Before you run it:
 - Finish updates and handoffs.
 - The peer must be healthy and own every segment. If the target still runs, coherent CARP on
   every segment also suffices.
-- Maintenance may name the target; run `sys firewall undo` afterwards.
+- Maintenance may name the target: its fresh root ends the maintenance. Maintenance on the peer
+  must be undone first.
 
 The rebuild waits for the guest and DNS locks, checks and seeds the replacement, restores normal
 roles and pushes the stored DNS. It first starts a `wan` or `svc` that Incus left stopped or

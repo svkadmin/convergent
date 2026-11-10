@@ -243,10 +243,12 @@ echo 'test-topology: recovery removes only stale probe routes'
     awk '/^rebuild\(\) \{/ {copy=1} copy {print} copy && /^}/ {exit}' "$repo/tools/guests" |
         awk -v dir="$scratch/images" '$0 == "    image_dir=/var/lib/convergent/release-guests/guests/fw" {$0 = "    image_dir=" dir; n++} {print} END {exit n != 1}' |
         sed -e "s|/proc/cmdline|$scratch/cmdline|" -e "s|/var/lib/convergent/guest-updates|$scratch/updates|" \
+            -e "s|/var/lib/convergent/firewall-maintenance|$scratch/maintenance|g" \
             -e "s|'0 700 directory'|'$(id -u) 700 directory'|" >"$scratch/rebuild"
     [ -s "$scratch/rebuild" ]
     sh -n "$scratch/rebuild"
     grep -q "$scratch/cmdline" "$scratch/rebuild" && grep -q "$scratch/updates" "$scratch/rebuild" || exit 1
+    [ "$(grep -c "$scratch/maintenance" "$scratch/rebuild")" -ge 3 ]
     . "$scratch/rebuild"
     mkdir -p "$scratch/images"
     echo 'BOOT_IMAGE=/vmlinuz convergent.release=42 ro' >"$scratch/cmdline"
@@ -288,6 +290,26 @@ echo 'test-topology: recovery removes only stale probe routes'
     (rebuild fw1) >/dev/null
     finished
     awk '$1 == "replace" {r=NR} $1 == "fw_release" {f=NR} $1 == "commit" {c=NR} END {exit !(r && r < f && f < c)}' "$log"
+    # The node in maintenance may be rebuilt, and its fresh root ends the demotion its journal records; the peer may not.
+    clean
+    echo fw1 >"$scratch/maintenance"
+    if (rebuild fw2) 2>"$scratch/err"; then exit 1; fi
+    grep -q 'the peer is in maintenance' "$scratch/err"
+    [ -f "$scratch/maintenance" ]
+    (rebuild fw1) >"$scratch/out"
+    finished
+    [ ! -e "$scratch/maintenance" ]
+    grep -qx 'guests: the fw1 maintenance demotion ended with the rebuild' "$scratch/out"
+    # A rebuild cut after its replace and resumed takes the handback; the journal naming its fresh root goes too.
+    clean
+    printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
+    cp "$state/committed" "$state/pending"
+    touch "$state/fw.rebuilt"
+    echo fw1 >"$scratch/maintenance"
+    (rebuild fw1) >/dev/null
+    finished
+    [ ! -e "$scratch/maintenance" ]
+    if grep -q '^replace' "$log"; then exit 1; fi
     # A committed rebuild whose node stays unhealthy is redone from its journal.
     clean
     printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
@@ -768,6 +790,39 @@ echo 'test-topology: rollback holds both, waits for a booting firewall and check
     running fw1 && running fw2
 )
 echo 'test-topology: a committed migration redoes a node that never becomes healthy'
+# A redo that keeps failing resumes the healthy firewall's allocator before it reports the failure.
+(
+    journal
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; done
+    touch "$state/fw.topology/committed" "$scratch/fw2.broken"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    rebuild_root() { stopped "$1" || return 1; echo "rebuild $1 $2" >>"$log"; printf '%s\n' "$2" >"$scratch/$1.image"; }
+    leases_hold() { echo "checkpoint ${rebuilding:-}" >>"$log"; }
+    leases_resume() { echo resume >>"$log"; }
+    seed_start() { echo "boot $1" >>"$log"; echo running >"$scratch/$1.status"; return 1; }
+    if topology_recover; then exit 1; fi
+    [ -f "$state/fw.topology/committed" ]
+    awk '$0 == "checkpoint fw2" {h=NR} $0 == "boot fw2" {b=NR} $0 == "resume" {u=NR} END {exit !(h && h < b && b < u)}' "$log"
+    rm -rf "$state/fw.topology" "$scratch/fw2.broken"
+)
+echo 'test-topology: a failed redo resumes work DHCP on the healthy firewall'
+# The same with the real lease checkpoint: fw2 silent, fw1 gets its allocator back and the hold stays for fw2.
+(
+    . "$lib/fw-leases"
+    journal
+    rm -rf "$state/leases"
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; done
+    touch "$state/fw.topology/committed" "$scratch/fw2.broken"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    rebuild_root() { stopped "$1" || return 1; echo "rebuild $1 $2" >>"$log"; printf '%s\n' "$2" >"$scratch/$1.image"; }
+    rsh() { [ ! -e "$scratch/$1.broken" ] || return 255; case $2 in *'rcctl enable dhcpd'*) echo "enable $1" >>"$log" ;; esac; }
+    seed_start() { echo "boot $1" >>"$log"; echo running >"$scratch/$1.status"; return 1; }
+    if topology_recover; then exit 1; fi
+    awk '$0 == "boot fw2" {b=NR} $0 == "enable fw1" {e=NR} END {exit !(b && b < e)}' "$log"
+    [ -f "$state/leases/held" ] && [ ! -f "$state/leases/quiesced" ]
+    rm -rf "$state/fw.topology" "$state/leases" "$scratch/fw2.broken"
+)
+echo 'test-topology: a failed redo resumes the healthy allocator through the real lease checkpoint'
 # Both committed nodes silent (an fsck prompt): both are redone under one real checkpoint, neither refused.
 (
     . "$lib/fw-leases"
