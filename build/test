@@ -5559,6 +5559,7 @@ done
 # The real bluetooth_device again: the trust step above replaced it.
 . "$work/module"
 : >"$work/calls"
+echo 0 >"$work/rfkill/rfkill1/soft"; echo 1 >"$work/rfkill/rfkill1/hard"
 if (bluetooth_scan) 2>"$work/err"; then exit 1; else [ "$?" = 3 ]; fi
 grep -qx 'Bluetooth is blocked by the hardware switch' "$work/err"
 echo 1 >"$work/rfkill/rfkill1/soft"; echo 0 >"$work/rfkill/rfkill1/hard"
@@ -5567,7 +5568,7 @@ for action in scan 'device connect AA:BB:CC:DD:EE:FF' 'device remove AA:BB:CC:DD
 	grep -qx 'Bluetooth is off; turn it on first (sys bluetooth on)' "$work/err"
 done
 [ ! -s "$work/calls" ]
-echo 0 >"$work/rfkill/rfkill1/soft"; echo 1 >"$work/rfkill/rfkill1/hard"
+echo 0 >"$work/rfkill/rfkill1/soft"
 echo 0 >"$work/rfkill/rfkill1/hard"
 if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
 [ "$(bluetooth_show 2>/dev/null)" = 'Radio: unblocked' ]

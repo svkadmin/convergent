@@ -25,10 +25,11 @@ bluetooth_radio() {
 bluetooth_ready() {
 	bluetooth_radio
 	case $radio in unblocked) return 0 ;; none) die 'no Bluetooth radio' ;; esac
+	# A radio only soft-blocked comes up with sys bluetooth on.
 	for r in /sys/class/rfkill/rfkill*; do
-		[ "$(cat "$r/type" 2>/dev/null)" != bluetooth ] || [ "$(cat "$r/hard" 2>/dev/null)" != 1 ] || die 'Bluetooth is blocked by the hardware switch'
+		[ "$(cat "$r/type" 2>/dev/null)" != bluetooth ] || [ "$(cat "$r/hard" 2>/dev/null)" = 1 ] || die 'Bluetooth is off; turn it on first (sys bluetooth on)'
 	done
-	die 'Bluetooth is off; turn it on first (sys bluetooth on)'
+	die 'Bluetooth is blocked by the hardware switch'
 }
 bluetooth_state() {
 	bluetooth_radio
