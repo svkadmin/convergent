@@ -597,7 +597,9 @@ done
                 {"name":"fw1","project":"default","config":{"user.convergent.autorestart.old":"true"}},
                 {"name":"work","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
                 {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},
-                {"name":"orphan","project":"owner","config":{"user.convergent.autorestart.old":"-"}},{"name":"wan","config":{}}]' ;;
+                {"name":"orphan","project":"owner","config":{"user.convergent.autorestart.old":"-"}},
+                {"name":"both","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}},
+                {"name":"bare","project":"owner"},{"name":"wan","config":{}}]' ;;
         *) return 1 ;;
         esac
     }
@@ -607,6 +609,7 @@ done
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
         '--project owner config unset work boot.autorestart user.convergent.autorestart' \
         '--project owner config unset hold user.convergent.autorestart' \
+        '--project owner config unset both boot.autorestart user.convergent.autorestart user.convergent.autorestart.old' \
         '--project default config set fw1 boot.autorestart=true' \
         '--project default config unset fw1 user.convergent.autorestart.old' \
         '--project owner config unset orphan user.convergent.autorestart.old' >"$work/expected-unsets"

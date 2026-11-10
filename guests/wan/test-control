@@ -303,7 +303,14 @@ for case in keep late recur latched; do
         if grep -q '^ifdown' "$work/calls"; then exit 1; fi ;;
     recur|latched)
         arg=retry
-        [ "$case" = recur ] || arg=
+        if [ "$case" = latched ]; then
+            # A refused Wi-Fi stays up for iwd to join a safe network.
+            arg=
+            mkdir "$work/sys/wlan0"
+            echo 0x1003 >"$work/sys/wlan0/flags"
+            echo 'wlan0 100.80.2.0/24 1000' >>"$work/run/refused"
+            echo 100.80.2.0/24 >"$work/run/dhcp-overlap.wlan0"
+        fi
         lease=overlap sh "$work/check-driver" $arg || :
         [ -e "$work/run/refused" ]
         if grep -q 'convergent-alert' "$work/calls"; then exit 1; fi
@@ -313,7 +320,7 @@ for case in keep late recur latched; do
             grep -qx 'ip link set dev eth1 down' "$work/after"
             [ "$(cat "$work/sys/eth1/flags")" = 0x1002 ]
         else
-            if grep -q eth1 "$work/calls"; then exit 1; fi
+            if grep -q 'eth1\|wlan0' "$work/calls"; then exit 1; fi
         fi ;;
     esac
 done
