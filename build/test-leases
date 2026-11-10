@@ -254,7 +254,8 @@ rm -rf "$state/fw.topology" "$state/leases/quiesced" "$state/leases/held"
 mv "$work/saved.keep" "$state/leases/saved"
 # Each remote mutation runs on the firewall under one lock and its own bound (100 s, under the host's 120 s),
 # so a hold or seed the host gave up on cannot outlive a later resume, and the seed installs nothing short of
-# the merge's byte count. The seed script runs here for real, with its paths moved.
+# the merge's byte count. The seed script runs here for real, with its paths moved and its host-wide sync
+# dropped: the 2 s bound is the lock wait's, not the builder's disk.
 (
 	rsh() {
 		case $2 in *'rcctl disable dhcpd'*) kind=hold ;; *'cat >/var/db/dhcpd.leases.new'*) kind=seed ;; *) kind=resume ;; esac
@@ -269,8 +270,9 @@ mv "$work/saved.keep" "$state/leases/saved"
 	done
 	sed -e "s|/var/run/convergent-leases.lock|$work/lock|g" -e "s|/var/db/dhcpd.leases|$work/seeded|g" \
 		-e "s|/etc/convergent/dhcpd.flags|$work/flags|g" -e "s|/var/db/convergent-seeded|$work/marker|g" \
-		-e 's/timeout -k 5 100 /timeout -k 1 2 /' "$work/script.fw1.seed" >"$work/seed.sh"
+		-e 's/timeout -k 5 100 /timeout -k 1 2 /' -e 's/^sync"$/:"/' "$work/script.fw1.seed" >"$work/seed.sh"
 	grep -q 'timeout -k 1 2 ' "$work/seed.sh"
+	grep -qx ':"' "$work/seed.sh"
 	touch "$work/flags" "$work/marker"
 	if head -c 20 "$state/leases/saved" | sh "$work/seed.sh"; then exit 1; fi
 	[ ! -e "$work/seeded" ]

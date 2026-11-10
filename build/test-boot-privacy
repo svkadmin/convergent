@@ -879,7 +879,7 @@ sed -n '/^bluetooth() {/,/^}/p; /^bluetooth_radio() {/,/^}/p; /^bluetooth_blocke
     sed -e "s|/sys/class/rfkill/|$work/bt/rfkill/|g" -e "s|/run/convergent-bluetooth|$work/bt/convergent-bluetooth|g" \
         -e 's/rc-service /rc_service /' >"$work/bt-functions"
 check_script "$work/bt-functions"
-[ "$(grep -c 'rc_service bluetooth' "$work/bt-functions")" = 3 ] || die 'bluetooth extraction'
+[ "$(grep -c 'rc_service bluetooth' "$work/bt-functions")" = 4 ] || die 'bluetooth extraction'
 mkdir -p "$work/bt/rfkill/rfkill0" "$work/bt/rfkill/rfkill1"
 echo wlan >"$work/bt/rfkill/rfkill0/type"; echo 0 >"$work/bt/rfkill/rfkill0/soft"
 echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1/soft"
@@ -899,8 +899,9 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
         esac
     }
     rc_service() {
-        case $* in 'bluetooth start'|'bluetooth stop') ;; *) exit 97 ;; esac
+        case $* in 'bluetooth start') : >"$b/running" ;; 'bluetooth stop') rm -f "$b/running" ;; 'bluetooth status') ;; *) exit 97 ;; esac
         echo "rc-service $*" >>"$b/calls"
+        [ "$*" != 'bluetooth status' ] || [ -e "$b/running" ]
     }
     timeout() {
         [ "$1 $2 $3 $4" = '-k 1 10 bluetoothctl' ] || exit 97
@@ -927,12 +928,13 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
     expect 'rfkill unblock bluetooth' 'rc-service bluetooth start' 'bluetoothctl show' 'bluetoothctl show' 'bluetoothctl power on'
     [ "$(cat "$b/rfkill/rfkill1/soft")" = 0 ]
     (bluetooth off)
-    expect 'bluetoothctl power off' 'rfkill block bluetooth' 'rc-service bluetooth stop'
+    expect 'rc-service bluetooth status' 'bluetoothctl power off' 'rfkill block bluetooth' 'rc-service bluetooth stop'
     [ "$(cat "$b/rfkill/rfkill1/soft")" = 1 ]
+    # bluetoothd stopped: off does not wait for it.
     echo 0 >"$b/rfkill/rfkill1/soft"; stuck=yes
     if (bluetooth off) 2>"$b/log"; then die 'Bluetooth off passed with the radio unblocked'; fi
     grep -q 'still reads unblocked' "$b/log"
-    expect 'bluetoothctl power off' 'rfkill block bluetooth' 'rc-service bluetooth stop'
+    expect 'rc-service bluetooth status' 'rfkill block bluetooth' 'rc-service bluetooth stop'
     # No adapter: a bounded wait, then the radio is blocked again.
     stuck=no adapter=no
     if (bluetooth on) 2>"$b/log"; then die 'Bluetooth on passed without an adapter'; fi
@@ -956,7 +958,7 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
     # A radio that vanishes mid-loop counts as blocked.
     mkdir "$b/rfkill/rfkill2"
     (bluetooth off) || die 'a vanished radio failed Bluetooth off'
-    expect 'bluetoothctl power off' 'rfkill block bluetooth' 'rc-service bluetooth stop'
+    expect 'rc-service bluetooth status' 'rfkill block bluetooth' 'rc-service bluetooth stop'
     rmdir "$b/rfkill/rfkill2"
 )
 echo 'test-boot-privacy: bluetooth passed'

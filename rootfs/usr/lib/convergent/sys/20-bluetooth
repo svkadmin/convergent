@@ -21,9 +21,19 @@ bluetooth_radio() {
 		fi
 	done
 }
+# bluetoothd runs only while the radio is unblocked: without it bluetoothctl waits out its bound.
+bluetooth_ready() {
+	bluetooth_radio
+	case $radio in unblocked) return 0 ;; none) die 'no Bluetooth radio' ;; esac
+	# A radio only soft-blocked comes up with sys bluetooth on.
+	for r in /sys/class/rfkill/rfkill*; do
+		[ "$(cat "$r/type" 2>/dev/null)" != bluetooth ] || [ "$(cat "$r/hard" 2>/dev/null)" = 1 ] || die 'Bluetooth is off; turn it on first (sys bluetooth on)'
+	done
+	die 'Bluetooth is blocked by the hardware switch'
+}
 bluetooth_state() {
 	bluetooth_radio
-	[ "$radio" != blocked ] || { echo 'Bluetooth: off (radio blocked)'; return 0; }
+	case $radio in blocked) echo 'Bluetooth: off (radio blocked)'; return 0 ;; none) echo 'Bluetooth: no radio'; return 0 ;; esac
 	value=$(timeout -k 1 10 bluetoothctl show 2>/dev/null) || { result=$?; echo 'Bluetooth: unknown'; return "$result"; }
 	value=$(printf '%s\n' "$value" | awk '$1 == "Powered:" {if ($2 == "yes") print "on"; else if ($2 == "no") print "off"; exit}')
 	printf 'Bluetooth: %s\n' "${value:-unknown}"
@@ -40,6 +50,7 @@ bluetooth_on() { noargs "$@"; run sudo /usr/local/sbin/devices bluetooth on; }
 bluetooth_off() { noargs "$@"; run sudo /usr/local/sbin/devices bluetooth off; }
 bluetooth_scan() {
 	noargs "$@"
+	bluetooth_ready
 	reply=$(run timeout -k 1 15 bluetoothctl --timeout 10 scan on); result=$?
 	printf '%s\n' "$reply" | tr -d '\000-\010\013-\037\177'
 	return "$result"
@@ -65,6 +76,7 @@ bluetooth_pick() {
 bluetooth_device() {
 	operation=$1; shift
 	[ "$#" -le 1 ] || usage
+	bluetooth_ready
 	if [ "$#" = 0 ]; then
 		[ "$operation" != pair ] || bluetooth_scan >&2 || return
 		bluetooth_pick || return
