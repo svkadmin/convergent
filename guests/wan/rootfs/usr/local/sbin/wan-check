@@ -47,9 +47,9 @@ if [ "${1:-}" = retry ]; then
 		[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
 		[ -e "/sys/class/net/$ifc" ] || continue
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || exit 1
+		# Only the new lease's hook may report a route overlap again.
+		rm -f "$d/dhcp-overlap.$ifc"
 		ifup "$ifc" 9>&- >/dev/null 2>&1 || rc=1
-		# The retry's own carrier changes are no replug: the next check keeps the new lease.
-		cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes" >"$d/link.$ifc" 2>/dev/null || :
 	done
 fi
 
@@ -62,7 +62,11 @@ for ifc in $UP_IFS; do
 		rm -f "$d/link.$ifc" "$d/dhcp-overlap.$ifc"
 		continue
 	fi
-	grep -q "^$ifc " "$d/refused" 2>/dev/null && continue
+	# A refused uplink's carrier changes (a retry, a late cable) are no replug once a safe lease clears it.
+	if grep -q "^$ifc " "$d/refused" 2>/dev/null; then
+		cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes" >"$d/link.$ifc" 2>/dev/null || :
+		continue
+	fi
 	link=$(cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes") || continue
 	previous=$(cat "$d/link.$ifc" 2>/dev/null || :)
 	if [ "$link" != "$previous" ] || ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
@@ -82,7 +86,9 @@ for ifc in $UP_IFS; do
 			bad=1 ifc_bad=1
 			if [ -n "$route_overlap" ] && grep -q "^$ifc " "$d/refused" 2>/dev/null; then
 				# Latched already: no new alert, but a retried wired uplink goes down again.
-				[ "$ifc" = "$WIFI_IF" ] || [ "$(cat "/sys/class/net/$ifc/operstate" 2>/dev/null)" = down ] || wired_down "$ifc"
+				flags=$(cat "/sys/class/net/$ifc/flags" 2>/dev/null) || flags=1
+				# Set down already (IFF_UP clear): no DHCP client left.
+				[ "$ifc" = "$WIFI_IF" ] || [ $((flags & 1)) = 0 ] || wired_down "$ifc"
 				continue
 			fi
 			# One line per interface: another uplink's refusal stays latched.

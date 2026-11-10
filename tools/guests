@@ -228,10 +228,14 @@ autorestart_clear() (
     done <"$work/autorestart"
     # A heal's restart clears a cut drain's hold but not the saved value beside it.
     jq -r '.[] | select(.config["user.convergent.autorestart"] != "true" and (.config | has("user.convergent.autorestart.old"))) |
-        "\(.project // "default") \(.name)"' "$work/autorestart-instances" >"$work/autorestart-orphans" || return
-    while read -r project node; do
+        "\(.project // "default") \(.name) \(.config["user.convergent.autorestart.old"])"' "$work/autorestart-instances" >"$work/autorestart-orphans" || return
+    while read -r project node old; do
         ic_project=$project
-        ic config unset "$node" user.convergent.autorestart.old || return
+        case $old in
+        -) ic config unset "$node" user.convergent.autorestart.old || return ;;
+        *) ic config set "$node" boot.autorestart="$old" &&
+            ic config unset "$node" user.convergent.autorestart.old || return ;;
+        esac
     done <"$work/autorestart-orphans"
 )
 volumes() {
