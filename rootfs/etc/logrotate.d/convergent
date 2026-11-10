@@ -6,6 +6,15 @@
 	missingok
 	notifempty
 }
+# The Incus package ships no rule; incusd keeps its log open.
+/var/log/incus/incusd.log {
+	weekly
+	rotate 4
+	compress
+	copytruncate
+	missingok
+	notifempty
+}
 # Incus appends up to the 1 MiB console ring to console.log on every read and rotates it only at VM start.
 /var/log/incus/*/console.log {
 	size 4M
