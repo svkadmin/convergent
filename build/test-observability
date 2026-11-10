@@ -661,6 +661,10 @@ sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage 
 [ -s "$work/volumes" ]
 sh -n "$work/volumes"
 (
+    # Guests set up: the volumes are read.
+    sdir=$work/volumes-state
+    mkdir -p "$sdir/guests"
+    touch "$sdir/guests/initialized"
     bad() { ok=0; }
     btrfs() {
         case $* in
@@ -693,6 +697,12 @@ sh -n "$work/volumes"
             ;;
         esac
     done
+    # Before guests setup nothing is read and nothing fails.
+    rm "$sdir/guests/initialized"
+    used=850 limit=1000 ok=1 sample=low
+    : >"$buf"
+    . "$work/volumes"
+    [ "$ok" = 1 ] && [ ! -s "$buf" ]
 )
 sed -n '/- alert: VolumeQuotaHigh/{n;p;n;p;}' \
     "$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml" >"$work/quota-rule"
