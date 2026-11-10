@@ -73,8 +73,10 @@ for ifc in $UP_IFS; do
 	link=$(cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes") || continue
 	previous=$(cat "$d/link.$ifc" 2>/dev/null || :)
 	# No address: restart only a dead client (ifupdown-ng runs udhcpc -b); a live one is still discovering.
+	pid=$(cat "/var/run/udhcpc.$ifc.pid" 2>/dev/null) || pid=
+	case $pid in '' | *[!0-9]*) pid= ;; esac
 	if [ "$link" != "$previous" ] || { ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet ' &&
-		! kill -0 "$(cat "/var/run/udhcpc.$ifc.pid" 2>/dev/null)" 2>/dev/null; }; then
+		{ [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; }; }; then
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 	fi
 	ifup "$ifc" 9>&- >/dev/null 2>&1 || :
