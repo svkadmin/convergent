@@ -197,7 +197,8 @@ for fault in expired fresh boundary renewed absent resolver close; do
     rc=0
     sh "$work/portal-driver" expire >"$work/out" 2>"$work/err" || rc=$?
     if [ "$fault" = close ]; then
-        [ "$rc" != 0 ] && [ -e "$work/run/portal" ]
+        [ "$rc" != 0 ]
+        [ -e "$work/run/portal" ]
         grep -qx 'wan-portal: could not close portal DNS' "$work/err"
         continue
     fi

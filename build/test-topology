@@ -99,8 +99,10 @@ for phase in before-rebuild one-new both-new first-boot both-booted rollback-int
         fault=fw2
         if topology_recover; then echo 'accepted failed rollback' >&2; exit 1; fi
         [ -d "$state/fw.topology" ]
-        stopped fw1 && stopped fw2
-        [ -f "$scratch/fw1.held" ] && [ -f "$scratch/fw2.held" ]
+        stopped fw1
+        stopped fw2
+        [ -f "$scratch/fw1.held" ]
+        [ -f "$scratch/fw2.held" ]
         fault=
         : >"$log"
     fi
@@ -115,7 +117,8 @@ for phase in before-rebuild one-new both-new first-boot both-booted rollback-int
         [ "$(cat "$scratch/fw1.image")" = old ]
         awk '/^rebuild / {n++} /^boot / {if(n!=2) bad=1} END {exit bad || n!=2}' "$log"
     fi
-    running fw1 && running fw2
+    running fw1
+    running fw2
     [ ! -e "$scratch/fw1.held" ] && [ ! -e "$scratch/fw2.held" ]
 done
 echo 'test-topology: rollback/replay and commit fixtures passed'
@@ -642,7 +645,9 @@ echo 'test-topology: a damaged wan disk is told apart from a host-side read fail
         journal "$guest"
         touch "$scratch/$guest.unhealthy"
         (update "$guest" "$scratch/image") >/dev/null
-        [ ! -e "$state/committed" ] && [ ! -e "$state/pending" ] && [ ! -e "$state/profiles.before" ]
+        [ ! -e "$state/committed" ]
+        [ ! -e "$state/pending" ]
+        [ ! -e "$state/profiles.before" ]
         grep -qx "replace $guest pending=1 rebuilding=$guest" "$log"
         [ "$(grep -cx commit "$log")" = 2 ]
         if grep -q -e rollback -e profiles_restore "$log"; then exit 1; fi
@@ -764,7 +769,8 @@ echo 'test-topology: update fw waits for booting firewalls and records its image
         for f in fw1 fw2; do echo running >"$scratch/$f.status"; done
         boots=0
         topology_hold
-        stopped fw1 && stopped fw2
+        stopped fw1
+        stopped fw2
         [ -f "$state/leases/quiesced" ]
         awk '$0 == "hold fw2" {h=NR} $0 == "retry topology_settled fw2" {w=NR} $0 == "read fw1" {r=NR} END {exit !(h && w && r && h < w && w < r)}' "$log"
         if [ "$silent" = 2 ]; then grep -qx 'read fw2' "$log"; elif grep -qx 'read fw2' "$log"; then exit 1; fi
@@ -836,9 +842,12 @@ echo 'test-topology: a failed redo resumes the healthy allocator through the rea
     rsh() { [ ! -e "$scratch/$1.broken" ] || return 255; case $2 in *'cat >/var/db/dhcpd.leases.new'*) cat >/dev/null ;; esac; }
     pair() { [ ! -e "$scratch/fw1.broken" ] && [ ! -e "$scratch/fw2.broken" ]; }
     topology_recover
-    [ ! -e "$state/fw.topology" ] && [ ! -e "$state/leases/held" ]
-    grep -qx 'rebuild fw1 new' "$log" && grep -qx 'rebuild fw2 new' "$log"
-    running fw1 && running fw2
+    [ ! -e "$state/fw.topology" ]
+    [ ! -e "$state/leases/held" ]
+    grep -qx 'rebuild fw1 new' "$log"
+    grep -qx 'rebuild fw2 new' "$log"
+    running fw1
+    running fw2
     rm -rf "$state/leases"
 )
 echo 'test-topology: a committed migration redoes both silent nodes'
@@ -851,7 +860,8 @@ echo 'test-topology: a committed migration redoes both silent nodes'
     retry() { tries=0; until "$@"; do [ "$((tries += 1))" -lt 5 ] || return 1; done; }
     start_guest() { [ -e "$scratch/fw1.refused" ] || { touch "$scratch/fw1.refused"; return 1; }; seed_start "$1"; }
     topology_recover
-    [ ! -e "$state/fw.topology" ] && [ -e "$scratch/fw1.refused" ]
+    [ ! -e "$state/fw.topology" ]
+    [ -e "$scratch/fw1.refused" ]
     if grep -q '^rebuild ' "$log"; then exit 1; fi
     running fw1 && running fw2
 )

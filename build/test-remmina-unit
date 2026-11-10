@@ -250,10 +250,12 @@ for role in remmina def; do
             "$outer_socket" "$wayland_socket" "$run" "$run" >"$run/expected"
         cmp "$run/expected" "$run/order"
         wait "$cage_capture"
-        [ -f "$run/drained" ] && [ "$(wc -c <"$run/cage.log")" = 1048576 ]
+        [ -f "$run/drained" ]
+        [ "$(wc -c <"$run/cage.log")" = 1048576 ]
         [ "$(tail -c 8 "$run/cage.log")" = drained ]
     else
-        [ "$wayland_socket" = "$run/sockets/wayland-0" ] && [ "$outer_socket" = "$wayland_socket" ]
+        [ "$wayland_socket" = "$run/sockets/wayland-0" ]
+        [ "$outer_socket" = "$wayland_socket" ]
         [ "$(wc -l <"$run/providers")" = 1 ]
     fi
 done

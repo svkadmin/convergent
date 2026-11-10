@@ -21,7 +21,8 @@ cp "$tmp/cert" "$keys/debug.crt"
 printf 'diagnostic output\n\000binary\n' >"$state/$id.txt"
 sed -n '/^{ printf.*"\$id"; cat /,/die "output encryption failed"/p' "$here/../tools/debug" >"$work/encrypt"
 sed -n '/^	openssl cms -decrypt/,/^	tail -n +2 /p' "$here/debug" >"$work/decrypt"
-[ -s "$work/encrypt" ] && [ -s "$work/decrypt" ]
+[ -s "$work/encrypt" ]
+[ -s "$work/decrypt" ]
 . "$work/encrypt"
 (. "$work/decrypt") >"$work/result"
 cmp "$state/$id.txt" "$work/result"

@@ -932,7 +932,8 @@ OWNER
         sh -eu "$work/owner-probe" || rc=$?
         [ -f "$work/bounded" ]
         if [ "$reply" = 0 ]; then
-            [ "$rc" = 0 ] && [ -f "$work/continued" ]
+            [ "$rc" = 0 ]
+            [ -f "$work/continued" ]
             for fd in 9 6 8; do grep -qx retained "$work/lock$fd"; done
         else
             [ "$rc" != 0 ] && [ ! -e "$work/continued" ]
@@ -1020,7 +1021,8 @@ for guest in wan svc; do
     sed -n '/^: >"\$.*\/etc\/sysctl.d\/00-alpine.conf"$/p' "$repo/guests/$guest/build" >"$work/override"
     [ -s "$work/override" ]
     . "$work/override"
-    [ -f "$target/etc/sysctl.d/00-alpine.conf" ] && [ ! -s "$target/etc/sysctl.d/00-alpine.conf" ]
+    [ -f "$target/etc/sysctl.d/00-alpine.conf" ]
+    [ ! -s "$target/etc/sysctl.d/00-alpine.conf" ]
     rm "$target/etc/sysctl.d/00-alpine.conf"
 done
 python3 -B - "$repo" "$work" <<'PY'

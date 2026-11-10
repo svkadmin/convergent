@@ -66,7 +66,8 @@ for node in wan fw1 fw2; do
     for fault in flood short; do
         touch "$work/$node.$fault"
         if sh "$work/gate"; then exit 1; fi
-        [ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+        [ "$(cat "$work/verdict")" = closed ]
+        [ ! -e "$work/gate.valid" ]
         rm "$work/$node.$fault"
         sh "$work/gate"
     done
@@ -81,7 +82,8 @@ rm "$work/wan.errflood"
 for node in fw1 fw2; do
     touch "$work/$node.liveflood"
     if sh "$work/gate"; then exit 1; fi
-    [ "$(cat "$work/verdict")" = closed ] && [ ! -e "$work/gate.valid" ]
+    [ "$(cat "$work/verdict")" = closed ]
+    [ ! -e "$work/gate.valid" ]
     rm "$work/$node.liveflood"
     sh "$work/gate"
 done
@@ -123,7 +125,8 @@ sh "$work/gate"
 # A healthy reply cut off by the timeout is unanswered: a loaded standby keeps a validated gate open.
 touch "$work/fw2.hung"
 sh "$work/gate"
-[ "$(cat "$work/verdict")" = open ] && [ -e "$work/gate.valid" ]
+[ "$(cat "$work/verdict")" = open ]
+[ -e "$work/gate.valid" ]
 rm "$work/fw2.hung"
 # Two masters close the gate but keep validation: a failover seen half-way reopens once one remains.
 echo MASTER >"$work/fw2.role"

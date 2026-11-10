@@ -449,10 +449,12 @@ echo 'test-networks: DNS guest durability and failure fixtures passed'
     [ "$(cat "$state/list.source")" = "$BLOCKLIST_URL" ]
     remote_ok=0
     if rollback; then exit 1; fi
-    [ -f "$state/pending" ] && [ -d "$state/cache.before" ]
+    [ -f "$state/pending" ]
+    [ -d "$state/cache.before" ]
     remote_ok=1
     rollback
-    [ ! -e "$state/stamp" ] && [ ! -e "$state/pending" ]
+    [ ! -e "$state/stamp" ]
+    [ ! -e "$state/pending" ]
     grep -qx 'old.net CNAME .' "$state/list.rpz"
     [ "$(cat "$state/list.refreshed")" = 1000 ]
     [ "$(cat "$state/list.source")" = https://fixture.invalid/list ]
@@ -471,7 +473,8 @@ echo 'test-networks: DNS guest durability and failure fixtures passed'
     . "$dns/journal"
     . "$dns/cache"
     rollback
-    [ ! -e "$state/list.rpz" ] && [ ! -e "$state/list.refreshed" ]
+    [ ! -e "$state/list.rpz" ]
+    [ ! -e "$state/list.refreshed" ]
     [ ! -e "$state/list.source" ]
     # A legacy cache without source metadata stays unknown on local publication.
     echo 'other.net CNAME .' >"$dns/list.raw"
@@ -582,7 +585,8 @@ echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
     done
     failing=
     close_src 2>"$dns/error"
-    [ -z "$src_open" ] && [ ! -s "$dns/error" ]
+    [ -z "$src_open" ]
+    [ ! -s "$dns/error" ]
     # An interrupted push says so before its cleanup trap runs.
     sed -n '/^trap .* HUP INT TERM$/p' "$repo/tools/dns-push" >"$dns/trap"
     [ "$(wc -l <"$dns/trap")" = 1 ]

@@ -69,9 +69,13 @@ for fault in none timeout route address both safe; do
     if . "$work/refuse" 2>"$work/error"; then :; fi
     case $fault in
     safe)
-        [ "$rc" = 0 ] && [ "$good" = 1 ] && [ "$bad" = 0 ]
-        [ ! -s "$work/calls" ] && [ ! -e "$d/refused" ]
-        [ -e "$work/address" ] && [ -e "$work/route" ]
+        [ "$rc" = 0 ]
+        [ "$good" = 1 ]
+        [ "$bad" = 0 ]
+        [ ! -s "$work/calls" ]
+        [ ! -e "$d/refused" ]
+        [ -e "$work/address" ]
+        [ -e "$work/route" ]
         continue ;;
     none) [ "$rc" = 0 ]; printf 'disconnect\n' >"$work/want" ;;
     *)
