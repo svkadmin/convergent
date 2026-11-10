@@ -343,5 +343,6 @@ echo 'nameserver 192.0.2.1' >"$work/run/resolv.eth1.dns"
     set -- clear
     . "$work/wan-dhcp-dns"
 )
-[ ! -e "$work/run/resolv.eth1.dns" ] && [ ! -s "$work/calls" ]
+[ ! -e "$work/run/resolv.eth1.dns" ]
+[ ! -s "$work/calls" ]
 echo 'wan-dhcp-dns: deconfig drops the record without queuing a check'
