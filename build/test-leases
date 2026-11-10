@@ -588,19 +588,22 @@ done
         case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
         case $* in
         'query /1.0/instances?recursion=1&project=default')
-            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
         'query /1.0/instances?recursion=1&all-projects=true')
             [ "$owner_frozen" != error ] || { echo 'Error: boom' >&2; return 1; }
             [ "$owner_frozen" = 0 ] || return 124
-            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
-                {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
+                {"name":"work","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
+                {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
         *) return 1 ;;
         esac
     }
+    timeout() { shift 5; ic "$@"; }
     : >"$work/unsets"
     autorestart_clear
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
-        '--project owner config unset work boot.autorestart user.convergent.autorestart' >"$work/expected-unsets"
+        '--project owner config unset work boot.autorestart user.convergent.autorestart' \
+        '--project owner config unset hold user.convergent.autorestart' >"$work/expected-unsets"
     cmp "$work/expected-unsets" "$work/unsets"
     owner_frozen=1
     : >"$work/unsets"
@@ -617,6 +620,33 @@ done
     grep -q '^guests: WARNING: cannot list all Incus projects' "$work/err"
     if grep -q 'timed out' "$work/err"; then exit 1; fi
     rm "$work/autorestart-all.failed"
+)
+# The old wan disk is read only with room left after its copy: a full scratch is the host's failure, never
+# the disk's damage.
+(
+    eval "$(sed -n '/^wan_read() {/,/^}/p' "$here/../tools/guests")"
+    work=$work/wan-guard.d
+    mkdir "$work"
+    pool=$work/pool
+    mkdir -p "$pool/virtual-machines/wan"
+    truncate -s 4M "$pool/virtual-machines/wan/root.img"
+    die() { echo "die: $*" >"$work/wan-guard"; exit 1; }
+    sfdisk() {
+        printf '{"partitiontable":{"label":"gpt","unit":"sectors","sectorsize":512,"partitions":[{"node":"%s2","start":2048,"size":4096}]}}\n' \
+            "$pool/virtual-machines/wan/root.img"
+    }
+    chown() { :; }
+    wan_extract() { echo extract >"$work/wan-guard"; }
+    for avail in 65535 65536; do
+        df() { printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' "pool 1 1 $avail 1% /"; }
+        rm -rf "$work/wan-read" "$work/iwd" "$work/wan-guard"
+        (wan_read) || :
+        case $avail in
+        65535) grep -qx 'die: too little free space on the state volume to read the wan disk' "$work/wan-guard" ;;
+        *) grep -qx extract "$work/wan-guard" ;;
+        esac
+    done
+    rm -rf "$work"
 )
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
