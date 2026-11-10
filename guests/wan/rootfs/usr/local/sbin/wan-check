@@ -40,6 +40,13 @@ wired_down() {
 	ip link set dev "$1" down 2>/dev/null
 }
 
+# The uplink's DHCP client runs: its pidfile names a live udhcpc for it (a killed client leaves a stale one).
+client_alive() {
+	pid=$(cat "/var/run/udhcpc.$1.pid" 2>/dev/null) || return 1
+	case $pid in '' | *[!0-9]*) return 1 ;; esac
+	grep -q "udhcpc.$1.pid" "/proc/$pid/cmdline" 2>/dev/null
+}
+
 rc=0
 # Retry only refused wired uplinks (a working one keeps its lease); keep the alarm until a safe lease arrives.
 if [ "${1:-}" = retry ]; then
@@ -48,7 +55,7 @@ if [ "${1:-}" = retry ]; then
 		[ -e "/sys/class/net/$ifc" ] || continue
 		grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
 		# The refusal already killed its client: a missing pidfile must not stop the retry.
-		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || [ ! -e "/var/run/udhcpc.$ifc.pid" ] ||
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || ! client_alive "$ifc" ||
 			{ logger -t wan-check "retry: ifdown $ifc failed" || :; rc=1; continue; }
 		# Only the new lease's hook may report a route overlap again.
 		rm -f "$d/dhcp-overlap.$ifc"
@@ -73,10 +80,8 @@ for ifc in $UP_IFS; do
 	link=$(cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes") || continue
 	previous=$(cat "$d/link.$ifc" 2>/dev/null || :)
 	# No address: restart only a dead client (ifupdown-ng runs udhcpc -b); a live one is still discovering.
-	pid=$(cat "/var/run/udhcpc.$ifc.pid" 2>/dev/null) || pid=
-	case $pid in '' | *[!0-9]*) pid= ;; esac
 	if [ "$link" != "$previous" ] || { ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet ' &&
-		{ [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; }; }; then
+		! client_alive "$ifc"; }; then
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 	fi
 	ifup "$ifc" 9>&- >/dev/null 2>&1 || :

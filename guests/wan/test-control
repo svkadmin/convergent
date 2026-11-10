@@ -263,7 +263,7 @@ wan_portal() { :; }
 . "$work/wan-check"
 DRIVER
 sh -n "$work/check-driver"
-for case in keep stale stuck pending late recur latched; do
+for case in keep stale stale-pid stuck pending late recur latched; do
     rm -rf "$work/run" "$work/m" "$work/sys" "$work/addr.eth1" "$work/addr.eth2" "$work/calls"
     mkdir -p "$work/run" "$work/sys/eth1" "$work/sys/eth2"
     echo 4 >"$work/sys/eth2/ifindex"
@@ -295,7 +295,7 @@ for case in keep stale stuck pending late recur latched; do
         [ ! -e "$work/run/refused" ] ;;
     stuck)
         # A client ifdown cannot stop is not doubled: no ifup, and the retry fails.
-        sleep 30 & echo $! >"$work/run/udhcpc.eth1.pid"
+        sh -c 'sleep 30; :' udhcpc -p "$work/run/udhcpc.eth1.pid" & echo $! >"$work/run/udhcpc.eth1.pid"
         rc=0; ifdown_rc=1 lease=safe sh "$work/check-driver" retry || rc=$?
         kill "$(cat "$work/run/udhcpc.eth1.pid")"
         [ "$rc" = 1 ]
@@ -304,14 +304,20 @@ for case in keep stale stuck pending late recur latched; do
         # Not refused, no address, link unchanged: a live client is still discovering and is left alone.
         rm -f "$work/run/refused" "$work/run/dhcp-overlap.eth1"
         printf '3\n6\n' >"$work/run/link.eth1"
-        sleep 30 & echo $! >"$work/run/udhcpc.eth1.pid"
+        sh -c 'sleep 30; :' udhcpc -p "$work/run/udhcpc.eth1.pid" & echo $! >"$work/run/udhcpc.eth1.pid"
         lease=none sh "$work/check-driver"
         kill "$(cat "$work/run/udhcpc.eth1.pid")"
         if grep -qx 'ifdown --force eth1' "$work/calls"; then exit 1; fi
-        # Once that client is gone, the next check restarts it.
-        rm -f "$work/run/udhcpc.eth1.pid"
+        # Once that client is gone (its pidfile left behind, or naming another process), the next check restarts it.
+        sleep 30 & echo $! >"$work/run/udhcpc.eth1.pid"
         lease=none sh "$work/check-driver"
+        kill "$(cat "$work/run/udhcpc.eth1.pid")"
         grep -qx 'ifdown --force eth1' "$work/calls" ;;
+    stale-pid)
+        # A killed client left its pidfile: the retry goes on.
+        echo 999999 >"$work/run/udhcpc.eth1.pid"
+        ifdown_rc=1 lease=safe sh "$work/check-driver" retry
+        grep -qx 'ifup eth1' "$work/calls" ;;
     late)
         lease=none sh "$work/check-driver" retry || :
         sed -n '/^ifup eth1$/,$p' "$work/calls" >"$work/after"
