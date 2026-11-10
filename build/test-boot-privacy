@@ -1222,8 +1222,11 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
     # A refusal is logged; the network repair goes on.
     refuse=yes
     logger() { echo "logger $*" >>"$work/host-rfkill-log"; }
+    : >"$work/host-rfkill-calls"
     (. "$work/host-rfkill") || die 'a refused unblock failed the network repair'
-    grep -q 'cannot unblock the platform Wi-Fi switch rfkill1$' "$work/host-rfkill-log" || die 'refused unblock not logged'
+    [ "$(tr '\n' , <"$work/host-rfkill-calls")" = 'rfkill unblock 1,rfkill unblock 3,' ] || die 'a refusal stopped the loop'
+    grep -q '^logger -p user.warning -t host-net cannot unblock the platform Wi-Fi switch rfkill1$' "$work/host-rfkill-log" &&
+        grep -q 'switch rfkill3$' "$work/host-rfkill-log" || die 'refused unblocks not logged as warnings'
     [ ! -e "$work/host-rfkill-died" ] || die 'a refused unblock died'
 )
 echo 'test-boot-privacy: platform Wi-Fi switch passed'

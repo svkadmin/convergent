@@ -4133,8 +4133,10 @@ wan_wifi() (
     [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]
     wan_read
     for file in "$release/iwd/"*; do cmp "$file" "$work/iwd/${file##*/}"; done
-    # Refused at the seed: not on wan's disk at all (extraction would drop it anyway).
-    [ -f "$work/wan-files" ] && ! grep -q '/CV-bad\.psk$' "$work/wan-files"
+    # Refused at the seed: not on wan's disk at all (extraction would drop it anyway). Separate tests: set -e
+    # ignores a failure before the last && and any ! pipeline.
+    [ -f "$work/wan-files" ]
+    if grep -q '/CV-bad\.psk$' "$work/wan-files"; then die 'the refused profile reached wan'\''s disk'; fi
     ic start wan
     deadline=$(($(date +%s) + 600))
     until timeout 30 ssh -F /etc/convergent/ssh_config wan check >/dev/null 2>&1; do
