@@ -39,8 +39,8 @@ bindsym --locked XF86MonBrightnessUp exec sys display bright +5
 # Lock now; after 10 minutes idle unless the bar's NL holds it off (nolock file); lid close.
 # No before-sleep: without logind swayidle exits on it.
 bindsym Mod4+Escape exec swaylock -f
-# A minute after locking the screen goes dark; any input wakes it (NL keeps it on too).
-exec swayidle -w timeout 600 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaylock -f' timeout 660 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaymsg "output * power off"' resume 'swaymsg "output * power on"'
+# A minute after locking the screen goes dark; any input wakes it (NL keeps it on too), but not a closed lid's panel.
+exec swayidle -w timeout 600 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaylock -f' timeout 660 '[ -e "$XDG_RUNTIME_DIR/nolock" ] || swaymsg "output * power off"' resume 'swaymsg "output * power on"; grep -qs closed /proc/acpi/button/lid/*/state && for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power off ;; esac; done'
 # Nothing else acts on the lid: it turns the internal panel off and on; an external monitor stays.
 bindswitch --locked lid:on exec sh -c 'swaylock -f; for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power off ;; esac; done'
 bindswitch --locked lid:off exec sh -c 'for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power on ;; esac; done'
