@@ -964,8 +964,10 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
 echo 'test-boot-privacy: bluetooth passed'
 
 # The session watch: a closed Remote window (Cage gone) ends the session quietly; any other provider is a failure.
-sed -n '/^    for child in \$children; do$/,/^    done$/p' "$repo/tools/browser" >"$work/watch"
-[ "$(grep -c 'kill -0' "$work/watch")" = 1 ]
+# The loop whose first line is the kill -0 probe (cleanup's loop starts the same).
+awk 'prev ~ /^    for child in \$children; do$/ && /kill -0/ {copy = 1; print prev} copy {print} copy && /^    done$/ {exit} {prev = $0}' \
+    "$repo/tools/browser" >"$work/watch"
+[ "$(grep -c 'kill -0' "$work/watch")" = 1 ] && [ "$(grep -c '^    done$' "$work/watch")" = 1 ]
 check_script "$work/watch"
 for sample in remmina:cage remmina:audio def:cage; do
     rc=0
