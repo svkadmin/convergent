@@ -5485,6 +5485,7 @@ trap 'rm -rf "$work"' 0
 sed "s|/sys/class/rfkill/|$work/rfkill/|" /usr/lib/convergent/sys/20-bluetooth >"$work/module"
 grep -qF "$work/rfkill/rfkill*" "$work/module"
 . "$work/module"
+die() { echo "$*" >&2; exit 3; }
 run() { "$@"; }
 sudo() {
 	printf 'sudo %s\n' "$*" >>"$work/calls"
@@ -5554,6 +5555,13 @@ for block in 1:0 0:1; do
 	state=$(bluetooth_state); [ "$state" = 'Bluetooth: off (radio blocked)' ]
 	shown=$(bluetooth_show); [ "$shown" = 'Radio: blocked' ]
 done
+# Actions on a blocked radio say so at once instead of waiting out bluetoothctl's bound.
+: >"$work/calls"
+for action in scan 'device connect AA:BB:CC:DD:EE:FF' 'device connect'; do
+	if (bluetooth_$action) 2>"$work/err" </dev/null; then exit 1; else [ "$?" = 3 ]; fi
+	grep -qx 'Bluetooth is off; turn it on first (sys bluetooth on)' "$work/err"
+done
+[ ! -s "$work/calls" ]
 echo 0 >"$work/rfkill/rfkill1/hard"
 if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
 [ "$(bluetooth_show 2>/dev/null)" = 'Radio: unblocked' ]
@@ -5561,6 +5569,9 @@ if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
 rm -r "$work/rfkill/rfkill1"
 : >"$work/calls"
 [ "$(bluetooth_show)" = 'Radio: none' ]
+[ "$(bluetooth_state)" = 'Bluetooth: no radio' ]
+if (bluetooth_scan) 2>"$work/err"; then exit 1; fi
+grep -qx 'no Bluetooth radio' "$work/err"
 [ ! -s "$work/calls" ]
 CHECK
 t sh -eu <<'CHECK'

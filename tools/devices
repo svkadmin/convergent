@@ -309,7 +309,8 @@ bluetooth() {
 		trap - INT TERM HUP
 		return
 	fi
-	timeout -k 1 10 bluetoothctl power off >/dev/null 2>&1 || :
+	# Only a running bluetoothd answers: a stopped one costs the whole bound.
+	if rc-service bluetooth status >/dev/null 2>&1; then timeout -k 1 10 bluetoothctl power off >/dev/null 2>&1 || :; fi
 	failed=
 	rfkill block bluetooth || failed='rfkill refused'
 	rc-service bluetooth stop || failed=${failed:-'bluetoothd did not stop'}
