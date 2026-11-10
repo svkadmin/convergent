@@ -662,8 +662,9 @@ policy reload is `/usr/local/libexec/convergent/fw-pf-reload`; a failed load lea
 1. Run `sys fw maintenance`. It checks coherent roles, PF, pfsync defer, Unbound and local DNS,
    asks before demoting the `MASTER`, then verifies that the peer took over fully.
 2. Do the maintenance.
-3. Run `sys fw undo`. Both firewalls must be healthy. Success: `fw1` is `MASTER` and `fw2` is
-   `BACKUP` on every registered segment.
+3. Run `sys fw undo`. Success: `fw1` is `MASTER` and `fw2` is `BACKUP` on every registered
+   segment. The firewall in maintenance must be healthy while its peer is; with a broken peer, undo
+   releases it anyway, so it takes over and the self-heal or `sys fw rebuild` can reach the peer.
 
 A failure or interruption after the demotion undoes it. One while the demotion is uncertain keeps
 the journal: run `sys fw undo`. If the peer then loses its WAN probes, it demotes equally, and

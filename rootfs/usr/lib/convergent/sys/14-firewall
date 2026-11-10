@@ -123,9 +123,20 @@ firewall_change() (
 		[ -f "$journal" ] || die 'no maintenance demotion recorded'
 		master=$(cat "$journal")
 		case $master in fw1) peer=fw2 ;; fw2) peer=fw1 ;; *) die 'invalid maintenance journal' ;; esac
-		firewall_healthy "$master" && firewall_healthy "$peer" || die 'both firewalls must be healthy before undo'
+		# A broken peer must not lock the owner out: the released firewall takes over, and the heal or a rebuild
+		# can reach the peer once the journal is gone.
+		peer_ok=1
+		firewall_healthy "$peer" || peer_ok=
+		[ -z "$peer_ok" ] || firewall_healthy "$master" ||
+			die "$master is unhealthy; run sys firewall rebuild $master (it ends the maintenance)"
+		[ -n "$peer_ok" ] || echo "$peer is unhealthy: releasing $master so it takes over" >&2
 		confirm "Release $master maintenance demotion" || exit 1
 		firewall_release || die 'undo failed; journal retained, retry sys firewall undo'
+		if [ -z "$peer_ok" ]; then
+			echo "Maintenance ended; $master is released. $peer is unhealthy: the self-heal can act again, or run sys firewall rebuild $peer."
+			logger -t sys-firewall "maintenance ended with $peer unhealthy" || :
+			exit 0
+		fi
 		firewall_wait fw1 fw2 || die 'demotion removed but normal fw1 MASTER / fw2 BACKUP roles not restored; inspect sys fw status'
 		echo 'Maintenance ended; fw1 is master on all registered segments.'
 		logger -t sys-firewall 'maintenance ended: fw1 took over all registered segments' || :
