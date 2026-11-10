@@ -63,9 +63,11 @@ done
 ip -4 route show default dev host | grep -Eq '^default via 100\.80\.1\.1 dev host( |$)' ||
 	ip route replace default via 100.80.1.1 dev host
 # rfkill.default_state=0 also blocks a platform Wi-Fi switch (dell-laptop) that can cut wan's card. Only a
-# blocked one: repair runs every minute, and each rfkill call is a syslog line.
+# blocked one, by its index: repair runs every minute, each rfkill call is a syslog line, and a WWAN modem
+# nothing uses stays blocked. A refusal is logged: failing the repair would fail every scan.
 for radio in /sys/class/rfkill/rfkill*; do
 	case $(cat "$radio/type" 2>/dev/null):$(cat "$radio/soft" 2>/dev/null) in
-	wlan:1|wwan:1) rfkill unblock wlan wwan || die 'cannot unblock the platform Wi-Fi switch'; break ;;
+	wlan:1) rfkill unblock "${radio##*/rfkill}" ||
+		logger -p user.warning -t host-net "cannot unblock the platform Wi-Fi switch ${radio##*/}" 2>/dev/null || : ;;
 	esac
 done

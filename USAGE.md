@@ -23,7 +23,8 @@ type `continue anyway`), the target disk, the owner name, password and LUKS pass
 keyboard layouts, time zone, an optional Wi-Fi network, the USB devices to allow and an optional LUKS
 header backup. A summary follows; type the disk path again, or `ERASE` and its serial, to install.
 A disk that already holds Convergent asks for `REINSTALL <disk>`; another disk with Convergent must be
-detached. It copies the guests and powers off. Ctrl-D or a wrong answer three times starts it again.
+detached. It copies the guests, waits for Enter and powers off. Ctrl-D or a wrong answer three times
+stops it; it says why and starts again after Enter.
 The Wi-Fi passphrase waits in the encrypted `/var` until the first guest setup moves it into wan. The
 header backup goes to a FAT, exFAT or ext4 filesystem on a USB or removable disk. At the end it
 prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second-passphrase-and-header-backup)).

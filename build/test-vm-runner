@@ -345,6 +345,10 @@ for last, want in ((b"@off", False), (b"@quit", True)):
     run(b"Remove the install stick", 0)
     run(now=0)
     assert state["step"] == 1 and bool(state["done"]) == want and state["qemu"].stdin.sent == [], last
+# A last answer (the installer's power-off prompt), then the guest's power-off: answered, not done.
+state, run = install_state([(rb"Press Enter to power off: ", b"=")])
+run(b"Press Enter to power off: ", 0)
+assert run(now=1) == [b"\n"] and state["step"] == 1 and not state["done"]
 for goal, seen, want in (("bless", b"\nThis is good.", False), ("bless", b"\r\nrelease 42 is good\r\n", True),
                          ("first-boot-dup", b"\r\nrelease 42 is good\r\n", False)):
     state = dict(goal=goal, re=re, seen=seen, result=None, guest_test=False, install_test=False, step=0, script=[])
