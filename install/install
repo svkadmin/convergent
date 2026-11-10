@@ -859,8 +859,8 @@ printf 'Remove the install stick after power-off, before booting.\n'
 if [ -n "$stick" ] || { [ -n "$backup" ] && [ -z "$saved" ]; }; then
 	# Ctrl-C here would restart the installer over a complete disk; keys typed during the install do not answer.
 	trap '' INT QUIT
-	stty -icanon min 0 time 0 <&3 && cat <&3 >/dev/null
-	stty "$tty_mode" <&3 || :
+	{ stty -icanon min 0 time 0 <&3 && cat <&3 >/dev/null; } || :
+	stty "$tty_mode" <&3 || stty sane <&3 || :
 	printf "Press Enter to power off: " >&3
 	IFS= read -r answer <&3 || :
 fi
