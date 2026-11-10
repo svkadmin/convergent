@@ -625,6 +625,8 @@ done
 # the disk's damage.
 (
     eval "$(sed -n '/^wan_read() {/,/^}/p' "$here/../tools/guests")"
+    work=$work/wan-guard.d
+    mkdir "$work"
     pool=$work/pool
     mkdir -p "$pool/virtual-machines/wan"
     truncate -s 4M "$pool/virtual-machines/wan/root.img"
@@ -635,16 +637,16 @@ done
     }
     chown() { :; }
     wan_extract() { echo extract >"$work/wan-guard"; }
-    for avail in 1000 70000; do
+    for avail in 65535 65536; do
         df() { printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' "pool 1 1 $avail 1% /"; }
         rm -rf "$work/wan-read" "$work/iwd" "$work/wan-guard"
         (wan_read) || :
         case $avail in
-        1000) grep -qx 'die: too little free space on the state volume to read the wan disk' "$work/wan-guard" ;;
+        65535) grep -qx 'die: too little free space on the state volume to read the wan disk' "$work/wan-guard" ;;
         *) grep -qx extract "$work/wan-guard" ;;
         esac
     done
-    rm -rf "$pool" "$work/wan-read" "$work/iwd" "$work/wan-guard" "$work/wan-partitions"
+    rm -rf "$work"
 )
 # Its timeout gives no rebuild advice and no console dump; healthy's does (control).
 (
