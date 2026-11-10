@@ -819,7 +819,8 @@ echo 'test-topology: a failed redo resumes work DHCP on the healthy firewall'
     seed_start() { echo "boot $1" >>"$log"; echo running >"$scratch/$1.status"; return 1; }
     if topology_recover; then exit 1; fi
     awk '$0 == "boot fw2" {b=NR} $0 == "enable fw1" {e=NR} END {exit !(b && b < e)}' "$log"
-    [ -f "$state/leases/held" ] && [ ! -f "$state/leases/quiesced" ]
+    [ -f "$state/leases/held" ]
+    [ ! -f "$state/leases/quiesced" ]
     rm -rf "$state/fw.topology" "$state/leases" "$scratch/fw2.broken"
 )
 echo 'test-topology: a failed redo resumes the healthy allocator through the real lease checkpoint'

@@ -228,7 +228,7 @@ echo 'wan-portal: locked expiry, renewal and resolver refresh fixtures passed'
 # whose route overlap recurs goes down again without a second alert; one already set down is left alone. A working
 # second wired uplink keeps its lease throughout.
 sed -e '/^PATH=/d' -e '/^\. /d' -e 's|^d=/run/wan$|d=$work/run|' -e 's|^m=/run/node_exporter$|m=$work/m|' \
-    -e 's|/sys/class/net/|$work/sys/|g' -e 's|^/usr/local/sbin/wan-portal expire|wan_portal expire|' \
+    -e 's|/sys/class/net/|$work/sys/|g' -e 's|^/usr/local/sbin/wan-portal expire|wan_portal expire|' -e 's|/var/run/udhcpc\.|$work/run/udhcpc.|' \
     "$here/rootfs/usr/local/sbin/wan-check" >"$work/wan-check"
 sh -n "$work/wan-check"
 grep -q 'wan_portal expire' "$work/wan-check"
@@ -238,7 +238,7 @@ UP_IFS='eth1 eth2 wlan0' WIFI_IF=wlan0 TRANSIT_IF=eth0 INTERNAL_NET=100.80.0.0/1
 flock() { :; }
 bump() { echo $(($(cat "$work/sys/$1/carrier_changes") + 1)) >"$work/sys/$1/carrier_changes"; }
 set_down() { [ "$(cat "$work/sys/$1/flags")" = 0x1002 ] || bump "$1"; echo 0x1002 >"$work/sys/$1/flags"; }
-ifdown() { echo "ifdown $*" >>"$work/calls"; set_down "$2"; rm -f "$work/addr.$2"; }
+ifdown() { echo "ifdown $*" >>"$work/calls"; set_down "$2"; rm -f "$work/addr.$2"; return "${ifdown_rc:-0}"; }
 ifup() {
     echo "ifup $*" >>"$work/calls"
     # An uplink already up keeps its carrier.
@@ -263,7 +263,7 @@ wan_portal() { :; }
 . "$work/wan-check"
 DRIVER
 sh -n "$work/check-driver"
-for case in keep late recur latched; do
+for case in keep stale stale-pid stuck pending late recur latched; do
     rm -rf "$work/run" "$work/m" "$work/sys" "$work/addr.eth1" "$work/addr.eth2" "$work/calls"
     mkdir -p "$work/run" "$work/sys/eth1" "$work/sys/eth2"
     echo 4 >"$work/sys/eth2/ifindex"
@@ -288,6 +288,36 @@ for case in keep late recur latched; do
         lease=safe sh "$work/check-driver"
         if grep -q '^ifdown' "$work/calls"; then exit 1; fi
         [ -f "$work/addr.eth1" ] ;;
+    stale)
+        # The refusal killed the client, so ifdown finds no pidfile and fails: the retry still brings it up.
+        ifdown_rc=1 lease=safe sh "$work/check-driver" retry
+        grep -qx 'ifup eth1' "$work/calls"
+        [ ! -e "$work/run/refused" ] ;;
+    stuck)
+        # A client ifdown cannot stop is not doubled: no ifup, and the retry fails.
+        sh -c 'sleep 30; :' udhcpc -p "$work/run/udhcpc.eth1.pid" & echo $! >"$work/run/udhcpc.eth1.pid"
+        rc=0; ifdown_rc=1 lease=safe sh "$work/check-driver" retry || rc=$?
+        kill "$(cat "$work/run/udhcpc.eth1.pid")"
+        [ "$rc" = 1 ]
+        if grep -qx 'ifup eth1' "$work/calls"; then exit 1; fi ;;
+    pending)
+        # Not refused, no address, link unchanged: a live client is still discovering and is left alone.
+        rm -f "$work/run/refused" "$work/run/dhcp-overlap.eth1"
+        printf '3\n6\n' >"$work/run/link.eth1"
+        sh -c 'sleep 30; :' udhcpc -p "$work/run/udhcpc.eth1.pid" & echo $! >"$work/run/udhcpc.eth1.pid"
+        lease=none sh "$work/check-driver"
+        kill "$(cat "$work/run/udhcpc.eth1.pid")"
+        if grep -qx 'ifdown --force eth1' "$work/calls"; then exit 1; fi
+        # Once that client is gone (its pidfile left behind, or naming another process), the next check restarts it.
+        sleep 30 & echo $! >"$work/run/udhcpc.eth1.pid"
+        lease=none sh "$work/check-driver"
+        kill "$(cat "$work/run/udhcpc.eth1.pid")"
+        grep -qx 'ifdown --force eth1' "$work/calls" ;;
+    stale-pid)
+        # A killed client left its pidfile: the retry goes on.
+        echo 999999 >"$work/run/udhcpc.eth1.pid"
+        ifdown_rc=1 lease=safe sh "$work/check-driver" retry
+        grep -qx 'ifup eth1' "$work/calls" ;;
     late)
         lease=none sh "$work/check-driver" retry || :
         sed -n '/^ifup eth1$/,$p' "$work/calls" >"$work/after"
@@ -325,3 +355,19 @@ for case in keep late recur latched; do
     esac
 done
 echo 'wan-check: retry and late leases, pending retry, recurring route overlap and latched refusal fixtures passed'
+# A client's deconfig (every start and stop) drops its record and queues no check.
+sed -e 's|/run/wan/|$work/run/|g' -e 's|/usr/sbin/resolvconf|resolvconf|g' \
+    "$here/rootfs/usr/local/sbin/wan-dhcp-dns" >"$work/wan-dhcp-dns"
+sh -n "$work/wan-dhcp-dns"
+mkdir -p "$work/run"
+echo 'nameserver 192.0.2.1' >"$work/run/resolv.eth1.dns"
+: >"$work/calls"
+(
+    resolvconf() { echo "resolvconf $*" >>"$work/calls"; }
+    interface=eth1
+    set -- clear
+    . "$work/wan-dhcp-dns"
+)
+[ ! -e "$work/run/resolv.eth1.dns" ]
+[ ! -s "$work/calls" ]
+echo 'wan-dhcp-dns: deconfig drops the record without queuing a check'
