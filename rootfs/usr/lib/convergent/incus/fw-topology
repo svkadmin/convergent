@@ -18,6 +18,8 @@ topology_started() { running "$1" || start_guest "$1"; }
 topology_autostart() {
     for node in fw1 fw2; do
         topology_unset "$node" user.convergent.autorestart || return
+        # The journal owns boot.autorestart: a drain's saved value from the hold is stale.
+        topology_unset "$node" user.convergent.autorestart.old || return
         for key in boot.autostart boot.autorestart; do
             value=$(jq -r --arg k "$key" '.config[$k] // "unset"' "$state/fw.topology/$node.json") || return
             if [ "$value" = unset ]; then topology_unset "$node" "$key" || return

@@ -186,7 +186,7 @@ if command -v jq >/dev/null 2>&1; then
         mkdir -p "$state/fw.topology"
         for node in fw1 fw2; do
             printf '{"config":{}}\n' >"$state/fw.topology/$node.json"
-            printf '{"config":{"user.convergent.autorestart":"true","boot.autostart":"false","boot.autorestart":"false"}}\n' >"$scratch/$node.json"
+            printf '{"config":{"user.convergent.autorestart":"true","user.convergent.autorestart.old":"false","boot.autostart":"false","boot.autorestart":"false"}}\n' >"$scratch/$node.json"
         done
         ic() {
             case $1:$2 in
@@ -199,6 +199,10 @@ if command -v jq >/dev/null 2>&1; then
         }
         topology_autostart
         topology_autostart
+        # A cut drain's saved value goes too, or the next clear would restore the hold's false.
+        for node in fw1 fw2; do
+            jq -e '.config == {}' "$scratch/$node.json" >/dev/null
+        done
         topology_retire
     )
     echo 'test-topology: repeated production unsets are idempotent'
