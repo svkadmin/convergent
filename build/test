@@ -5691,7 +5691,8 @@ text_valid() { :; }
 cached() { head -n 1 "$1"; }
 old=$(cat /etc/timezone)
 new=Europe/Bratislava
-[ "$old" != "$new" ] || new=UTC
+# Not UTC: glibc falls back to it when no zone loads.
+[ "$old" != "$new" ] || new=Asia/Tokyo
 for bad in Mars/Base ../etc/passwd posix/UTC right/UTC Etc; do
 	if (time_set "$bad") 2>/dev/null; then exit 1; fi
 	[ "$(cat /etc/timezone)" = "$old" ]
