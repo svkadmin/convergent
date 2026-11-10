@@ -3543,7 +3543,8 @@ cv_time firewall-self-heal
     rm /run/convergent/guests-stopping
     inhibited=
     deadline=$(($(date +%s) + 1500))
-    while [ -e /var/lib/convergent/guests/leases/held ]; do
+    # The resume drops held before its queued reconcile holds again: wait for both.
+    while [ -e /var/lib/convergent/guests/leases/held ] || [ -e /var/lib/convergent/guests/leases/reconcile ]; do
         [ "$(date +%s)" -lt "$deadline" ]; sleep 10
     done
     leased=
@@ -4116,6 +4117,7 @@ wan_wifi() (
     pool=/var/lib/incus/storage-pools/default
     loop= mounted=
     die() { echo "CV-WIFI $*" >&2; exit 1; }
+    fail() { echo "CV-WIFI $*" >&2; return 1; }
     running() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Running ]; }
     stopped() { [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]; }
     retry() {
@@ -4131,7 +4133,8 @@ wan_wifi() (
     [ "$(incus --force-local query /1.0/instances/wan/state | jq -r .status)" = Stopped ]
     wan_read
     for file in "$release/iwd/"*; do cmp "$file" "$work/iwd/${file##*/}"; done
-    [ ! -e "$work/iwd/CV-bad.psk" ]
+    # Refused at the seed: not on wan's disk at all (extraction would drop it anyway).
+    [ -f "$work/wan-files" ] && ! grep -q '/CV-bad\.psk$' "$work/wan-files"
     ic start wan
     deadline=$(($(date +%s) + 600))
     until timeout 30 ssh -F /etc/convergent/ssh_config wan check >/dev/null 2>&1; do
@@ -6789,6 +6792,7 @@ wrong-$(hex)
 $luks"
 	deadline=$(($(date +%s) + 1200))
 	run_vm first-boot
+	installs="$installs $runs"
 	[ "$ended" = first-boot-0 ] || die "the installed disk failed its first boot ($ended); CV-INSTALLED lines in $log"
 	grep -qF 'Passphrase [3/3]' "$log" && grep -qF "release $release is good" "$log" ||
 		die "the installed disk did not take the third passphrase and bless; see $log"
@@ -6798,6 +6802,7 @@ $luks"
 	pass=$luks
 	deadline=$(($(date +%s) + 600))
 	run_vm first-boot-dup
+	installs="$installs $runs"
 	[ "$ended" = poweroff ] && grep -qF 'more than one disk has a cv-state partition' "$log" && ! grep -q ' is good' "$log" ||
 		die "the installed disk booted beside a second cv-state ($ended); see $log"
 	# G: a USB disk as the target: its port stays allowed.
@@ -6819,7 +6824,8 @@ $luks"
 	grep -q 'serial "CVUSBTARGET"' "$state/etc/usbguard/rules.conf" && ! grep -q 'serial "CVSTICK"' "$state/etc/usbguard/rules.conf" ||
 		die 'the USB target is not allowed, or the stick is'
 	close_state
-	# The serial transcripts never carry the password or a passphrase: every boot try of every installer run.
+	# The serial transcripts never carry the password or a passphrase: every boot try of every installer
+	# run and of the installed disk's unlocks.
 	for r in $installs; do
 		set -- "$BUILDER$work/console-$r-"*.log
 		[ -f "$1" ] || die "no console log of run $r"

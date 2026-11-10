@@ -1219,9 +1219,12 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
     : >"$work/host-rfkill-calls"; echo wlan >"$work/net-rfkill/rfkill3/type"; echo 1 >"$work/net-rfkill/rfkill3/soft"
     . "$work/host-rfkill"
     [ "$(tr '\n' , <"$work/host-rfkill-calls")" = 'rfkill unblock 1,rfkill unblock 3,' ] || die 'a second blocked Wi-Fi switch was skipped'
+    # A refusal is logged; the network repair goes on.
     refuse=yes
-    if (. "$work/host-rfkill"); then die 'a refused unblock passed'; fi
-    grep -qx 'cannot unblock the platform Wi-Fi switch' "$work/host-rfkill-died" || die 'refused unblock not named'
+    logger() { echo "logger $*" >>"$work/host-rfkill-log"; }
+    (. "$work/host-rfkill") || die 'a refused unblock failed the network repair'
+    grep -q 'cannot unblock the platform Wi-Fi switch rfkill1$' "$work/host-rfkill-log" || die 'refused unblock not logged'
+    [ ! -e "$work/host-rfkill-died" ] || die 'a refused unblock died'
 )
 echo 'test-boot-privacy: platform Wi-Fi switch passed'
 
