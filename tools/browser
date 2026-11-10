@@ -237,7 +237,8 @@ elif [ "$role" = tmp ]; then
     done
 else
     exec 8>"/run/convergent/browser/$name.lock"
-    flock -n 8 || die "$role is already open; close it before reopening"
+    # A few seconds: the minute sweep holds int's and Remote's lock briefly while it finds nothing open.
+    flock -w 5 8 || die "$role is already open; close it before reopening"
 fi
 run=/run/convergent/browser/$name
 children= active= grafana= portal= browser= capture= cage= cage_capture=
@@ -483,7 +484,12 @@ exec 5<"$run/tick"
 rm "$run/tick"
 while kill -0 "$browser" 2>/dev/null; do
     read -r tick <&5 || die 'session timer exited'
-    for child in $children; do kill -0 "$child" 2>/dev/null || die 'socket or audio provider exited'; done
+    for child in $children; do
+        kill -0 "$child" 2>/dev/null && continue
+        # Closing the Remote window ends Cage with its output: a normal close.
+        [ "$role" != remmina ] || [ "$child" != "$cage" ] || exit 0
+        die 'socket or audio provider exited'
+    done
     if [ -n "$portal_mode" ]; then
         started=
         [ ! -f /run/convergent/portal ] || read -r started </run/convergent/portal || :

@@ -963,6 +963,27 @@ echo bluetooth >"$work/bt/rfkill/rfkill1/type"; echo 1 >"$work/bt/rfkill/rfkill1
 )
 echo 'test-boot-privacy: bluetooth passed'
 
+# The session watch: a closed Remote window (Cage gone) ends the session quietly; any other provider is a failure.
+sed -n '/^    for child in \$children; do$/,/^    done$/p' "$repo/tools/browser" >"$work/watch"
+[ "$(grep -c 'kill -0' "$work/watch")" = 1 ]
+check_script "$work/watch"
+for sample in remmina:cage remmina:audio def:cage; do
+    rc=0
+    (
+        role=${sample%:*} cage=101 children='101 102'
+        case ${sample#*:} in cage) dead=101 ;; *) dead=102 ;; esac
+        kill() { [ "$2" != "$dead" ]; }
+        die() { echo "die $*"; exit 1; }
+        . "$work/watch"
+        echo continued
+    ) >"$work/watch.out" || rc=$?
+    case $sample in
+    remmina:cage) [ "$rc" = 0 ] && [ ! -s "$work/watch.out" ] ;;
+    *) [ "$rc" = 1 ] && grep -qx 'die socket or audio provider exited' "$work/watch.out" ;;
+    esac || die "session watch: $sample"
+done
+echo 'test-boot-privacy: session watch passed'
+
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
 sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
     sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/var/lib/convergent/guests/initialized|$work/wired/initialized|g" \
