@@ -342,6 +342,9 @@ grep -qx ran "$work/facts-ran"
 # boot, after the host first synchronizes, bounded, and again only until it succeeded.
 grep -qx 'makestep 1.0 -1' "$repo/guests/wan/rootfs/etc/chrony/chrony.conf"
 sed -n '/^nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	fw_ntpd'
+# Guest certificates and svc volumes wait for guests setup; init publishes them when it ends.
+[ "$(grep -c '^		\[ -e "\$sdir/guests/initialized" \] || break$' "$repo/tools/facts")" = 2 ]
+grep -qx '    /usr/local/sbin/facts daily >/dev/null 2>&1 9>&- 8>&- 7>&- 6>&- || :' "$repo/tools/guests"
 sed -n '/^fw_ntpd() {/,/^}/p' "$repo/tools/facts" >"$work/fw-ntpd"
 [ -s "$work/fw-ntpd" ]; sh -n "$work/fw-ntpd"
 (
