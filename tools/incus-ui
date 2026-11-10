@@ -80,6 +80,7 @@ close_session() {
     pending=$(tokens) || { pending=; closed=0; }
     for id in $pending; do
         case $id in *[!0-9a-f-]*) closed=0 ;; *) ic query -X DELETE "/1.0/operations/$id" >/dev/null || closed=0 ;; esac
+        logger -t incus-ui "pending trust token $id revoked"
     done
     if [ -d "$run" ] || [ -n "$fps" ]; then
         mkdir -p "$run"
