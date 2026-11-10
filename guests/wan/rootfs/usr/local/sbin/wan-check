@@ -48,7 +48,8 @@ if [ "${1:-}" = retry ]; then
 		[ -e "/sys/class/net/$ifc" ] || continue
 		grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
 		# The refusal already killed its client: a missing pidfile must not stop the retry.
-		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || [ ! -e "/var/run/udhcpc.$ifc.pid" ] ||
+			{ logger -t wan-check "retry: ifdown $ifc failed" || :; rc=1; continue; }
 		# Only the new lease's hook may report a route overlap again.
 		rm -f "$d/dhcp-overlap.$ifc"
 		ifup "$ifc" 9>&- >/dev/null 2>&1 || rc=1
@@ -71,7 +72,9 @@ for ifc in $UP_IFS; do
 	fi
 	link=$(cat "/sys/class/net/$ifc/ifindex" "/sys/class/net/$ifc/carrier_changes") || continue
 	previous=$(cat "$d/link.$ifc" 2>/dev/null || :)
-	if [ "$link" != "$previous" ] || ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet '; then
+	# No address: restart only a dead client (ifupdown-ng runs udhcpc -b); a live one is still discovering.
+	if [ "$link" != "$previous" ] || { ! ip -4 -o addr show dev "$ifc" scope global | grep -q ' inet ' &&
+		! kill -0 "$(cat "/var/run/udhcpc.$ifc.pid" 2>/dev/null)" 2>/dev/null; }; then
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 	fi
 	ifup "$ifc" 9>&- >/dev/null 2>&1 || :

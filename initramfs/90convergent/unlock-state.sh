@@ -6,7 +6,7 @@ i=0
 while [ ! -e /dev/dri/card0 ] && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
 # A rescue boot has no root wait: give a slow boot disk time to appear.
 i=0
-while [ ! -b "$dev" ] && [ $i -lt 40 ]; do sleep 0.25; i=$((i + 1)); done
+while [ ! -b "$dev" ] && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
 [ -b "$dev" ] || die "state: no partition labelled cv-state"
 # A second Convergent disk would make every label ambiguous.
 [ "$(blkid -o device -t PARTLABEL=cv-state | wc -l)" = 1 ] ||
