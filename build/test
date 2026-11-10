@@ -942,7 +942,7 @@ cleanup() {
 	if [ -n "$loop" ]; then losetup -d "$loop" || :; fi
 	chroot_umount
 	# Test output only: a rerun of the same line must not find it.
-	[ -z "${broken_made:-}" ] || rm -rf "$broken"
+	[ -z "${broken_made:-}" ] || rm -rf "${broken:?}"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -5559,11 +5559,15 @@ done
 # The real bluetooth_device again: the trust step above replaced it.
 . "$work/module"
 : >"$work/calls"
-for action in scan 'device connect AA:BB:CC:DD:EE:FF' 'device connect'; do
+if (bluetooth_scan) 2>"$work/err"; then exit 1; else [ "$?" = 3 ]; fi
+grep -qx 'Bluetooth is blocked by the hardware switch' "$work/err"
+echo 1 >"$work/rfkill/rfkill1/soft"; echo 0 >"$work/rfkill/rfkill1/hard"
+for action in scan 'device connect AA:BB:CC:DD:EE:FF' 'device remove AA:BB:CC:DD:EE:FF' 'device connect'; do
 	if (bluetooth_$action) 2>"$work/err" </dev/null; then exit 1; else [ "$?" = 3 ]; fi
 	grep -qx 'Bluetooth is off; turn it on first (sys bluetooth on)' "$work/err"
 done
 [ ! -s "$work/calls" ]
+echo 0 >"$work/rfkill/rfkill1/soft"; echo 1 >"$work/rfkill/rfkill1/hard"
 echo 0 >"$work/rfkill/rfkill1/hard"
 if bluetooth_state >/dev/null; then exit 1; else [ "$?" = 124 ]; fi
 [ "$(bluetooth_show 2>/dev/null)" = 'Radio: unblocked' ]
@@ -5572,7 +5576,7 @@ rm -r "$work/rfkill/rfkill1"
 : >"$work/calls"
 [ "$(bluetooth_show)" = 'Radio: none' ]
 [ "$(bluetooth_state)" = 'Bluetooth: no radio' ]
-if (bluetooth_scan) 2>"$work/err"; then exit 1; fi
+if (bluetooth_scan) 2>"$work/err"; then exit 1; else [ "$?" = 3 ]; fi
 grep -qx 'no Bluetooth radio' "$work/err"
 [ ! -s "$work/calls" ]
 CHECK
@@ -6736,7 +6740,11 @@ EOF
 	# Only a clean read of every file passes: grep's 2 (a read error) is no proof.
 	found=0
 	grep -rqF -e "$pw" -e "$luks" "$state" || found=$?
-	[ "$found" = 1 ] || die 'the password or the LUKS passphrase is in the installed state, or a file could not be read'
+	case $found in
+	1) ;;
+	0) die 'the password or the LUKS passphrase is in the installed state' ;;
+	*) die 'the installed state could not be read in full for the secret scan' ;;
+	esac
 	seed="$state/var-$release/lib/convergent/install/iwd/CV test.psk"
 	grep -qx 'Hidden=true' "$seed" && grep -qxF "Passphrase=$wifi" "$seed" || die 'the Wi-Fi seed lacks Hidden=true or its passphrase'
 	close_state
