@@ -88,7 +88,8 @@ for fault in none nokeep cut move slot sidecar flush cross-device stat; do
     if sh "$stagework/run" "$root" "$fault" "$stagework/publish" >"$stagework/log" 2>&1; then
         case $fault in none|nokeep) ;; *) die "accepted $fault stage publication" ;; esac
         [ -f "$root/accepted" ]
-        [ ! -e "$root/stages/42" ] && [ ! -e "$root/stages/44" ]
+        [ ! -e "$root/stages/42" ]
+        [ ! -e "$root/stages/44" ]
         [ ! -e "$root/stages/43.old" ]
         if [ "$fault" = nokeep ]; then
             [ ! -e "$root/installed" ] && grep -q "cannot keep the manifest" "$stagework/log" || die "unkept manifest"
@@ -99,7 +100,8 @@ for fault in none nokeep cut move slot sidecar flush cross-device stat; do
         case $fault in none|nokeep) cat "$stagework/log"; exit 1 ;; esac
         [ ! -e "$root/accepted" ]
         [ "$(cat "$root/installed/manifest")" = 42 ] || die "kept the manifest of a failed $fault write"
-        [ -f "$root/stages/42/keep" ] && [ -f "$root/stages/44/keep" ]
+        [ -f "$root/stages/42/keep" ]
+        [ -f "$root/stages/44/keep" ]
     fi
     # Immediate reboot, including fallback with and without a stage of its own.
     for boot in 43 42 41; do
@@ -114,7 +116,8 @@ for fault in none nokeep cut move slot sidecar flush cross-device stat; do
     # A fetch retry must also recover an aside without nesting the new directory.
     case $fault in cut|move)
         sh "$stagework/run" "$root" none "$stagework/publish" >"$stagework/log" 2>&1 || { cat "$stagework/log"; exit 1; }
-        [ -f "$root/accepted" ] && [ ! -e "$root/stages/43.old" ]
+        [ -f "$root/accepted" ]
+        [ ! -e "$root/stages/43.old" ]
         [ "$(cat "$root/installed/manifest")" = 43 ]
         ;;
     esac
@@ -161,7 +164,8 @@ for limit in 1024 65536; do
     done
 done
 sed -n '/^field()/p; /^have()/p; /^mf()/p; /^download() {/,/^}/p' "$repo/tools/fetch-release" >"$work/download-check"
-[ -s "$work/download-check" ] && grep -q '^download()' "$work/download-check"
+[ -s "$work/download-check" ]
+grep -q '^download()' "$work/download-check"
 sh -n "$work/download-check"
 . "$work/download-check"
 printf good >"$usb/slot.img"
@@ -227,7 +231,8 @@ for f in $files; do [ -f "$work/done.$f" ] || die "skipped download $f"; done
 )
 # The anti-rollback floor is not evidence that the running release is current.
 sed -n '/^uptodate=/,/^# Fail now/p' "$repo/tools/fetch-release" >"$work/current"
-[ -s "$work/current" ] && grep -q '^sync=' "$work/current"
+[ -s "$work/current" ]
+grep -q '^sync=' "$work/current"
 sh -n "$work/current"
 for mode in check write; do
     for highest in 43 44; do
@@ -426,7 +431,8 @@ awk '/^for manifest in guests.manifest remmina.manifest/ {copy=1} copy {print} c
 old=$here/fixtures/fetch-release-0.1.3
 awk '/^guest_files=\$\(awk / {copy=1} copy {print} copy && /invalid guest path in guests.manifest/ {exit}' "$old" >"$work/paths"
 awk '/^awk .*\$1 == "guest"/ {copy=1} copy {print} copy && /invalid guest identity in guests.manifest/ {exit}' "$old" >"$work/identities"
-[ -s "$work/paths" ] && [ -s "$work/identities" ]
+[ -s "$work/paths" ]
+[ -s "$work/identities" ]
 dir=$work
 gm=$bundle/guests.manifest
 . "$work/paths"

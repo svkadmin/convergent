@@ -14,7 +14,9 @@ ic() {
 tls=/var/lib/convergent/guests/tls
 state=$tls/incus-ui
 run=/run/convergent/incus-ui
-[ ! -e "$state" ] && [ ! -e "$state.previous" ] && [ ! -e "$state.next" ]
+[ ! -e "$state" ]
+[ ! -e "$state.previous" ]
+[ ! -e "$state.next" ]
 work=$(mktemp -d /run/convergent/ui-test.XXXXXX)
 created= svc_stopped=
 cleanup() {
@@ -207,5 +209,6 @@ mkdir "$state.next"
 cp "$work/client.crt" "$state.next/client.crt"
 /usr/local/sbin/incus-ui --reconcile
 cmp "$state/client.crt" "$work/client.crt"
-[ ! -e "$state.previous" ] && [ ! -e "$state.next" ]
+[ ! -e "$state.previous" ]
+[ ! -e "$state.next" ]
 ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'

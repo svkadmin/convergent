@@ -177,13 +177,16 @@ cpu=$work/cpu rc=0 current=old
 mkdir -p "$cpu/policy0"
 echo 0 >"$cpu/policy0/affected_cpus"
 write_failed "$cpu/policy0/scaling_governor" powersave rejected 2>/dev/null || :
-[ "$rc" = 1 ] && grep -q -- '-p user.err -t power' "$work/log"
+[ "$rc" = 1 ]
+grep -q -- '-p user.err -t power' "$work/log"
 rc=0
 : >"$cpu/policy0/affected_cpus"
 write_failed "$cpu/policy0/scaling_governor" powersave rejected 2>/dev/null || :
-[ "$rc" = 0 ] && grep -q -- '-p user.notice -t power' "$work/log"
+[ "$rc" = 0 ]
+grep -q -- '-p user.notice -t power' "$work/log"
 sed -n '/^trap .*handler failed/p' "$repo/tools/power" >"$work/power-trap"
 status=0
 (. "$work/power-trap"; exit 7) || status=$?
-[ "$status" = 7 ] && grep -q 'handler failed (status 7)' "$work/log"
+[ "$status" = 7 ]
+grep -q 'handler failed (status 7)' "$work/log"
 echo 'test: failure logging severities and exit status passed'

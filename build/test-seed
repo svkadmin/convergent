@@ -339,7 +339,8 @@ for stamp in future missing; do
     grep -q '; skipping' "$scratch/log" || die "credentials did not skip for a $stamp stamp"
     cmp "$tls/ca.crt" "$scratch/future-ca.crt"
     for cert in server incus-server incus-client; do cmp "$tls/$cert.crt" "$scratch/good/tls/$cert.crt"; done
-    [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/pending" ]
+    [ ! -f "$tls/ca.pending" ]
+    [ ! -f "$tls/pending" ]
     # Nothing to keep: setup stops instead of issuing, and says how to go on (no firewalls run yet).
     if state=$scratch/clockless tls=$scratch/clockless/tls keys=$scratch/clockless/keys \
         sh -eu "$scratch/credentials" >"$scratch/log" 2>&1; then die "issued under a $stamp stamp"; fi
@@ -406,7 +407,8 @@ sh -n "$scratch/deploy-functions"
 sed -n '/^seed_finish() {/,/^}/p' "$repo/tools/guests" >"$scratch/init-finish"
 sed -n '/^    seed_finish wan$/,/^    ca_hash=/p' "$repo/tools/guests" | sed '$d' |
     sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g; s|/var/lib/syslog-ng|$scratch/syslog|g" >"$scratch/init-tail"
-[ -s "$scratch/init-finish" ] && [ -s "$scratch/init-tail" ]
+[ -s "$scratch/init-finish" ]
+[ -s "$scratch/init-tail" ]
 sh -n "$scratch/init-finish"
 sh -n "$scratch/init-tail"
 old_trust=$(openssl x509 -in "$tls/incus-client.previous" -outform DER | sha256sum | awk '{print $1}')
@@ -545,7 +547,8 @@ for fault in host fw1 fw2 wan none; do
         [ "$fault" = none ] || die "missed $fault reload failure"
     else
         [ "$fault" != none ] || { cat "$scratch/log"; die 'CA deployment'; }
-        [ -f "$tls/ca.pending" ] && [ -f "$tls/incus-client.previous" ]
+        [ -f "$tls/ca.pending" ]
+        [ -f "$tls/incus-client.previous" ]
         if grep -qx remove "$scratch/events"; then die 'removed trust before deployment'; fi
         fault=none sh -eu "$scratch/deploy" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'deployment retry'; }
     fi
@@ -554,7 +557,8 @@ for fault in host fw1 fw2 wan none; do
     done
     cmp "$tls/server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"
     cmp "$tls/incus-client.crt" "$scratch/svc/etc/victoria-metrics/tls/incus-client.crt"
-    [ ! -f "$tls/ca.pending" ] && [ ! -f "$tls/incus-client.previous" ]
+    [ ! -f "$tls/ca.pending" ]
+    [ ! -f "$tls/incus-client.previous" ]
     if certificates_due; then die 'deployed credentials due'; fi
     current=$(openssl x509 -in "$tls/incus-client.crt" -outform DER | sha256sum | awk '{print $1}')
     jq -e --arg fp "$current" --arg ui "$ui_trust" '[.[] | select(.type == "metrics") | .fingerprint] == [$fp] and
@@ -597,7 +601,8 @@ mode=init fault=none sh -eu "$scratch/deploy" >"$scratch/log" 2>&1 || { cat "$sc
 cmp "$tls/server.crt" "$scratch/svc/etc/victoria-logs/tls/server.crt"
 grep -qx 'removed svc' "$scratch/events"
 [ -f "$state/init/seed-svc" ]
-[ ! -f "$tls/pending" ] && [ ! -f "$tls/deploy" ]
+[ ! -f "$tls/pending" ]
+[ ! -f "$tls/deploy" ]
 # A pre-0.1.5 wan refuses syslog-ca (126): only init, whose seed carried the CA, goes on without the push.
 sed '/^"syslog-ca")$/,/^	;;$/d' "$repo/guests/wan/rootfs/usr/local/sbin/wan-ssh" >"$scratch/wan-ssh-0.1.4"
 if grep -q syslog-ca "$scratch/wan-ssh-0.1.4"; then die 'legacy wan-ssh still knows syslog-ca'; fi
@@ -615,7 +620,8 @@ for run in init deploy init-fault; do
     grep -qx fw2 "$scratch/events" || { cat "$scratch/log"; die "$run skipped the firewalls"; }
     if [ "$run" = init ]; then
         [ "$rc" = 0 ] || { cat "$scratch/log"; die 'init stopped at a pre-0.1.5 wan'; }
-        [ ! -f "$tls/ca.pending" ] && [ "$(cat "$scratch/wan/ca")" = seeded ]
+        [ ! -f "$tls/ca.pending" ]
+        [ "$(cat "$scratch/wan/ca")" = seeded ]
         grep -q 'predates syslog-ca' "$scratch/log"
     else
         [ "$rc" != 0 ] && [ -f "$tls/ca.pending" ] || die "$run ignored a failed wan CA push"
@@ -671,7 +677,9 @@ for fault in ssh-key ca-key ca-pair leaf-pair missing-ca-key; do
     grep -q 'invalid CA pair' "$scratch/log" || die "unexpected error for $fault"
     (cd "$tls" && sh -eu "$scratch/ca-recipe")
     sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die "CA recipe after $fault"; }
-    [ -f "$tls/ca.pending" ] && [ -f "$tls/pending" ] && [ ! -e "$tls/incus-client.previous" ]
+    [ -f "$tls/ca.pending" ]
+    [ -f "$tls/pending" ]
+    [ ! -e "$tls/incus-client.previous" ]
     if cmp -s "$tls/ca.crt" "$scratch/good/tls/ca.crt"; then die "CA kept after $fault"; fi
     for cert in server incus-server incus-client; do
         cmp "$tls/$cert.key" "$scratch/good/tls/$cert.key"

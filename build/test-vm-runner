@@ -57,7 +57,8 @@ once)
     case $mode in fallback | interrupt) tries=2 ;; *) tries=1 ;; esac
     [ "$(cat "$work/loopp1")" = "$tries" ]
     run_vm "$goal"
-    [ "$runs" = 2 ] && [ "$(wc -l <"$work/calls")" = 3 ]
+    [ "$runs" = 2 ]
+    [ "$(wc -l <"$work/calls")" = 3 ]
     grep -qF "$signature" "$work/console-1-1.log"
     [ "$(readlink "$work/console.log")" = console-2-1.log ]
     [ "$(cat "$work/loopp1")" = "$((tries - 1))" ]
@@ -245,7 +246,8 @@ for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to k
             case $scenario in
             once | twice | driver-crash)
                 [ "$(grep -c '^CV-TEST nested PID 1 crash; rerunning boot 1$' "$fixture/output")" = 1 ]
-                [ -f "$work/console-1-1.log" ] && [ -f "$work/console-1-2.log" ]
+                [ -f "$work/console-1-1.log" ]
+                [ -f "$work/console-1-2.log" ]
                 ;;
             *) if grep -q '^CV-TEST nested PID 1 crash' "$fixture/output"; then exit 1; fi ;;
             esac
