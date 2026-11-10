@@ -588,15 +588,16 @@ done
         case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
         case $* in
         'query /1.0/instances?recursion=1&project=default')
-            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
         'query /1.0/instances?recursion=1&all-projects=true')
             [ "$owner_frozen" != error ] || { echo 'Error: boom' >&2; return 1; }
             [ "$owner_frozen" = 0 ] || return 124
-            echo '[{"name":"fw2","project":"default","config":{"user.convergent.autorestart":"true"}},
-                {"name":"work","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
+                {"name":"work","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
         *) return 1 ;;
         esac
     }
+    timeout() { shift 5; ic "$@"; }
     : >"$work/unsets"
     autorestart_clear
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \

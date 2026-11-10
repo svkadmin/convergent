@@ -197,7 +197,9 @@ autorestart_clear() (
     all=failed
     if [ ! -e "$work/autorestart-all.failed" ]; then
         all=0
-        ic query '/1.0/instances?recursion=1&all-projects=true' >"$work/autorestart-all" 2>"$work/autorestart-all.err" || all=$?
+        # Best effort, outside ic: a timeout is warned below, not logged as an error.
+        timeout -k 1 120 incus --force-local query '/1.0/instances?recursion=1&all-projects=true' \
+            >"$work/autorestart-all" 2>"$work/autorestart-all.err" 9>&- 8>&- 7>&- 6>&- || all=$?
     fi
     case $all in
     0) mv "$work/autorestart-all" "$work/autorestart-instances" || return ;;
@@ -211,13 +213,15 @@ autorestart_clear() (
         echo 'guests: WARNING: cannot list all Incus projects; owner autorestart holds stay until a later run' >&2 ;;
     esac
     jq -r '.[] | select(.config["user.convergent.autorestart"] == "true") |
-        "\(.project // "default") \(.name) \(.config["user.convergent.autorestart.old"] // "")"' \
+        "\(.project // "default") \(.name) \(.config | has("boot.autorestart")) \(.config["user.convergent.autorestart.old"] // "")"' \
         "$work/autorestart-instances" >"$work/autorestart" || return
-    while read -r project node old; do
+    while read -r project node auto old; do
         ic_project=$project
+        # A drain cut between its two restores leaves the hold without boot.autorestart; Incus refuses an unset key.
+        case $auto in true) auto=boot.autorestart ;; *) auto= ;; esac
         case $old in
-        '') ic config unset "$node" boot.autorestart user.convergent.autorestart || return ;;
-        -) ic config unset "$node" boot.autorestart user.convergent.autorestart user.convergent.autorestart.old || return ;;
+        '') ic config unset "$node" ${auto:+"$auto"} user.convergent.autorestart || return ;;
+        -) ic config unset "$node" ${auto:+"$auto"} user.convergent.autorestart user.convergent.autorestart.old || return ;;
         *) ic config set "$node" boot.autorestart="$old" &&
             ic config unset "$node" user.convergent.autorestart user.convergent.autorestart.old || return ;;
         esac
@@ -1339,6 +1343,8 @@ EOF
     dd if="$disk" of="$work/wan-read/partition" bs=4M iflag=skip_bytes,count_bytes \
         skip="$offset" count="$bytes" status=none || die 'cannot copy wan partition'
     [ "$(stat -c %s "$work/wan-read/partition")" = "$bytes" ] || die 'short wan partition copy'
+    # A full scratch truncates what debugfs writes, which reads as the old disk's damage: room for the bounded reads.
+    [ "$(df -Pk "$work" | awk 'NR == 2 {print $4}')" -ge 65536 ] || die 'too little free space on the state volume to read the wan disk'
     chown 65534:65534 "$work/wan-read/partition" "$work/wan-read/out" &&
         chmod 0400 "$work/wan-read/partition" && chmod 0700 "$work/wan-read/out" && chmod 0711 "$work/wan-read" ||
         die 'cannot prepare wan read scratch'
