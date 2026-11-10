@@ -21,6 +21,10 @@ trap '' INT QUIT
 printf '\nThe installer stopped (exit status %s).\n' "$status"
 # agetty clears a screen console before it starts again: the reason stays there until Enter.
 case $tty in
-tty[1-9]*) printf 'Press Enter to start again: '; IFS= read -r answer || sleep 2 ;;
+tty[1-9]*)
+	# Keys pressed while it ran do not answer; a second at least between restarts.
+	saved=$(stty -g 2>/dev/null) && stty -icanon min 0 time 0 2>/dev/null && cat >/dev/null
+	[ -z "$saved" ] || stty "$saved" 2>/dev/null
+	printf 'Press Enter to start again: '; IFS= read -r answer || sleep 1; sleep 1 ;;
 *) printf 'It starts again in 2 seconds.\n'; sleep 2 ;;
 esac

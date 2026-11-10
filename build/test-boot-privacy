@@ -1200,7 +1200,7 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
 (
     die() { echo "$*" >"$work/host-rfkill-died"; exit 1; }
     rfkill() { echo "rfkill $*" >>"$work/host-rfkill-calls"; [ "$refuse" = no ]; }
-    mkdir -p "$work/net-rfkill/rfkill0" "$work/net-rfkill/rfkill1" "$work/net-rfkill/rfkill2"
+    mkdir -p "$work/net-rfkill/rfkill0" "$work/net-rfkill/rfkill1" "$work/net-rfkill/rfkill2" "$work/net-rfkill/rfkill3"
     echo bluetooth >"$work/net-rfkill/rfkill0/type"; echo 1 >"$work/net-rfkill/rfkill0/soft"
     refuse=no
     . "$work/host-rfkill"
@@ -1215,6 +1215,10 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
     echo 1 >"$work/net-rfkill/rfkill1/soft"
     . "$work/host-rfkill"
     [ "$(cat "$work/host-rfkill-calls")" = 'rfkill unblock 1' ] || die 'platform Wi-Fi switch not unblocked by its index'
+    # Each blocked one.
+    : >"$work/host-rfkill-calls"; echo wlan >"$work/net-rfkill/rfkill3/type"; echo 1 >"$work/net-rfkill/rfkill3/soft"
+    . "$work/host-rfkill"
+    [ "$(tr '\n' , <"$work/host-rfkill-calls")" = 'rfkill unblock 1,rfkill unblock 3,' ] || die 'a second blocked Wi-Fi switch was skipped'
     refuse=yes
     if (. "$work/host-rfkill"); then die 'a refused unblock passed'; fi
     grep -qx 'cannot unblock the platform Wi-Fi switch' "$work/host-rfkill-died" || die 'refused unblock not named'
@@ -1684,13 +1688,14 @@ printf 'exit 3\n' >"$work/inst-stub"
 start=$(date +%s%N)
 (cd "$work" && printf '\n' | sh "$work/installer-vt" >"$work/inst-out" 2>&1) || :
 elapsed=$((($(date +%s%N) - start) / 1000000))
-grep -q 'Press Enter to start again: ' "$work/inst-out" && [ "$elapsed" -lt 1500 ] ||
+grep -q 'Press Enter to start again: ' "$work/inst-out" && [ "$elapsed" -ge 900 ] && [ "$elapsed" -lt 1800 ] ||
     die "installer: a screen console did not wait for Enter (${elapsed} ms)"
 if grep -q 'starts again in 2 seconds' "$work/inst-out"; then die 'installer: a screen console promised a timed restart'; fi
 start=$(date +%s%N)
 (cd "$work" && sh "$work/installer-vt" >"$work/inst-out" 2>&1 </dev/null) || :
 elapsed=$((($(date +%s%N) - start) / 1000000))
-[ "$elapsed" -ge 1900 ] || die "installer: end of input on a screen console cut the pause (${elapsed} ms)"
+grep -q 'Press Enter to start again: ' "$work/inst-out" && [ "$elapsed" -ge 1900 ] ||
+    die "installer: end of input on a screen console cut the pause (${elapsed} ms)"
 # A finished install waits for the power-off without the restart line.
 grep -q '^\[ "\$status" != 0 \] || exec sleep 0$' "$work/installer" || die 'installer: the finished-install wait moved'
 printf 'exit 0\n' >"$work/inst-stub"

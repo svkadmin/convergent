@@ -6746,6 +6746,8 @@ EOF
 	0) die 'the password or the LUKS passphrase is in the installed state' ;;
 	*) die 'the installed state could not be read in full for the secret scan' ;;
 	esac
+	cmp -s "$BUILDER/releases/$release/manifest" "$state/var-$release/lib/convergent/release-guests/manifest" ||
+		die 'the installed state lacks the release manifest check accept reads'
 	seed="$state/var-$release/lib/convergent/install/iwd/CV test.psk"
 	grep -qx 'Hidden=true' "$seed" && grep -qxF "Passphrase=$wifi" "$seed" || die 'the Wi-Fi seed lacks Hidden=true or its passphrase'
 	close_state
