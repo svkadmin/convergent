@@ -59,7 +59,9 @@ for mode in normal interrupted detached renamed committed; do
 				cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
 			done
 			if [ "$fault" = pruning ]; then
-				[ ! -e "$state/profiles.before" ] && [ ! -e "$state/pending" ] && [ ! -e "$state/committed" ]
+				[ ! -e "$state/profiles.before" ]
+				[ ! -e "$state/pending" ]
+				[ ! -e "$state/committed" ]
 			else
 				[ -f "$state/profiles.before/browser-web.yaml" ]
 			fi

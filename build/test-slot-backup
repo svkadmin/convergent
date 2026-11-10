@@ -320,7 +320,8 @@ for base in "$state" "$state/var-1"; do
 done
 . "$work/boot-cleanup"
 for base in "$state" "$state/var-1"; do
-    [ ! -e "$base/.backup.123456" ] && [ ! -e "$base/.backup.empty1" ]
+    [ ! -e "$base/.backup.123456" ]
+    [ ! -e "$base/.backup.empty1" ]
 done
 # A leftover that stays is warned about and skipped; the next one is still removed and boot goes on.
 warn() { echo "$*" >&2; }

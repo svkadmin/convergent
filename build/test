@@ -1807,7 +1807,8 @@ for try in 1 2 3; do
     printf '%s\n' 'hold fw1' 'resume fw1' 'resume fw2' >"$work/expected"
     cmp "$work/calls" "$work/expected"
     grep -q "lease reconcile failed ($try/3)" "$work/run/firewall-heal/event"
-    [ "$(cat "$leases/reconcile")" = "$try" ] && [ ! -e "$leases/held" ]
+    [ "$(cat "$leases/reconcile")" = "$try" ]
+    [ ! -e "$leases/held" ]
 done
 : >"$work/calls"
 tick 1780
@@ -2495,7 +2496,8 @@ for fault in mkdir losetup partition mount none umount; do
     esac
     if [ "$fault" = umount ]; then
         if unmount_root; then exit 1; fi
-        [ "$mounted" = 1 ] && [ "$loop" = /dev/loop-fixture ]
+        [ "$mounted" = 1 ]
+        [ "$loop" = /dev/loop-fixture ]
     else
         unmount_root
         [ -z "$mounted$loop" ]

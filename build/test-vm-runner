@@ -246,7 +246,8 @@ for signature in 'init[1]: segfault' 'Kernel panic - not syncing: Attempted to k
             case $scenario in
             once | twice | driver-crash)
                 [ "$(grep -c '^CV-TEST nested PID 1 crash; rerunning boot 1$' "$fixture/output")" = 1 ]
-                [ -f "$work/console-1-1.log" ] && [ -f "$work/console-1-2.log" ]
+                [ -f "$work/console-1-1.log" ]
+                [ -f "$work/console-1-2.log" ]
                 ;;
             *) if grep -q '^CV-TEST nested PID 1 crash' "$fixture/output"; then exit 1; fi ;;
             esac

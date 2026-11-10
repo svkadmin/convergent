@@ -100,7 +100,8 @@ for fault in none nokeep cut move slot sidecar flush cross-device stat; do
         case $fault in none|nokeep) cat "$stagework/log"; exit 1 ;; esac
         [ ! -e "$root/accepted" ]
         [ "$(cat "$root/installed/manifest")" = 42 ] || die "kept the manifest of a failed $fault write"
-        [ -f "$root/stages/42/keep" ] && [ -f "$root/stages/44/keep" ]
+        [ -f "$root/stages/42/keep" ]
+        [ -f "$root/stages/44/keep" ]
     fi
     # Immediate reboot, including fallback with and without a stage of its own.
     for boot in 43 42 41; do

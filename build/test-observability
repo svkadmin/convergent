@@ -936,7 +936,8 @@ OWNER
             [ -f "$work/continued" ]
             for fd in 9 6 8; do grep -qx retained "$work/lock$fd"; done
         else
-            [ "$rc" != 0 ] && [ ! -e "$work/continued" ]
+            [ "$rc" != 0 ]
+            [ ! -e "$work/continued" ]
         fi
         rm -f "$work/bounded" "$work/continued"
     done

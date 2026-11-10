@@ -409,10 +409,12 @@ for scenario in held frozen silent unheld topology carp resume-failed peer-down 
         [ "$scenario" != frozen ] || grep -qx 'kill -KILL 4242' "$work/mutations"
         if [ "$scenario" != frozen ] && grep -q '^kill ' "$work/mutations"; then exit 1; fi
         grep -qx rebuild "$work/mutations"
-        [ ! -e "$state/pending" ] && [ -e "$state/leases/held" ]
+        [ ! -e "$state/pending" ]
+        [ -e "$state/leases/held" ]
     else
         case $scenario in held|silent|booting*) exit 1 ;; esac
-        [ -e "$state/pending" ] && [ ! -s "$work/mutations" ]
+        [ -e "$state/pending" ]
+        [ ! -s "$work/mutations" ]
     fi
     if [ "$scenario" = peer-down ] && grep -q '^retry reachable' "$work/retries"; then exit 1; fi
 done
