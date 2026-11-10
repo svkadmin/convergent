@@ -594,7 +594,8 @@ done
             [ "$owner_frozen" = 0 ] || return 124
             echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
                 {"name":"work","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
-                {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+                {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},
+                {"name":"orphan","project":"owner","config":{"user.convergent.autorestart.old":"-"}},{"name":"wan","config":{}}]' ;;
         *) return 1 ;;
         esac
     }
@@ -603,7 +604,8 @@ done
     autorestart_clear
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
         '--project owner config unset work boot.autorestart user.convergent.autorestart' \
-        '--project owner config unset hold user.convergent.autorestart' >"$work/expected-unsets"
+        '--project owner config unset hold user.convergent.autorestart' \
+        '--project owner config unset orphan user.convergent.autorestart.old' >"$work/expected-unsets"
     cmp "$work/expected-unsets" "$work/unsets"
     owner_frozen=1
     : >"$work/unsets"
