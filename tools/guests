@@ -1712,6 +1712,11 @@ rebuild() {
     [ ! -f "$state/committed" ] || ! awk '$1 ~ /^fw[12]$/ && $2 !~ /-rebuild$/ {found=1} END {exit !found}' "$state/committed" ||
         update_open=1
     commit_update
+    # A fresh root carries no maintenance marker: the demotion recorded for this node ended with it.
+    if [ -f /var/lib/convergent/firewall-maintenance ] && [ "$(cat /var/lib/convergent/firewall-maintenance)" = "$1" ]; then
+        rm -f /var/lib/convergent/firewall-maintenance && sync
+        echo "guests: the $1 maintenance demotion ended with the rebuild"
+    fi
     echo "guests: rebuilt $1; fw1 MASTER / fw2 BACKUP on all registered segments"
     if [ -n "$update_open" ]; then
         echo 'guests: the firewall update that stopped is not finished: run it again so both firewalls and the installed release follow' >&2
