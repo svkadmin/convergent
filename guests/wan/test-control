@@ -223,3 +223,105 @@ for portal_rc in 0 1; do
     [ "$rc" = "$portal_rc" ]
 done
 echo 'wan-portal: locked expiry, renewal and resolver refresh fixtures passed'
+# wan-check: a retry keeps its new lease, also one that comes after the retry with a carrier change; a retry
+# still waiting for its lease is left running despite the old refusal's overlap file; a retried wired uplink
+# whose route overlap recurs goes down again without a second alert; one already set down is left alone. A working
+# second wired uplink keeps its lease throughout.
+sed -e '/^PATH=/d' -e '/^\. /d' -e 's|^d=/run/wan$|d=$work/run|' -e 's|^m=/run/node_exporter$|m=$work/m|' \
+    -e 's|/sys/class/net/|$work/sys/|g' -e 's|^/usr/local/sbin/wan-portal expire|wan_portal expire|' \
+    "$here/rootfs/usr/local/sbin/wan-check" >"$work/wan-check"
+sh -n "$work/wan-check"
+grep -q 'wan_portal expire' "$work/wan-check"
+if grep -q '/sys/class/net/\|/run/wan' "$work/wan-check"; then exit 1; fi
+cat >"$work/check-driver" <<'DRIVER'
+UP_IFS='eth1 eth2 wlan0' WIFI_IF=wlan0 TRANSIT_IF=eth0 INTERNAL_NET=100.80.0.0/16
+flock() { :; }
+bump() { echo $(($(cat "$work/sys/$1/carrier_changes") + 1)) >"$work/sys/$1/carrier_changes"; }
+set_down() { [ "$(cat "$work/sys/$1/flags")" = 0x1002 ] || bump "$1"; echo 0x1002 >"$work/sys/$1/flags"; }
+ifdown() { echo "ifdown $*" >>"$work/calls"; set_down "$2"; rm -f "$work/addr.$2"; }
+ifup() {
+    echo "ifup $*" >>"$work/calls"
+    # An uplink already up keeps its carrier.
+    [ "$(cat "$work/sys/$1/flags")" = 0x1003 ] || bump "$1"
+    echo 0x1003 >"$work/sys/$1/flags"
+    case $1:$lease in
+    eth1:safe) echo 192.168.5.10/24 >"$work/addr.$1"; rm -f "$work/run/dhcp-overlap.$1" ;;
+    eth1:overlap) echo 100.80.1.0/24 >"$work/run/dhcp-overlap.$1" ;;
+    esac
+}
+ip() {
+    case $* in
+    "-4 -o addr show dev "*" scope global") [ ! -f "$work/addr.$6" ] || echo "2: $6    inet $(cat "$work/addr.$6") brd x scope global $6" ;;
+    "link set dev "*" down") echo "ip $*" >>"$work/calls"; set_down "$4" ;;
+    *) echo "ip $*" >>"$work/calls" ;;
+    esac
+}
+overlaps_internal() { case $1 in 100.80.*) return 0 ;; *) return 1 ;; esac; }
+logger() { echo "logger $*" >>"$work/calls"; }
+iwctl() { echo "iwctl $*" >>"$work/calls"; }
+wan_portal() { :; }
+. "$work/wan-check"
+DRIVER
+sh -n "$work/check-driver"
+for case in keep late recur latched; do
+    rm -rf "$work/run" "$work/m" "$work/sys" "$work/addr.eth1" "$work/addr.eth2" "$work/calls"
+    mkdir -p "$work/run" "$work/sys/eth1" "$work/sys/eth2"
+    echo 4 >"$work/sys/eth2/ifindex"
+    echo 2 >"$work/sys/eth2/carrier_changes"
+    echo 0x1003 >"$work/sys/eth2/flags"
+    printf '4\n2\n' >"$work/run/link.eth2"
+    echo 192.168.6.10/24 >"$work/addr.eth2"
+    echo 3 >"$work/sys/eth1/ifindex"
+    echo 6 >"$work/sys/eth1/carrier_changes"
+    echo 0x1002 >"$work/sys/eth1/flags"
+    echo 'eth1 100.80.1.0/24 1000' >"$work/run/refused"
+    # Written before the refusal set the link down; the refusal was a route overlap.
+    printf '3\n5\n' >"$work/run/link.eth1"
+    echo 100.80.1.0/24 >"$work/run/dhcp-overlap.eth1"
+    case $case in
+    keep)
+        lease=safe sh "$work/check-driver" retry
+        if grep -q '^ifdown --force eth2$' "$work/calls"; then exit 1; fi
+        [ ! -e "$work/run/refused" ]
+        grep -q '^convergent_wan_upstream_up 1$' "$work/m/wan.prom"
+        : >"$work/calls"
+        lease=safe sh "$work/check-driver"
+        if grep -q '^ifdown' "$work/calls"; then exit 1; fi
+        [ -f "$work/addr.eth1" ] ;;
+    late)
+        lease=none sh "$work/check-driver" retry || :
+        sed -n '/^ifup eth1$/,$p' "$work/calls" >"$work/after"
+        if grep -q '^ifdown' "$work/after"; then exit 1; fi
+        [ -e "$work/run/refused" ]
+        # The lease comes a minute later, after a carrier change.
+        echo 9 >"$work/sys/eth1/carrier_changes"
+        echo 192.168.5.10/24 >"$work/addr.eth1"
+        lease=none sh "$work/check-driver"
+        [ ! -e "$work/run/refused" ]
+        : >"$work/calls"
+        lease=none sh "$work/check-driver"
+        if grep -q '^ifdown' "$work/calls"; then exit 1; fi ;;
+    recur|latched)
+        arg=retry
+        if [ "$case" = latched ]; then
+            # A refused Wi-Fi stays up for iwd to join a safe network.
+            arg=
+            mkdir "$work/sys/wlan0"
+            echo 0x1003 >"$work/sys/wlan0/flags"
+            echo 'wlan0 100.80.2.0/24 1000' >>"$work/run/refused"
+            echo 100.80.2.0/24 >"$work/run/dhcp-overlap.wlan0"
+        fi
+        lease=overlap sh "$work/check-driver" $arg || :
+        [ -e "$work/run/refused" ]
+        if grep -q 'convergent-alert' "$work/calls"; then exit 1; fi
+        if [ "$case" = recur ]; then
+            sed -n '/^ifup eth1$/,$p' "$work/calls" >"$work/after"
+            grep -qx 'ifdown --force eth1' "$work/after"
+            grep -qx 'ip link set dev eth1 down' "$work/after"
+            [ "$(cat "$work/sys/eth1/flags")" = 0x1002 ]
+        else
+            if grep -q 'eth1\|wlan0' "$work/calls"; then exit 1; fi
+        fi ;;
+    esac
+done
+echo 'wan-check: retry and late leases, pending retry, recurring route overlap and latched refusal fixtures passed'

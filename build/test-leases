@@ -588,13 +588,18 @@ done
         case $1 in config) echo "--project ${ic_project:-default} $*" >>"$work/unsets"; return ;; esac
         case $* in
         'query /1.0/instances?recursion=1&project=default')
-            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+            echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
+                {"name":"fw1","project":"default","config":{"user.convergent.autorestart.old":"true"}},{"name":"wan","config":{}}]' ;;
         'query /1.0/instances?recursion=1&all-projects=true')
             [ "$owner_frozen" != error ] || { echo 'Error: boom' >&2; return 1; }
             [ "$owner_frozen" = 0 ] || return 124
             echo '[{"name":"fw2","project":"default","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
+                {"name":"fw1","project":"default","config":{"user.convergent.autorestart.old":"true"}},
                 {"name":"work","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true"}},
-                {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},{"name":"wan","config":{}}]' ;;
+                {"name":"hold","project":"owner","config":{"user.convergent.autorestart":"true"}},
+                {"name":"orphan","project":"owner","config":{"user.convergent.autorestart.old":"-"}},
+                {"name":"both","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}},
+                {"name":"bare","project":"owner"},{"name":"wan","config":{}}]' ;;
         *) return 1 ;;
         esac
     }
@@ -603,19 +608,27 @@ done
     autorestart_clear
     printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
         '--project owner config unset work boot.autorestart user.convergent.autorestart' \
-        '--project owner config unset hold user.convergent.autorestart' >"$work/expected-unsets"
+        '--project owner config unset hold user.convergent.autorestart' \
+        '--project owner config unset both boot.autorestart user.convergent.autorestart user.convergent.autorestart.old' \
+        '--project default config set fw1 boot.autorestart=true' \
+        '--project default config unset fw1 user.convergent.autorestart.old' \
+        '--project owner config unset orphan user.convergent.autorestart.old' >"$work/expected-unsets"
     cmp "$work/expected-unsets" "$work/unsets"
     owner_frozen=1
     : >"$work/unsets"
     autorestart_clear 2>"$work/err"
-    echo '--project default config unset fw2 boot.autorestart user.convergent.autorestart' | cmp - "$work/unsets"
+    printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
+        '--project default config set fw1 boot.autorestart=true' '--project default config unset fw1 user.convergent.autorestart.old' |
+        cmp - "$work/unsets"
     grep -q '^guests: WARNING: the Incus listing of all projects timed out' "$work/err"
     rm "$work/autorestart-all.failed"
     # Any other failure keeps Incus's own words and is not blamed on a frozen VM.
     owner_frozen=error
     : >"$work/unsets"
     autorestart_clear 2>"$work/err"
-    echo '--project default config unset fw2 boot.autorestart user.convergent.autorestart' | cmp - "$work/unsets"
+    printf '%s\n' '--project default config unset fw2 boot.autorestart user.convergent.autorestart' \
+        '--project default config set fw1 boot.autorestart=true' '--project default config unset fw1 user.convergent.autorestart.old' |
+        cmp - "$work/unsets"
     grep -qx 'Error: boom' "$work/err"
     grep -q '^guests: WARNING: cannot list all Incus projects' "$work/err"
     if grep -q 'timed out' "$work/err"; then exit 1; fi
