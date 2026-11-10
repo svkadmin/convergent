@@ -108,7 +108,7 @@ for sample in peer-broken master-broken both-healthy both-broken both-declined; 
         die() { echo "die $*"; exit 1; }
         logger() { :; }
         confirm() { case $1 in *anyway*) echo "asked anyway"; [ "$sample" != both-declined ] ;; esac; }
-        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | master-broken:fw1 | both-*:*) return 1 ;; esac; }
+        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | master-broken:fw1 | both-broken:* | both-declined:*) return 1 ;; esac; }
         firewall_wait_role() { echo "role $*"; }
         firewall_release() { echo release; rm -f "$journal"; }
         firewall_wait() { echo "wait $*"; }
