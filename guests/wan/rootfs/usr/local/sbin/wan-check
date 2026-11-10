@@ -41,11 +41,12 @@ wired_down() {
 }
 
 rc=0
-# Retry only configured wired uplinks; keep the alarm until a safe lease arrives.
+# Retry only refused wired uplinks (a working one keeps its lease); keep the alarm until a safe lease arrives.
 if [ "${1:-}" = retry ]; then
 	for ifc in $UP_IFS; do
 		[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
 		[ -e "/sys/class/net/$ifc" ] || continue
+		grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
 		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || exit 1
 		# Only the new lease's hook may report a route overlap again.
 		rm -f "$d/dhcp-overlap.$ifc"
