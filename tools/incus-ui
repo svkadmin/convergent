@@ -62,6 +62,11 @@ fingerprint() {
     digest=$(openssl x509 -in "$1" -noout -fingerprint -sha256) || return
     printf '%s\n' "$digest" | cut -d= -f2 | tr -d ':' | tr A-F a-f
 }
+# Pending trust tokens: Incus keeps them as default-project operations, and any int could redeem one later.
+tokens() {
+    ops=$(ic query '/1.0/operations?recursion=1&project=default') || return
+    printf '%s\n' "$ops" | jq -r '(. // {}) | .[]? | .[]? | select(.class == "token" and .status_code == 103) | .id'
+}
 close_session() {
     closed=1
     trust=$(ic config trust list --format json) || return
@@ -71,6 +76,10 @@ close_session() {
         '.[] | select(.name == "browser-int-ui" or .fingerprint == $fp) | .fingerprint') || return
     # Revoked before the slow instance calls: check's bound may cut those, never this.
     for fp in $fps; do ic config trust remove "$fp" || closed=0; done
+    pending=$(tokens) || { pending=; closed=0; }
+    for id in $pending; do
+        case $id in *[!0-9a-f-]*) closed=0 ;; *) ic query -X DELETE "/1.0/operations/$id" >/dev/null || closed=0 ;; esac
+    done
     if [ -d "$run" ] || [ -n "$fps" ]; then
         mkdir -p "$run"
         if instances=$(ic query '/1.0/instances?recursion=1&project=default'); then
@@ -133,6 +142,8 @@ case $action in
                  .type == "client" and .restricted == false and (.projects | length) == 0)) and
             (if $trusted then any(.[]; .fingerprint == $ui) else true end)' >/dev/null ||
             die 'unexpected Incus trust; inspect config trust list'
+        pending=$(tokens) || die 'cannot list Incus trust tokens'
+        [ -z "$pending" ] || die 'pending Incus trust token; inspect config trust list-tokens'
         ;;
     cleanup|--reconcile|--close|revoke)
         close_session

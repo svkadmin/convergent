@@ -154,7 +154,13 @@ ic exec svc -- rc-service grafana status
 ic config trust remove "$fp"
 [ "$(api --cert "$work/client.crt" --key "$work/key")" = 403 ]
 ic config trust add-certificate "$work/client.crt" --type client --name browser-int-ui
+# A token made in the session fails the audit, and closing the session revokes it.
+/usr/local/sbin/incus-ui --audit 8>&-
+ic config trust add w2-token >/dev/null
+if /usr/local/sbin/incus-ui --audit 8>&- 2>"$work/token-audit"; then exit 1; fi
+grep -qx 'incus-ui: pending Incus trust token; inspect config trust list-tokens' "$work/token-audit"
 /usr/local/sbin/incus-ui --close 8>&-
+ic config trust list-tokens --format json | jq -e 'length == 0'
 [ "$(ic query '/1.0/instances/int/state?project=default' | jq -r .status)" = Stopped ]
 [ ! -e "$run" ]
 ic config trust list --format json | jq -e 'all(.[]; .name != "browser-int-ui")'
