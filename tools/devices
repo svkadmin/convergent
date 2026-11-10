@@ -216,7 +216,9 @@ enrol() (
 	rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
 	logger -t devices 'USB policy replaced after individual review'
 	# A subshell: wired takes fd 9, which holds the USB lock here.
-	(wired prune) || die "policy saved; wan's wired role not checked: sys wired status, then sys wired remove if needed"
+	# Before guests setup there is no wan and no role to check.
+	[ ! -f /var/lib/convergent/guests/initialized ] || (wired prune) ||
+		die "policy saved; wan's wired role not checked: sys wired status, then sys wired remove if needed"
 )
 
 revoke() {
@@ -231,7 +233,8 @@ revoke() {
 	usbguard remove-rule "$1" || die 'cannot remove rule'
 	rc-service usbguard restart || die 'rule removed; USBGuard restart failed'
 	logger -t devices "USB rule $1 revoked"
-	(wired prune) || die "rule revoked; wan's wired role not checked: sys wired status, then sys wired remove if needed"
+	[ ! -f /var/lib/convergent/guests/initialized ] || (wired prune) ||
+		die "rule revoked; wan's wired role not checked: sys wired status, then sys wired remove if needed"
 }
 
 camera_unload() {

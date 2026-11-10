@@ -263,6 +263,11 @@ CREDENTIALS
 sh -n "$scratch/credentials"
 sh -eu "$scratch/credentials" >"$scratch/log" 2>&1 || { cat "$scratch/log"; die 'initial credentials'; }
 cp -R "$state" "$scratch/good"
+# Issued a day back, so a clock stepped back after a first boot ahead (RTC in local time) keeps them valid.
+for cert in ca server incus-server incus-client; do
+    start=$(openssl x509 -in "$tls/$cert.crt" -startdate -noout) && start=$(date -d "${start#notBefore=}" +%s) &&
+        [ "$start" -le "$(($(date +%s) - 82800))" ] || die "$cert is not issued a day back"
+done
 # Resume a saved server after the clock moves behind its certificate.
 sed -n '/^secret_valid() {/,/^certificates_due() {/p' "$repo/tools/guests" | sed '$d' | sed "$built_stamp" >"$scratch/init-recover"
 sed -n '/^init_server() {/,/^}/p; /^init_done()/p' "$repo/tools/guests" |

@@ -478,6 +478,8 @@ credentials() {
         certificate_pair "$tls/ca.key" "$tls/ca.crt" || die 'invalid CA pair'
         openssl verify -no_check_time -CAfile "$tls/ca.crt" "$tls/ca.crt" >/dev/null || die 'invalid CA certificate'
     fi
+    # A day back: a first boot under an RTC kept in local time (after Windows) runs ahead until chrony steps it.
+    since=$(date -u -d '1 day ago' +%Y%m%d%H%M%SZ) || die 'cannot read the clock'
     if ! certificate_current "$tls/ca.crt"; then
         if [ ! -f "$tls/ca.key" ]; then
             openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$tls/ca.key.new"
@@ -487,7 +489,7 @@ credentials() {
             sync
         fi
         openssl pkey -in "$tls/ca.key" -check -noout >/dev/null || die 'invalid CA key'
-        openssl req -x509 -key "$tls/ca.key" -out "$tls/ca.crt.new" -days 3650 -subj '/CN=Local CA' \
+        openssl req -x509 -key "$tls/ca.key" -out "$tls/ca.crt.new" -not_before "$since" -days 3650 -subj '/CN=Local CA' \
             -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign
         certificate_pair "$tls/ca.key" "$tls/ca.crt.new" || die 'invalid CA pair'
         openssl verify -CAfile "$tls/ca.crt.new" "$tls/ca.crt.new" >/dev/null || die 'invalid CA certificate'
@@ -523,7 +525,7 @@ credentials() {
         printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=%s\nsubjectAltName=%s\n' \
             "$purpose" "$san" >"$work/extensions"
         openssl x509 -req -in "$work/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
-            -set_serial "0x$(openssl rand -hex 16)" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt.new"
+            -set_serial "0x$(openssl rand -hex 16)" -not_before "$since" -days 825 -extfile "$work/extensions" -out "$tls/$cert.crt.new"
         openssl verify -CAfile "$tls/ca.crt" "$tls/$cert.crt.new"
         if [ "$cert" = incus-client ] && [ -f "$tls/$cert.crt" ] && [ ! -f "$tls/incus-client.previous" ]; then
             cp "$tls/$cert.crt" "$tls/incus-client.previous"
