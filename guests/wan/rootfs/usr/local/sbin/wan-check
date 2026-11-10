@@ -47,7 +47,8 @@ if [ "${1:-}" = retry ]; then
 		[ "$ifc" != "$WIFI_IF" ] && [ "$ifc" != "$TRANSIT_IF" ] || continue
 		[ -e "/sys/class/net/$ifc" ] || continue
 		grep -q "^$ifc " "$d/refused" 2>/dev/null || continue
-		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || exit 1
+		# The refusal already killed its client: a missing pidfile must not stop the retry.
+		ifdown --force "$ifc" 9>&- >/dev/null 2>&1 || :
 		# Only the new lease's hook may report a route overlap again.
 		rm -f "$d/dhcp-overlap.$ifc"
 		ifup "$ifc" 9>&- >/dev/null 2>&1 || rc=1

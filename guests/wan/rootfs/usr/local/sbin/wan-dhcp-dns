@@ -39,7 +39,9 @@ set)
 	done | /usr/sbin/resolvconf -a "$interface.dns"
 	;;
 clear)
-	/usr/sbin/resolvconf -d "$interface.dns"
+	# Every client start and stop deconfigures: a check queued from here bounced a lease-less uplink, which queued
+	# another. The minute check sees a lost lease.
+	rm -f "/run/wan/resolv.$interface.dns"
 	;;
 *)
 	echo "usage: wan-dhcp-dns set|clear" >&2
