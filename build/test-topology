@@ -300,6 +300,16 @@ echo 'test-topology: recovery removes only stale probe routes'
     finished
     [ ! -e "$scratch/maintenance" ]
     grep -qx 'guests: the fw1 maintenance demotion ended with the rebuild' "$scratch/out"
+    # A rebuild cut after its replace and resumed takes the handback; the journal naming its fresh root goes too.
+    clean
+    printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"
+    cp "$state/committed" "$state/pending"
+    touch "$state/fw.rebuilt"
+    echo fw1 >"$scratch/maintenance"
+    (rebuild fw1) >/dev/null
+    finished
+    [ ! -e "$scratch/maintenance" ]
+    if grep -q '^replace' "$log"; then exit 1; fi
     # A committed rebuild whose node stays unhealthy is redone from its journal.
     clean
     printf '%s\n' 'fw1 guests-20250101T000000-1-rebuild image' >"$state/committed"

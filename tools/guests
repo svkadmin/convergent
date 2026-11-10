@@ -1679,6 +1679,12 @@ rebuild() {
     # A completed handback can be committed after an interruption.
     if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
         { [ -f "$state/fw.rebuilt" ] || [ -f "$state/committed" ]; } && pair fw1 fw2 && fw_check "$1" release; then
+        # The interrupted run replaced the root: a maintenance journal naming it is stale.
+        if [ -f "$state/fw.rebuilt" ] && [ -f /var/lib/convergent/firewall-maintenance ] &&
+            [ "$(cat /var/lib/convergent/firewall-maintenance)" = "$1" ]; then
+            rm -f /var/lib/convergent/firewall-maintenance
+            sync
+        fi
         touch "$state/dns.stale"
         sync
     else
@@ -1856,9 +1862,9 @@ init() {
     images_prune
     touch "$state/initialized"
     sync
-    # The boot run skipped the guest certificates and volumes: publish them now, not a day later.
-    /usr/local/sbin/facts daily >/dev/null 2>&1 9>&- 8>&- 7>&- 6>&- || :
-    /usr/local/sbin/facts auto >/dev/null 2>&1 9>&- 8>&- 7>&- 6>&- || :
+    # The boot run skipped the guest certificates and volumes: publish them now, not a day later, in the
+    # background so their bounded lock waits never hold the guests lock.
+    (timeout -k 5 300 /usr/local/sbin/facts daily; timeout -k 5 300 /usr/local/sbin/facts auto) >/dev/null 2>&1 </dev/null 9>&- 8>&- 7>&- 6>&- &
     # Clears the bar's SETUP after a manual retry too.
     [ ! -e /run/convergent/status/setup ] || echo 'done' >/run/convergent/status/setup
 }

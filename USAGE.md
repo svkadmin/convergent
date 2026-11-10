@@ -685,7 +685,8 @@ installed images and seed. Before you run it:
 - Finish updates and handoffs.
 - The peer must be healthy and own every segment. If the target still runs, coherent CARP on
   every segment also suffices.
-- Maintenance may name the target; run `sys firewall undo` afterwards.
+- Maintenance may name the target: its fresh root ends the maintenance. Maintenance on the peer
+  must be undone first.
 
 The rebuild waits for the guest and DNS locks, checks and seeds the replacement, restores normal
 roles and pushes the stored DNS. It first starts a `wan` or `svc` that Incus left stopped or

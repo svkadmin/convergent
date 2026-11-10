@@ -975,6 +975,8 @@ for sample in remmina:cage remmina:audio def:cage; do
         role=${sample%:*} cage=101 children='101 102'
         case ${sample#*:} in cage) dead=101 ;; *) dead=102 ;; esac
         kill() { [ "$2" != "$dead" ]; }
+        wait() { return 0; }
+        logger() { :; }
         die() { echo "die $*"; exit 1; }
         . "$work/watch"
         echo continued
@@ -984,6 +986,11 @@ for sample in remmina:cage remmina:audio def:cage; do
     *) [ "$rc" = 1 ] && grep -qx 'die socket or audio provider exited' "$work/watch.out" ;;
     esac || die "session watch: $sample"
 done
+# A window close often takes Cage and Remmina in one tick: past the loop, a dead Cage is still a normal close.
+awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage" 2>\/dev\/null; then$/ {copy = 1} copy {print} copy && /^fi$/ {exit}' \
+    "$repo/tools/browser" >"$work/after-watch"
+grep -qx '    exit 0' "$work/after-watch"
+awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage"/ {s = NR} /^wait "\$browser" \|\| \{$/ {w = NR} END {exit !(s && w && s < w)}' "$repo/tools/browser"
 echo 'test-boot-privacy: session watch passed'
 
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.

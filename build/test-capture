@@ -96,7 +96,7 @@ awk '/^firewall_change\(\) \($/ {copy = 1} copy {print} copy && /^\)$/ {exit}' "
     sed -e "s|/run/convergent|$fixture/undo/run|g" -e "s|/var/lib/convergent|$fixture/undo/lib|g" >"$fixture/undo.sh"
 [ "$(grep -c "$fixture/undo/lib/firewall-maintenance" "$fixture/undo.sh")" = 1 ]
 sh -n "$fixture/undo.sh"
-for sample in peer-broken master-broken both-healthy; do
+for sample in peer-broken master-broken both-healthy both-broken both-declined; do
     rm -rf "$fixture/undo"; mkdir -p "$fixture/undo/run" "$fixture/undo/lib/guests"
     echo fw1 >"$fixture/undo/lib/firewall-maintenance"
     rc=0
@@ -107,14 +107,18 @@ for sample in peer-broken master-broken both-healthy; do
         flock() { :; }
         die() { echo "die $*"; exit 1; }
         logger() { :; }
-        confirm() { :; }
-        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | master-broken:fw1) return 1 ;; esac; }
+        confirm() { case $1 in *anyway*) echo "asked anyway"; [ "$sample" != both-declined ] ;; esac; }
+        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | master-broken:fw1 | both-*:*) return 1 ;; esac; }
+        firewall_wait_role() { echo "role $*"; }
         firewall_release() { echo release; rm -f "$journal"; }
         firewall_wait() { echo "wait $*"; }
         firewall_change undo
     ) >"$fixture/undo.out" 2>&1 || rc=$?
     case $sample in
-    peer-broken) [ "$rc" = 0 ] && grep -qx release "$fixture/undo.out" && ! grep -q '^wait' "$fixture/undo.out" ;;
+    peer-broken) [ "$rc" = 0 ] && grep -qx release "$fixture/undo.out" && grep -qx 'role fw1 MASTER' "$fixture/undo.out" &&
+        ! grep -q '^wait' "$fixture/undo.out" && ! grep -q 'asked anyway' "$fixture/undo.out" ;;
+    both-broken) [ "$rc" = 0 ] && grep -qx 'asked anyway' "$fixture/undo.out" && grep -qx release "$fixture/undo.out" ;;
+    both-declined) [ "$rc" = 1 ] && ! grep -qx release "$fixture/undo.out" && [ -f "$fixture/undo/lib/firewall-maintenance" ] ;;
     master-broken) [ "$rc" = 1 ] && grep -q '^die fw1 is unhealthy' "$fixture/undo.out" && ! grep -qx release "$fixture/undo.out" &&
         [ -f "$fixture/undo/lib/firewall-maintenance" ] ;;
     both-healthy) [ "$rc" = 0 ] && grep -qx 'wait fw1 fw2' "$fixture/undo.out" ;;

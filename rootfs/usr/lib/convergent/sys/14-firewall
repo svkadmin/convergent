@@ -101,6 +101,13 @@ done
 test ! -e /etc/convergent/seeded/maintenance' || return
 	rm -f "$journal" && sync
 }
+firewall_wait_role() {
+	for attempt in 1 2 3 4 5 6; do
+		firewall_role "$1" "$2" && return 0
+		sleep 2
+	done
+	return 1
+}
 firewall_wait() {
 	for attempt in 1 2 3 4 5 6; do
 		firewall_pair "$1" "$2" && return 0
@@ -127,12 +134,18 @@ firewall_change() (
 		# can reach the peer once the journal is gone.
 		peer_ok=1
 		firewall_healthy "$peer" || peer_ok=
-		[ -z "$peer_ok" ] || firewall_healthy "$master" ||
-			die "$master is unhealthy; run sys firewall rebuild $master (it ends the maintenance)"
-		[ -n "$peer_ok" ] || echo "$peer is unhealthy: releasing $master so it takes over" >&2
+		if ! firewall_healthy "$master"; then
+			[ -z "$peer_ok" ] || die "$master is unhealthy; run sys firewall rebuild $master (it ends the maintenance)"
+			# Both broken: only a release lets the heal act, and only the owner can judge that.
+			echo "warning: both firewalls are unhealthy" >&2
+			confirm "Release $master anyway, so the self-heal can act on both" || exit 1
+		fi
+		[ -n "$peer_ok" ] || echo "$peer is unhealthy: releasing $master so the self-heal or a rebuild can act on $peer" >&2
 		confirm "Release $master maintenance demotion" || exit 1
 		firewall_release || die 'undo failed; journal retained, retry sys firewall undo'
 		if [ -z "$peer_ok" ]; then
+			# fw1 preempts; a released fw2 stays BACKUP while fw1 still advertises.
+			firewall_wait_role "$master" MASTER || echo "warning: $master is not MASTER yet; check sys fw status" >&2
 			echo "Maintenance ended; $master is released. $peer is unhealthy: the self-heal can act again, or run sys firewall rebuild $peer."
 			logger -t sys-firewall "maintenance ended with $peer unhealthy" || :
 			exit 0

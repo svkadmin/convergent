@@ -238,7 +238,7 @@ elif [ "$role" = tmp ]; then
 else
     exec 8>"/run/convergent/browser/$name.lock"
     # A few seconds: the minute sweep holds int's and Remote's lock briefly while it finds nothing open.
-    flock -w 5 8 || die "$role is already open; close it before reopening"
+    flock -w 5 8 || die "$role is already open or being checked; close it or retry"
 fi
 run=/run/convergent/browser/$name
 children= active= grafana= portal= browser= capture= cage= cage_capture=
@@ -487,7 +487,12 @@ while kill -0 "$browser" 2>/dev/null; do
     for child in $children; do
         kill -0 "$child" 2>/dev/null && continue
         # Closing the Remote window ends Cage with its output: a normal close.
-        [ "$role" != remmina ] || [ "$child" != "$cage" ] || exit 0
+        if [ "$role" = remmina ] && [ "$child" = "$cage" ]; then
+            # Its status stays in the log: a crash and a close look alike here.
+            wait "$cage" && cage_rc=0 || cage_rc=$?
+            logger -t browser "Remote ended: Cage exited $cage_rc" 2>/dev/null || :
+            exit 0
+        fi
         die 'socket or audio provider exited'
     done
     if [ -n "$portal_mode" ]; then
@@ -507,6 +512,13 @@ while kill -0 "$browser" 2>/dev/null; do
         [ $((${uptime%.*} - checked)) -lt 180 ] || die 'portal status is stale'
     fi
 done
+# Closing the Remote window ends Cage, then Remmina, often within one tick: a normal close.
+if [ "$role" = remmina ] && ! kill -0 "$cage" 2>/dev/null; then
+    wait "$cage" && cage_rc=0 || cage_rc=$?
+    logger -t browser "Remote ended: Cage exited $cage_rc" 2>/dev/null || :
+    wait "$browser" || :
+    exit 0
+fi
 wait "$browser" || {
     rc=$?
     case $rc in
