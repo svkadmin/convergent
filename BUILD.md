@@ -551,7 +551,7 @@ at the same time. Every mode first runs `build/test-topology`, `build/test-lease
 | `build/test --guests-topology <release> $g` | plus a no-peer rebuild, topology migration, Remmina update | a 0.1.3 release, 8 GiB RAM |
 | `build/test --online <release> $g` | its guests from the channel | published release, 8 GiB RAM |
 
-`<broken-dir>` must not exist: the test builds a broken svc image there and verifies the rollback.
+`<broken-dir>` must not exist: the test builds a broken svc image there, verifies the rollback and removes it.
 `--guests-update` and `--guests-topology` are the two halves of the update flow, meant for two rigs
 at once. `--guests-topology` migrates from the newest 0.1.3 release with firewall images (or
 `CONVERGENT_LEGACY_RELEASE`) and fails without one.

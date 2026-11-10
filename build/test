@@ -846,7 +846,7 @@ aaaa-0002'
 	echo 'test: install options passed'
 	exit 0
 fi
-for fixture in test-topology test-leases test-work-gate test-release-compat test-slot-backup test-seed; do sh "$here/$fixture" || exit 1; done
+for fixture in test-topology test-leases test-work-gate test-release-compat test-slot-backup test-seed; do sh "$here/$fixture" || { echo "test: $fixture failed" >&2; exit 1; }; done
 . "$here/build.conf"
 . "$here/chroot.sh"
 
@@ -941,6 +941,8 @@ cleanup() {
 	bld cryptsetup close "$map" 2>/dev/null || :
 	if [ -n "$loop" ]; then losetup -d "$loop" || :; fi
 	chroot_umount
+	# Test output only: a rerun of the same line must not find it.
+	[ -z "${broken_made:-}" ] || rm -rf "$broken"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -1040,6 +1042,7 @@ close_state() {
 make_broken_svc() {
 	# Break only the service script, leaving the good svc output intact.
 	mkdir "$broken" || die "$broken exists; give a new path"
+	broken_made=1
 	mkdir -p "$BUILDER$work/broken-root"
 	broken=$(cd "$broken" && pwd)
 	cp -a "$guests/svc/." "$broken/"
@@ -5674,16 +5677,17 @@ onearg() { answer=$2; }
 text_valid() { :; }
 cached() { head -n 1 "$1"; }
 old=$(cat /etc/timezone)
-[ "$old" != Europe/Bratislava ]
+new=Europe/Bratislava
+[ "$old" != "$new" ] || new=UTC
 for bad in Mars/Base ../etc/passwd posix/UTC right/UTC Etc; do
 	if (time_set "$bad") 2>/dev/null; then exit 1; fi
 	[ "$(cat /etc/timezone)" = "$old" ]
 done
-time_set Europe/Bratislava
-[ "$(time_state)" = 'Time zone: Europe/Bratislava' ]
+time_set "$new"
+[ "$(time_state)" = "Time zone: $new" ]
 mountpoint -q /etc/localtime && mountpoint -q /etc/timezone && [ ! -L /etc/localtime ]
-cmp /usr/share/zoneinfo/Europe/Bratislava /etc/localtime
-case $(env -u TZ date +%Z) in CET|CEST) ;; *) exit 1 ;; esac
+cmp "/usr/share/zoneinfo/$new" /etc/localtime
+[ "$(env -u TZ date +%Z)" = "$(TZ=$new date +%Z)" ]
 time_set "$old"
 [ "$(cat /etc/timezone)" = "$old" ]
 cmp "/usr/share/zoneinfo/$old" /etc/localtime
@@ -6715,7 +6719,10 @@ EOF
 	# The installed state: no password or LUKS passphrase in any file; the iwd seed for the first update.
 	printf '%s\n' "$luks" >"$BUILDER$work/passphrase"
 	open_state ro
-	if grep -rqF -e "$pw" -e "$luks" "$state"; then die 'the password or the LUKS passphrase is in the installed state'; fi
+	# Only a clean read of every file passes: grep's 2 (a read error) is no proof.
+	found=0
+	grep -rqF -e "$pw" -e "$luks" "$state" || found=$?
+	[ "$found" = 1 ] || die 'the password or the LUKS passphrase is in the installed state, or a file could not be read'
 	seed="$state/var-$release/lib/convergent/install/iwd/CV test.psk"
 	grep -qx 'Hidden=true' "$seed" && grep -qxF "Passphrase=$wifi" "$seed" || die 'the Wi-Fi seed lacks Hidden=true or its passphrase'
 	close_state
