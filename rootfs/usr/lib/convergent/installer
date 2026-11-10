@@ -18,5 +18,9 @@ status=0
 trap '' INT QUIT
 # A finished install has asked init to power off: no restart line under its last words.
 [ "$status" != 0 ] || exec sleep 600
-printf '\nThe installer stopped (exit status %s); it starts again in 2 seconds.\n' "$status"
-sleep 2
+printf '\nThe installer stopped (exit status %s).\n' "$status"
+# agetty clears a screen console before it starts again: the reason stays there until Enter.
+case $tty in
+tty[1-9]*) printf 'Press Enter to start again: '; IFS= read -r answer || sleep 2 ;;
+*) printf 'It starts again in 2 seconds.\n'; sleep 2 ;;
+esac

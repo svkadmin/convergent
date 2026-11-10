@@ -1191,8 +1191,8 @@ check_script "$work/host-wait"
 )
 echo 'test-boot-privacy: host bridge waiter passed'
 
-# A blocked platform Wi-Fi or WWAN switch is unblocked once; an unblocked one (every minute's repair) and
-# Bluetooth are left alone.
+# A blocked platform Wi-Fi switch is unblocked by its index; a blocked WWAN switch, an unblocked one (every
+# minute's repair) and Bluetooth are left alone.
 sed -n '/^# rfkill.default_state=0 also blocks/,/^done$/p' "$repo/rootfs/usr/lib/convergent/incus/host-net" |
     sed "s|/sys/class/rfkill/|$work/net-rfkill/|" >"$work/host-rfkill"
 check_script "$work/host-rfkill"
@@ -1211,7 +1211,10 @@ grep -q "$work/net-rfkill/rfkill\*" "$work/host-rfkill" || die 'host rfkill extr
     [ ! -e "$work/host-rfkill-calls" ] || die 'unblocked switches that were not blocked'
     echo 1 >"$work/net-rfkill/rfkill2/soft"
     . "$work/host-rfkill"
-    [ "$(cat "$work/host-rfkill-calls")" = 'rfkill unblock wlan wwan' ] || die 'platform Wi-Fi switch not unblocked once'
+    [ ! -e "$work/host-rfkill-calls" ] || die 'unblocked a WWAN switch nothing uses'
+    echo 1 >"$work/net-rfkill/rfkill1/soft"
+    . "$work/host-rfkill"
+    [ "$(cat "$work/host-rfkill-calls")" = 'rfkill unblock 1' ] || die 'platform Wi-Fi switch not unblocked by its index'
     refuse=yes
     if (. "$work/host-rfkill"); then die 'a refused unblock passed'; fi
     grep -qx 'cannot unblock the platform Wi-Fi switch' "$work/host-rfkill-died" || die 'refused unblock not named'
@@ -1668,11 +1671,26 @@ for sig in INT QUIT; do
             setsid -w perl -e '$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec @ARGV or exit 1' sh "$work/installer" >"$work/inst-out" 2>&1 </dev/null
     ) || :
     elapsed=$((($(date +%s%N) - start) / 1000000))
-    grep -q "^The installer stopped (exit status [0-9]*); it starts again in 2 seconds\.$" "$work/inst-out" ||
-        die "installer: $sig skipped the message"
+    grep -q "^The installer stopped (exit status [0-9]*)\.$" "$work/inst-out" &&
+        grep -qx 'It starts again in 2 seconds.' "$work/inst-out" || die "installer: $sig skipped the message"
     [ "$elapsed" -ge 1900 ] || die "installer: $sig cut the pause (${elapsed} ms)"
     [ -e "$work/inst-second" ] || die "installer: no second $sig"
 done
+# A screen console: agetty clears it before the restart, so the reason waits for Enter; end of input
+# still pauses 2 s.
+sed 's|^tty=${tty#/dev/}$|tty=tty1|' "$work/installer" >"$work/installer-vt"
+grep -qx 'tty=tty1' "$work/installer-vt" || die 'installer: the tty line moved'
+printf 'exit 3\n' >"$work/inst-stub"
+start=$(date +%s%N)
+(cd "$work" && printf '\n' | sh "$work/installer-vt" >"$work/inst-out" 2>&1) || :
+elapsed=$((($(date +%s%N) - start) / 1000000))
+grep -q 'Press Enter to start again: ' "$work/inst-out" && [ "$elapsed" -lt 1500 ] ||
+    die "installer: a screen console did not wait for Enter (${elapsed} ms)"
+if grep -q 'starts again in 2 seconds' "$work/inst-out"; then die 'installer: a screen console promised a timed restart'; fi
+start=$(date +%s%N)
+(cd "$work" && sh "$work/installer-vt" >"$work/inst-out" 2>&1 </dev/null) || :
+elapsed=$((($(date +%s%N) - start) / 1000000))
+[ "$elapsed" -ge 1900 ] || die "installer: end of input on a screen console cut the pause (${elapsed} ms)"
 # A finished install waits for the power-off without the restart line.
 grep -q '^\[ "\$status" != 0 \] || exec sleep 0$' "$work/installer" || die 'installer: the finished-install wait moved'
 printf 'exit 0\n' >"$work/inst-stub"

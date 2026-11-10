@@ -36,13 +36,11 @@ case $release in '' | *[!0-9]*) die "release must be numeric" ;; esac
 dir=$BUILDER/releases/$release
 rel=/releases/$release
 for f in slot.img manifest "convergent-$release-a.efi" "convergent-$release-b.efi" vmlinuz microcode.cpio initramfs.img \
-	cmdline-a os-release-a guests.manifest; do
+	cmdline-a os-release-a guests.manifest remmina.manifest; do
 	[ -s "$dir/$f" ] && [ ! -L "$dir/$f" ] || die "release $release lacks $f; run build/image and build/guests first"
 done
-manifests=manifest
-for m in guests.manifest remmina.manifest; do
-	if [ -f "$dir/$m" ]; then manifests="$manifests $m"; fi
-done
+# The first guest setup needs all five kinds, Remmina too.
+manifests='manifest guests.manifest remmina.manifest'
 # Every file the manifests list, by its published path; nothing else goes on the image.
 files=
 for m in $manifests; do

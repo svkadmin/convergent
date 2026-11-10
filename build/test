@@ -6723,7 +6723,7 @@ EOF
 	step '(?s)\n  (/dev/sd[a-z]+)  vfat  .*?Backup filesystem \(its /dev path\): ' '={cap}'
 	step 'Write the header backup to /dev/sd[a-z]+ on .*\? \[y/N\]: ' =y
 	step 'or ERASE followed by a space and serial CVTARGET: ' '=ERASE CVTARGET'
-	step 'Remove the install stick after power-off, before booting\.' @off
+	step 'Remove the install stick after power-off, before booting\.\r?\nPress Enter to power off: ' =
 	install_run install
 	[ "$ended" = poweroff ] || die "the reinstall did not power off ($ended); see $log"
 	grep -q '^LUKS header backup: cv-luks-header-CVTARGET-' "$tlog" &&
@@ -6809,7 +6809,7 @@ $luks"
 	answers UTC ''
 	step 'Save a LUKS header backup to another USB disk at the end\? \[y/N\]: ' =
 	step 'or ERASE followed by a space and serial CVUSBTARGET: ' '=ERASE CVUSBTARGET'
-	step 'Remove the install stick after power-off, before booting\.' @off
+	step 'Remove the install stick after power-off, before booting\.\r?\nPress Enter to power off: ' =
 	install_run install
 	[ "$ended" = poweroff ] || die "the USB target install did not power off ($ended); see $log"
 	grep -q '(the install target)$' "$tlog" || die "the USB list did not show the target's port; see $log"

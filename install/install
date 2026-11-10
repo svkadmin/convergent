@@ -795,6 +795,8 @@ if [ -n "$stick" ]; then
 		[ -d "$guests/guests/$kind" ] || continue
 		(cd "$guests/guests/$kind" && sha256sum -c --quiet SHA256SUMS) || die "$kind guest files do not match SHA256SUMS"
 	done
+	# check accept's input, as an update keeps it: the manifest verified above.
+	run cp "$work/manifest" "$guests/manifest"
 fi
 
 check_identity
@@ -851,8 +853,11 @@ if [ -n "$saved" ]; then
 	printf 'Restore it (RECOVERY 10): cryptsetup luksHeaderRestore /dev/disk/by-partlabel/cv-state --header-backup-file %s\n' "$saved"
 elif [ -n "$backup" ]; then
 	printf 'install: the LUKS header backup on %s failed; the installed system is complete.\n' "$backup" >&2
+fi
+printf 'Remove the install stick after power-off, before booting.\n'
+# The stick's screen clears at power-off: these lines stay until the owner has read them.
+if [ -n "$stick" ] || { [ -n "$backup" ] && [ -z "$saved" ]; }; then
 	printf "Press Enter to power off: " >&3
 	IFS= read -r answer <&3 || :
 fi
-printf 'Remove the install stick after power-off, before booting.\n'
 run poweroff
