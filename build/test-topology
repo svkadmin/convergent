@@ -796,6 +796,23 @@ echo 'test-topology: a committed migration redoes a node that never becomes heal
     rm -rf "$state/fw.topology" "$scratch/fw2.broken"
 )
 echo 'test-topology: a failed redo resumes work DHCP on the healthy firewall'
+# The same with the real lease checkpoint: fw2 silent, fw1 gets its allocator back and the hold stays for fw2.
+(
+    . "$lib/fw-leases"
+    journal
+    rm -rf "$state/leases"
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; done
+    touch "$state/fw.topology/committed" "$scratch/fw2.broken"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    rebuild_root() { stopped "$1" || return 1; echo "rebuild $1 $2" >>"$log"; printf '%s\n' "$2" >"$scratch/$1.image"; }
+    rsh() { [ ! -e "$scratch/$1.broken" ] || return 255; case $2 in *'rcctl enable dhcpd'*) echo "enable $1" >>"$log" ;; esac; }
+    seed_start() { echo "boot $1" >>"$log"; echo running >"$scratch/$1.status"; return 1; }
+    if topology_recover; then exit 1; fi
+    awk '$0 == "boot fw2" {b=NR} $0 == "enable fw1" {e=NR} END {exit !(b && b < e)}' "$log"
+    [ -f "$state/leases/held" ] && [ ! -f "$state/leases/quiesced" ]
+    rm -rf "$state/fw.topology" "$state/leases" "$scratch/fw2.broken"
+)
+echo 'test-topology: a failed redo resumes the healthy allocator through the real lease checkpoint'
 # Both committed nodes silent (an fsck prompt): both are redone under one real checkpoint, neither refused.
 (
     . "$lib/fw-leases"

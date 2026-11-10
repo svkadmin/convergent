@@ -249,7 +249,7 @@ groups:
       - alert: RuleEvaluationUnhealthy
         expr: (cv_rules_healthy == 0) or absent(cv_rules_healthy)
         # vmalert starts each group up to one interval late: the 5m groups' first evaluation, then observe and a scrape.
-        for: 7m
+        for: 10m
         labels: {severity: warning}
         annotations: {summary: 'Rule API reports failed, missing or stalled evaluations', dashboard: '/d/cv-monitoring'}
       - alert: ObservationStale

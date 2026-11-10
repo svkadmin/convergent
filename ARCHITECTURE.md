@@ -190,7 +190,8 @@ packet before the loopback and established accepts. Metrics use a separate ident
 PKCS#12 and the public certificate persist, in root-only TLS state. Each session prompts in a host
 terminal, verifies the fingerprint and imports the key as UID 1000 into fresh tmpfs NSS state; both
 persistent NSS locations are masked, even for a plain `int`. Import precedes trust; closing `int`
-stops the session and removes its trust and data. Boot and `check auto` clean orphans; an
+stops the session and removes its trust, any pending trust token and its data. The minute audit also fails on
+a pending token. Boot and `check auto` clean orphans; an
 interrupted rotation restores a complete credential directory. An Incus session also gets its own
 Chromium profile on a tmpfs that ends with `int`, and a policy limited to the Incus origin;
 Grafana-only launches get neither, and no key. Each Incus session first rebuilds `int`'s root

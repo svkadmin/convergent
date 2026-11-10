@@ -64,8 +64,9 @@ fingerprint() {
 }
 # Pending trust tokens: Incus keeps them as default-project operations, and any int could redeem one later.
 tokens() {
-    ops=$(ic query '/1.0/operations?recursion=1&project=default') || return
-    printf '%s\n' "$ops" | jq -r '(. // {}) | .[]? | .[]? | select(.class == "token" and .status_code == 103) | .id'
+    ops=$(ic query '/1.0/operations?recursion=1&project=default') && [ -n "$ops" ] || return 1
+    printf '%s\n' "$ops" | jq -r 'if type == "object" or type == "null" then (. // {}) | .[]? | .[]? |
+        select(.class == "token" and .status_code == 103) | .id else error("operations reply is not an object") end'
 }
 close_session() {
     closed=1
