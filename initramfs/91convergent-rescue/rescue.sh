@@ -8,6 +8,8 @@ if ! mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-sta
 	mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||
 		die 'rescue: the state volume did not mount'
 	echo 'rescue: the state volume mounted read-only (no log replay): copy the logs; writes will fail'
+	CV_STATE_RO=1
+	export CV_STATE_RO
 fi
 sh /sbin/convergent-rescue "$state"
 # Never fall through to mounting or switching root.
