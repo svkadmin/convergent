@@ -999,6 +999,25 @@ grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browse
 grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
 grep -qF 'until blockdev --rereadpt "$disk" 2>"$work/rereadpt"; do' "$repo/install/install"
 grep -qF -- '--mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -' "$repo/guests/wan/build"
+# Rescue reaches its menu on a volume that mounts only read-only, and refuses the writes there (21C).
+# The menu itself, read-only: options 2 and 3 are refused, the reset never runs, 7 still powers off.
+sed -e '/^exec <\/dev\/console/d' -e "s|^\. /lib/convergent-recovery.sh$|. $work/rescue-stubs|" \
+    "$repo/initramfs/91convergent-rescue/menu.sh" >"$work/rescue-menu"
+grep -q "$work/rescue-stubs" "$work/rescue-menu"
+cat >"$work/rescue-stubs" <<'STUBS'
+reset_password() { echo RESET; }
+slot() { echo "SLOT $*"; }
+sync() { :; }
+poweroff() { echo POWEROFF; exit 0; }
+STUBS
+printf '2\n3\n7\n' | CV_STATE_RO=1 sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
+[ "$(grep -c 'The state volume is read-only' "$work/rescue.out")" = 2 ]
+if grep -q -e RESET -e SLOT "$work/rescue.out"; then die 'rescue wrote a read-only state'; fi
+grep -q 'POWEROFF$' "$work/rescue.out"
+# Writable (the usual case): option 2 runs the reset.
+printf '2\n7\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
+grep -q 'RESET$' "$work/rescue.out"
+grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"

@@ -791,4 +791,31 @@ for sample in short exact bytes unlock spaces empty; do
     esac || { cat "$work/prompt-error"; exit 1; }
     case $sample in short|empty) [ ! -e "$work/prompt-scratch/password" ] ;; esac
 done
+# A metrics renewal that stopped part-way (incus-client.previous kept) trusts both certificates until its apply ends.
+sed -n '/^    --audit)$/,/^        ;;$/p' "$repo/tools/incus-ui" | sed '1d;$d' >"$work/audit-arm"
+[ -s "$work/audit-arm" ]
+sh -n "$work/audit-arm"
+for sample in renewed partial stray; do
+    rm -rf "$work/aud"
+    mkdir -p "$work/aud/tls" "$work/aud/run"
+    : >"$work/aud/tls/incus-client.crt"
+    [ "$sample" = renewed ] || : >"$work/aud/tls/incus-client.previous"
+    rc=0
+    (
+        tls=$work/aud/tls run=$work/aud/run
+        die() { echo "die $*"; exit 1; }
+        fingerprint() { case $1 in *previous) echo old ;; *) echo new ;; esac; }
+        tokens() { :; }
+        logger() { :; }
+        ic() {
+            case $sample in
+            stray) echo '[{"fingerprint":"old","type":"metrics"},{"fingerprint":"new","type":"metrics"},{"fingerprint":"x","type":"metrics"}]' ;;
+            *) echo '[{"fingerprint":"old","type":"metrics"},{"fingerprint":"new","type":"metrics"}]' ;;
+            esac
+        }
+        . "$work/audit-arm"
+    ) >"$work/aud.out" 2>&1 || rc=$?
+    # renewed: the old entry without its file is foreign; stray: a third certificate always is.
+    case $sample in partial) [ "$rc" = 0 ] ;; *) [ "$rc" = 1 ] ;; esac || { cat "$work/aud.out"; exit 1; }
+done
 echo 'incus-ui: query, independent launch, bounded audit and passphrase floor fixtures passed'

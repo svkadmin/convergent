@@ -135,13 +135,20 @@ prompt() {
 case $action in
     --audit)
         metrics=$(fingerprint "$tls/incus-client.crt")
+        # A metrics renewal that stopped part-way trusts the previous certificate too, until its apply ends.
+        previous=
+        if [ -f "$tls/incus-client.previous" ]; then
+            previous=$(fingerprint "$tls/incus-client.previous") || die 'cannot read the previous metrics certificate'
+            logger -p user.warning -t incus-ui 'metrics renewal unfinished: the previous certificate is still trusted' 2>/dev/null || :
+        fi
         expected=
         [ ! -f "$run/client.crt" ] || expected=$(fingerprint "$run/client.crt")
         trusted=false
         [ ! -f "$run/trusted" ] || trusted=true
-        ic config trust list --format json | jq -e --arg ui "$expected" --arg metrics "$metrics" --argjson trusted "$trusted" '
+        ic config trust list --format json | jq -e --arg ui "$expected" --arg metrics "$metrics" --arg previous "$previous" \
+            --argjson trusted "$trusted" '
             all(.[];
-                (.fingerprint == $metrics and .type == "metrics") or
+                ((.fingerprint == $metrics or ($previous != "" and .fingerprint == $previous)) and .type == "metrics") or
                 ($ui != "" and .fingerprint == $ui and .name == "browser-int-ui" and
                  .type == "client" and .restricted == false and (.projects | length) == 0)) and
             (if $trusted then any(.[]; .fingerprint == $ui) else true end)' >/dev/null ||

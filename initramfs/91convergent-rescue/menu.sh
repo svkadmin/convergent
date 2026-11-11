@@ -70,6 +70,10 @@ while :; do
 	printf '\nConvergent rescue: state at %s\n' "$state"
 	printf '1. Root shell (exit returns here)\n2. Reset owner password\n3. Write release from USB\n4. Choose next slot\n5. Copy logs to USB\n6. Reboot\n7. Power off\nRescue choice: '
 	IFS= read -r choice || exit 1
+	# Read-only state: the password and release writes would stop half-way.
+	case ${CV_STATE_RO:-}:$choice in
+	1:2 | 1:3) echo 'The state volume is read-only: copy the logs (5), or read it from another Linux (RECOVERY 9).'; continue ;;
+	esac
 	case $choice in
 	1) sh -i || :; stty "$saved" ;;
 	2) reset_password || echo 'Password reset failed.' ;;
