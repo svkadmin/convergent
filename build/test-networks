@@ -651,7 +651,7 @@ grep -qF '! blocked "$record" "$work/edit" || die "the record $record needs this
 (
     l=$work/list-mode
     mkdir -p "$l/state" "$l/run"
-    sed -e "s|^state=.*|state=$l/state|" -e "s|^run=.*|run=$l/run|" "$repo/tools/dns-push" >"$l/dns-push"
+    sed -e "s|^state=.*|state=$l/state|" -e "s|^run=.*|run=$l/run|" -e "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" "$repo/tools/dns-push" >"$l/dns-push"
     : >"$l/state/pending"
     mkdir "$l/state/edit.before"
     sh "$l/dns-push" list >"$l/out"
