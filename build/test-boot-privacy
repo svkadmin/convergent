@@ -999,6 +999,8 @@ grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browse
 grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
 grep -qF 'until blockdev --rereadpt "$disk" 2>"$work/rereadpt"; do' "$repo/install/install"
 grep -qF -- '--mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -' "$repo/guests/wan/build"
+# Rescue reaches its menu on a volume that mounts only read-only (21C).
+grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
