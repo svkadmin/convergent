@@ -595,7 +595,7 @@ for gate in reap:guests reap:update close:guests reap:open; do
     rc=0
     (
         id() { echo 0; }
-        flock() { case ${gate#*:}:$* in 'guests:-s -n 9'|'update:-s -n 6') return 1 ;; esac; }
+        flock() { case ${gate#*:}:$* in 'guests:-s -n 9'|'guests:-s -w 2 9'|'update:-s -n 6') return 1 ;; esac; }
         timeout() { [ "$1 $2 $3 $4" = '-k 1 30 incus' ] || exit 97; echo '[]'; }
         set -- "${gate%:*}"
         . "$work/remote"
