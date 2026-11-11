@@ -566,7 +566,7 @@ for gate in open guests update stopping nonroot arguments; do
         id() { if [ "$gate" = nonroot ]; then echo 1000; else echo 0; fi; }
         flock() {
             echo "$*" >>"$work/locks-taken"
-            case $gate:$* in 'guests:-s -w 2 9'|'update:-s -n 6') return 1 ;; esac
+            case $gate:$* in 'guests:-s -n 9'|'update:-s -n 6') return 1 ;; esac
         }
         reap_tmp() { touch "$work/swept"; }
         set -- --reap-tmp
@@ -576,7 +576,7 @@ for gate in open guests update stopping nonroot arguments; do
     case $gate in
     open)
         [ "$rc" = 0 ] && [ -f "$work/swept" ] || exit 1
-        printf '%s\n' '-s -w 2 9' '-s -n 6' >"$work/expected"
+        printf '%s\n' '-s -n 9' '-s -n 6' >"$work/expected"
         cmp "$work/expected" "$work/locks-taken" ;;
     nonroot) [ ! -e "$work/swept" ] && [ ! -s "$work/locks-taken" ] ;;
     # An update's held lock, or guests stopping, defers the sweep (75); check does not log that as a failure.

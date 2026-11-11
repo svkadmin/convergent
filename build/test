@@ -1083,6 +1083,8 @@ test_guest_delivery() {
 	# The host manifest stays as older releases and the installer parse it.
 	cmp "$BUILDER/releases/$release/manifest" "$delivery/release/manifest" || die 'guests changed the host manifest'
 	(cd "$delivery/release" && grep -E '^[0-9a-f]{64}  ' guests.manifest | sha256sum -c --quiet -) || die 'guest transport hashes failed'
+	[ -f "$BUILDER/releases/$release/guests.manifest" ] ||
+		echo "test: release $release has no guests.manifest yet; the guests under test are not checked against it" >&2
 	for kind in fw wan svc browser; do
 		# build/guests' identity: SHA256SUMS and the Incus profiles.
 		id=$( (cd "$guests/$kind" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1)

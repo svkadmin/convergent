@@ -387,12 +387,17 @@ for sample in wifi-first kvm-only none; do
         ebegin() { :; }
         eend() { return "$1"; }
         ewarn() { echo "warn $*"; }
+        modprobe() { :; }
         . "$work/ptp-kvm"
         start
     ) >"$work/ptp.out"
     case $sample in
-    wifi-first) [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp1 ] ;;
-    kvm-only) [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp0 ] ;;
+    wifi-first)
+        [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp1 ]
+        [ ! -s "$work/ptp.out" ] ;;
+    kvm-only)
+        [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp0 ]
+        [ ! -s "$work/ptp.out" ] ;;
     none) [ ! -e "$work/dev/ptp_kvm" ]; grep -qx 'warn no KVM PTP clock' "$work/ptp.out" ;;
     esac
 done

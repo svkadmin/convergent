@@ -995,7 +995,7 @@ awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage"/ {s = NR} /^wait "\$bro
 echo 'test-boot-privacy: session watch passed'
 # Locks an owner command meets: bounded, with a reason (20X).
 grep -qx "flock -w 5 9 || die 'another USB policy command is open; finish or cancel it'" "$repo/tools/devices"
-grep -qx "    flock -s -w 2 9 || busy 'guest update in progress'" "$repo/tools/browser"
+grep -qx "    if [ -n \"\${reaping:-}\" ]; then flock -s -n 9; else flock -s -w 2 9; fi || busy 'guest update in progress'" "$repo/tools/browser"
 grep -qx "flock -s -w 2 9 || die 'guest update in progress'" "$repo/tools/firewall-capture"
 grep -q '^flock -s -w 2 8 || die .a guest update is running' "$repo/tools/fetch-release"
 
