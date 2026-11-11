@@ -144,9 +144,9 @@ black at boot.
 Success: the passphrase opens the state partition and the login prompt appears.
 
 If it fails: three wrong tries cost no data. Right after an update every power-on uses one of the
-new release's three tries; after the third, the previous release comes back (recipe 2). A USB disk
-cannot install over an existing Convergent disk, because the two are ambiguous: erase the old disk
-first, in the firmware (Dell: F2, Maintenance, Data Wipe) or from another system.
+new release's three tries; after the third, the previous release comes back (recipe 2). The install
+stick replaces an existing Convergent disk once you type `REINSTALL <disk>`; only a second Convergent
+system disk must be detached first.
 
 ## 2. A new release does not boot or does not become good
 
@@ -160,12 +160,13 @@ the power button). After the third try the previous slot boots by itself, with i
 The release booted, but the bar says `UNBLESSED` because setup failed early:
 
 1. Close the browsers.
-2. Start setup and the health checks again, then read the result:
+2. Run the health checks again, then read the result:
    ```sh
-   sudo rc-service convergent-setup start
    sudo rc-service convergent-bless start
    sudo slot status
    ```
+   If the bar then shows `GUESTS failed` or `SETUP failed`, run `sys guests update` (on a first
+   boot, `sys guests setup`).
 
 Success: `sudo slot status` shows `good` equal to the booted release and the booted slot as `good`;
 the bar shows `rel <release> good`.
@@ -222,7 +223,8 @@ sys guests update
 > [!NOTE]
 > The older release's `/var` predates the update; guest pool data stays current and may conflict
 > with old metadata. There is no guest-update rollback guard. The next `slot write` must exceed
-> `highest`.
+> `highest`. After a passphrase change on the newer release (recipe 10), repeat its
+> `luks-header.sha256` step here too, or LuksHeaderChanged fires on the older release.
 
 ## 4. `guests init` or `guests update` stopped
 

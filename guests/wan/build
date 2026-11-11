@@ -115,7 +115,7 @@ if grep -rIl '@[A-Z_][A-Z_]*@' "$target/boot/grub" "$target/etc/fstab" "$target/
 fi
 
 chmod 755 "$target"/usr/local/sbin/wan-* "$target/usr/sbin/resolvconf" \
-	"$target/etc/init.d/wan-firewall" "$target/etc/init.d/convergent-seed" "$target/etc/local.d/10-wan.start" \
+	"$target/etc/init.d/wan-firewall" "$target/etc/init.d/convergent-seed" "$target/etc/init.d/ptp-kvm" "$target/etc/local.d/10-wan.start" \
 	"$target/etc/udhcpc/post-bound/wan-dns" "$target/etc/udhcpc/post-renew/wan-dns" "$target/etc/udhcpc/post-deconfig/wan-dns"
 chmod 644 "$target/usr/local/lib/wan-lib.sh" "$target/etc/udhcpc/udhcpc.conf" "$target/etc/wan/wan.conf" "$target/etc/nftables.nft"
 chmod 700 "$target/root"

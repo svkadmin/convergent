@@ -13,7 +13,7 @@ case $2 in [1-9]|[1-5][0-9]|60) ;; *) die 'seconds must be 1..60' ;; esac
 . /usr/lib/convergent/sys/14-firewall
 mkdir -p /run/convergent
 exec 9>/run/convergent/guests.lock
-flock -s -n 9 || die 'guest update in progress'
+flock -s -w 2 9 || die 'guest update in progress'
 exec 8>/run/convergent/firewall-capture.lock
 flock -n 8 || die 'a capture is already running'
 if firewall_pair fw1 fw2; then master=fw1

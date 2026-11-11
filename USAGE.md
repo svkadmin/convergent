@@ -86,8 +86,9 @@ prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second
    set it), then type the target's disk path again, or `ERASE` followed by a space and its serial.
 4. Wait for the installer to verify slot A, register a boot entry named after the release `NAME`
    and power off. Remove the USB disk.
-5. Guests are not copied. Put them at `/var/lib/convergent/release-guests/guests`, then run
-   `sys guests setup`.
+5. Guests are not copied. Copy the release's `guests` directory to
+   `/var/lib/convergent/release-guests/guests` and its `manifest` to `/var/lib/convergent/release-guests/`,
+   unpack each `.zst` there (`zstd -d --long=27 --rm FILE`), then run `sys guests setup`.
 
 The installer verifies the release signature with the booted key; `CONVERGENT_UNSIGNED=1` bypasses
 that. It lists the disks and refuses unsafe targets. It needs at least 49 GiB plus 4 MiB without
@@ -134,11 +135,11 @@ YAML has no runtime effect. Building the disk image: [BUILD](BUILD.md).
 > Slovak keys, `@` is Shift+2 and Y and Z swap.
 
 1. In the firmware setup, disable Secure Boot and keep VT-d enabled. On Dell, F2 opens setup and
-   F12 the boot menu. Connect the boot disk directly, not through a hub or dock.
+   F12 the boot menu.
 2. Enter the LUKS passphrase at `Passphrase [1/3]:`. Three failures power the laptop off.
 3. Log in as the owner at the tuigreet prompt. Sway starts; the bar reaches `rel <release> good`
    after the health checks. Ctrl+Alt+F2 to F6 offer text logins.
-4. Wait until the orange `SETUP` disappears from the bar (10–30 min after a disk image). On a red
+4. Wait until the orange `SETUP` disappears from the bar (10–30 min). On a red
    `SETUP failed`, run `sys guests setup` to resume; the log is `/var/log/guests-setup.log`.
 5. Attach every trusted device, including the built-in camera, Bluetooth and fingerprint reader.
    Run `sys usb enrol`, answer `yes` for each device, then confirm.
@@ -755,7 +756,8 @@ Once guests exist, a `latest` that names guests requires their signed manifest.
 
 1. Plug in the USB disk and find its number with `sudo devices list`.
 2. Approve it with `sudo devices allow <number>`.
-3. Run `sys update usb` and pick the release by number.
+3. Run `sys update usb`, answer `yes`, enter the stick's partition (`lsblk -o NAME,FSTYPE,TRAN`, for
+   example `/dev/sdb1`), then pick the release by number.
 4. Accept the reboot offer, then continue as for [host updates](#host-updates) from step 4.
 
 By hand:

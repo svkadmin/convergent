@@ -26,6 +26,7 @@ update_media() (
 	lsblk -snro TRAN -- "$source" | grep -qx usb || die 'source must be on USB'
 	# As rescue: named filesystems only (never a probed driver), no journal replay on a read-only mount.
 	fs=$(lsblk -dnro FSTYPE -- "$source") || die 'cannot read the USB filesystem type'
+	[ -n "$fs" ] || [ "$(lsblk -dnro TYPE -- "$source")" != disk ] || die 'name the partition (for example /dev/sdb1), not the disk'
 	options=ro,nodev,nosuid,noexec
 	case $fs in
 	vfat|exfat) ;;

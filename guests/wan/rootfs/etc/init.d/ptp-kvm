@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# chrony reads KVM's clock by name: a Wi-Fi driver loaded first (iwlmld) takes ptp0.
+description="KVM PTP clock link for chrony"
+
+depend() {
+	after modules
+	before chronyd
+}
+
+start() {
+	ebegin "Linking the KVM PTP clock"
+	modprobe -q ptp_kvm 2>/dev/null || :
+	rm -f /dev/ptp_kvm
+	for p in /sys/class/ptp/ptp*; do
+		[ "$(cat "$p/clock_name" 2>/dev/null)" = "KVM virtual PTP" ] || continue
+		ln -s "/dev/${p##*/}" /dev/ptp_kvm
+		break
+	done
+	# Without it (a nested test VM) chronyd cannot open its refclock, as with ptp0 before.
+	[ -L /dev/ptp_kvm ] || ewarn "no KVM PTP clock"
+	eend 0
+}
