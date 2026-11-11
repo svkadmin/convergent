@@ -342,9 +342,12 @@ storage() {
 		else since=0; bad 'invalid missing scrub observation'; fi
 		m "cv_btrfs_scrub_missing_since_seconds $since"
 	fi
-	for volume in svc-metrics svc-logs svc-grafana; do
+	for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state; do
 		[ -e "$sdir/guests/initialized" ] || break
 		path=/var/lib/incus/storage-pools/default/custom/default_$volume
+		# A browser or Remmina volume once its guest exists: Chromium sizes its caches from the filesystem, not
+		# the quota, so a full one fails downloads and profile writes with nothing else saying why.
+		case $volume in svc-*) ;; *) [ -d "$path" ] || continue ;; esac
 		if id=$(btrfs inspect-internal rootid "$path" 2>/dev/null) && limits=$(btrfs qgroup show --raw -r "$path" 2>/dev/null); then
 			printf '%s\n' "$limits" | awk -v id="0/$id" -v volume="$volume" '
 				$1 == id && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ {

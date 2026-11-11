@@ -40,6 +40,8 @@ for scenario in wired wifi noaddress nocarrier linkdown internal none; do
     [ "$(cat "$status/.wan")" = "$expected" ]
 done
 if guest_reply 128 wan_probe diag >/dev/null; then exit 1; fi
+# A firewall probe that timed out is unknown (grey), a refused one down (red).
+grep -qF 'case $? in 124 | 125 | 137) echo unknown ;; *) echo down ;; esac >"$status/.$node"' "$repo/tools/check"
 # A wan that does not answer is unknown, not running without an uplink.
 (guest_reply() { return 1; }; . "$work/uplink"; [ "$(cat "$status/.wan")" = 'unknown -' ])
 echo 'check status: route preference and eligibility passed'
