@@ -239,6 +239,13 @@ edit() {
 		else
 			grep -Fxq "$name" "$work/normalized" || die 'exception does not exist'
 			awk -v name="$name" '{s=$0; sub(/#.*/, "", s); gsub(/^[ \t]+|[ \t]+$/, "", s); sub(/\.$/, "", s); if (tolower(s)!=name) print}' "$work/allow.before" >"$work/edit"
+			# An owner record the exception kept answering would read NXDOMAIN without it.
+			if [ -f "$state/list.rpz" ]; then
+				awk '$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); print tolower(s)}' "$work/records.before" >"$work/record-names"
+				while read -r record; do
+					! blocked "$record" "$work/edit" || die "the record $record needs this exception: remove the record first"
+				done <"$work/record-names"
+			fi
 		fi ;;
 	esac
 	echo "Proposed $file change (both firewalls):"
@@ -256,9 +263,10 @@ edit() {
 	mv "$state/$file.new" "$state/$file"
 }
 
-# Whether the stored list blocks a name (its own entry or a wildcard above it) that no exception covers.
+# Whether the stored list blocks a name (its own entry or a wildcard above it) that no exception (in $2, or the
+# current ones) covers.
 blocked() {
-	awk -v name="$1" -v allow="$work/allow.before" '
+	awk -v name="$1" -v allow="${2:-$work/allow.before}" '
 		BEGIN {
 			while ((getline a < allow) > 0) {
 				sub(/#.*/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", a); sub(/\.$/, "", a); a = tolower(a)
@@ -285,13 +293,13 @@ if [ "$mode" = list ]; then
 		[ ! -f "$state/$file" ] || cat "$state/$file"
 	done
 	[ ! -f "$state/last-push" ] || { printf 'Last successful push (UTC): '; cat "$state/last-push"; }
-	if [ -f "$state/pending" ]; then
-		exec 7>"$run/dns-push.lock"
-		if ! flock -n 7; then echo 'A push is running.'
-		elif [ -f "$state/edit.before" ]; then echo 'The last change failed: the next push or recovery undoes it.'
+	exec 7>"$run/dns-push.lock"
+	if ! flock -n 7; then echo 'A push or guest operation is running: the list may be about to change.'
+	elif [ -f "$state/pending" ] && [ ! -f "$state/committed" ]; then
+		if [ -f "$state/edit.before" ]; then echo 'The last change failed: the next push or recovery undoes it.'
 		else echo 'A failed push awaits recovery: the firewalls may serve the previous list.'; fi
-		exec 7>&-
 	fi
+	exec 7>&-
 	exit 0
 fi
 exec 9>"$run/dns-push.lock"

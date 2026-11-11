@@ -628,6 +628,7 @@ awk '/^if \[ "\$mode" = list \]; then$/ {l = NR} /^exec 9>"\$run\/dns-push.lock"
 sed -n '/^blocked() {/,/^}/p' "$repo/tools/dns-push" >"$work/blocked"
 [ -s "$work/blocked" ]
 grep -qF '[ ! -f "$state/list.rpz" ] || ! blocked "$name" || die' "$repo/tools/dns-push"
+grep -qF '! blocked "$record" "$work/edit" || die "the record $record needs this exception: remove the record first"' "$repo/tools/dns-push"
 (
     . "$work/blocked"
     state=$work/blk work=$work/blk
@@ -640,6 +641,9 @@ grep -qF '[ ! -f "$state/list.rpz" ] || ! blocked "$name" || die' "$repo/tools/d
     if blocked other.example.com; then exit 1; fi
     echo 'tracker.example.com' >"$work/allow.before"
     if blocked tracker.example.com; then exit 1; fi
+    # unallow asks with the exceptions it would leave: without this one the record would read NXDOMAIN.
+    : >"$work/left"
+    blocked tracker.example.com "$work/left"
     echo 'example.net  # work' >"$work/allow.before"
     if blocked x.ads.example.net; then exit 1; fi
 )

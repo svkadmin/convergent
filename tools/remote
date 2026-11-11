@@ -37,10 +37,16 @@ close|reap)
     printf '%s\n' "$instances" | jq -e 'all(.[] | select(.name == "remmina"); .type == "container" and .profiles == ["remmina"])' >/dev/null ||
         { echo 'remote: the remmina instance is not the shipped one' >&2; exit 1; }
     if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
-        # reap: only an orphan (no launcher), its lock taken after the query, which a launch must not wait for.
-        [ "$1" != reap ] || flock -n 8 || exit 0
-        timeout -k 5 60 incus --force-local --project default stop remmina --force 9>&- 6>&- 8>&-
-        [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
+        # reap: only an orphan (no launcher), its lock taken after the query, which a launch must not wait for;
+        # asked again under the lock: a session that closed meanwhile stopped its own container.
+        if [ "$1" = reap ]; then
+            flock -n 8 || exit 0
+            instances=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 6>&- 8>&-)
+        fi
+        if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
+            timeout -k 5 60 incus --force-local --project default stop remmina --force 9>&- 6>&- 8>&-
+            [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
+        fi
     elif [ -n "$session" ]; then
         echo 'remote: Remote is still starting: close its window once it opens' >&2; exit 1
     fi

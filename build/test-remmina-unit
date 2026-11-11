@@ -405,8 +405,12 @@ EOF
         foreign) [ "$rc" = 1 ]; grep -qx 'remote: the remmina instance is not the shipped one' "$work/remote-out" ;;
         stuck) [ "$rc" = 1 ]; grep -qx 'timeout -k 5 60' "$CALLS" ;;
         starting) [ "$rc" = 1 ]; grep -qx 'remote: Remote is still starting: close its window once it opens' "$work/remote-out" ;;
-        updating|reap-orphan) [ "$rc" = 0 ]
+        updating) [ "$rc" = 0 ]
             printf '%s\n' 'timeout -k 1 30' 'timeout -k 5 60' '--force-local --project default stop remmina --force' >"$work/expected"
+            cmp "$work/expected" "$CALLS" ;;
+        # Asked again under the lock before the stop.
+        reap-orphan) [ "$rc" = 0 ]
+            printf '%s\n' 'timeout -k 1 30' 'timeout -k 1 30' 'timeout -k 5 60' '--force-local --project default stop remmina --force' >"$work/expected"
             cmp "$work/expected" "$CALLS" ;;
         orphan-updating) [ "$rc" = 1 ]; grep -qx 'remote: guest update in progress' "$work/remote-out"; [ ! -s "$CALLS" ] ;;
         reap-busy) [ "$rc" = 0 ]; printf 'timeout -k 1 30\n' >"$work/expected"; cmp "$work/expected" "$CALLS" ;;
