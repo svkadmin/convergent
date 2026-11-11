@@ -1666,8 +1666,11 @@ check_script "$work/allow-usb"
         *) exit 97 ;;
         esac
     }
+    sync() { [ "$*" = '-f /etc/usbguard/rules.conf' ] || exit 97; echo synced >"$work/allow-synced"; }
     for iface in '{ 08:06:50 03:00:00 }' '03:01:01' '{ 08:06:50 ff:00:00 }' '08:06:50'; do
+        rm -f "$work/allow-synced"
         allow_usb 7 >"$work/allow-out"
+        [ -e "$work/allow-synced" ] || die 'the allowance was not synced'
         case $iface in
         *03:*) grep -q '^WARNING: it has a HID interface' "$work/allow-out" || die "no HID warning for $iface" ;;
         *) if grep -q WARNING "$work/allow-out"; then die "HID warning for $iface"; fi ;;
