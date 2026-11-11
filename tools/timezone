@@ -34,7 +34,10 @@ case ${1:-}:$# in set:2) ;; *) usage ;; esac
 [ "$(id -u)" = 0 ] || die 'run as root'
 zone=$2
 zone_valid "$zone" /usr/share/zoneinfo || die "not an installed time zone: $zone"
+# A 0600 lock: a world-readable one lets the owner flock it and block every change.
+umask 077
 exec 9>/run/convergent-timezone.lock
+umask 022
 flock -w 30 9 || die 'another time zone change is running'
 trap cleanup 0
 trap 'exit 1' HUP INT TERM

@@ -27,6 +27,7 @@ reachable() { running "$1"; }
 start_guest() { seed_start "$1"; }
 seed_remove() { echo "unseed $1" >>"$log"; }
 image_alias() { echo "alias $1 $2" >>"$log"; }
+images_prune() { echo prune >>"$log"; }
 fail() { echo "$*" >&2; return 1; }
 sh() {
     if [ "$1" = "$lib/work-gate" ]; then echo 'gate closed' >>"$log"
@@ -794,6 +795,8 @@ echo 'test-topology: rollback holds both, waits for a booting firewall and check
     if grep -q '^rebuild fw1' "$log"; then exit 1; fi
     awk '$0 == "checkpoint fw2" {h=NR} $0 == "stop fw2" {s=NR} $0 == "rebuild fw2 new" {r=NR} $0 == "boot fw2" {b=NR} $0 == "resume" {u=NR}
         END {exit !(h && h < s && s < r && r < b && b < u)}' "$log"
+    # The old pair's images are pruned once both aliases moved (this path has no commit_update).
+    awk '$1 == "alias" {a=NR} $0 == "prune" {p=NR} END {exit !(a && p && a < p)}' "$log"
     running fw1 && running fw2
 )
 echo 'test-topology: a committed migration redoes a node that never becomes healthy'
