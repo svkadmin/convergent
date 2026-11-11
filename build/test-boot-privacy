@@ -1475,6 +1475,11 @@ sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"
 sed -n 's/^bindsym --locked XF86AudioMicMute exec //p' "$sway" >"$work/mic-locked"
+# Locked screen: a dead locker can be replaced and the layout switched, at top level and in resize mode.
+for b in 'Mod4+Escape exec swaylock -f' 'Mod4+space input type:keyboard xkb_switch_layout next'; do
+    [ "$(grep -cx "[[:space:]]*bindsym --locked $b" "$sway")" = 2 ] || die "sway: $b is not bound locked twice"
+done
+if grep -q '^[[:space:]]*bindsym Mod4+Escape ' "$sway"; then die 'sway: an unlocked Super+Escape remains'; fi
 check_script "$work/mic-init"
 check_script "$work/mic-locked"
 (

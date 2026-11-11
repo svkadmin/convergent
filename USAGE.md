@@ -101,7 +101,8 @@ in `config.example.yaml`. Put no secrets in it, not even in comments. The instal
 validated copy at `/var/lib/convergent/config.yaml`; nothing reads it at runtime.
 
 Passwords are always typed at the prompts. Both need 12–256 bytes; the
-LUKS passphrase must use printable ASCII (space through `~`).
+LUKS passphrase must use printable ASCII (space through `~`). So must a password set later with
+`sys security password`: the login prompt types the console keymap, not the session's layouts.
 
 ```yaml
 install:
@@ -181,7 +182,8 @@ Stock Sway bindings plus the Convergent additions below. Super is the Windows ke
 | Super+d | an app by name: Browser_default, Browser_internal, Browser_temporary, Incus management, Remote, Settings (the `sys` menu), Screenshot, Files, Notes, Foot |
 | Super+b | default browser (`browser def`) |
 | Super+Shift+t | temporary browser (`browser tmp`) |
-| Super+Escape | lock the screen now |
+| Super+Escape | lock the screen now; on a locked screen whose prompt has gone, a new prompt |
+| Super+Space on the lock screen | next keyboard layout for the password (the prompt names the active one) |
 | Super+Enter | terminal (foot) |
 | Super+Shift+q | close the window |
 | Super+1 … 9, Super+Shift+1 … 9 | go to a workspace; move the window there |
