@@ -370,7 +370,8 @@ EOF
     sh -n "$work/remote"
     grep -q "^PATH=$work/remote-bin:" "$work/remote"
     printf '#!/bin/sh\necho 0\n' >"$work/remote-bin/id"
-    printf '#!/bin/sh\ncase "$SAMPLE:$*" in "update:-s -n 6" | "starting:-w 5 8") exit 1 ;; esac\n' >"$work/remote-bin/flock"
+    printf '#!/bin/sh\ncase "$SAMPLE:$*" in "update:-s -n 6" | "starting:-w 5 8" | "updating:-s -w 2 9" | "updating:-w 5 8" | "orphan-updating:-s -w 2 9" | "reap-busy:-n 8") exit 1 ;; esac\n' >"$work/remote-bin/flock"
+    printf '#!/bin/sh\n:\n' >"$work/remote-bin/logger"
     printf '#!/bin/sh\necho "timeout $1 $2 $3" >>"$CALLS"\nshift 3\nexec "$@"\n' >"$work/remote-bin/timeout"
     cat >"$work/remote-bin/incus" <<'EOF'
 #!/bin/sh
@@ -385,12 +386,16 @@ esac
 EOF
     chmod +x "$work/remote-bin/"*
     # starting: a launch holds the session lock and nothing runs yet: no reported close it would outlive.
-    for SAMPLE in running stopped update foreign stuck starting; do
+    # updating: a guest update holds guests.lock; a live session (its lock held) still closes; an orphan waits.
+    # reap-busy: a launcher holds the lock after the reap's query: no stop; reap-orphan: no launcher: stopped.
+    for SAMPLE in running stopped update foreign stuck starting updating orphan-updating reap-busy reap-orphan; do
         CALLS=$work/remote-calls
         : >"$CALLS"
         export SAMPLE CALLS
         rc=0
-        sh "$work/remote" close >"$work/remote-out" 2>&1 || rc=$?
+        verb=close
+        case $SAMPLE in reap-*) verb=reap ;; esac
+        sh "$work/remote" "$verb" >"$work/remote-out" 2>&1 || rc=$?
         case $SAMPLE in
         running) [ "$rc" = 0 ]
             printf '%s\n' 'timeout -k 1 30' 'timeout -k 5 60' '--force-local --project default stop remmina --force' >"$work/expected"
@@ -400,6 +405,11 @@ EOF
         foreign) [ "$rc" = 1 ]; grep -qx 'remote: the remmina instance is not the shipped one' "$work/remote-out" ;;
         stuck) [ "$rc" = 1 ]; grep -qx 'timeout -k 5 60' "$CALLS" ;;
         starting) [ "$rc" = 1 ]; grep -qx 'remote: Remote is still starting: close its window once it opens' "$work/remote-out" ;;
+        updating|reap-orphan) [ "$rc" = 0 ]
+            printf '%s\n' 'timeout -k 1 30' 'timeout -k 5 60' '--force-local --project default stop remmina --force' >"$work/expected"
+            cmp "$work/expected" "$CALLS" ;;
+        orphan-updating) [ "$rc" = 1 ]; grep -qx 'remote: guest update in progress' "$work/remote-out"; [ ! -s "$CALLS" ] ;;
+        reap-busy) [ "$rc" = 0 ]; printf 'timeout -k 1 30\n' >"$work/expected"; cmp "$work/expected" "$CALLS" ;;
         esac
     done
     echo 'CV-REMOTE unit remote close ok'
