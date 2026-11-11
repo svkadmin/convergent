@@ -372,7 +372,7 @@ done
 	die "not enough free space in /var: $((need / 1048576)) MiB to download, plus 1 GiB"
 
 downloads
-[ -z "$src_open" ] || close_src || die "a firewall kept the update source open; it expires within 4 hours"
+[ -z "$src_open" ] || close_src || die "a firewall kept the update source open (it expires within 4 hours); the release was not written: run sys update install again"
 
 for g in $changed; do
 	for f in $files; do
