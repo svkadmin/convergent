@@ -1513,6 +1513,22 @@ echo 'state:      closed' >"$work/lid/LID0/state"
 )
 printf '%s\n' apply 'output eDP-1 power off' apply 'output eDP-1 power off' >"$work/watch-expected"
 cmp -s "$work/watch-expected" "$work/watch-calls" || die 'display watch: a reload was not applied again, or a closed lid lit the panel'
+# An ambiguous monitor set (no key) still keeps a closed lid's panel dark.
+: >"$work/watch-calls"
+(
+    noargs() { :; }; sway() { :; }; path() { :; }
+    XDG_RUNTIME_DIR=$work/xdg
+    display_lock() { profiles=$work/profiles; }
+    display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":""},{"name":"DP-1","make":"d","model":"e","serial":""}]'; }
+    display_key() { return 1; }
+    display_apply() { echo apply >>"$work/watch-calls"; }
+    display_defaults() { echo defaults >>"$work/watch-calls"; }
+    display_command() { echo "$1" >>"$work/watch-calls"; }
+    swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
+    . "$work/display-watch"
+    display_watch
+)
+[ "$(cat "$work/watch-calls")" = 'output eDP-1 power off' ] || die 'display watch: an ambiguous set left a closed lid lit'
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"

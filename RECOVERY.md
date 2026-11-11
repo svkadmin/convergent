@@ -180,10 +180,10 @@ If it fails: `convergent-bless` prints what the health checks found (a crashed o
 of the default runlevel, a protection not running, Incus not answering). Fix that, then run the
 three commands again, within the watchdog window. `slot: cannot read the highest blessed release`
 means the state file `highest` is damaged: in the Recovery root shell, write the newest release that
-became good, never an older one (it is the floor that stops downgrades). That is usually the
-release the menu names; a newer `ls -d /run/cv-state/var-*` entry counts only if that release
+became good, never an older one (it is the floor that stops downgrades): normally the one in
+`/run/cv-state/good` (the menu's release may not be good yet), a newer one only if you know it
 became good (one that never did would then block its own reinstall):
-`echo <release> >/run/cv-state/highest.new && mv /run/cv-state/highest.new /run/cv-state/highest && sync`,
+`cp /run/cv-state/good /run/cv-state/highest.new && mv /run/cv-state/highest.new /run/cv-state/highest && sync`,
 then Continue.
 `slot: expected one cv-esp partition` means a second installed Convergent disk is attached (not
 the install stick, whose labels differ), such as an old drive in a USB enclosure: detach it and run the three commands again. A release already good is not reset meanwhile.
