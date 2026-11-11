@@ -1157,6 +1157,37 @@ grep -q 'POWEROFF$' "$work/rescue.out"
 # Writable (the usual case): option 2 runs the reset.
 printf '2\n7\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
 grep -q 'RESET$' "$work/rescue.out"
+# Ctrl-D at either menu shows it again (stopping powers off, and in Recovery costs a try); a console that
+# keeps closing stops after three (q81).
+sed -e '/^exec <\/dev\/console/d' -e '/^\. \/lib\/convergent-recovery.sh$/d' \
+    "$repo/initramfs/90convergent/convergent-recovery.sh" >"$work/recovery-menu"
+if grep -q '^\. /lib/\|^exec </dev/console' "$work/recovery-menu"; then die 'recovery menu not isolated'; fi
+rc=0; sh "$work/recovery-menu" 1 a "$work/state" </dev/null >"$work/recovery.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Recovery choice: ' "$work/recovery.out" | wc -l)" = 3 ] ||
+    die 'recovery menu: Ctrl-D did not show the menu again'
+rc=0; sh "$work/rescue-menu" "$work/state" </dev/null >"$work/rescue.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Rescue choice: ' "$work/rescue.out" | wc -l)" = 3 ] ||
+    die 'rescue menu: Ctrl-D did not show the menu again'
+# State failures after the passphrase stay on screen before the power-off.
+[ "$(grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/convergent-state.sh")" = 5 ]
+# A log copy with unreadable files keeps the rest and says so; an empty archive is still a failure.
+sed -n '/^copy_logs() (/,/^)/p' "$repo/initramfs/91convergent-rescue/menu.sh" |
+    sed "s|/run/rescue-usb|$work/rescue-usb|" >"$work/copy-logs"
+check_script "$work/copy-logs"
+for written in partial ''; do
+    rc=0
+    (
+        state=$work/log-state; mkdir -p "$state/var-1/log"
+        usb_mount() { :; }; umount() { return 1; }; sync() { :; }
+        tar() { printf '%s' "$written" >"$4"; return 2; }
+        . "$work/copy-logs"; copy_logs
+    ) >"$work/copy.out" 2>&1 || rc=$?
+    case $written:$rc in
+    partial:0) grep -q 'archive is incomplete' "$work/copy.out" && grep -q '^Logs copied to ' "$work/copy.out" ;;
+    :1) ;;
+    *) die "log copy with tar status 2 ($written) gave $rc" ;;
+    esac
+done
 grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"

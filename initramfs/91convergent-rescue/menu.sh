@@ -61,15 +61,21 @@ copy_logs() (
 	done
 	[ $# -gt 0 ] || { echo 'No logs found.'; exit 1; }
 	# Archive numeric guest owners; do not follow links out of their filesystems.
-	tar --one-file-system --numeric-owner -cf "$dest/logs.tar" "$@" || exit 1
+	# A failing disk has unreadable files: tar skips them and exits 2, and the rest is still worth keeping.
+	rc=0; tar --one-file-system --numeric-owner -cf "$dest/logs.tar" "$@" || rc=$?
+	case $rc in 0) ;; 2) [ -s "$dest/logs.tar" ] || exit 1 ;; *) exit 1 ;; esac
 	sync
+	[ "$rc" = 0 ] || echo 'Some files could not be read: the archive is incomplete.'
 	echo "Logs copied to ${dest#"$usb"}/logs.tar (includes Incus VM console logs)."
 )
 
+eof=0
 while :; do
 	printf '\nConvergent rescue: state at %s\n' "$state"
 	printf '1. Root shell (exit returns here)\n2. Reset owner password\n3. Write release from USB\n4. Choose next slot\n5. Copy logs to USB\n6. Reboot\n7. Power off\nRescue choice: '
-	IFS= read -r choice || exit 1
+	# Ctrl-D (one too many after the shell) shows the menu again; a console that keeps closing stops it.
+	IFS= read -r choice || { eof=$((eof + 1)); [ "$eof" -lt 3 ] || exit 1; echo; continue; }
+	eof=0
 	# Read-only state: the password and release writes would stop half-way.
 	case ${CV_STATE_RO:-}:$choice in
 	1:2 | 1:3) echo 'The state volume is read-only: copy the logs (5), or read it from another Linux (RECOVERY 9).'; continue ;;
@@ -78,7 +84,7 @@ while :; do
 	1) sh -i || :; stty "$saved" ;;
 	2) reset_password || echo 'Password reset failed.' ;;
 	3) write_release || echo 'Release write failed.' ;;
-	4) printf 'Next slot (a or b): '; IFS= read -r target || exit 1
+	4) printf 'Next slot (a or b): '; IFS= read -r target || { echo; continue; }
 		slot rescue-next "$target" || echo 'Slot selection failed.' ;;
 	5) copy_logs || echo 'Log copy failed.' ;;
 	6) sync; reboot -f ;;
