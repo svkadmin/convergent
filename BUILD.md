@@ -111,6 +111,7 @@ Assemble the guests in one directory, here `$g`:
 
 ```sh
 g=/var/lib/convergent/out/guests
+rm -rf $g   # a failed build must not ship the last release's guest
 mkdir -p $g/fw $g/wan $g/svc $g/browser/incus $g/remmina
 guests/fw/build $g/fw
 WAN_COUNTRY=SK guests/wan/build $g/wan

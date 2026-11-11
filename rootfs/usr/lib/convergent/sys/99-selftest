@@ -85,7 +85,7 @@ grep -Eq '^[[:space:]]*[0-9]+[[:space:]]+\[' /proc/asound/cards || { echo 'no AL
 s=$(wpctl status 2>/dev/null); printf '%s\n' "$s" | awk '/^Audio/ {audio=1} /^Video/ {audio=0; sinks=0} audio && /Sinks:/ {sinks=1; next} sinks && /(Sources|Filters|Streams):/ {sinks=0} sinks && /\* *[0-9]+\./ {found=1} END {print "PipeWire default sink " (found ? "present" : "missing"); exit !found}'
 CHECK
 	check bluetooth 5 <<'CHECK'
-for d in /sys/class/bluetooth/hci*; do [ ! -e "$d" ] || { echo "${d##*/} present"; exit 0; }; done; echo 'no Bluetooth controller'; exit 1
+for d in /sys/class/bluetooth/hci*; do [ ! -e "$d" ] || { echo "${d##*/} present"; exit 0; }; done; echo 'no Bluetooth controller (none, or not enrolled)'; exit 77
 CHECK
 	check battery 5 <<'CHECK'
 for d in /sys/class/power_supply/*; do [ "$(cat "$d/type")" = Battery ] || continue; c=$(cat "$d/capacity"); case $c in ''|*[!0-9]*) continue ;; esac; [ "$c" -le 100 ] || continue; echo "${d##*/}: $c%"; exit 0; done; echo 'no battery with capacity'; exit 1
