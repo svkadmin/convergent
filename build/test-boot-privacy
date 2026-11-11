@@ -1186,6 +1186,16 @@ rc=0
     . "$work/copy-logs"; copy_logs
 ) >"$work/copy.out" 2>&1 || rc=$?
 [ "$rc" = 1 ] && grep -q 'No space left' "$work/copy.out" || die 'log copy: a full stick passed as an incomplete source'
+# A stick that fails at writeback fails the copy too.
+rc=0
+(
+    state=$work/log-state; mkdir -p "$state/var-1/log"
+    usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }
+    sync() { [ "$#" = 1 ] && [ "${1##*/}" = logs.tar ] && return 1; }
+    tar() { printf 'archive' >"$4"; }
+    . "$work/copy-logs"; copy_logs
+) >"$work/copy.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] || die 'log copy: a writeback failure passed'
 for written in partial ''; do
     rc=0
     (
