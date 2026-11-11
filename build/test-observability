@@ -790,11 +790,18 @@ mkdir "$work/btrfs" "$work/state"
     collect
     grep -qx 'cv_btrfs_scrub_missing_since_seconds 100000' "$work/scrub.prom"
     [ "$(cat "$work/scrub.ok")" = 1 ]
-    for value in bad 0 300000 999999999999999999999; do
+    for value in bad 0; do
         echo "$value" >"$sdir/scrub-missing.fixture"
         collect
         grep -qx 'cv_btrfs_scrub_missing_since_seconds 0' "$work/scrub.prom"
         [ "$(cat "$work/scrub.ok")" = 0 ]
+    done
+    # A stamp ahead of the clock (a first boot before chrony stepped it back) is renewed, not reported.
+    for value in 300000 999999999999999999999; do
+        echo "$value" >"$sdir/scrub-missing.fixture"
+        collect
+        grep -qx 'cv_btrfs_scrub_missing_since_seconds 200000' "$work/scrub.prom"
+        [ "$(cat "$work/scrub.ok")" = 1 ]
     done
     for value in 0 1 bad missing; do
         row='fs:1|t_start:100000|finished:1|canceled:0|uncorrectable_errors:0|read_errors:0|csum_errors:0|verify_errors:0'
