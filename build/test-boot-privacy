@@ -1215,6 +1215,18 @@ check_script "$work/etc-sweep"
     . "$work/etc-sweep"
     [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
 )
+# Boot-time records reach /var/log/messages: syslog-ng starts in boot (after lo for its 127.0.0.1 source), and the
+# sysinit watchdog warnings also go to the kernel log; lock-screen failures count as auth events (q87).
+grep -qF 'boot/apparmor boot/syslog-ng default/chronyd' "$repo/build/image"
+grep -qF 'rm -f "$rl/boot/mtab" "$rl/default/syslog-ng"' "$repo/build/image"
+grep -qx 'rc_need="loopback"' "$repo/rootfs/etc/conf.d/syslog-ng" && grep -qx 'SYSLOG_NG_OPTS=""' "$repo/rootfs/etc/conf.d/syslog-ng"
+sed -n '/^wd_log() /p' "$repo/rootfs/etc/init.d/convergent-watchdog" | sed "s|/dev/kmsg|$work/kmsg|" >"$work/wd-log"
+check_script "$work/wd-log"
+(logger() { :; }; . "$work/wd-log"; wd_log 'no usable watchdog')
+grep -qx '<4>convergent-watchdog: no usable watchdog' "$work/kmsg"
+[ "$(grep -c '^		wd_log "' "$repo/rootfs/etc/init.d/convergent-watchdog")" = 2 ]
+grep -qF '(greetd|tuigreet|login|su|sudo|sshd|swaylock)(' "$repo/rootfs/usr/lib/convergent/sys/80-security"
+grep -qF '"sudo","sshd","swaylock")' "$repo/guests/svc/dashboards/dashlib.py"
 # 21E: no host NIC for a USB4 host-to-host cable; no build host details or shared id in guest images; the
 # Thunderbolt levels that keep PCIe tunnels off are named so.
 grep -qx 'install thunderbolt_net /bin/false' "$repo/rootfs/etc/modprobe.d/convergent.conf"

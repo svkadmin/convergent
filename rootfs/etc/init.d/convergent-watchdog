@@ -19,6 +19,8 @@ done
 logger -t convergent-watchdog "no bless within ten minutes, the watchdog is left to reset the board"
 '
 
+# sysinit runs before syslog-ng: the kernel log carries the line into /var/log/messages.
+wd_log() { logger -t convergent-watchdog "$1"; printf '<4>convergent-watchdog: %s\n' "$1" 2>/dev/null >/dev/kmsg || :; }
 depend() {
 	after devfs
 }
@@ -45,12 +47,12 @@ start() {
 		# Only while it runs and honours the V: opening an idle one starts it, and nowayout keeps it running.
 		[ ! -c /dev/watchdog ] || [ "$(cat /sys/class/watchdog/watchdog0/state 2>/dev/null)" != active ] ||
 			[ "$(cat /sys/class/watchdog/watchdog0/nowayout 2>/dev/null)" != 0 ] || printf V 2>/dev/null >/dev/watchdog || :
-		logger -t convergent-watchdog "watchdog0 is ${wd_identity:-unknown} with a ${wd_timeout} s timeout; continuing without a watchdog"
+		wd_log "watchdog0 is ${wd_identity:-unknown} with a ${wd_timeout} s timeout; continuing without a watchdog"
 		ewarn "No usable hardware watchdog"
 		return 0
 	fi
 	if [ ! -c /dev/watchdog ] || ! command exec 3>/dev/watchdog; then
-		logger -t convergent-watchdog "cannot open /dev/watchdog; continuing without a watchdog"
+		wd_log "cannot open /dev/watchdog; continuing without a watchdog"
 		ewarn "No usable hardware watchdog"
 		return 0
 	fi
