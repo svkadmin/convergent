@@ -1482,6 +1482,15 @@ sed -n '/^screenshot_capture() /p' "$repo/rootfs/usr/lib/convergent/sys/60-scree
     if screenshot_capture -o eDP-1; then exit 1; fi
     [ ! -e "$shot" ]
 ) || die 'a failed screenshot left its file'
+# A second run in the same second neither overwrites nor removes the first run's file.
+(
+    . "$work/shot-capture"
+    run() { shift; printf 'second' >&3; }
+    shot=$work/first.png
+    printf 'first' >"$shot"
+    if screenshot_capture -o eDP-1 2>/dev/null; then exit 1; fi
+    [ "$(cat "$shot")" = first ]
+) || die 'a second screenshot run touched the first one'
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"

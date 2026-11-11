@@ -85,8 +85,9 @@ The menu names the release and slot; the state partition is mounted read-write a
 1. Root shell. The verified root is `/sysroot`; the encrypted data and the writable `/etc` files
    are under `/run/cv-state`. `exit` returns to the menu.
 2. Reset owner password. Type 12–256 bytes of printable ASCII twice; it sets the password of uid
-   1000. This prompt types the US layout and the login prompt the console keymap (`console_keymap`,
-   US by default): with another keymap, use only characters on the same keys in both.
+   1000. This prompt types the US layout, the login prompt the console keymap (`console_keymap`, US
+   by default) and the lock screen the session's layout (Super+Space switches it): use only
+   characters on the same keys in all three.
 3. Continue booting this release. The health checks then mark it good as usual.
 4. Reboot.
 5. Power off.

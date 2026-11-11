@@ -256,7 +256,7 @@ cleanup() {
     fi
     if [ -n "$grafana" ]; then
         # Bounded: a stuck svc must not keep the session locks.
-        if timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana stop 9>&- 8>&- 7>&- 6>&- >/dev/null 2>&1; then
+        if guest_stderr timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana stop 9>&- 8>&- 7>&- 6>&- >/dev/null 2>>"$run/grafana.log"; then
             ic config set svc limits.memory=350MiB || result=1
         else result=1; fi
     fi
@@ -459,8 +459,10 @@ if [ -n "$incus_ui" ]; then
 fi
 if [ "$role" = int ] && [ -z "$incus_ui" ]; then
     ic config set svc limits.memory=768MiB
-    # svc's output is a guest's: dropped, never the launch reason.
-    grafana=1; timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana start 9>&- 8>&- 7>&- 6>&- >/dev/null 2>&1
+    # svc's errors are a guest's: bounded and filtered into grafana.log, whose tail cleanup prints labelled.
+    grafana=1
+    guest_stderr timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana start 9>&- 8>&- 7>&- 6>&- >/dev/null 2>"$run/grafana.log" ||
+        die 'Grafana did not start in svc'
 fi
 [ -z "$portal_mode" ] || portal_on || die 'portal mode ended during startup'
 # A dead proxy shows only as a confusing Chromium error ("Connection refused").

@@ -17,7 +17,8 @@ screenshot_saved() {
 	run wl-copy -t image/png <"$shot" || return
 	run notify-send -t 3000 'Screenshot saved' "${shot##*/}"
 }
-screenshot_capture() (set -C; run grim "$@" - >"$shot" || { rm -f "$shot"; exit 1; })
+# Only a file this run created is removed: noclobber refuses another run's.
+screenshot_capture() (set -C; exec 3>"$shot" || exit 1; run grim "$@" - >&3 || { rm -f "$shot"; exit 1; })
 screenshot_area() {
 	noargs "$@"; screenshot_path || return
 	# Esc in slurp is a cancel, not a failure.
