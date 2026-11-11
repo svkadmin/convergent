@@ -98,7 +98,8 @@ tries; Reboot and Power off do not mark it good.
 Pick `RESCUE | <name> <version> - <kernel>` when neither slot boots. It carries its own initramfs,
 needs a working ESP, kernel and state partition, and never mounts a slot root. Enter the LUKS
 passphrase (US layout); three failures power off. The state partition is mounted read-write at
-`/run/cv-state`. There is no network, watchdog, boot counter, blessing or way to continue into a
+`/run/cv-state`; one whose log no longer replays is mounted read-only instead (the menu says so and refuses
+options 2 and 3). There is no network, watchdog, boot counter, blessing or way to continue into a
 release.
 
 1. Root shell. Only the tools of the rescue initramfs; `/sysroot` is empty. `exit` returns.
