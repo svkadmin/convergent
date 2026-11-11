@@ -1012,6 +1012,76 @@ for hook in unlock-state convergent-install; do
 died: state: a reason" ]
     grep -qx "state: a reason" "$work/console"
 done
+# Menu paths: a typed command reports its own status (not xargs' 123), capture asks for its arguments, and a
+# failed status probe after a Wi-Fi join says the join worked.
+sed -n '/^typed_command() (/,/^)/p' "$repo/tools/sys" >"$work/typed"
+check_script "$work/typed"
+printf '#!/bin/sh\nexit "$1"\n' >"$work/sysstub"
+chmod +x "$work/sysstub"
+mkdir "$work/typed-states"
+for code in 0 1 3; do
+    rc=0
+    sh -c '. "$1"; text_valid() { :; }; die() { exit 99; }; states=$2 current= query=$3; typed_command' \
+        "$work/sysstub" "$work/typed" "$work/typed-states" "$code" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = "$code" ] || die "a typed command exiting $code reported $rc"
+done
+sed -n '/^firewall_capture() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/14-firewall" >"$work/capture"
+check_script "$work/capture"
+(
+    . "$work/capture"
+    HOME=$work/capture-home
+    id() { echo 1000; }
+    ask() { IFS= read -r answer; }
+    run() { echo "$*" >"$work/capture-run"; }
+    printf 'vio4\n15\n' | firewall_capture >/dev/null
+    [ "$(cat "$work/capture-run")" = 'sudo /usr/local/sbin/firewall-capture vio4 15' ]
+)
+grep -qF "echo 'joined; the status check failed: run sys wifi status' >&2" "$repo/rootfs/usr/lib/convergent/sys/10-wifi"
+# A shutdown that cannot drain (a guest operation holds the lock) keeps running ephemeral work VMs, which Incus
+# would delete when it stops them, marked; the next guests run makes them ephemeral again.
+sed -n '/^ic() /p; /^note() /p; /^keep_ephemeral() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/shutdown" >"$work/keep-ephemeral"
+check_script "$work/keep-ephemeral"
+grep -qF "flock -w 30 9 || { note 'guest operation still running; leaving final shutdown to Incus'; keep_ephemeral; exit 1; }" \
+    "$repo/rootfs/usr/lib/convergent/incus/shutdown"
+(
+    set -eu
+    . "$work/keep-ephemeral"
+    logger() { :; }
+    nic='"expanded_devices":{"eth0":{"type":"nic","network":"work"}}'
+    timeout() {
+        shift 3
+        case $* in
+        "incus --force-local query /1.0/instances?recursion=1&all-projects=true")
+            printf '[%s,%s,%s,%s]\n' "{\"name\":\"w1\",\"project\":\"owner\",\"status\":\"Running\",\"ephemeral\":true,$nic}" \
+                "{\"name\":\"w2\",\"project\":\"owner\",\"status\":\"Running\",\"ephemeral\":false,$nic}" \
+                "{\"name\":\"w3\",\"project\":\"owner\",\"status\":\"Stopped\",\"ephemeral\":true,$nic}" \
+                '{"name":"x","project":"owner","status":"Running","ephemeral":true,"expanded_devices":{"eth0":{"type":"nic","network":"other"}}}' ;;
+        *) echo "$*" >>"$work/keep-calls" ;;
+        esac
+    }
+    : >"$work/keep-calls"
+    keep_ephemeral
+    printf '%s\n' 'incus --force-local --project owner config set w1 user.convergent.ephemeral=true' \
+        'incus --force-local --project owner config set w1 ephemeral=false --property' >"$work/keep-expected"
+    cmp "$work/keep-expected" "$work/keep-calls"
+)
+sed -n '/^autorestart_clear() (/,/^)/p' "$repo/tools/guests" >"$work/autorestart-clear"
+check_script "$work/autorestart-clear"
+(
+    set -eu
+    . "$work/autorestart-clear"
+    state=$work/ar-state work=$work/ar-work frozen=
+    mkdir -p "$state" "$work"
+    ic() { echo "${ic_project:-default} $*" >>"$work/calls"; [ "$1" != query ] || echo '[]'; }
+    fail() { return 1; }
+    timeout() { shift 3; [ "$*" = 'incus --force-local query /1.0/instances?recursion=1&all-projects=true' ] || exit 97
+        echo '[{"name":"w1","project":"owner","config":{"user.convergent.ephemeral":"true"}},{"name":"w2","project":"owner","config":{}}]'; }
+    : >"$work/calls"
+    autorestart_clear
+    printf '%s\n' 'default query /1.0/instances?recursion=1&project=default' 'owner config set w1 ephemeral=true --property' \
+        'owner config unset w1 user.convergent.ephemeral' >"$work/expected"
+    cmp "$work/expected" "$work/calls"
+)
 # The installed policy keeps a port only for a device without a serial, as USBGuard's own policy does: a dock
 # or a USB system disk moved to another port stays allowed.
 sed -n '/^# Ports only where USBGuard/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"

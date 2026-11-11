@@ -237,6 +237,13 @@ autorestart_clear() (
             ic config unset "$node" user.convergent.autorestart.old || return ;;
         esac
     done <"$work/autorestart-orphans"
+    # A shutdown that could not drain kept ephemeral work VMs (incus/shutdown): ephemeral again.
+    jq -r '.[] | select(.config["user.convergent.ephemeral"] == "true") | "\(.project // "default") \(.name)"' \
+        "$work/autorestart-instances" >"$work/ephemeral-kept" || return
+    while read -r project node; do
+        ic_project=$project
+        ic config set "$node" ephemeral=true --property && ic config unset "$node" user.convergent.ephemeral || return
+    done <"$work/ephemeral-kept"
 )
 volumes() {
     case $1 in

@@ -63,7 +63,12 @@ wifi_join_reply() {
 		return "$_result"
 	fi
 	for attempt in 1 2 3 4 5 6; do
-		_reply=$(wifi_wan status </dev/null) || return
+		_reply=$(wifi_wan status </dev/null) || {
+			_result=$?
+			printf '%s\n' "$_reply"
+			echo 'joined; the status check failed: run sys wifi status' >&2
+			return "$_result"
+		}
 		printf '%s\n' "$_reply" | grep -q '^address ' && return 0
 		sleep 5
 	done
