@@ -455,7 +455,15 @@ if grep -q '/usr/local/sbin/\|/var/lib/convergent\|/run/openrc' "$work/setup-sta
         *) grep -q '^ewarn Incus is not ready' "$work/setup/calls" || die 'no warning with Incus not ready'
             if grep -qx cleanup "$work/setup/calls"; then die 'cleanup ran with Incus not ready'; fi ;;
         esac
+        # Guests created: the state says done (the owner cannot see the guests directory).
+        [ "$(cat "$work/setup/run/status/setup")" = done ] || die 'setup state not done with guests initialized'
     done
+    # Installed without guests: the state says so, and no job starts.
+    rm "$work/setup/lib/guests/initialized"
+    rm -f "$work/setup/job"
+    start
+    [ "$(cat "$work/setup/run/status/setup")" = missing ] && [ ! -e "$work/setup/job" ] || die 'no guests reported as done'
+    : >"$work/setup/lib/guests/initialized"
     # First boot: the job, extracted as nohup gets it, run with a stand-in guests.
     rm "$work/setup/lib/guests/initialized"
     mkdir -p "$work/setup/lib/release-guests/guests" "$work/setup/openrc/started"
@@ -1184,6 +1192,26 @@ grep -q 'newsyslog.out' "$work/authlog-cap"
 printf '%s\n' '/var/log/authlog root:wheel 640 7 * 168 Z' '/var/log/daemon 640 5 300 * Z' >"$work/newsyslog.in"
 sh "$work/authlog-cap"
 awk '$1 == "/var/log/authlog" && $5 == 2048 {a++} $1 == "/var/log/daemon" && $4 == 300 && $5 == "*" {d++} END {exit !(a == 1 && d == 1)}' "$work/newsyslog.out"
+# Builds from a checkout refuse untracked or ignored files in the shipped trees; a tree without .git builds.
+for script in image guests; do
+    sed -n '/^# Only tracked files ship/,/^fi$/p' "$repo/build/$script" >"$work/tracked-$script"
+    check_script "$work/tracked-$script"
+done
+cmp -s "$work/tracked-image" "$work/tracked-guests"
+(
+    t=$work/tracked-tree
+    mkdir -p "$t/build" "$t/tools"
+    git -C "$t" init -q
+    : >"$t/tools/a"
+    git -C "$t" add tools/a
+    git -C "$t" -c user.name=t -c user.email=t@example.invalid commit -qm t
+    here=$t/build
+    (. "$work/tracked-image") || exit 1
+    : >"$t/tools/a.orig"
+    if (. "$work/tracked-image") 2>/dev/null; then exit 1; fi
+    rm -rf "$t/.git"
+    (. "$work/tracked-image") || exit 1
+)
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"

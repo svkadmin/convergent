@@ -316,7 +316,7 @@ sed -n "/-name '\.run\.??????' -mmin +1440 /p" "$repo/tools/check" >"$work/prune
     . "$work/prune"
     [ ! -e "$state/.run.OLDOLD" ] && [ -d "$state/.run.NEWNEW" ]
 )
-sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
+sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/facts" | sed "s|/var/lib/|$work/varlib/|g" >"$work/facts-auto"
 [ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
 (
     . "$work/facts-auto"
@@ -362,6 +362,17 @@ sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/fac
     awk() { echo 100001; }
     auto
     [ "$(wc -l <"$out/boot-calls")" = 5 ]
+    # A certificate renewed since the last daily facts republishes its expiry at once (CertExpiry clears).
+    awk() { echo 1; }
+    echo 'cv_collector_success{collector="daily"} 1' >"$out/daily.prom"
+    command touch -d @1000 "$out/daily.prom"
+    clock=100000; rm -f "$out/due"
+    auto
+    [ ! -e "$out/due" ]
+    mkdir -p "$work/varlib/convergent/guests/tls/incus-ui"
+    : >"$work/varlib/convergent/guests/tls/incus-ui/client.crt"
+    auto
+    grep -qx due "$out/due"
 )
 # The minute's nts run redoes it too, not only the hourly auto.
 grep -qxF 'nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale clock; then boot; fi ;;' "$repo/tools/facts"

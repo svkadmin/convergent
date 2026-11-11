@@ -377,7 +377,13 @@ auto() {
 		boot
 	fi
 	daily_age=$(age "$out/daily.prom")
-	if [ "$daily_age" -lt 0 ] || [ "$daily_age" -ge 72000 ] ||
+	# A certificate renewed or rotated since (guests apply, incus-ui rotate): its expiry within the hour, not ~20 h.
+	renewed=
+	for renew in /var/lib/incus/server.crt /var/lib/convergent/guests/tls/ca.crt /var/lib/convergent/guests/tls/server.crt \
+		/var/lib/convergent/guests/tls/incus-client.crt /var/lib/convergent/guests/tls/incus-ui/client.crt; do
+		[ ! "$renew" -nt "$out/daily.prom" ] || renewed=1
+	done
+	if [ -n "$renewed" ] || [ "$daily_age" -lt 0 ] || [ "$daily_age" -ge 72000 ] ||
 		{ [ "$daily_age" -ge 3600 ] && ! grep -qx 'cv_collector_success{collector="daily"} 1' "$out/daily.prom" 2>/dev/null; }; then
 		daily
 	fi

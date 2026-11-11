@@ -51,7 +51,10 @@ start() {
 		eend 0
 		return 0
 	fi
-	[ ! -e /var/lib/convergent/guests/initialized ] && [ -d "$src/guests" ] || return 0
+	# The owner cannot read the 0700 guests directory: the setup state says whether guests exist.
+	if [ -e /var/lib/convergent/guests/initialized ]; then mkdir -p "$st" && echo done >"$st/setup"; return 0; fi
+	# Installed without them (USAGE, Install step 5): nothing creates them until they are copied.
+	if [ ! -d "$src/guests" ]; then mkdir -p "$st" && echo missing >"$st/setup"; return 0; fi
 	ebegin "Creating the guests in the background; the bar shows SETUP until done"
 	mkdir -p "$st"
 	echo running >"$st/setup"
