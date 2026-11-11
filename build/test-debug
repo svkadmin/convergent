@@ -78,6 +78,8 @@ for fail in "$ep/debug-out/$id" "$ep/beta/debug/script" "$ep/beta/debug/script.s
 	grep -qxF "debug: cannot delete $want" "$work/error" || die "unreported deletion failure: $fail"
 	printf '%s\n' "$published" | cmp -s - "$work/calls" || die "stopped after a failed deletion of $fail"
 done
+# A fetched output goes before it is checked: a forged one must not stay against the bucket's cap.
+grep -A2 -F 's3 -o "$tmp/output.cms" "$ep/debug-out/$id"' "$here/debug" | grep -qF 's3 -o /dev/null -X DELETE "$ep/debug-out/$id"'
 echo 'test: debug fetch cleanup passed'
 
 sh "$here/test-diag"

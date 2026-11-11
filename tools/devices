@@ -36,7 +36,7 @@ list() {
 		[ -e "$d/security" ] || continue
 		case $(cat "$d/security") in
 		user | secure) ;;
-		dponly) echo "  ${d##*/}: security level dponly, PCIe tunnels are off in the firmware" ;;
+		dponly | usbonly | nopcie) echo "  ${d##*/}: security level $(cat "$d/security"), PCIe tunnels are off in the firmware" ;;
 		*) echo "  ${d##*/}: security level $(cat "$d/security"): devices are authorized without asking" ;;
 		esac
 	done

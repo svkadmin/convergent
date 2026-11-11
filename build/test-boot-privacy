@@ -1145,6 +1145,12 @@ check_script "$work/etc-sweep"
     . "$work/etc-sweep"
     [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
 )
+# 21E: no host NIC for a USB4 host-to-host cable; no build host details or shared id in guest images; the
+# Thunderbolt levels that keep PCIe tunnels off are named so.
+grep -qx 'install thunderbolt_net /bin/false' "$repo/rootfs/etc/modprobe.d/convergent.conf"
+grep -qx 'rm -f /var/run/dmesg.boot' "$repo/guests/fw/site/install.site"
+grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$repo/guests/wan/build"
+grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
