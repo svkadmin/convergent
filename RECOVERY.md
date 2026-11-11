@@ -722,12 +722,12 @@ into a new dated folder, so an earlier copy stays until you delete it. Browsers,
 Remmina's keyring and the system guests are not copied: setup creates them again.
 
 1. Once per disk, find it with `lsblk -o NAME,SIZE,MODEL,TRAN`, then erase and format it. The
-   first line formats only a USB disk; for any other the lines after it fail harmlessly:
+   block runs only for a USB disk:
    ```sh
-   [ "$(lsblk -dno TRAN /dev/sdX)" = usb ] && sudo cryptsetup luksFormat /dev/sdX
-   sudo cryptsetup open /dev/sdX cv-copy
-   sudo mkfs.btrfs /dev/mapper/cv-copy
-   sudo cryptsetup close cv-copy
+   if [ "$(lsblk -dno TRAN /dev/sdX)" = usb ]; then
+       sudo cryptsetup luksFormat /dev/sdX && sudo cryptsetup open /dev/sdX cv-copy &&
+           sudo mkfs.btrfs /dev/mapper/cv-copy && sudo cryptsetup close cv-copy
+   else echo 'STOP: not a USB disk'; fi
    ```
 2. Open and mount it, then check the mount. Stop if the last line does not print
    `/dev/mapper/cv-copy`: a copy would land on the laptop instead.

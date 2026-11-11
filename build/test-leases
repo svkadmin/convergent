@@ -419,23 +419,34 @@ for scenario in held frozen silent unheld topology carp resume-failed peer-down 
     if [ "$scenario" = peer-down ] && grep -q '^retry reachable' "$work/retries"; then exit 1; fi
 done
 # wan: the rollback restores the candidate's networks (added or forgotten since the update started); an
-# unreadable candidate keeps those saved when the update started.
-for scenario in wan-read wan-damaged; do
-    rm -rf "$state/iwd.wan" "$work/iwd" "$work/wan-networks"
+# unreadable candidate keeps those saved when the update started. A later pass (again) does not read the disk its
+# cut rebuild left; a read with no store (empty) keeps the saved set; a pass cut between the renames (cut) resumes.
+for scenario in wan-read wan-damaged wan-again wan-empty wan-cut; do
+    rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread" "$work/iwd" "$work/wan-networks"
     mkdir -p "$state/iwd.wan"
     echo old >"$state/iwd.wan/kept.psk"
+    case $scenario in
+    wan-again) : >"$state/iwd.wan.reread" ;;
+    wan-cut) mkdir "$state/iwd.wan.new"; echo mid >"$state/iwd.wan.new/mid.psk"; rm -rf "$state/iwd.wan"; : >"$state/iwd.wan.reread" ;;
+    esac
     echo "wan test-update old-image" >"$state/pending"
     rollback_rc=0
     (
         killed=1
-        wan_read() { [ "$scenario" = wan-read ] || exit 2; mkdir -p "$work/iwd"; echo new >"$work/iwd/new.psk"; }
+        wan_read() {
+            case $scenario in
+            wan-read|wan-again|wan-cut) mkdir -p "$work/iwd"; echo new >"$work/iwd/new.psk" ;;
+            wan-empty) return 0 ;;
+            *) exit 2 ;;
+            esac
+        }
         rebuild_root() { ls "$state/iwd.wan" >"$work/wan-networks"; }
         rollback
     ) >"$work/wan-rollback.out" 2>&1 || rollback_rc=$?
     [ "$rollback_rc" = 0 ] || { cat "$work/wan-rollback.out" >&2; exit 1; }
-    case $scenario in wan-read) expected=new.psk ;; *) expected=kept.psk ;; esac
+    case $scenario in wan-read) expected=new.psk ;; wan-cut) expected=mid.psk ;; *) expected=kept.psk ;; esac
     [ "$(cat "$work/wan-networks")" = "$expected" ] || { echo "rollback $scenario restored $(cat "$work/wan-networks")" >&2; exit 1; }
-    [ ! -e "$state/iwd.wan" ]
+    [ ! -e "$state/iwd.wan" ] && [ ! -e "$state/iwd.wan.reread" ]
 done
 # Cleanup waits the same way for a booting peer before it resumes the allocators.
 rm -f "$state/pending" "$work/live/fw1" "$work/dhcp.fw2"

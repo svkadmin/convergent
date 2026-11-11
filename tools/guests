@@ -237,7 +237,9 @@ autorestart_clear() (
             ic config unset "$node" user.convergent.autorestart.old || return ;;
         esac
     done <"$work/autorestart-orphans"
-    # A shutdown that could not drain kept ephemeral work VMs (incus/shutdown): ephemeral again.
+    # A shutdown that could not drain kept ephemeral work VMs (incus/shutdown): ephemeral again, but not while
+    # that shutdown runs (this run held its lock), or Incus deletes them as it stops them.
+    [ ! -e /run/convergent/guests-stopping ] || return 0
     jq -r '.[] | select(.config["user.convergent.ephemeral"] == "true") | "\(.project // "default") \(.name)"' \
         "$work/autorestart-instances" >"$work/ephemeral-kept" || return
     while read -r project node; do
@@ -299,11 +301,18 @@ rollback() {
             # Networks added or forgotten since the update started are on the candidate's disk; an unreadable
             # one keeps those saved when it started.
             if [ "$guest" = wan ]; then
-                rm -rf "$work/wan-read" "$work/iwd" || return
-                if (wan_read); then
-                    rm -rf "$state/iwd.wan" && mv "$work/iwd" "$state/iwd.wan" && sync || return
-                else
-                    echo 'guests: WARNING: the Wi-Fi networks saved when the update started are restored' >&2
+                # A pass cut between the two renames below left only the new set.
+                [ -d "$state/iwd.wan" ] || [ ! -d "$state/iwd.wan.new" ] || mv "$state/iwd.wan.new" "$state/iwd.wan" || return
+                # Once a rollback: a later pass would read the disk a cut rebuild left.
+                if [ ! -e "$state/iwd.wan.reread" ]; then
+                    rm -rf "$work/wan-read" "$work/iwd" "$state/iwd.wan.new" || return
+                    if (wan_read) && [ -d "$work/iwd" ]; then
+                        mv "$work/iwd" "$state/iwd.wan.new" && sync && rm -rf "$state/iwd.wan" &&
+                            mv "$state/iwd.wan.new" "$state/iwd.wan" || return
+                    else
+                        echo 'guests: WARNING: the Wi-Fi networks saved when the update started are restored' >&2
+                    fi
+                    : >"$state/iwd.wan.reread" && sync || return
                 fi
             fi
             seed_remove "$guest" || return
@@ -335,7 +344,7 @@ rollback() {
         esac
         [ "$guest" != fw1 ] || { touch "$state/fw.handoff" && sync && fw_release || return; }
         tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
-        rm -rf "$state/iwd.$guest" "$state/backups/$guest-$snap.tar.gz" || return
+        rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/backups/$guest-$snap.tar.gz" || return
     done
     rm "$state/pending" || return
     pending=

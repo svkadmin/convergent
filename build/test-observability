@@ -364,7 +364,19 @@ sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/fac
     [ "$(wc -l <"$out/boot-calls")" = 5 ]
 )
 # The minute's nts run redoes it too, not only the hourly auto.
-grep -qxF 'nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale; then boot; fi ;;' "$repo/tools/facts"
+grep -qxF 'nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale clock; then boot; fi ;;' "$repo/tools/facts"
+# There a failed collection is not redone (auto retries it hourly); a clock step still is.
+(
+    . "$work/facts-auto"
+    out=$work/clock-out
+    mkdir "$out"
+    stat() { echo 100000; }; date() { echo 100000; }; awk() { echo 1; }
+    echo 'cv_collector_success{collector="boot"} 0' >"$out/boot.prom"
+    if boot_stale clock; then exit 1; fi
+    boot_stale
+    awk() { echo 100001; }
+    boot_stale clock
+)
 # Below two NTS sources chrony is asked to resolve and poll again, at most every five minutes of uptime.
 sed -n '/^nts_nudge() {/,/^}/p' "$repo/tools/facts" | sed "s|/proc/uptime|$work/nudge-uptime|" >"$work/nts-nudge"
 [ -s "$work/nts-nudge" ]; sh -n "$work/nts-nudge"

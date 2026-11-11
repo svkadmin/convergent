@@ -1065,7 +1065,7 @@ grep -qF "flock -w 30 9 || { note 'guest operation still running; leaving final 
         'incus --force-local --project owner config set w1 ephemeral=false --property' >"$work/keep-expected"
     cmp "$work/keep-expected" "$work/keep-calls"
 )
-sed -n '/^autorestart_clear() (/,/^)/p' "$repo/tools/guests" >"$work/autorestart-clear"
+sed -n '/^autorestart_clear() (/,/^)/p' "$repo/tools/guests" | sed "s|/run/convergent/guests-stopping|$work/ar-stopping|" >"$work/autorestart-clear"
 check_script "$work/autorestart-clear"
 (
     set -eu
@@ -1081,6 +1081,11 @@ check_script "$work/autorestart-clear"
     printf '%s\n' 'default query /1.0/instances?recursion=1&project=default' 'owner config set w1 ephemeral=true --property' \
         'owner config unset w1 user.convergent.ephemeral' >"$work/expected"
     cmp "$work/expected" "$work/calls"
+    # Not while the shutdown that kept them runs: Incus would delete them as it stops them.
+    : >"$work/ar-stopping"
+    : >"$work/calls"
+    autorestart_clear
+    [ "$(cat "$work/calls")" = 'default query /1.0/instances?recursion=1&project=default' ]
 )
 # The installed policy keeps a port only for a device without a serial, as USBGuard's own policy does: a dock
 # or a USB system disk moved to another port stays allowed.
@@ -1232,25 +1237,40 @@ touch "$work/wired/initialized"
     printf '%s\n' yes | (enrol) >"$w/out"
     [ ! -s "$w/calls" ] || exit 1
     touch "$w/initialized"
-    # A system installed to a USB disk: enrol refuses to block that disk, and changes nothing.
+    # A system installed to a USB disk: enrol refuses to block that disk or a hub above it, revoke refuses to
+    # drop their rules, and neither changes anything.
     disk='allow id 0781:5581 serial "D1" name "Disk" hash "h3"'
+    hub='allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI" hash "h4"'
     d=$w/devices-tree/usb3/3-2
     mkdir -p "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/dev" "$w/block"
     : >"$d/idVendor"
+    : >"$w/devices-tree/usb3/idVendor"
     ln -s ../.. "$d/3-2:1.0/host0/0:0:0/block/sdz/device"
     ln -s "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/block/sdz1"
     ln -s /dev/sdz1 "$w/dev/cv-state"
-    [ "$(system_usb)" = 3-2 ] || exit 1
-    printf '9: %s via-port "3-2"\n' "$disk" >"$w/devices"
-    printf '%s\n%s\n' "$kbd" "$disk" >"$w/generated"
-    for answers in 'yes no' 'yes yes'; do
+    [ "$(system_usb)" = "3-2
+usb3" ] || exit 1
+    printf '9: %s via-port "3-2"\n8: %s via-port "usb3"\n' "$disk" "$hub" >"$w/devices"
+    printf '%s\n%s\n%s\n' "$kbd" "$hub" "$disk" >"$w/generated"
+    for answers in 'yes yes no' 'yes no yes' 'yes yes yes'; do
         reset; rm -f "$w/synced"; cp "$w/rules" "$w/rules.before"
         code=0
         printf '%s\n' $answers | (enrol) >"$w/out" 2>&1 || code=$?
         case $answers in
-        'yes no') [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && [ ! -e "$w/synced" ] &&
-            grep -q 'runs from a USB disk you did not trust' "$w/out" || exit 1 ;;
-        *) [ "$code" = 0 ] && [ -e "$w/synced" ] || { cat "$w/out" >&2; exit 1; } ;;
+        'yes yes yes') [ "$code" = 0 ] && [ -e "$w/synced" ] || { cat "$w/out" >&2; exit 1; } ;;
+        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && [ ! -e "$w/synced" ] &&
+            grep -q 'runs from a USB disk: enrol again' "$w/out" || exit 1 ;;
+        esac
+    done
+    for rule in 9 8 5; do
+        reset; rm -f "$w/synced"
+        printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"
+        cp "$w/rules" "$w/rules.before"
+        code=0
+        (revoke "$rule") >"$w/out" 2>&1 || code=$?
+        case $rule in
+        5) [ "$code" = 0 ] && [ -e "$w/synced" ] || { cat "$w/out" >&2; exit 1; } ;;
+        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'the USB disk the system runs from' "$w/out" || exit 1 ;;
         esac
     done
     rm "$w/dev/cv-state"
