@@ -566,7 +566,7 @@ for gate in open guests update stopping nonroot arguments; do
         id() { if [ "$gate" = nonroot ]; then echo 1000; else echo 0; fi; }
         flock() {
             echo "$*" >>"$work/locks-taken"
-            case $gate:$* in 'guests:-s -n 9'|'update:-s -n 6') return 1 ;; esac
+            case $gate:$* in 'guests:-s -w 2 9'|'update:-s -n 6') return 1 ;; esac
         }
         reap_tmp() { touch "$work/swept"; }
         set -- --reap-tmp
