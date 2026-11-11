@@ -1082,7 +1082,7 @@ check_script "$work/autorestart-clear"
         'owner config unset w1 user.convergent.ephemeral' >"$work/expected"
     cmp "$work/expected" "$work/calls"
     # Not while the shutdown that kept them runs: Incus would delete them as it stops them.
-    : >"$work/ar-stopping"
+    : >"$work/../ar-stopping"
     : >"$work/calls"
     autorestart_clear
     [ "$(cat "$work/calls")" = 'default query /1.0/instances?recursion=1&project=default' ]
