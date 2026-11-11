@@ -526,8 +526,8 @@ sudo portal status             # per-node state, aggregate on/off/mixed/unknown 
 
 ### USB
 
-A fresh disk image allows whole USB classes (HID, storage, hubs). `sys usb enrol` replaces that
-with one rule per trusted device:
+The installer allows the devices attached at install, one rule each. `sys usb enrol` replaces the
+rules with one per trusted device:
 
 1. Attach the devices and hubs you trust.
 2. Run `sys usb enrol` and review the attached devices.
