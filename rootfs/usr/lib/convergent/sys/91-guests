@@ -7,7 +7,9 @@ guests_state() {
 	case $(cached /run/convergent/status/setup) in
 	running) echo 'Setup: creating the guests' ;;
 	failed) echo 'Setup: failed; run sys guests setup' ;;
-	*) echo 'Setup: done' ;;
+	missing) echo 'Setup: no guests installed; copy them (USAGE, Install step 5), then run sys guests setup' ;;
+	done) echo 'Setup: done' ;;
+	*) echo 'Setup: unknown' ;;
 	esac
 	case $(cached /run/convergent/status/guests-update) in
 	running) echo 'Updates: applying downloaded guests' ;;

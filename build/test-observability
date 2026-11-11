@@ -316,7 +316,7 @@ sed -n "/-name '\.run\.??????' -mmin +1440 /p" "$repo/tools/check" >"$work/prune
     . "$work/prune"
     [ ! -e "$state/.run.OLDOLD" ] && [ -d "$state/.run.NEWNEW" ]
 )
-sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
+sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/facts" | sed "s|/var/lib/|$work/varlib/|g" >"$work/facts-auto"
 [ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
 (
     . "$work/facts-auto"
@@ -362,6 +362,17 @@ sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/fac
     awk() { echo 100001; }
     auto
     [ "$(wc -l <"$out/boot-calls")" = 5 ]
+    # A certificate renewed since the last daily facts republishes its expiry at once (CertExpiry clears).
+    awk() { echo 1; }
+    echo 'cv_collector_success{collector="daily"} 1' >"$out/daily.prom"
+    command touch -d @1000 "$out/daily.prom"
+    clock=100000; rm -f "$out/due"
+    auto
+    [ ! -e "$out/due" ]
+    mkdir -p "$work/varlib/convergent/guests/tls/incus-ui"
+    : >"$work/varlib/convergent/guests/tls/incus-ui/client.crt"
+    auto
+    grep -qx due "$out/due"
 )
 # The minute's nts run redoes it too, not only the hourly auto.
 grep -qxF 'nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale clock; then boot; fi ;;' "$repo/tools/facts"
@@ -728,7 +739,9 @@ done
 grep -qxF 'VictoriaMetrics and VictoriaLogs flush every 30 s: at most 30 s of monitoring data is lost on a crash.' "$repo/ARCHITECTURE.md"
 sed -n '/^[[:space:]]*for volume in svc-metrics /,/^[[:space:]]*publish storage storage/ {
     /^[[:space:]]*publish storage storage/d; p;
-}' "$repo/tools/facts" >"$work/volumes"
+}' "$repo/tools/facts" | sed "s|/var/lib/incus/storage-pools/default/custom/|$work/pool/|" >"$work/volumes"
+# A browser volume is read once it exists (def here), not before (int, Remmina).
+mkdir -p "$work/pool/default_browser-def-state"
 [ -s "$work/volumes" ]
 sh -n "$work/volumes"
 (
@@ -760,7 +773,7 @@ sh -n "$work/volumes"
         *)
             [ "$ok" = 1 ]
             : >"$work/expected"
-            for volume in svc-metrics svc-logs svc-grafana; do
+            for volume in svc-metrics svc-logs svc-grafana browser-def-state; do
                 printf 'cv_volume_used_bytes{volume="%s"} %s\ncv_volume_limit_bytes{volume="%s"} 1000\n' \
                     "$volume" "$used" "$volume" >>"$work/expected"
             done

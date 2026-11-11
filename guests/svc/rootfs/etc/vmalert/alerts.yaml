@@ -151,7 +151,7 @@ groups:
         expr: cv_volume_used_bytes / cv_volume_limit_bytes > 0.85
         for: 10m
         labels: {severity: warning}
-        annotations: {summary: 'svc volume qgroup above 85%: {{ $labels.volume }}', dashboard: '/d/cv-host'}
+        annotations: {summary: 'Guest volume qgroup above 85%: {{ $labels.volume }}', dashboard: '/d/cv-host'}
   - name: security-time
     interval: 1m
     concurrency: 1

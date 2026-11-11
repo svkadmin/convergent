@@ -342,9 +342,12 @@ storage() {
 		else since=0; bad 'invalid missing scrub observation'; fi
 		m "cv_btrfs_scrub_missing_since_seconds $since"
 	fi
-	for volume in svc-metrics svc-logs svc-grafana; do
+	for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state share; do
 		[ -e "$sdir/guests/initialized" ] || break
 		path=/var/lib/incus/storage-pools/default/custom/default_$volume
+		# A browser or Remmina volume once its guest exists: Chromium sizes its caches from the filesystem, not
+		# the quota, so a full one fails downloads and profile writes with nothing else saying why.
+		case $volume in svc-*) ;; *) [ -d "$path" ] || continue ;; esac
 		if id=$(btrfs inspect-internal rootid "$path" 2>/dev/null) && limits=$(btrfs qgroup show --raw -r "$path" 2>/dev/null); then
 			printf '%s\n' "$limits" | awk -v id="0/$id" -v volume="$volume" '
 				$1 == id && $2 ~ /^[0-9]+$/ && $4 ~ /^[0-9]+$/ {
@@ -374,7 +377,13 @@ auto() {
 		boot
 	fi
 	daily_age=$(age "$out/daily.prom")
-	if [ "$daily_age" -lt 0 ] || [ "$daily_age" -ge 72000 ] ||
+	# A certificate renewed or rotated since (guests apply, incus-ui rotate): its expiry within the hour, not ~20 h.
+	renewed=
+	for renew in /var/lib/incus/server.crt /var/lib/convergent/guests/tls/ca.crt /var/lib/convergent/guests/tls/server.crt \
+		/var/lib/convergent/guests/tls/incus-client.crt /var/lib/convergent/guests/tls/incus-ui/client.crt; do
+		[ ! "$renew" -nt "$out/daily.prom" ] || renewed=1
+	done
+	if [ -n "$renewed" ] || [ "$daily_age" -lt 0 ] || [ "$daily_age" -ge 72000 ] ||
 		{ [ "$daily_age" -ge 3600 ] && ! grep -qx 'cv_collector_success{collector="daily"} 1' "$out/daily.prom" 2>/dev/null; }; then
 		daily
 	fi

@@ -19,7 +19,8 @@ ask() {
 }
 
 tb_list() {
-	for d in "$tb"/[0-9]*-[0-9]*; do
+	# Named domain-route, the route in hex (0-b01): any route.
+	for d in "$tb"/[0-9]*-*; do
 		[ -e "$d/authorized" ] && [ -e "$d/unique_id" ] || continue
 		printf '%s %s %s %s\n' "$(cat "$d/unique_id")" "$(cat "$d/authorized")" \
 			"$(cat "$d/vendor_name" 2>/dev/null || echo ?)" "$(cat "$d/device_name" 2>/dev/null || echo ?)" | tr -d '\000-\010\013-\037\177'
@@ -75,9 +76,11 @@ allow_usb() {
 }
 
 allow_tb() {
-	id=$1
-	case $id in '' | *[!0-9a-fA-F-]*) die "not a unique id: $id" ;; esac
-	for d in "$tb"/[0-9]*-[0-9]*; do
+	# The kernel prints unique_id in lowercase.
+	id=$(printf '%s' "$1" | tr A-F a-f)
+	case $id in '' | *[!0-9a-f-]*) die "not a unique id: $1" ;; esac
+	# Named domain-route, the route in hex (0-b01): any route.
+	for d in "$tb"/[0-9]*-*; do
 		# Pin the directory across approval.
 		CDPATH= cd -P "$d" 2>/dev/null || continue
 		[ -e unique_id ] && [ "$(cat unique_id)" = "$id" ] || continue

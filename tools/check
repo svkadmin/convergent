@@ -159,7 +159,10 @@ if [ "${1:-}:$#" = status:1 ]; then
                 # All registered CARP interfaces must agree.
                 printf '%s\n' "$carp" | awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments - >"$status/.$node" || echo degraded >"$status/.$node"
                 printf '%s\n' "$carp" | awk '$1 == "portal" {print $2}' >"$status/.portal-$node"
-            else echo down >"$status/.$node"; fi
+            else
+                # Timed out or cut short (a loaded node): unknown (grey), not down; a refused one is down.
+                case $? in 124 | 125 | 137) echo unknown ;; *) echo down ;; esac >"$status/.$node"
+            fi
         ) &
     done
     (

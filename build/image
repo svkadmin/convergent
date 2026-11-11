@@ -8,6 +8,11 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=${here%/build}
+# Only tracked files ship: in a checkout an untracked or ignored file (a merge backup, an editor copy) would go
+# out with the release. A git archive tree has no .git.
+if [ -e "$here/../.git" ] && [ -n "$(git -C "$here/.." ls-files --others -- tools rootfs initramfs install guests)" ]; then
+	echo "untracked files in tools, rootfs, initramfs, install or guests: build from a clean tree" >&2; exit 1
+fi
 . "$here/build.conf"
 . "$here/chroot.sh"
 

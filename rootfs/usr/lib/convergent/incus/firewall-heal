@@ -166,6 +166,14 @@ heal_resume() (
 # A node that ran under another QEMU since the last run (a restart by the heal or by hand, a crash Incus
 # restarted, a host reboot) missed what its peer handed out meanwhile, and dhcpd refuses a sync for an
 # address it abandoned: one reconcile is queued, durably. The record is host-side only, never a guest reply.
+# Under memory pressure the kernel kills the largest process: the network guests' QEMUs go last, not before a
+# browser. Not through incusd: everything it starts would inherit the score. Each run, for a QEMU Incus restarted.
+heal_oom() {
+    for oom_node in fw1 fw2 wan; do
+        pid=$(heal_qemu "$oom_node") || continue
+        echo -800 2>/dev/null >"/proc/$pid/oom_score_adj" || :
+    done
+}
 heal_booted() {
     boot=$(tr -cd '0-9a-f-' 2>/dev/null </proc/sys/kernel/random/boot_id) || boot=
     for boot_node in fw1 fw2; do
@@ -258,6 +266,7 @@ heal_pair_stopped() {
 firewall_heal() (
     heal=/run/convergent/firewall-heal
     mkdir -p "$heal" || exit 1
+    heal_oom
     # A hold gone takes its resume counts with it: the next hold counts afresh.
     [ -f /var/lib/convergent/guests/leases/held ] || rm -f "$heal/resume.failed.fw1" "$heal/resume.failed.fw2" "$heal/resume.stuck"
     if ! heal_allowed; then

@@ -341,6 +341,7 @@ while :; do
 		# First boot of a disk image: guests being created (convergent-setup).
 		setup=get(st "/setup")
 		if (setup == "running") block("SETUP", orange); else if (setup == "failed") block("SETUP failed", red)
+		else if (setup == "missing") block("SETUP: no guests", red)
 		guests=get(st "/guests-update")
 		if (guests == "running") block("GUESTS", orange); else if (guests == "failed") block("GUESTS failed", red)
 		# An open browser postponed the guest updates: close it, then sys guests update.

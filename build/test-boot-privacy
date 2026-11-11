@@ -455,7 +455,15 @@ if grep -q '/usr/local/sbin/\|/var/lib/convergent\|/run/openrc' "$work/setup-sta
         *) grep -q '^ewarn Incus is not ready' "$work/setup/calls" || die 'no warning with Incus not ready'
             if grep -qx cleanup "$work/setup/calls"; then die 'cleanup ran with Incus not ready'; fi ;;
         esac
+        # Guests created: the state says done (the owner cannot see the guests directory).
+        [ "$(cat "$work/setup/run/status/setup")" = "done" ] || die 'setup state not done with guests initialized'
     done
+    # Installed without guests: the state says so, and no job starts.
+    rm "$work/setup/lib/guests/initialized"
+    rm -f "$work/setup/job"
+    start
+    [ "$(cat "$work/setup/run/status/setup")" = missing ] && [ ! -e "$work/setup/job" ] || die 'no guests reported as done'
+    : >"$work/setup/lib/guests/initialized"
     # First boot: the job, extracted as nohup gets it, run with a stand-in guests.
     rm "$work/setup/lib/guests/initialized"
     mkdir -p "$work/setup/lib/release-guests/guests" "$work/setup/openrc/started"
@@ -1153,11 +1161,66 @@ grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$r
 grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
 # A missed firewall probe shows the portal as unknown, not as off (21E).
 grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
+# 21F: the network guests' QEMUs go last under memory pressure (every heal run, before its gates); a browser may
+# run many threads; a launcher check that did not answer is no verdict on the image; Remmina's OOM kills count.
+sed -n '/^heal_qemu() {/,/^}/p; /^heal_oom() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
+    sed -e "s|/run/incus/|$work/oom/incus/|g" -e "s|/proc/|$work/oom/proc/|g" >"$work/heal-oom"
+check_script "$work/heal-oom"
+(
+    . "$work/heal-oom"
+    pid=4100
+    for n in fw1 fw2 wan svc; do
+        pid=$((pid + 1))
+        mkdir -p "$work/oom/incus/$n" "$work/oom/proc/$pid"
+        echo "$pid" >"$work/oom/incus/$n/qemu.pid"
+        printf '%s\0' /usr/bin/qemu-system-x86_64 -name "$n" -pidfile "$work/oom/incus/$n/qemu.pid" >"$work/oom/proc/$pid/cmdline"
+    done
+    heal_oom
+    [ "$(cat "$work/oom/proc/4101/oom_score_adj")" = -800 ]
+    [ "$(cat "$work/oom/proc/4102/oom_score_adj")" = -800 ]
+    [ "$(cat "$work/oom/proc/4103/oom_score_adj")" = -800 ]
+    [ ! -e "$work/oom/proc/4104/oom_score_adj" ]
+)
+grep -A1 -F '    mkdir -p "$heal" || exit 1' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" | grep -qx '    heal_oom'
+grep -qx '  limits.processes: "4096"' "$repo/guests/browser/incus/base.yaml"
+grep -qF '124 | 137) die "$role did not answer its launcher check in time; retry" ;;' "$repo/tools/browser"
+grep -qF 'case $name in svc|def|int|remmina|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac' "$repo/tools/observe"
+# The firewalls' authlog rotates by size too (OpenBSD's line is weekly only); other lines stay.
+sed -n '/^awk .\$1 == "\/var\/log\/authlog"/p' "$repo/guests/fw/site/install.site" |
+    sed "s| /etc/newsyslog.conf >/etc/newsyslog.conf.new &&\$| $work/newsyslog.in >$work/newsyslog.out|" >"$work/authlog-cap"
+grep -q 'newsyslog.out' "$work/authlog-cap"
+printf '%s\n' '/var/log/authlog root:wheel 640 7 * 168 Z' '/var/log/daemon 640 5 300 * Z' >"$work/newsyslog.in"
+sh "$work/authlog-cap"
+awk '$1 == "/var/log/authlog" && $5 == 2048 {a++} $1 == "/var/log/daemon" && $4 == 300 && $5 == "*" {d++} END {exit !(a == 1 && d == 1)}' "$work/newsyslog.out"
+# Builds from a checkout refuse untracked or ignored files in the shipped trees; a tree without .git builds.
+for script in image guests; do
+    sed -n '/^# Only tracked files ship/,/^fi$/p' "$repo/build/$script" >"$work/tracked-$script"
+    check_script "$work/tracked-$script"
+done
+cmp -s "$work/tracked-image" "$work/tracked-guests"
+(
+    t=$work/tracked-tree
+    mkdir -p "$t/build" "$t/tools"
+    git -C "$t" init -q
+    : >"$t/tools/a"
+    git -C "$t" add tools/a
+    git -C "$t" -c user.name=t -c user.email=t@example.invalid commit -qm t
+    here=$t/build
+    (. "$work/tracked-image") || exit 1
+    : >"$t/tools/a.orig"
+    if (. "$work/tracked-image") 2>/dev/null; then exit 1; fi
+    rm -rf "$t/.git"
+    (. "$work/tracked-image") || exit 1
+)
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
 # Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
-grep -qxF '23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
+# Hourly: four fixed minutes a day missed a laptop off at each of them; logrotate keeps its own intervals.
+grep -qxF '23 * * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
+# Thunderbolt devices on any route (hex, 0-b01), ids in either case.
+[ "$(grep -c 'for d in "$tb"/\[0-9\]\*-\*; do' "$repo/tools/devices")" = 2 ]
+grep -qF "id=\$(printf '%s' \"\$1\" | tr A-F a-f)" "$repo/tools/devices"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
 grep -B1 -x 'exec 9>/run/convergent-timezone.lock' "$repo/tools/timezone" | head -n 1 | grep -qx 'umask 077'
 # A Remmina update with no instance prunes the image it superseded (20Y).

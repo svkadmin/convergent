@@ -24,7 +24,9 @@ config:
   limits.cpu.priority: "5"
   limits.memory: 2GiB
   limits.memory.swap: "false"
-  limits.processes: "512"
+  # pids.max counts threads: Chromium runs a renderer of 15-20 per site (cross-site iframes too), so a busy
+  # profile can reach 512. The memory limit bounds a fork bomb.
+  limits.processes: "4096"
   boot.autostart: "false"
 description: browser common confinement
 devices:

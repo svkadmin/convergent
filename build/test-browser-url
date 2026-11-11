@@ -227,6 +227,15 @@ for version in current old missing shared legacy; do
         fi
     done
 done
+# A probe that timed out (a loaded host) is no verdict on the image.
+rc=0
+(
+    role=def name=def portal_mode= incus_ui= launcher=$guest
+    service_call() { printf '%s\n' "$*" >>"$work/services-called"; }
+    timeout() { return 124; }
+    . "$work/services"
+) >"$work/error" 2>&1 || rc=$?
+[ "$rc" != 0 ] && grep -q 'did not answer its launcher check in time' "$work/error" || die 'a timed-out probe read as an old guest'
 # A hostile guest can stall the probe: it must stay bounded.
 grep -q 'timeout -k 1 30 incus --force-local --project default exec "\$name" --' "$work/services" ||
     die 'compatibility probe is unbounded'

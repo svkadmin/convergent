@@ -56,7 +56,7 @@ now=$(date +%s)
     for dir in /sys/fs/cgroup/lxc.payload.*; do
         [ -d "$dir" ] || continue
         name=${dir##*/lxc.payload.}
-        case $name in svc|def|int|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac
+        case $name in svc|def|int|remmina|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac
         for field in current max; do
             if read -r value <"$dir/memory.$field"; then
                 case $value in max) ;; *[!0-9]*|'') ok=0 ;; *) echo "cv_guest_memory_${field}_bytes{name=\"$name\",project=\"default\"} $value" ;; esac
