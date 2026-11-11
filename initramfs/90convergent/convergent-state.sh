@@ -108,11 +108,15 @@ done
 # as install and devices write them (rule_portable), before USBGuard reads them.
 rules=$state/etc/usbguard/rules.conf
 if [ -f "$rules" ]; then
-	sed -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//' -e '/^allow id 1d6b:/s/ hash "[^"]*"//' \
+	# Only a whole copy replaces it: a read or write cut short would drop rules.
+	if sed -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//' -e '/^allow id 1d6b:/s/ hash "[^"]*"//' \
 		-e 's/ with-connect-type "hotplug"//' -e 's/ with-connect-type "unknown"//' -e 's/ with-connect-type ""//' \
-		"$rules" >"$rules.new" || warn "state: cannot read the USB policy"
-	if [ -s "$rules.new" ] && ! cmp -s "$rules" "$rules.new"; then
-		chmod 0600 "$rules.new" && sync && mv "$rules.new" "$rules" && sync || warn "state: cannot convert the USB policy"
+		"$rules" >"$rules.new"; then
+		if [ -s "$rules.new" ] && ! cmp -s "$rules" "$rules.new"; then
+			chmod 0600 "$rules.new" && sync && mv "$rules.new" "$rules" && sync || warn "state: cannot convert the USB policy"
+		fi
+	else
+		warn "state: cannot convert the USB policy"
 	fi
 	rm -f "$rules.new"
 fi

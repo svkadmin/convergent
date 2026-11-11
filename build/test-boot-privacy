@@ -1292,6 +1292,19 @@ usb3" ] || exit 1
             grep -q 'runs from a USB disk: enrol again' "$w/out" || exit 1 ;;
         esac
     done
+    # Portable root hub rules carry no hash: the guard knows them by id and serial; the USB 2 root hub on the
+    # same controller (same serial) stays revocable.
+    for rule in 6 7; do
+        reset; rm -f "$w/synced"
+        printf '5: %s\n6: allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI"\n7: allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI"\n' "$kbd" >"$w/rules"
+        cp "$w/rules" "$w/rules.before"
+        code=0
+        (revoke "$rule") >"$w/out" 2>&1 || code=$?
+        case $rule in
+        7) [ "$code" = 0 ] || { cat "$w/out" >&2; exit 1; } ;;
+        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'the USB disk the system runs from' "$w/out" || exit 1 ;;
+        esac
+    done
     for rule in 9 8 5; do
         reset; rm -f "$w/synced"
         printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"
@@ -1803,6 +1816,20 @@ check_script "$work/usb-migrate"
     touch -d @1 "$state/etc/usbguard/rules.conf"
     . "$work/usb-migrate"
     [ "$(stat -c %Y "$state/etc/usbguard/rules.conf")" = 1 ]
+)
+# A read or write cut short replaces nothing.
+(
+    state=$work/migrate-cut
+    mkdir -p "$state/etc/usbguard"
+    warned=
+    warn() { warned=1; }
+    sed() { command sed "$@" | head -c 20; return 1; }
+    printf '%s\n' 'allow id 1:1 serial "S" name "Dock" hash "a" parent-hash "r" via-port "3-2"' >"$state/etc/usbguard/rules.conf"
+    cp "$state/etc/usbguard/rules.conf" "$work/migrate-before"
+    . "$work/usb-migrate"
+    cmp "$work/migrate-before" "$state/etc/usbguard/rules.conf"
+    [ -n "$warned" ]
+    [ ! -e "$state/etc/usbguard/rules.conf.new" ]
 )
 grep -q 'inst_multiple .* sed cmp ' "$repo/initramfs/90convergent/module-setup.sh"
 # The installer, devices and boot write rules the same way.

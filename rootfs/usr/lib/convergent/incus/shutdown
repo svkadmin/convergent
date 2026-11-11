@@ -16,7 +16,8 @@ stop_one() (
             ic config set "$node" ephemeral=true --property || exit 1
             ic config unset "$node" user.convergent.ephemeral || :
             fi' 0
-        ic config set "$node" user.convergent.ephemeral=true || note "cannot mark $project/$node"
+        ic config set "$node" user.convergent.ephemeral=true || ic config set "$node" user.convergent.ephemeral=true ||
+            note "cannot mark $project/$node"
         ic config set "$node" ephemeral=false --property || exit 1
         ephemeral=false
     fi
@@ -54,6 +55,7 @@ keep_ephemeral() {
         "\(.project // "default") \(.name)"' 2>/dev/null | while read -r project node; do
         # Marked first (harmless on one still ephemeral), protected whatever the mark did; a loaded host is slow.
         timeout -k 1 30 incus --force-local --project "$project" config set "$node" user.convergent.ephemeral=true 9>&- ||
+            timeout -k 1 30 incus --force-local --project "$project" config set "$node" user.convergent.ephemeral=true 9>&- ||
             note "cannot mark $project/$node"
         timeout -k 1 30 incus --force-local --project "$project" config set "$node" ephemeral=false --property 9>&- ||
             note "cannot keep $project/$node"
