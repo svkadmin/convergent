@@ -23,6 +23,8 @@ start() {
 	src=/var/lib/convergent/release-guests
 	st=/run/convergent/status
 	if [ -e /var/lib/convergent/guests/initialized ]; then
+		# The owner cannot read the 0700 guests directory: the setup state says whether guests exist.
+		mkdir -p "$st" && echo done >"$st/setup"
 		release=$(tr ' ' '\n' </proc/cmdline | sed -n 's/^convergent\.release=//p')
 		case $release in ''|*[!0-9]*) return 0 ;; esac
 		[ ! -e /run/convergent/guests-update-started ] || return 0
@@ -51,8 +53,6 @@ start() {
 		eend 0
 		return 0
 	fi
-	# The owner cannot read the 0700 guests directory: the setup state says whether guests exist.
-	if [ -e /var/lib/convergent/guests/initialized ]; then mkdir -p "$st" && echo done >"$st/setup"; return 0; fi
 	# Installed without them (USAGE, Install step 5): nothing creates them until they are copied.
 	if [ ! -d "$src/guests" ]; then mkdir -p "$st" && echo missing >"$st/setup"; return 0; fi
 	ebegin "Creating the guests in the background; the bar shows SETUP until done"
