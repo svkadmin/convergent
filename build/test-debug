@@ -80,6 +80,12 @@ for fail in "$ep/debug-out/$id" "$ep/beta/debug/script" "$ep/beta/debug/script.s
 done
 # A fetched output goes before it is checked: a forged one must not stay against the bucket's cap.
 grep -A2 -F 's3 -o "$tmp/output.cms" "$ep/debug-out/$id"' "$here/debug" | grep -qF 's3 -o /dev/null -X DELETE "$ep/debug-out/$id"'
+# send publishes only mkdiag-wrapped scripts: the marker it checks is what mkdiag writes.
+grep -qF 'die '"'"'not a wrapped diagnostic: run build/diag/mkdiag.sh BODY OUT first'"'" "$here/debug"
+printf 'echo body\n' >"$work/body.sh"
+sh "$here/diag/mkdiag.sh" "$work/body.sh" "$work/wrapped.sh"
+grep -qxF "cat >\"\$o/scrub.awk\" <<'AWK'" "$work/wrapped.sh"
+if grep -qxF "cat >\"\$o/scrub.awk\" <<'AWK'" "$here/diagnostics/field-check"; then exit 1; fi
 echo 'test: debug fetch cleanup passed'
 
 sh "$here/test-diag"

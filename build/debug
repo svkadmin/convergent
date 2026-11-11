@@ -99,6 +99,8 @@ for part in (day, "auto", "s3", "aws4_request"):
 signature = hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
 print("https://" + host + path + "?" + query + "&X-Amz-Signature=" + signature)
 PY
+	# Only scrubbed system evidence leaves the laptop: the script must be mkdiag.sh's wrapping of a collector.
+	grep -qxF "cat >\"\$o/scrub.awk\" <<'AWK'" "$2" || die 'not a wrapped diagnostic: run build/diag/mkdiag.sh BODY OUT first'
 	{
 		printf '# convergent-debug %s %s\n# purpose: %s\n# upload: %s\n# cert-begin\n' "$id" "$expires" "$purpose" "$(cat "$tmp/url")"
 		sed 's/^/# /' "$keys/debug.crt"
