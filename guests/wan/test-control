@@ -377,7 +377,7 @@ sed -e "s|/sys/class/ptp/|$work/ptp/|g" -e "s|/dev/ptp|$work/dev/ptp|g" "$here/r
 grep -qx 'refclock PHC /dev/ptp_kvm poll 2 refid KVM' "$here/rootfs/etc/chrony/chrony.conf"
 grep -qx 'boot ptp-kvm' "$here/runlevels"
 for sample in wifi-first kvm-only none; do
-    rm -rf "$work/ptp" "$work/dev"
+    rm -rf "${work:?}/ptp" "${work:?}/dev"
     mkdir -p "$work/dev"
     case $sample in
     wifi-first) mkdir -p "$work/ptp/ptp0" "$work/ptp/ptp1"; echo iwlwifi-PTP >"$work/ptp/ptp0/clock_name"; echo 'KVM virtual PTP' >"$work/ptp/ptp1/clock_name" ;;
