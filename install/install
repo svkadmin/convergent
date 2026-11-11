@@ -573,7 +573,7 @@ while yes_no 'Join a Wi-Fi network for the first update?'; do
 	break
 done
 
-# 8. USB devices: what is attached now stays allowed, but this stick; the target's own port is kept.
+# 8. USB devices: what is attached now stays allowed, but this stick; the target stays allowed.
 target_port=$(usb_port "$disk") || die "cannot trace the target's path"
 printf '%s' "$stick_ports" >"$work/stick-ports"
 while :; do
@@ -599,6 +599,10 @@ while :; do
 	done
 	[ "$answer" = r ] || break
 done
+# Ports only where USBGuard's own policy keeps them (no serial), as sys usb allow and enrol write them: a dock
+# or disk moved to another port stays allowed.
+sed '/ serial ""/!s/ via-port "[^"]*"//' "$work/usb.rules" >"$work/usb.rules.new" &&
+	mv "$work/usb.rules.new" "$work/usb.rules" || die "cannot write the USB policy"
 
 # 9. A LUKS header backup at the end: a filesystem on another USB or removable disk, never the stick or the target.
 # The disks as they are now: question 8 asked to attach things.
