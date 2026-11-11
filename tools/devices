@@ -146,7 +146,8 @@ wired() {
 			echo 'devices: no USB rule allows the wired uplink NIC any more; dropped its failed re-attach'
 			return 0
 		fi
-		ic config device remove wan wired-uplink
+		# Callers run this left of ||, where errexit is off: a failed removal must not read as done.
+		ic config device remove wan wired-uplink || die 'cannot remove the wired role from wan'
 		rm -f /run/convergent/wired-strike /run/convergent/wired-heal
 		echo 'devices: no USB rule allows the wired uplink NIC any more; removed its role from wan'
 		;;
