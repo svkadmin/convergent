@@ -851,7 +851,7 @@ set -eu
 printf '%s\n' "$*" >>"$work/modules"
 case "$*" in
 '-r videodev') printf 'choice=%s\n' "$(cat "$work/camera/state/camera")" >>"$work/modules"; exit 1 ;;
-'--ignore-install uvcvideo'|'uvcvideo') ;;
+'--ignore-install uvcvideo'|'uvcvideo'|'--ignore-install intel_ipu7') ;;
 *) exit 98 ;;
 esac
 EOF
@@ -862,9 +862,23 @@ export work
     flock() { :; }
     modprobe() { sh "$work/modprobe" "$@"; }
     usage() { exit 2; }
+    udevadm() { echo "$*" >>"$work/udev"; }
     : >"$work/modules"
+    : >"$work/udev"
     (camera on)
     [ "$(cat "$work/modules")" = uvcvideo ]
+    # A MIPI camera's loads refused at boot are asked again (sensors on i2c, IVSC on mei, IPU parts on auxiliary).
+    printf '%s\n' 'trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary --subsystem-match=mei' 'settle -t 30' >"$work/expected"
+    cmp "$work/expected" "$work/udev"
+    # From a udev worker (power's boot restore): no settle on its own event.
+    : >"$work/udev"
+    (SEQNUM=1; camera restore) >/dev/null
+    printf '%s\n' 'trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary --subsystem-match=mei' >"$work/expected"
+    cmp "$work/expected" "$work/udev"
+    # The IPU7 gate's own load (Lunar Lake) is allowed once on.
+    : >"$work/modules"
+    (camera load intel_ipu7)
+    [ "$(cat "$work/modules")" = '--ignore-install intel_ipu7' ]
     [ "$(cat "$work/camera/state/camera")" = on ]
     : >"$work/modules"
     (camera load uvcvideo)
@@ -880,6 +894,10 @@ export work
     grep -q 'camera is off' "$work/load-log"
     [ ! -s "$work/modules" ]
 )
+# Every camera module devices loads is gated too (IPU7: Lunar Lake).
+for m in intel_ipu6 intel_ipu6_isys intel_ipu7 intel_ipu7_isys ipu3_cio2 ipu3_imgu atomisp; do
+    grep -qx "install $m /usr/local/sbin/devices camera load $m" "$repo/rootfs/etc/modprobe.d/camera.conf"
+done
 echo 'test-boot-privacy: camera passed'
 
 # Bluetooth: rfkill is the gate; off fails while a radio still reads unblocked, a failed on blocks again.
