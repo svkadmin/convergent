@@ -102,7 +102,8 @@ wired_heal() (
     fi
     echo "$now" >>"$attempts" || exit 1
     # After a failed re-add the role may be gone: the add, which refuses an existing one, decides then.
-    if { ic config device remove wan wired-uplink || [ -n "$retry" ]; } &&
+    # A retry's remove fails on the role a failed add dropped: its error is no report line.
+    if { ic config device remove wan wired-uplink 2>/dev/null || [ -n "$retry" ]; } &&
         ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false; then
         echo "healed $serial" >"$outcome"
         logger -t check 'wired uplink: wan did not hold its NIC for two runs; role removed and added again' 2>/dev/null || :
@@ -490,7 +491,7 @@ autostart() {
     [ ! -s "$work/home.links" ] || return 1
     # Bounded: an owner's file that never ends (or turns into a FIFO) must not hold check.lock and guests.lock.
     copy=$work/autostart.copy timeout -k 1 120 find /home \( -type f -o -type l \) \( -path '*/.config/autostart/*' -o -path '*/.config/systemd/user/*' \
-        -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' \
+        -o -path '*/.local/share/systemd/user/*' -o -path '*/.config/sway/*' -o -path '*/.local/bin/*' -o -path '*/.local/share/wireplumber/*' -o -path '*/.local/share/dbus-1/*' \
         -o -path '*/.sway/*' -o -path '*/.i3/*' -o -path '*/.config/i3/*' -o -path '*/.config/mako/*' \
         -o -path '*/.config/pipewire/*' -o -path '*/.config/wireplumber/*' \
         -o -path '*/.config/environment.d/*' -o -name .profile -o -name .shrc -o -name .bashrc \
@@ -506,7 +507,7 @@ autostart() {
         -o -path '*/.config/pipewire' -o -path '*/.config/wireplumber' \
         -o -path '*/.config/fish' -o -path '*/.config/autostart-scripts' \
         -o -path '*/.config/plasma-workspace' -o -path '*/.config/plasma-workspace/env' \
-        -o -path '*/.local/share/autostart' \) -exec sh -c '
+        -o -path '*/.local/share/autostart' -o -path '*/.local/share/wireplumber' -o -path '*/.local/share/dbus-1' \) -exec sh -c '
             # One capped read into root scratch: a sparse or growing file fails fast, and the checks below
             # and the hash see the same bytes. 64 MiB leaves room for binaries in ~/.local/bin.
             cap=67108864
