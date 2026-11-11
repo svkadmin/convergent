@@ -342,7 +342,7 @@ storage() {
 		else since=0; bad 'invalid missing scrub observation'; fi
 		m "cv_btrfs_scrub_missing_since_seconds $since"
 	fi
-	for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state; do
+	for volume in svc-metrics svc-logs svc-grafana browser-def-state browser-int-state remmina-state share; do
 		[ -e "$sdir/guests/initialized" ] || break
 		path=/var/lib/incus/storage-pools/default/custom/default_$volume
 		# A browser or Remmina volume once its guest exists: Chromium sizes its caches from the filesystem, not

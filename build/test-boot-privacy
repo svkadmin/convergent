@@ -1216,7 +1216,11 @@ cmp -s "$work/tracked-image" "$work/tracked-guests"
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
 # Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
-grep -qxF '23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
+# Hourly: four fixed minutes a day missed a laptop off at each of them; logrotate keeps its own intervals.
+grep -qxF '23 * * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
+# Thunderbolt devices on any route (hex, 0-b01), ids in either case.
+[ "$(grep -c 'for d in "$tb"/\[0-9\]\*-\*; do' "$repo/tools/devices")" = 2 ]
+grep -qF "id=\$(printf '%s' \"\$1\" | tr A-F a-f)" "$repo/tools/devices"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
 grep -B1 -x 'exec 9>/run/convergent-timezone.lock' "$repo/tools/timezone" | head -n 1 | grep -qx 'umask 077'
 # A Remmina update with no instance prunes the image it superseded (20Y).
