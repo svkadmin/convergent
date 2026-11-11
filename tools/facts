@@ -37,7 +37,8 @@ publish() {
 	buf=
 }
 
-trap 'rm -f "$buf"' 0
+# The LUKS header copy too: a TERM between the backup and its removal must not leave keyslots behind.
+trap 'rm -f "$buf"; [ -z "${luks_tmp:-}" ] || rm -rf "$luks_tmp"' 0
 
 new_buf() { buf=$(mktemp "$out/.facts.XXXXXX") || die "could not write in $out"; ok=1; }
 
@@ -89,10 +90,12 @@ fact_lockdown() {
 fact_luks() {
 	dev=$(cryptsetup status cv-state 2>/dev/null | awk '$1 == "device:" { print $2 }')
 	[ -b "$dev" ] || { bad "no LUKS device behind cv-state"; return; }
-	d=$(mktemp -d "$run/luks.XXXXXX") || { bad "no scratch space for the LUKS header"; return; }
+	# One a KILL left (no trap ran): facts holds its lock, so no other run is reading it.
+	rm -rf "$run"/luks.??????
+	luks_tmp=$(mktemp -d "$run/luks.XXXXXX") || { bad "no scratch space for the LUKS header"; return; }
 	umask 077
-	if cryptsetup luksHeaderBackup --disable-locks "$dev" --header-backup-file "$d/h" >/dev/null 2>&1; then
-		h=$(sha256sum <"$d/h" | cut -d' ' -f1)
+	if cryptsetup luksHeaderBackup --disable-locks "$dev" --header-backup-file "$luks_tmp/h" >/dev/null 2>&1; then
+		h=$(sha256sum <"$luks_tmp/h" | cut -d' ' -f1)
 		acc=$(cat "$sdir/luks-header.sha256" 2>/dev/null || :)
 		if [ -z "$acc" ]; then
 			echo "$h" >"$sdir/luks-header.sha256" && acc=$h && log "LUKS header seen for the first time, recorded"
@@ -102,7 +105,8 @@ fact_luks() {
 		bad "could not read the LUKS header of $dev"
 	fi
 	umask 022
-	rm -rf "$d"
+	rm -rf "$luks_tmp"
+	luks_tmp=
 }
 
 fact_pstore() {

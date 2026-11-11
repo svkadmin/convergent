@@ -96,6 +96,12 @@ for old in "$state"/.backup.?????? "$state"/var-*/.backup.??????; do
 	[ -e "$old" ] || [ -L "$old" ] || continue
 	remove_snapshot "$old" || warn "state: cannot remove abandoned snapshot $old"
 done
+# A power cut between a temporary account or zone copy and its rename leaves hashes no one would remove.
+for old in "$state"/etc/.passwd.?????? "$state"/etc/.group.?????? "$state"/etc/.shadow.?????? \
+	"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.??????; do
+	[ -e "$old" ] || continue
+	rm -f "$old" || warn "state: cannot remove $old"
+done
 
 # Prepare this release's /var atomically; cached policy is rebuilt once per release.
 if [ ! -d "$state/var-$release" ]; then
