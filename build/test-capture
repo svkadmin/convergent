@@ -50,6 +50,8 @@ ssh() {
     transport-error) return 1 ;;
     transport-interrupt) kill -TERM "$$"; return 1 ;;
     transport-large) head -c 50000001 /dev/zero; return ;;
+    # A compromised firewall writing terminal escapes (OSC 52 clipboard, screen clear) to its stderr.
+    escape) printf '\033]52;c;eA==\007\033[2Jwarning\n' >&2 ;;
     esac
     sh "$fixture/remote" vlan320 60
 }
@@ -62,11 +64,12 @@ EOF
 {
     cat "$fixture/mocks"
     sed -e '/^PATH=/d' -e "s|^\\. /usr/lib/convergent/sys/14-firewall|:|" \
+        -e "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
         -e "s|/run/convergent|$fixture/run|g" "$repo/tools/firewall-capture"
 } >"$fixture/local"
 for wrapper in local remote; do
 samples='valid timeout large empty error interrupt'
-[ "$wrapper" != local ] || samples="$samples transport-error transport-interrupt transport-large"
+[ "$wrapper" != local ] || samples="$samples transport-error transport-interrupt transport-large escape"
 for sample in $samples; do
     export sample
     : >"$fixture/calls"
@@ -74,10 +77,12 @@ for sample in $samples; do
     rc=0
     sh "$fixture/$wrapper" vlan320 60 >"$fixture/output" 2>"$fixture/error" || rc=$?
     case $sample in
-    valid|timeout) [ "$rc" = 0 ] && [ "$(cat "$fixture/output")" = pcap ] ;;
+    valid|timeout|escape) [ "$rc" = 0 ] && [ "$(cat "$fixture/output")" = pcap ] ;;
     *) [ "$rc" != 0 ] && [ ! -s "$fixture/output" ] ;;
     esac || { cat "$fixture/error" >&2; echo "capture fixture failed: $wrapper/$sample" >&2; exit 1; }
     [ "$wrapper" != local ] || grep -qx ssh "$fixture/calls"
+    # The firewall's stderr reached the terminal without its control bytes.
+    [ "$(tr -d '\033\007' <"$fixture/error" | wc -c)" = "$(wc -c <"$fixture/error")" ] || { echo 'capture passed a guest escape' >&2; exit 1; }
     case $sample in transport-*) ;; *) grep -qx tcpdump "$fixture/calls"; esac
     [ "$wrapper" != local ] || grep -q '^-k 5 80 ssh ' "$fixture/timeouts"
     case $sample in transport-*) ;; *) grep -q '^-p -s INT -k 1 60 tcpdump ' "$fixture/timeouts"; esac

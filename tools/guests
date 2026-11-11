@@ -63,8 +63,10 @@ frozen_hint() {
 }
 # A wedged svc must not hang a mutator under the locks: a timeout counts as failed.
 svc_exec() {
-    timeout -k 5 120 incus --force-local --project default exec svc -- "$@" 9>&- 8>&- 7>&- 6>&- ||
-        { code=$?; fail "incus exec svc -- $* failed (status $code)" || return "$code"; }
+    # Its output reaches the owner's terminal only through guest_text: a compromised svc runs these binaries.
+    guest_stderr timeout -k 5 120 incus --force-local --project default exec svc -- "$@" 9>&- 8>&- 7>&- 6>&- >"$work/svc-out" ||
+        { code=$?; head -c 65536 "$work/svc-out" | guest_text; fail "incus exec svc -- $* failed (status $code)" || return "$code"; }
+    head -c 65536 "$work/svc-out" | guest_text
 }
 svc_storage_check() (
     for path in "$pool/containers/svc" "$pool/custom/default_svc-metrics" "$pool/custom/default_svc-logs" "$pool/custom/default_svc-grafana"; do
@@ -804,7 +806,7 @@ healthy() {
     fw1|fw2) rsh "$1" true >/dev/null ;;
     wan) rsh wan check >/dev/null ;;
     svc)
-        probe incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health || { fail 'VictoriaMetrics health check failed'; return 1; }
+        probe incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health >/dev/null || { fail 'VictoriaMetrics health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:8880/health >/dev/null || { fail 'metrics proxy health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null || { fail 'VictoriaLogs query check failed'; return 1; }
         probe_limit=5 probe openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
@@ -1375,6 +1377,8 @@ wan_read() {
         [.partitions[] | select(.node == ($disk + "2"))] | select(length == 1) | .[0] |
         select(.start > 0 and .size > 0 and .start == (.start | floor) and .size == (.size | floor)) |
         select((.start + .size) <= ($bytes / $s | floor)) |
+        # The image ships about 1 GiB: a guest-grown GPT must not make the host copy the whole sparse disk.
+        select(.size * $s <= 2147483648) |
         "\(.start * $s) \(.size * $s)"' "$work/wan-partitions") || wan_damaged 'invalid wan partition 2'
     read -r offset bytes <<EOF
 $range

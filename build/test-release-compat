@@ -290,6 +290,19 @@ for fs in vfat exfat ext4 btrfs xfs udf iso9660 ntfs3 none; do
     fi
 done
 echo 'test-release-compat: sys update usb mounts only named FAT, exFAT, ext4 or Btrfs sticks'
+# A firewall's stderr from the update's ssh reaches the owner without control bytes (OSC 52, escapes).
+(
+    . "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
+    . "$repo/rootfs/usr/lib/convergent/update.sh"
+    timeout() { shift; "$@"; }
+    ssh() { printf '\033]52;c;eA==\007\033[2Jwarning\n' >&2; echo out; }
+    rsh fw1 true >"$work/rsh-out" 2>"$work/rsh-err"
+    [ "$(cat "$work/rsh-out")" = out ]
+    grep -q warning "$work/rsh-err"
+    [ "$(tr -d '\033\007' <"$work/rsh-err" | wc -c)" = "$(wc -c <"$work/rsh-err")" ]
+)
+grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/fetch-release"
+grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/debug"
 # A failed flush must still kill states, retain tracking and allow cleanup to retry.
 (
 . "$repo/rootfs/usr/lib/convergent/update.sh"

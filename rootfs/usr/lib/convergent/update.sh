@@ -7,8 +7,9 @@ src_open=
 src_skip=
 
 # Own connections, lock fds closed, as in dns-push: a shared master's death or the config's 15 s connect
-# and 30 s keepalive must not cut a source write (or its close) inside 120 s.
-rsh() { _h=$1; shift; timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&-; }
+# and 30 s keepalive must not cut a source write (or its close) inside 120 s. A firewall's stderr reaches the
+# owner's terminal only through guest_text (guest-reply.sh, loaded by the callers): no escapes, no OSC 52.
+rsh() { _h=$1; shift; guest_stderr timeout 120 ssh -F "$ssh_conf" -o ControlMaster=no -o ControlPath=none -o ConnectTimeout=60 -o ServerAliveCountMax=12 -n "$_h" "$@" 9>&- 8>&- 7>&-; }
 lock_src() {
 	mkdir -p /run/convergent
 	exec 9>/run/convergent/fetch-release.lock
