@@ -451,6 +451,11 @@ sed -n '/^svc_exec() {/,/^}/p' "$here/../tools/guests" >"$work/svc-exec"
     [ "$(wc -c <"$work/svc-out")" -le 66048 ]
 )
 grep -qF 'select(.size * $s <= 2147483648)' "$here/../tools/guests"
+# Failures errexit would skip left of && stop the run (21J): the svc profile save, the fw2 handoff release; a
+# failed DNS restore takes its lock back first.
+grep -qF "{ profiles_save svc || die 'cannot save the svc profile'; profile svc" "$here/../tools/guests"
+grep -qF "{ fw_release || die 'cannot release the firewall handoff'; retry carp fw1 MASTER; }" "$here/../tools/guests"
+sed -n '/^dns_restore() {/,/^}/p' "$here/../tools/guests" | awk '/dns-push local 9>&-/ {p = NR} /flock -w 120 8/ {l = NR} /the DNS push failed/ {f = NR} END {exit !(p && l && f && p < l && l < f)}'
 # A redone update rebuild clears that mark before it empties the store again.
 grep -qxF '    case $1:${3:-} in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac' "$here/../tools/guests"
 # The rollback says so itself: $step there names its last helper (seed_remove).

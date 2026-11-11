@@ -647,4 +647,17 @@ grep -qF '! blocked "$record" "$work/edit" || die "the record $record needs this
     echo 'example.net  # work' >"$work/allow.before"
     if blocked x.ads.example.net; then exit 1; fi
 )
+# dns list names a failed change (edit.before is a directory) apart from a failed push.
+(
+    l=$work/list-mode
+    mkdir -p "$l/state" "$l/run"
+    sed -e "s|^state=.*|state=$l/state|" -e "s|^run=.*|run=$l/run|" -e "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" "$repo/tools/dns-push" >"$l/dns-push"
+    : >"$l/state/pending"
+    mkdir "$l/state/edit.before"
+    sh "$l/dns-push" list >"$l/out"
+    grep -qx 'The last change failed: the next push or recovery undoes it.' "$l/out"
+    rmdir "$l/state/edit.before"
+    sh "$l/dns-push" list >"$l/out"
+    grep -qx 'A failed push awaits recovery: the firewalls may serve the previous list.' "$l/out"
+)
 echo 'test-networks: DNS source close and interruption diagnostics passed'

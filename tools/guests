@@ -422,9 +422,12 @@ cleanup() {
 dns_restore() {
     [ -f "$state/dns.stale" ] && [ -f /var/lib/convergent/dns/list.rpz ] || return 0
     exec 8>&-
-    dns-push local 9>&- 7>&- 6>&- || { code=$?; fail "the DNS push failed (status $code); run sudo dns-push local"; return 1; }
+    # The lock back on both paths: a rollback's rebuild after a failed push expects to hold it.
+    code=0
+    dns-push local 9>&- 7>&- 6>&- || code=$?
     exec 8>/run/convergent/dns-push.lock
     flock -w 120 8 || { fail 'a DNS push is still running'; return 1; }
+    [ "$code" = 0 ] || { fail "the DNS push failed (status $code); run sudo dns-push local"; return 1; }
 }
 update_status() {
     mkdir -p /run/convergent/status
@@ -1710,7 +1713,8 @@ rebuild() {
         die "$peer does not answer SSH; it must before rebuilding $1"
     [ "$actual" = "$(sha256sum "$state/carp-pass" | awk '{print $1}')" ] || die 'running CARP password differs from laptop state'
     # CARP preempts within seconds of the release: wait for it before judging the pair.
-    [ "$1" != fw2 ] || { fw_release && retry carp fw1 MASTER; }
+    # A failed release left fw1 demoted: the rebuilt fw2 would take MASTER and the pair check wait it out.
+    [ "$1" != fw2 ] || { fw_release || die 'cannot release the firewall handoff'; retry carp fw1 MASTER; }
     rebuilding=$1
     # A completed handback can be committed after an interruption.
     if [ -n "$resuming" ] && [ ! -f "$state/preparing" ] &&
@@ -2038,7 +2042,8 @@ ifconfig -g handoff carpdemote 128'
             ic profile set wan boot.autorestart=true
         fi
         [ "$1" != svc ] || certificates_prepare
-        [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc && profile svc "$image_dir/incus.yaml"; }
+        # Not left of &&: errexit would skip a failed save and record the update without its profile.
+        [ "$1" != svc ] || [ ! -f "$image_dir/incus.yaml" ] || { profiles_save svc || die 'cannot save the svc profile'; profile svc "$image_dir/incus.yaml"; }
         replace "$1"
         commit_update
         record_installed "$1" "$2"

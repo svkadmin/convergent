@@ -1286,7 +1286,7 @@ touch "$work/wired/initialized"
         case $* in
         '--force-local query /1.0/instances/wan?project=default')
             printf '{"type":"virtual-machine","devices":{"wired-uplink":%s}}\n' "$(cat "$w/role")" ;;
-        '--force-local --project default config device remove wan wired-uplink') echo null >"$w/role" ;;
+        '--force-local --project default config device remove wan wired-uplink') [ -z "${remove_fail:-}" ] || return 1; echo null >"$w/role" ;;
         '--force-local --project default config device add wan wired-uplink usb vendorid=0bda productid=8153 serial=S1 required=false') ;;
         *) echo "unexpected incus: $*" >&2; exit 97 ;;
         esac
@@ -1323,6 +1323,14 @@ touch "$work/wired/initialized"
     (revoke 7) >"$w/out"
     [ "$(cat "$w/calls")" = "$removed" ] && [ "$(cat "$w/role")" = null ] || exit 1
     grep -q 'removed its role from wan' "$w/out" || exit 1
+    # A removal Incus refuses is not reported done (prune runs left of ||, errexit off), and its records stay.
+    reset; echo 'failed S1' >"$w/wired-heal"
+    rc=0
+    (remove_fail=1; revoke 7) >"$w/out" 2>&1 || rc=$?
+    [ "$rc" != 0 ] && grep -q 'cannot remove the wired role from wan' "$w/out" || exit 1
+    if grep -q 'removed its role from wan' "$w/out"; then exit 1; fi
+    grep -qx 'failed S1' "$w/wired-heal" || exit 1
+    rm -f "$w/wired-heal"
     # With no role, a failed re-add's record goes with the NIC's last rule; revoking another device keeps it.
     reset; echo null >"$w/role"; echo 'failed S1' >"$w/wired-heal"
     (revoke 5) >"$w/out"
