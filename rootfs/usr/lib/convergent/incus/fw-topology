@@ -61,9 +61,10 @@ topology_finish() {
     work_profiles || return
     topology_autostart || return
     printf '%s firewall topology committed\n' "$(date -u +%FT%TZ)" >>"$state/updates" || return
-    # The old pair's images went superseded with the aliases; this path never reaches commit_update.
-    images_prune || return
-    topology_retire
+    topology_retire || return
+    # The old pair's images went superseded with the aliases; this path never reaches commit_update. Best
+    # effort: a refused delete must not fail a finished migration, and the next commit retries it.
+    images_prune || :
 }
 topology_restore_config() {
     jq '.config["boot.autostart"]="false" | .config["boot.autorestart"]="false"' \

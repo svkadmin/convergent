@@ -1000,7 +1000,7 @@ grep -qx '23 \*/6 \* \* \* root /usr/bin/logrotate /etc/logrotate.conf' "$repo/r
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
 grep -B1 -x 'exec 9>/run/convergent-timezone.lock' "$repo/tools/timezone" | head -n 1 | grep -qx 'umask 077'
 # A Remmina update with no instance prunes the image it superseded (20Y).
-grep -A2 -x '            import_image remmina' "$repo/tools/guests" | grep -qx '            images_prune'
+grep -A2 -x '            import_image remmina' "$repo/tools/guests" | grep -qx '            images_prune || :'
 # Locks an owner command meets: bounded, with a reason (20X).
 grep -qx "flock -w 5 9 || die 'another USB policy command is open; finish or cancel it'" "$repo/tools/devices"
 grep -qxF "    if [ -n \"\${reaping:-}\" ]; then flock -s -n 9; else flock -s -w 2 9; fi || busy 'guest update in progress'" "$repo/tools/browser"

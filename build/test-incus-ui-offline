@@ -392,11 +392,14 @@ sed -n '/^busy() {/,/^esac$/p' "$repo/tools/incus-ui" | sed "s|/run/convergent/|
 grep -q "^        flock -s -n 6 || busy 'browser update in progress' ;;$" "$work/update-lock"
 sh -n "$work/update-lock"
 for action in cleanup setup; do
-    for held in none 9 6; do
+    for held in none 9 6 brief; do
         rc=0
-        ( die() { echo "incus-ui: $*" >&2; exit 1; }; flock() { for fd; do :; done; [ "$fd" != "$held" ]; }; . "$work/update-lock" ) 2>"$work/error" || rc=$?
+        ( die() { echo "incus-ui: $*" >&2; exit 1; }
+          # brief: the heal's millisecond hold on fd 9, which only a waiting probe outlasts.
+          flock() { for fd; do :; done; if [ "$held" = brief ]; then [ "$*" != "-s -n 9" ]; else [ "$fd" != "$held" ]; fi; }
+          . "$work/update-lock" ) 2>"$work/error" || rc=$?
         case $action:$held in
-        *:none) [ "$rc" = 0 ] ;;
+        *:none | setup:brief) [ "$rc" = 0 ] ;;
         cleanup:*) [ "$rc" = 75 ] ;;
         *) [ "$rc" = 1 ] ;;
         esac || exit 1
@@ -591,17 +594,18 @@ rc=0
 # remote reap defers the same way; the owner's close still fails.
 sed "s|/run/convergent|$work/remote-run|g" "$repo/tools/remote" >"$work/remote"
 grep -q "$work/remote-run/guests.lock" "$work/remote"
-for gate in reap:guests reap:update close:guests reap:open; do
+for gate in reap:guests reap:update close:guests reap:open close:brief reap:brief; do
     rc=0
     (
         id() { echo 0; }
-        flock() { case ${gate#*:}:$* in 'guests:-s -n 9'|'guests:-s -w 2 9'|'update:-s -n 6') return 1 ;; esac; }
+        # brief: the heal's millisecond hold, which only a waiting probe outlasts.
+        flock() { case ${gate#*:}:$* in 'guests:-s -n 9'|'guests:-s -w 2 9'|'update:-s -n 6'|'brief:-s -n 9') return 1 ;; esac; }
         timeout() { [ "$1 $2 $3 $4" = '-k 1 30 incus' ] || exit 97; echo '[]'; }
         set -- "${gate%:*}"
         . "$work/remote"
     ) 2>/dev/null || rc=$?
     case $gate in
-    reap:open) [ "$rc" = 0 ] ;;
+    reap:open | close:brief) [ "$rc" = 0 ] ;;
     reap:*) [ "$rc" = 75 ] ;;
     *) [ "$rc" = 1 ] ;;
     esac || exit 1

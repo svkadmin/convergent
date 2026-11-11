@@ -38,6 +38,8 @@ zone_valid "$zone" /usr/share/zoneinfo || die "not an installed time zone: $zone
 umask 077
 exec 9>/run/convergent-timezone.lock
 umask 022
+# One an older release made 0644 keeps its mode until reboot.
+chmod 0600 /run/convergent-timezone.lock
 flock -w 30 9 || die 'another time zone change is running'
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
