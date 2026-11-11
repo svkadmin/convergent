@@ -1175,7 +1175,7 @@ check_script "$work/heal-oom"
 )
 grep -A1 -F '    mkdir -p "$heal" || exit 1' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" | grep -qx '    heal_oom'
 grep -qx '  limits.processes: "4096"' "$repo/guests/browser/incus/base.yaml"
-grep -qF '*) die "$role did not answer its launcher check (status $launcher_rc); retry" ;;' "$repo/tools/browser"
+grep -qF '124 | 137) die "$role did not answer its launcher check in time; retry" ;;' "$repo/tools/browser"
 grep -qF 'case $name in svc|def|int|remmina|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac' "$repo/tools/observe"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"

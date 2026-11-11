@@ -432,13 +432,13 @@ if [ "$role" != remmina ]; then
         grep -Fqx '[ "$#" = 0 ] || die "URLs must arrive on stdin"' "$launcher" 9>&- 8>&- 7>&- 6>&- >/dev/null || launcher_rc=$?
     case $launcher_rc in
     0) ;;
-    1)
+    # Timed out (a loaded host): no verdict on the image.
+    124 | 137) die "$role did not answer its launcher check in time; retry" ;;
+    *)
         # With this release's browser image staged, only the guest update is left.
         [ -f /var/lib/convergent/release-guests/guests/browser/incus/def.yaml ] ||
             die 'browser guest needs updating: run sys update install, or sys update usb with a stick that carries the guests'
         die 'browser guest needs updating: close the browsers, then sys guests update' ;;
-    # A slow or failed exec (a loaded host) is no verdict on the image.
-    *) die "$role did not answer its launcher check (status $launcher_rc); retry" ;;
     esac
 fi
 # An Incus session: int's tmpfs profile and home and the Incus origin alone, never Grafana's.
