@@ -485,7 +485,7 @@ for action in cleanup --reconcile --close revoke; do
         (export work action sample; sh -eu "$work/orphan-driver") >"$work/orphan-out" 2>&1
         # svc's stdout never reaches the owner's terminal; its stderr arrives filtered.
         if grep -q 'svc-stdout' "$work/orphan-out" || grep -q "$(printf '\033')" "$work/orphan-out"; then
-            die "raw svc output on the terminal ($action $sample)"
+            echo "test-incus-ui-offline: raw svc output on the terminal ($action $sample)" >&2; exit 1
         fi
         : >"$work/expected"
         case $action in
