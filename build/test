@@ -355,9 +355,17 @@ if [ "${1:-}" = --install-options ]; then
 	is_block() { [ "$1" = "$disk" ] && [ "$fault" != nonblock ]; }
 	lsblk() {
 		case $1 in
-		-dnro) [ "$2:$3" = "TYPE:$disk" ] || exit 97
-			[ "$fault" != type-probe ] || return 1
-			case $fault in partition) echo part ;; loop) echo loop ;; *) echo disk ;; esac ;;
+		-dnro)
+			case $2:$3 in
+			"TYPE:$disk")
+				[ "$fault" != type-probe ] || return 1
+				case $fault in partition) echo part ;; loop) echo loop ;; *) echo disk ;; esac ;;
+			# An eMMC or SD target cannot boot: the kernel waits for its slot before any module loads.
+			"TRAN:$disk")
+				[ "$fault" != tran-probe ] || return 1
+				case $fault in mmc) echo mmc ;; *) echo nvme ;; esac ;;
+			*) exit 97 ;;
+			esac ;;
 		-nrpo) [ "$3" = "$disk" ] || exit 97
 			case $2 in
 			MOUNTPOINTS)
@@ -372,7 +380,7 @@ if [ "${1:-}" = --install-options ]; then
 		[ "$*" = "--getro $disk" ] || exit 97
 		case $fault in ro-probe) return 1 ;; readonly) echo 1 ;; *) echo 0 ;; esac
 	}
-	for fault in safe loop nonblock partition boot readonly mounted swap holder child-holder type-probe ro-probe mount-probe holder-probe; do
+	for fault in safe loop nonblock partition boot readonly mounted swap holder child-holder type-probe ro-probe mount-probe holder-probe mmc tran-probe; do
 		rm -rf "$work/sys" "$work/erase"
 		mkdir -p "$work/sys/testdisk/holders" "$work/sys/testdisk1/holders"
 		bootdisks=/dev/bootdisk

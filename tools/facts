@@ -37,7 +37,8 @@ publish() {
 	buf=
 }
 
-trap 'rm -f "$buf"' 0
+# The LUKS header copy too: a TERM between the backup and its removal must not leave keyslots behind.
+trap 'rm -f "$buf"; [ -z "${luks_tmp:-}" ] || rm -rf "$luks_tmp"' 0
 
 new_buf() { buf=$(mktemp "$out/.facts.XXXXXX") || die "could not write in $out"; ok=1; }
 
@@ -89,10 +90,12 @@ fact_lockdown() {
 fact_luks() {
 	dev=$(cryptsetup status cv-state 2>/dev/null | awk '$1 == "device:" { print $2 }')
 	[ -b "$dev" ] || { bad "no LUKS device behind cv-state"; return; }
-	d=$(mktemp -d "$run/luks.XXXXXX") || { bad "no scratch space for the LUKS header"; return; }
+	# One a KILL left (no trap ran): facts holds its lock, so no other run is reading it.
+	rm -rf "$run"/luks.??????
+	luks_tmp=$(mktemp -d "$run/luks.XXXXXX") || { bad "no scratch space for the LUKS header"; return; }
 	umask 077
-	if cryptsetup luksHeaderBackup --disable-locks "$dev" --header-backup-file "$d/h" >/dev/null 2>&1; then
-		h=$(sha256sum <"$d/h" | cut -d' ' -f1)
+	if cryptsetup luksHeaderBackup --disable-locks "$dev" --header-backup-file "$luks_tmp/h" >/dev/null 2>&1; then
+		h=$(sha256sum <"$luks_tmp/h" | cut -d' ' -f1)
 		acc=$(cat "$sdir/luks-header.sha256" 2>/dev/null || :)
 		if [ -z "$acc" ]; then
 			echo "$h" >"$sdir/luks-header.sha256" && acc=$h && log "LUKS header seen for the first time, recorded"
@@ -102,7 +105,8 @@ fact_luks() {
 		bad "could not read the LUKS header of $dev"
 	fi
 	umask 022
-	rm -rf "$d"
+	rm -rf "$luks_tmp"
+	luks_tmp=
 }
 
 fact_pstore() {
@@ -180,6 +184,7 @@ fact_nvme() {
 
 # Count selected/combined sources with NTS cookies.
 fact_nts() {
+	nts_ok=
 	sources=$(chronyc -n -c sources 2>/dev/null) && authdata=$(chronyc -n authdata 2>/dev/null) || {
 		bad "chronyc gave no answer"; return
 	}
@@ -189,6 +194,7 @@ fact_nts() {
 		END { for (k in agree) if (k in auth) c++; print c + 0 }')
 	case $n in '' | *[!0-9]*) bad "chronyc gave no answer"; return ;; esac
 	m "cv_nts_authenticated_sources $n"
+	nts_ok=$n
 }
 
 fact_certs() {
@@ -273,10 +279,25 @@ fw_ntpd() {
 	exec 7>&-
 }
 
+# Booted offline, chrony backs off resolving its NTS names to once an hour. With no authenticated source (none to
+# disturb), have it resolve and poll again: at once, then at most every five minutes of uptime.
+nts_nudge() {
+	[ "${nts_ok:-}" = 0 ] || return 0
+	read -r up _ </proc/uptime
+	up=${up%.*}
+	last=$(cat "$run/nts-nudge" 2>/dev/null) || last=
+	case $last in '' | *[!0-9]*) last= ;; esac
+	[ -z "$last" ] || [ "$up" -lt "$last" ] || [ "$((up - last))" -ge 300 ] || return 0
+	echo "$up" >"$run/nts-nudge" || return 0
+	chronyc online >/dev/null 2>&1 || :
+	chronyc refresh >/dev/null 2>&1 || :
+}
+
 nts() {
 	new_buf
 	fact_nts
 	publish nts nts
+	nts_nudge
 	hourly
 	logger -t cv-heartbeat alive
 	fw_ntpd
@@ -305,6 +326,13 @@ storage() {
 	else
 		m 'cv_btrfs_scrub_recorded 0'
 		now=$(date +%s)
+		# A stamp from a first boot whose clock ran ahead (RTC in local time) is renewed once chrony is synchronized; a
+		# clock behind (a dead RTC) keeps it and reports it until then.
+		since=$(cat "$missing" 2>/dev/null) || since=
+		case $since in '' | *[!0-9]*) ;; *)
+			[ "$since" -le "$now" ] 2>/dev/null || ! chronyc -n tracking 2>/dev/null | grep -q '^Leap status *: Normal$' ||
+				rm -f "$missing" ;;
+		esac
 		if [ -n "$uuid" ] && [ ! -e "$missing" ]; then
 			printf '%s\n' "$now" >"$missing.new" && mv "$missing.new" "$missing" || bad 'cannot record missing scrub observation'
 		fi
@@ -334,7 +362,9 @@ age() { _m=$(stat -c %Y "$1" 2>/dev/null) || { echo 999999999; return; }; echo $
 auto() {
 	storage
 	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+	# Also one written ahead of the clock (a first boot before chrony stepped it back).
 	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ] ||
+		[ "$(stat -c %Y "$out/boot.prom")" -gt "$(($(date +%s) + 60))" ] ||
 		! grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"; then
 		boot
 	fi
