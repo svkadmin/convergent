@@ -262,20 +262,22 @@ add|remove|allow|unallow) ;;
 *) die 'usage: dns-push [local | auto | list | add NAME IPv4 | remove NAME | allow DOMAIN | unallow DOMAIN]' ;;
 esac
 mkdir -p "$state" "$run"
-exec 9>"$run/dns-push.lock"
-flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
-trap cleanup 0
-trap 'echo "dns-push: interrupted" >&2; exit 1' HUP INT TERM
-rollback || die "recover both firewalls before another push"
-rm -rf "$state/edit.before.new"
+# Local files only: no lock and no recovery (a pending one pushes to both firewalls first, and failed with one down).
 if [ "$mode" = list ]; then
 	for file in records allow; do
 		echo "$file:"
 		[ ! -f "$state/$file" ] || cat "$state/$file"
 	done
 	[ ! -f "$state/last-push" ] || { printf 'Last successful push (UTC): '; cat "$state/last-push"; }
+	[ ! -f "$state/pending" ] || echo 'A failed push is being recovered: the firewalls may serve the previous list.'
 	exit 0
 fi
+exec 9>"$run/dns-push.lock"
+flock -n 9 || { [ "$mode" = auto ] && exit 0; die "another push is running"; }
+trap cleanup 0
+trap 'echo "dns-push: interrupted" >&2; exit 1' HUP INT TERM
+rollback || die "recover both firewalls before another push"
+rm -rf "$state/edit.before.new"
 if [ "$mode" = auto ] && [ -f /var/lib/convergent/guests/dns.stale ]; then
 	if [ -f "$state/list.rpz" ]; then mode=local; else mode=full; fi
 fi

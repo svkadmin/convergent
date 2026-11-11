@@ -357,7 +357,7 @@ for case in keep stale stale-pid stuck pending late recur latched; do
 done
 echo 'wan-check: retry and late leases, pending retry, recurring route overlap and latched refusal fixtures passed'
 # A client's deconfig (every start and stop) drops its record and queues no check.
-sed -e 's|/run/wan/|$work/run/|g' -e 's|/usr/sbin/resolvconf|resolvconf|g' \
+sed -e 's|/run/wan/|$work/run/|g' -e 's|/usr/sbin/resolvconf|resolvconf|g' -e 's|/usr/local/sbin/wan-portal|wan_portal|g' \
     "$here/rootfs/usr/local/sbin/wan-dhcp-dns" >"$work/wan-dhcp-dns"
 sh -n "$work/wan-dhcp-dns"
 mkdir -p "$work/run"
@@ -371,6 +371,19 @@ echo 'nameserver 192.0.2.1' >"$work/run/resolv.eth1.dns"
 )
 [ ! -e "$work/run/resolv.eth1.dns" ]
 [ ! -s "$work/calls" ]
+# In portal mode it refreshes the portal's DNS map at once (still no check).
+: >"$work/run/portal"
+(
+    resolvconf() { echo "resolvconf $*" >>"$work/calls"; }
+    setsid() { "$@"; }
+    wan_portal() { echo "portal $*" >>"$work/calls"; }
+    interface=eth1
+    set -- clear
+    . "$work/wan-dhcp-dns"
+    wait
+)
+[ "$(cat "$work/calls")" = 'portal refresh' ]
+rm "$work/run/portal"
 echo 'wan-dhcp-dns: deconfig drops the record without queuing a check'
 # chrony's clock is KVM's by name: the Wi-Fi card's PHC may be ptp0.
 sed -e "s|/sys/class/ptp/|$work/ptp/|g" -e "s|/dev/ptp|$work/dev/ptp|g" "$here/rootfs/etc/init.d/ptp-kvm" >"$work/ptp-kvm"

@@ -619,4 +619,8 @@ echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
     done >"$dns/want"
     cmp "$dns/want" "$dns/opened"
 )
+# dns list reads local files before the push lock and any recovery: a pending one with a firewall down failed it.
+awk '/^if \[ "\$mode" = list \]; then$/ {l = NR} /^exec 9>"\$run\/dns-push.lock"$/ {k = NR} /^rollback \|\| die/ {r = NR}
+    END {exit !(l && k && r && l < k && k < r)}' "$repo/tools/dns-push"
+[ "$(grep -c '^if \[ "\$mode" = list \]; then$' "$repo/tools/dns-push")" = 1 ]
 echo 'test-networks: DNS source close and interruption diagnostics passed'
