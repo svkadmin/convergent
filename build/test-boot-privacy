@@ -363,8 +363,9 @@ EOF
     echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
 
     # A start after bless (an owner's restart) must not arm a reset on a good release.
-    sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
+    sed -n '/^wd_log() /p; /^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
         sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
+            -e "s|/run/convergent-watchdog.warn|$work/logger|g" \
             -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" -e "s|/proc/cmdline|$work/cmdline|g" >"$work/start"
     check_script "$work/start"
     grep -q "$work/sys-watchdog/watchdog0/identity" "$work/start" || die 'watchdog identity read moved'
