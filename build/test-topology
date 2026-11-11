@@ -978,8 +978,8 @@ if command -v jq >/dev/null 2>&1; then
         mkdir -p "$root/etc"
         cp "$repo/rootfs/etc/nftables.rules" "$root/etc/"
         command sh "$here/networks" host "$root"
-        sed -n '/^  security.syscalls.deny: |$/,/^  security.guestapi: "false"$/p' "$repo/guests/browser/incus/base.yaml" >"$scratch/guest-config"
-        [ "$(wc -l <"$scratch/guest-config")" = 6 ]
+        sed -n '/^  security.syscalls.deny: |$/,/^  linux.sysctl.net.ipv4.conf.eth0.arp_ignore: "0"$/p' "$repo/guests/browser/incus/base.yaml" >"$scratch/guest-config"
+        [ "$(wc -l <"$scratch/guest-config")" = 8 ]
         printf 'devices:\n  eth0:\n    type: nic\n    network: work\n    name: eth0\n    vlan: N\n    security.mac_filtering: "true"\n' >"$scratch/work-devices"
         count=0
         for profile in "$root/usr/lib/convergent/incus/work/"work-*.yaml; do
