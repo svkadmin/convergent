@@ -740,8 +740,8 @@ grep -qxF '        expr: increase(cv_btrfs_device_errors_total[7d]) > 0' "$rules
 grep -qxF '        expr: (increase(cv_nvme_media_errors_total[7d]) > 0) or (bitmap_and(cv_nvme_critical_warning, 29) > 0)' "$rules"
 grep -qF 'node_power_supply_info{node="host",type="Battery",scope!="Device",status="Discharging"}' "$rules"
 # The autostart inventory covers WirePlumber scripts and user D-Bus services, which load at every login (21A).
-grep -qF "-o -path '*/.local/share/wireplumber/*' -o -path '*/.local/share/dbus-1/*'" "$repo/tools/check"
-grep -qF "-o -path '*/.local/share/wireplumber' -o -path '*/.local/share/dbus-1' \)" "$repo/tools/check"
+grep -qF -- "-o -path '*/.local/share/wireplumber/*' -o -path '*/.local/share/dbus-1/*'" "$repo/tools/check"
+grep -qF -- "-o -path '*/.local/share/wireplumber' -o -path '*/.local/share/dbus-1' \)" "$repo/tools/check"
 # Failed self-heal appends must preserve the complete report and its scan time.
 sed -n '/^    if \[ -f "\$state\/last" \]; then$/,/^    fi$/p' "$repo/tools/check" |
     sed "s|/run/convergent/|$work/report-run/|g" >"$work/report-update"
