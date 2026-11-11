@@ -224,6 +224,10 @@ fi
 exec 8>/run/convergent/guests.lock
 flock -s -w 2 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
 exec 8>&-
+# Likewise: slot write takes only a booted release marked good, and a refused write would download the guests again.
+good=$(slot status 2>/dev/null | awk '$1 == "good" { print $2 }') || good=
+[ -n "$sync" ] || [ "$mode" = check ] || [ -z "$good" ] || [ "$good" = "$booted" ] ||
+	die "the booted release $booted is not the one marked good; boot the good slot or let it bless first"
 for _d in "$work"/* "$work"/.[!.]* "$work"/..?*; do
 	[ -e "$_d" ] || [ -L "$_d" ] || continue
 	[ "$_d" = "$work/$latest" ] && [ -d "$_d" ] && [ ! -L "$_d" ] || rm -rf "$_d"

@@ -227,6 +227,8 @@ display_watch() (
 	swaymsg -m -r -t subscribe '["output","tick"]' | (
 		previous= failed= retries=0
 		while IFS= read -r event; do
+			# A config reload (its tick) dropped every output setting applied over IPC: apply them again.
+			case $event in *'"payload"'*'"reload"'*) previous= ;; esac
 			next=$(
 				display_lock
 				json=$(display_json) || exit 1
@@ -238,6 +240,12 @@ display_watch() (
 					if [ -f "$profiles/$key.json" ]; then display_apply "$profiles/$key.json" || { display_defaults; false; }
 					elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi ||
 						{ printf '%s\n' "$stamp"; exit 1; }
+					# As the lid binding does: a closed lid keeps the internal panel dark.
+					if grep -qs closed /proc/acpi/button/lid/*/state; then
+						for name in $(printf '%s\n' "$json" | jq -r '.[].name'); do
+							case $name in eDP-*|LVDS-*) display_command "output $name power off" || { printf '%s\n' "$stamp"; exit 1; } ;; esac
+						done
+					fi
 				fi
 				printf '%s\n' "$stamp"
 			) && { previous=$next retries=0; continue; }

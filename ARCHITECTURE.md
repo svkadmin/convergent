@@ -80,7 +80,8 @@ client, and performs NAT. It has no Incus agent or guest API; the host reaches i
 #### Uplinks
 
 - Wi-Fi: a random MAC per network, the regulatory country, protected management frames where
-  offered; no DHCP hostname, mDNS or LLMNR, so the upstream learns little.
+  offered; no DHCP hostname, mDNS or LLMNR, so the upstream learns little. iwd keeps the kernel's
+  `wlan0`, which a driver reprobe recreates under the same name.
 - Wired: a passed-through USB Ethernet adapter (`devices wired attach`, Incus USB `required=false`,
   Realtek firmware included). It sends no hostname but keeps the adapter's MAC and udhcpc's vendor
   class.

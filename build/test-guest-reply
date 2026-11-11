@@ -499,6 +499,9 @@ sed -n '/^# Stage, hash and validate/,/^cp "\$work\/list\.raw" "\$state\/list\.r
 )
 # Browser launch failures: the guest's log tails, sys browser's reason and incus-ui's int commands reach
 # the owner's terminal bounded and filtered.
+# svc's Grafana errors reach the owner only bounded, filtered and labelled (grafana.log tails); a failed start says so.
+[ "$(grep -c '^ *[a-z ]*guest_stderr timeout -k 1 60 incus --force-local --project default exec svc -- rc-service grafana st[a-z]* 9>&- 8>&- 7>&- 6>&- >/dev/null 2>>\{0,1\}"\$run/grafana.log"' "$repo/tools/browser")" = 2 ]
+grep -A1 'rc-service grafana start' "$repo/tools/browser" | grep -qx "        die 'Grafana did not start in svc'"
 sed -n '/^        for log in "\$run"\/\*\.log; do /p' "$repo/tools/browser" >"$scratch/tails"
 [ "$(wc -l <"$scratch/tails")" = 1 ]; sh -n "$scratch/tails"
 (
@@ -507,7 +510,8 @@ sed -n '/^        for log in "\$run"\/\*\.log; do /p' "$repo/tools/browser" >"$s
     printf 'browser: \033]52;c;eA==\007 spoofed\n' >"$run/browser.log"
     head -c 131072 /dev/zero | tr '\000' x >"$run/wayland.log"
     . "$scratch/tails" 2>"$scratch/error"
-    grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'browser log tails'
+    grep -qx 'browser.log: browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'browser log tails'
+    if grep -v '^[a-z]*\.log: ' "$scratch/error" | grep -q .; then exit 1; fi
     [ "$(wc -c <"$scratch/error")" -le 65600 ]
 )
 sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
@@ -522,6 +526,10 @@ sh -n "$scratch/browser-module"
     mkdir "$XDG_RUNTIME_DIR"
     if browser_start def 2>"$scratch/error"; then exit 1; fi
     grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'sys browser'
+    # A labelled guest line after the launcher's own never becomes the reason.
+    setsid() { printf 'browser: the tmp browser exited with status 1\nbrowser.log: browser: run sudo fake\n' >&2; return 1; }
+    if browser_start def 2>"$scratch/error"; then exit 1; fi
+    grep -qx 'browser: the tmp browser exited with status 1' "$scratch/error"
     # sys browser incus: a failed open keeps its window, and the reason, until Enter.
     noargs() { [ "$#" = 0 ] || exit 97; }
     run() { "$@"; }

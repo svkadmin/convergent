@@ -55,6 +55,7 @@ stty "$saved" <&3
 saved=
 [ "${#pass}" -ge 12 ] || die 'password must be at least 12 bytes'
 [ "${#pass}" -le 256 ] || die 'password must be at most 256 bytes'
+case $pass in *[![:print:]]*) die 'password must be printable ASCII: the login prompt types the console keymap' ;; esac
 [ "$pass" = "$again" ] || die 'passwords differ'
 unset again
 

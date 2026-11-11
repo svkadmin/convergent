@@ -129,7 +129,8 @@ ic stop int
 sed -n '/^if \[ "$role" = int \] \&\& \[ -z "$incus_ui" \]; then/,/^fi/p' "$repo/tools/browser" >"$work/grafana"
 [ -s "$work/grafana" ]
 ic() { echo "$*" >>"$work/grafana-calls"; return 1; }
-role=int incus_ui=1
+. "$repo/rootfs/usr/lib/convergent/guest-reply.sh"
+role=int incus_ui=1 run=$work
 . "$work/grafana"
 [ ! -e "$work/grafana-calls" ]
 ic() { echo "$*" >>"$work/grafana-calls"; }
@@ -140,6 +141,11 @@ incus_ui=
 . "$work/grafana"
 printf '%s\n' 'config set svc limits.memory=768MiB' 'timeout -k 1 60' 'exec svc -- rc-service grafana start' >"$work/expected"
 cmp "$work/expected" "$work/grafana-calls"
+# A failed start names itself; svc's own words stay in grafana.log, filtered, for cleanup's labelled tail.
+if (ic() { [ "$1" != exec ] || { printf 'browser: \033[31mspoof\n' >&2; return 1; }; }
+    die() { echo "browser: $*" >&2; exit 1; }; . "$work/grafana") 2>"$work/grafana-err"; then exit 1; fi
+grep -qx 'browser: Grafana did not start in svc' "$work/grafana-err"
+grep -qx 'browser: \[31mspoof' "$work/grafana.log"
 sed -n '/^    if \[ -n "\$grafana" \]; then$/,/^    fi$/p' "$repo/tools/browser" >"$work/grafana-stop"
 [ -s "$work/grafana-stop" ]
 sh -n "$work/grafana-stop"
@@ -459,6 +465,7 @@ ic() {
         *) echo '{"status":"Running"}' ;;
         esac ;;
     'exec svc -- rc-service grafana stop')
+        printf 'svc-stdout\n'; printf 'svc \033[31mstderr\n' >&2
         [ "$sample" != stop-fail ] ;;
     'config set svc limits.memory=350MiB')
         [ "$sample" != shrink-fail ] ;;
@@ -466,14 +473,20 @@ ic() {
     esac
 }
 logger() { echo "$*" >>"$work/orphan-errors"; return 1; }
+. "$work/guest-reply.sh"
 . "$work/orphan"
 EOF
+cp "$repo/rootfs/usr/lib/convergent/guest-reply.sh" "$work/guest-reply.sh"
 sh -n "$work/orphan-driver"
 for action in cleanup --reconcile --close revoke; do
     for sample in normal custom empty missing read-fail running stopped query-fail stop-fail shrink-fail; do
         : >"$work/orphan-calls"
         : >"$work/orphan-errors"
-        (export work action sample; sh -eu "$work/orphan-driver")
+        (export work action sample; sh -eu "$work/orphan-driver") >"$work/orphan-out" 2>&1
+        # svc's stdout never reaches the owner's terminal; its stderr arrives filtered.
+        if grep -q 'svc-stdout' "$work/orphan-out" || grep -q "$(printf '\033')" "$work/orphan-out"; then
+            echo "test-incus-ui-offline: raw svc output on the terminal ($action $sample)" >&2; exit 1
+        fi
         : >"$work/expected"
         case $action in
         cleanup|--reconcile)
