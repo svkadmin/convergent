@@ -129,11 +129,12 @@ filesystem is FAT, exFAT, ext4 or Btrfs; it is mounted read-only, without journa
    embedded release key; a Rescue entry from a release built without one cannot write releases.
 4. Pick option 4 to boot the written slot next; otherwise the newest release boots.
 
-Rescue accepts an older or identical signed release and keeps the `/var` subvolumes, `good` and
-`highest`. The write uses the checksum, size and readback checks of `slot` and installs the UKI
-with three tries. Later boots return to the newer slot (recipe 3); a normal update refuses a
-release that is not newer than `highest`. If Rescue cannot boot, read the state from another
-Linux (recipe 9).
+Rescue accepts any signed release, older, identical or newer, and keeps the `/var` subvolumes,
+`good` and `highest`. A newer one comes without its guest images: once it is good, run
+`sys update install` (or `sys update usb`) to bring them. The write uses the checksum, size and
+readback checks of `slot` and installs the UKI with three tries. Later boots return to the newer
+slot (recipe 3); a normal update refuses a release that is not newer than `highest`. If Rescue
+cannot boot, read the state from another Linux (recipe 9).
 
 ## 1. Wrong passphrase, the laptop powers off
 
@@ -178,8 +179,10 @@ the bar shows `rel <release> good`.
 If it fails: `convergent-bless` prints what the health checks found (a crashed or stopped service
 of the default runlevel, a protection not running, Incus not answering). Fix that, then run the
 three commands again, within the watchdog window. `slot: cannot read the highest blessed release`
-means the state file `highest` is damaged: in the Recovery root shell, write the release ID the
-menu names into it (`echo <release> >/run/cv-state/highest`), then Continue.
+means the state file `highest` is damaged: in the Recovery root shell, write the newest release ID
+among the menu's and those `ls -d /run/cv-state/var-*` lists, never an older one (it is the floor
+that stops downgrades): `echo <release> >/run/cv-state/highest.new && mv /run/cv-state/highest.new
+/run/cv-state/highest && sync`, then Continue.
 `slot: expected one cv-esp partition` means a second installed Convergent disk is attached (not
 the install stick, whose labels differ), such as an old drive in a USB enclosure: detach it and run the three commands again. A release already good is not reset meanwhile.
 
