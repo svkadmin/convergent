@@ -9,7 +9,10 @@ note() { logger -t guests "shutdown: $*" 2>/dev/null || :; }
 stop_one() (
     project=$1 node=$2 old_auto=$3 old_hold=$4 ephemeral=$5 group=$6 remember=$7
     if [ "$group" = 0 ] && [ "$ephemeral" = true ]; then
-        trap 'ic config set "$node" ephemeral=true --property || exit 1' 0
+        # Ephemeral again once stopped. One that did not stop stays persistent, marked for guests to restore:
+        # Incus deletes an ephemeral instance it stops.
+        trap 'if [ -n "${stopped:-}" ]; then ic config set "$node" ephemeral=true --property || exit 1
+            else ic config set "$node" user.convergent.ephemeral=true || exit 1; fi' 0
         ic config set "$node" ephemeral=false --property || exit 1
         ephemeral=false
     fi
@@ -27,6 +30,7 @@ stop_one() (
         [.[] | select(.name == $n)] |
         if length == 0 then $e == "true" else length == 1 and .[0].status == "Stopped" end' >/dev/null ||
         { note "$project/$node did not stop; autorestart hold retained"; exit 1; }
+    stopped=1
     [ "$ephemeral" != true ] || exit 0
     # Restore only our override; an interrupted update may already own a hold.
     if [ "$old_auto" = - ]; then ic config unset "$node" boot.autorestart
@@ -44,7 +48,9 @@ keep_ephemeral() {
     printf '%s\n' "$list" | jq -r '.[] | select(.status != "Stopped" and .ephemeral == true) |
         select(any(.expanded_devices[]?; .type == "nic" and (.network == "work" or .parent == "work"))) |
         "\(.project // "default") \(.name)"' 2>/dev/null | while read -r project node; do
-        ic config set "$node" user.convergent.ephemeral=true && ic config set "$node" ephemeral=false --property ||
+        # The protection first; a loaded host answers slowly.
+        timeout -k 1 30 incus --force-local --project "$project" config set "$node" ephemeral=false --property 9>&- &&
+            timeout -k 1 30 incus --force-local --project "$project" config set "$node" user.convergent.ephemeral=true 9>&- ||
             note "cannot keep $project/$node"
     done
 }

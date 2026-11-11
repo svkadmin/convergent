@@ -190,10 +190,13 @@ review() {
 	printf '%s\n' "$lines" | tr -d '\000-\010\013-\037\177'
 }
 
-# The USB ports from the disk holding the state volume up to its root hub: a system installed to a USB disk.
+# The USB ports from the disk under the open state volume (not a label another disk may carry) up to its root
+# hub: a system installed to a USB disk.
 system_usb() {
-	part=$(readlink -f /dev/disk/by-partlabel/cv-state) || return 0
-	usb=$(readlink -f "/sys/class/block/${part##*/}/../device") || return 0
+	dm=$(readlink -f /dev/mapper/cv-state) || return 0
+	set -- /sys/block/"${dm##*/}"/slaves/*
+	[ $# = 1 ] && [ -e "$1" ] || return 0
+	usb=$(readlink -f "/sys/class/block/${1##*/}/../device") || return 0
 	while [ -n "$usb" ]; do
 		[ ! -f "$usb/idVendor" ] || echo "${usb##*/}"
 		usb=${usb%/*}

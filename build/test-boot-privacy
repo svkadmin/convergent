@@ -1061,8 +1061,8 @@ grep -qF "flock -w 30 9 || { note 'guest operation still running; leaving final 
     }
     : >"$work/keep-calls"
     keep_ephemeral
-    printf '%s\n' 'incus --force-local --project owner config set w1 user.convergent.ephemeral=true' \
-        'incus --force-local --project owner config set w1 ephemeral=false --property' >"$work/keep-expected"
+    printf '%s\n' 'incus --force-local --project owner config set w1 ephemeral=false --property' \
+        'incus --force-local --project owner config set w1 user.convergent.ephemeral=true' >"$work/keep-expected"
     cmp "$work/keep-expected" "$work/keep-calls"
 )
 sed -n '/^autorestart_clear() (/,/^)/p' "$repo/tools/guests" | sed "s|/run/convergent/guests-stopping|$work/ar-stopping|" >"$work/autorestart-clear"
@@ -1147,7 +1147,8 @@ grep -q '^flock -s -w 2 8 || die .a guest update is running' "$repo/tools/fetch-
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
 sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^system_usb() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
     sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/var/lib/convergent/guests/initialized|$work/wired/initialized|g" \
-        -e "s|/dev/disk/by-partlabel/cv-state|$work/wired/dev/cv-state|" -e "s|/sys/class/block/|$work/wired/block/|" \
+        -e "s|/dev/mapper/cv-state|$work/wired/dev/cv-state|" -e "s|/sys/block/|$work/wired/sysblock/|" \
+        -e "s|/sys/class/block/|$work/wired/block/|" \
         -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
 check_script "$work/wired-functions"
 grep -q 'wired prune' "$work/wired-functions"
@@ -1250,7 +1251,9 @@ touch "$work/wired/initialized"
     : >"$w/devices-tree/usb3/idVendor"
     ln -s ../.. "$d/3-2:1.0/host0/0:0:0/block/sdz/device"
     ln -s "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/block/sdz1"
-    ln -s /dev/sdz1 "$w/dev/cv-state"
+    # The open mapping's one slave, not a by-partlabel link a second Convergent disk may take.
+    ln -s /dev/dm-9 "$w/dev/cv-state"
+    mkdir -p "$w/sysblock/dm-9/slaves/sdz1"
     [ "$(system_usb)" = "3-2
 usb3" ] || exit 1
     printf '9: %s via-port "3-2"\n8: %s via-port "usb3"\n' "$disk" "$hub" >"$w/devices"

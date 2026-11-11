@@ -423,13 +423,17 @@ done
 # cut rebuild left; a read with no store (empty) keeps the saved set; a pass cut between the renames (cut) resumes.
 # A marker an abandoned rollback left goes when the next update saves its set, and with any committed or
 # cleaned-up entry.
-grep -qxF '        rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread"' "$here/../tools/guests"
-grep -qF 'rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" || return' "$here/../tools/guests"
-grep -qF 'rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" && prune "$guest" || return' "$here/../tools/guests"
-for scenario in wan-read wan-damaged wan-again wan-empty wan-cut; do
-    rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread" "$work/iwd" "$work/wan-networks"
+grep -qxF '        rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread" "$state/iwd.wan.copied"' "$here/../tools/guests"
+grep -qF 'rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" "$state/iwd.$prep_guest.copied" || return' "$here/../tools/guests"
+grep -qF 'rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/iwd.$guest.copied" && prune "$guest" || return' "$here/../tools/guests"
+# The update's rebuild marks a candidate that got the networks; a rollback's own rebuild does not.
+grep -qxF '        [ "$step" = rollback ] || { : >"$state/iwd.wan.copied" && sync; } || return' "$here/../tools/guests"
+# uncopied: the update was cut before its rebuild copied the networks: the candidate's empty store is not read.
+for scenario in wan-read wan-damaged wan-again wan-empty wan-cut wan-uncopied; do
+    rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread" "$state/iwd.wan.copied" "$work/iwd" "$work/wan-networks"
     mkdir -p "$state/iwd.wan"
     echo old >"$state/iwd.wan/kept.psk"
+    [ "$scenario" = wan-uncopied ] || : >"$state/iwd.wan.copied"
     case $scenario in
     wan-again) : >"$state/iwd.wan.reread" ;;
     wan-cut) mkdir "$state/iwd.wan.new"; echo mid >"$state/iwd.wan.new/mid.psk"; rm -rf "$state/iwd.wan"; : >"$state/iwd.wan.reread" ;;
@@ -440,8 +444,9 @@ for scenario in wan-read wan-damaged wan-again wan-empty wan-cut; do
         killed=1
         wan_read() {
             case $scenario in
-            wan-read|wan-again|wan-cut) mkdir -p "$work/iwd"; echo new >"$work/iwd/new.psk" ;;
-            wan-empty) return 0 ;;
+            wan-read|wan-again|wan-cut|wan-uncopied) mkdir -p "$work/iwd"; echo new >"$work/iwd/new.psk" ;;
+            # As the real read: the store's directory, here empty (the owner forgot every network).
+            wan-empty) mkdir -p "$work/iwd" ;;
             *) exit 2 ;;
             esac
         }
@@ -449,9 +454,11 @@ for scenario in wan-read wan-damaged wan-again wan-empty wan-cut; do
         rollback
     ) >"$work/wan-rollback.out" 2>&1 || rollback_rc=$?
     [ "$rollback_rc" = 0 ] || { cat "$work/wan-rollback.out" >&2; exit 1; }
-    case $scenario in wan-read) expected=new.psk ;; wan-cut) expected=mid.psk ;; *) expected=kept.psk ;; esac
+    case $scenario in wan-read) expected=new.psk ;; wan-cut) expected=mid.psk ;; wan-empty) expected= ;; *) expected=kept.psk ;; esac
     [ "$(cat "$work/wan-networks")" = "$expected" ] || { echo "rollback $scenario restored $(cat "$work/wan-networks")" >&2; exit 1; }
-    [ ! -e "$state/iwd.wan" ] && [ ! -e "$state/iwd.wan.reread" ]
+    [ ! -e "$state/iwd.wan" ]
+    [ ! -e "$state/iwd.wan.reread" ]
+    [ ! -e "$state/iwd.wan.copied" ]
 done
 # Cleanup waits the same way for a booting peer before it resumes the allocators.
 rm -f "$state/pending" "$work/live/fw1" "$work/dhcp.fw2"

@@ -303,8 +303,9 @@ rollback() {
             if [ "$guest" = wan ]; then
                 # A pass cut between the two renames below left only the new set.
                 [ -d "$state/iwd.wan" ] || [ ! -d "$state/iwd.wan.new" ] || mv "$state/iwd.wan.new" "$state/iwd.wan" || return
-                # Once a rollback: a later pass would read the disk a cut rebuild left.
-                if [ ! -e "$state/iwd.wan.reread" ]; then
+                # Only a candidate that got the networks (a cut rebuild leaves an empty store), and once a
+                # rollback: a later pass would read the disk its own cut rebuild left.
+                if [ -e "$state/iwd.wan.copied" ] && [ ! -e "$state/iwd.wan.reread" ]; then
                     rm -rf "$work/wan-read" "$work/iwd" "$state/iwd.wan.new" || return
                     if (wan_read) && [ -d "$work/iwd" ]; then
                         mv "$work/iwd" "$state/iwd.wan.new" && sync && rm -rf "$state/iwd.wan" &&
@@ -344,7 +345,7 @@ rollback() {
         esac
         [ "$guest" != fw1 ] || { touch "$state/fw.handoff" && sync && fw_release || return; }
         tail -n +2 "$state/pending" >"$work/pending" && sync && mv "$work/pending" "$state/pending" && sync || return
-        rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/backups/$guest-$snap.tar.gz" || return
+        rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/iwd.$guest.copied" "$state/backups/$guest-$snap.tar.gz" || return
     done
     rm "$state/pending" || return
     pending=
@@ -1435,7 +1436,7 @@ prepare_cleanup() {
                 locked ic storage volume snapshot delete default "$volume" "$prep_snap" || return
             fi
         done
-        rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" || return
+        rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" "$state/iwd.$prep_guest.copied" || return
         if [ "$prep_start" = yes ]; then
             running "$prep_guest" || start_guest "$prep_guest" || return
             prep_health=$prep_guest
@@ -1495,7 +1496,7 @@ replace() {
             logger -p user.warning -t guests 'wan: old disk unreadable; Wi-Fi networks not carried over' 2>/dev/null || :
             rm -rf "$work/wan-read" "$work/iwd" && mkdir "$work/iwd" || die 'cannot reset the wan iwd store'
         }
-        rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread"
+        rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread" "$state/iwd.wan.copied"
         mv "$work/iwd" "$state/iwd.wan"
         sync
     fi
@@ -1533,6 +1534,8 @@ rebuild_root() {
         mkdir -p "$work/root/var/lib/iwd" || return
         [ ! -d "$state/iwd.wan" ] || cp -a "$state/iwd.wan/." "$work/root/var/lib/iwd/" || return
         unmount_root || return
+        # The candidate holds the networks now: from here a rollback reads them back from its disk.
+        [ "$step" = rollback ] || { : >"$state/iwd.wan.copied" && sync; } || return
         ;;
     remmina)
         ic file pull "$1/usr/local/bin/remmina-launch" "$work/remmina-launch" || return
@@ -1582,7 +1585,7 @@ commit_update() {
     # Its kept copy first: a later commit must never find another update's images.
     rm -rf "$state/committed.stage" && rm "$state/committed" && sync || return
     images_prune || return
-    while read -r guest snap image; do rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" && prune "$guest" || return; done <"$work/committed"
+    while read -r guest snap image; do rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/iwd.$guest.copied" && prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
     # The durable marker means both replacements passed; recovery finishes the commit (cleanup too, without errexit).
