@@ -43,7 +43,8 @@ alpine_pinned https://raw.githubusercontent.com/alpinelinux/aports/35f5eb2864e50
     47657c9e2db48db1c6498fd177426ea2121b2fef3f4ab09e967f6f75fd1e64758ea68cbb036d20e9375b8d7618f63aad53fd14e367aafb2c44d865a6f220f47d \
     "$cache/remmina-1.0.0-dsofix-35f5eb28.patch"
 cp "$cache/remmina-1.0.0-dsofix-35f5eb28.patch" "$root/tmp/remmina-build/dsofix.patch"
-chroot "$root" /bin/sh -eu <<'COMPILE'
+# Only what the build sets: compiler variables the builder's shell exports must not reach the shipped binary.
+chroot "$root" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root ${SOURCE_DATE_EPOCH:+SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH} /bin/sh -eu <<'COMPILE'
 cd /tmp/remmina-build
 patch -p1 <dsofix.patch
 patch -p1 <secret-service-only.patch
