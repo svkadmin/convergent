@@ -114,7 +114,7 @@ retry() {
     # VMs boot slowly; the svc container is up in seconds; a halted VM stops within minutes.
     case "$*" in
     stopped\ *) wait=$((boot_timeout < 300 ? boot_timeout : 300)) ;;
-    *' svc'*) wait=${GUEST_SVC_TIMEOUT:-300} ;;
+    *' svc'* | svc_answers) wait=${GUEST_SVC_TIMEOUT:-300} ;;
     *) wait=$boot_timeout ;;
     esac
     now=$(cut -d. -f1 /proc/uptime) || return
@@ -132,8 +132,9 @@ retry() {
             polling=
             # Guest text: bounded and without terminal controls.
             head -c 65536 "$work/retry.err" | guest_text >&2
-            # One syslog line, bounded and without controls: guest text must not forge lines in the security events.
-            [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(head -c 1024 "$work/retry.err" | guest_text | tr '\n\t' '  ')" 2>/dev/null || :
+            # One syslog line, bounded and without controls: guest text must not forge lines in the security events,
+            # and starts after a host prefix and -- (a leading -f/path would make logger read a root file).
+            [ ! -s "$work/retry.err" ] || logger -p user.err -t guests -- "$*: $(head -c 1024 "$work/retry.err" | guest_text | tr '\n\t' '  ')" 2>/dev/null || :
             fail "$* timed out after ${wait}s" || :
             case $1:${2:-} in pin:fw1|pin:fw2|pin:wan|seed_applied:fw1|seed_applied:fw2|seed_applied:wan|healthy:fw1|healthy:fw2|healthy:wan)
                 now=$(cut -d. -f1 /proc/uptime) || return

@@ -2,7 +2,7 @@
 # Wait for Incus without delaying the net provider it needs.
 set -eu
 
-die() { logger -p user.err -t host-net "$*"; echo "host-net: $*" >&2; exit 1; }
+die() { logger -p user.err -t host-net -- "$*"; echo "host-net: $*" >&2; exit 1; }
 vfio_bind() {
 	for address do
 		device=/sys/bus/pci/devices/$address

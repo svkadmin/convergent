@@ -9,8 +9,8 @@ state=/var/lib/convergent/check
 out=/var/lib/node_exporter
 list=/usr/lib/convergent/etc-state
 work=
-die() { logger -p user.err -t check "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
-bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+die() { logger -p user.err -t check -- "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
+bad() { ok=0; logger -p user.err -t check -- "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
 # The same rule as the initramfs (convergent-state.sh) and tools/timezone.
 zone_valid() {
     printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// && !/^(localtime|posixrules|Factory)$/ {ok = 1}

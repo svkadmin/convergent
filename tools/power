@@ -29,7 +29,7 @@ devfs=/dev
 mounts=/proc/mounts
 swaps=/proc/swaps
 
-die() { logger -p user.err -t power "$*" 2>/dev/null || :; echo "power: $*" >&2; exit 1; }
+die() { logger -p user.err -t power -- "$*" 2>/dev/null || :; echo "power: $*" >&2; exit 1; }
 trap 'status=$?; [ "$status" = 0 ] || logger -p user.err -t power "handler failed (status $status)" 2>/dev/null || :' 0
 [ "$(id -u)" = 0 ] || die "run as root"
 

@@ -14,8 +14,8 @@ run=/run/convergent
 stamp=$run/portal
 reason=$run/portal.reason
 
-die() { logger -t portal "$*"; echo "portal: $*" >&2; exit 1; }
-log() { logger -t portal "$*"; echo "portal: $*"; }
+die() { logger -t portal -- "$*"; echo "portal: $*" >&2; exit 1; }
+log() { logger -t portal -- "$*"; echo "portal: $*"; }
 usage() { echo "usage: portal on [A.B.C.D/LEN] | begin | gateway | off [closed|interrupted] | status | expire" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
