@@ -9,10 +9,14 @@ note() { logger -t guests "shutdown: $*" 2>/dev/null || :; }
 stop_one() (
     project=$1 node=$2 old_auto=$3 old_hold=$4 ephemeral=$5 group=$6 remember=$7
     if [ "$group" = 0 ] && [ "$ephemeral" = true ]; then
-        # Ephemeral again once stopped. One that did not stop stays persistent, marked for guests to restore:
-        # Incus deletes an ephemeral instance it stops.
-        trap 'if [ -n "${stopped:-}" ]; then ic config set "$node" ephemeral=true --property || exit 1
-            else ic config set "$node" user.convergent.ephemeral=true || exit 1; fi' 0
+        # Incus deletes an ephemeral instance it stops: persistent for the stop, marked first, so a drain cut from
+        # here leaves it for guests to make ephemeral again; once stopped, ephemeral again here.
+        stopped=
+        trap 'if [ -n "$stopped" ]; then
+            ic config set "$node" ephemeral=true --property || exit 1
+            ic config unset "$node" user.convergent.ephemeral || :
+            fi' 0
+        ic config set "$node" user.convergent.ephemeral=true || note "cannot mark $project/$node"
         ic config set "$node" ephemeral=false --property || exit 1
         ephemeral=false
     fi
@@ -48,9 +52,10 @@ keep_ephemeral() {
     printf '%s\n' "$list" | jq -r '.[] | select(.status != "Stopped" and .ephemeral == true) |
         select(any(.expanded_devices[]?; .type == "nic" and (.network == "work" or .parent == "work"))) |
         "\(.project // "default") \(.name)"' 2>/dev/null | while read -r project node; do
-        # The protection first; a loaded host answers slowly.
-        timeout -k 1 30 incus --force-local --project "$project" config set "$node" ephemeral=false --property 9>&- &&
-            timeout -k 1 30 incus --force-local --project "$project" config set "$node" user.convergent.ephemeral=true 9>&- ||
+        # Marked first (harmless on one still ephemeral), protected whatever the mark did; a loaded host is slow.
+        timeout -k 1 30 incus --force-local --project "$project" config set "$node" user.convergent.ephemeral=true 9>&- ||
+            note "cannot mark $project/$node"
+        timeout -k 1 30 incus --force-local --project "$project" config set "$node" ephemeral=false --property 9>&- ||
             note "cannot keep $project/$node"
     done
 }

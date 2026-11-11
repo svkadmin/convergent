@@ -1527,6 +1527,8 @@ rebuild_root() {
         [ "$tries" -le 60 ] || { fail "a file server still holds the old root of $1"; return 1; }
         sleep 1
     done
+    # A redone update rebuild empties the store its first pass filled: not the networks until copied again.
+    case $1:$step in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac
     locked ic rebuild "$2" "$1" || return
     case $1 in
     wan)

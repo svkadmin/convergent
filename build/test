@@ -2413,15 +2413,18 @@ for fault in none clear clear-timeout stop query missing last-state; do
     if [ "$fault" = none ]; then stop_one owner wan - - true 0 true
     elif stop_one owner wan - - true 0 true; then exit 1; fi
     grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
+    # Marked before the protection: a drain cut later leaves it for guests.
+    [ "$(grep -n 'config set wan user.convergent.ephemeral=true$' "$fixture/calls" | cut -d: -f1)" -lt \
+        "$(grep -n 'config set wan ephemeral=false --property$' "$fixture/calls" | cut -d: -f1)" ]
     case $fault in
     none|last-state)
-        # Stopped: ephemeral again.
+        # Stopped: ephemeral again, unmarked.
         [ -f "$fixture/ephemeral" ]
-        grep -q '^-k 1 10 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts" ;;
+        grep -q '^-k 1 10 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
+        grep -q 'config unset wan user.convergent.ephemeral$' "$fixture/calls" ;;
     *)
         # Not confirmed stopped: Incus would delete it as it stops it; persistent, marked for guests.
         if grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"; then exit 1; fi
-        grep -q 'config set wan user.convergent.ephemeral=true$' "$fixture/calls"
         [ "$fault" = clear ] || [ ! -f "$fixture/ephemeral" ] ;;
     esac
     if [ "$fault" = clear ] || [ "$fault" = clear-timeout ]; then

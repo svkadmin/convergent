@@ -42,6 +42,14 @@ list() {
 	done
 }
 
+# Rules that follow a device: no parent-hash (a hub changes with the port) and no root hub hash (it carries the
+# kernel version), a port only without a serial (USBGuard's own default), and a connection type only for
+# internal (hardwired) devices. install/install writes the same.
+rule_portable() {
+	sed -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//' -e '/^allow id 1d6b:/s/ hash "[^"]*"//' \
+		-e 's/ with-connect-type "hotplug"//' -e 's/ with-connect-type "unknown"//' -e 's/ with-connect-type ""//'
+}
+
 allow_usb() {
 	id=$1
 	case $id in '' | *[!0-9]*) die "not a device number: $id" ;; esac
@@ -53,14 +61,15 @@ allow_usb() {
 	case $line in *" 08:"*) echo "NOTE: it presents itself as mass storage." ;; esac
 	case $line in *" 02:"* | *" 0a:"* | *" e0:"* | *" ff:"*) echo "NOTE: it has a network, wireless or vendor-specific interface." ;; esac
 	ask "Allow device $id for good?"
-	# The rule the installer and enrol write: no parent-hash, a port only without a serial. First, so it wins
-	# over an earlier block of the same device.
-	rule=$(printf '%s\n' "$line" | sed -e 's/^[0-9]*: block /allow /' -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//')
-	case $rule in allow\ id\ *\ hash\ \"*) ;; *) die "cannot build a rule for device $id" ;; esac
-	usbguard append-rule -a 0 "$rule" >/dev/null || die "usbguard refused the rule"
+	case $line in [0-9]*:\ block\ id\ *\ hash\ \"*) ;; *) die "cannot build a rule for device $id" ;; esac
+	# The rule the installer and enrol write (rule_portable), first, so it wins over an earlier block of the
+	# same device; on disk before the device is let in.
+	rule=$(printf '%s\n' "$line" | sed 's/^[0-9]*: block /allow /' | rule_portable)
+	# A retry after a failed authorization finds its rule there already.
+	usbguard list-rules | sed 's/^[0-9]*: //' | grep -qxF -- "$rule" ||
+		usbguard append-rule -a 0 "$rule" >/dev/null || die "usbguard refused the rule"
+	sync -f /etc/usbguard/rules.conf || die 'rule added, but it may not survive a power cut; run sync'
 	usbguard allow-device "$id" || die "rule saved; the device is allowed at the next USBGuard start"
-	# rules.conf is a file on the state volume: on disk before success is reported.
-	sync -f /etc/usbguard/rules.conf || die 'allowed, but the policy may not survive a power cut; run sync'
 	logger -t devices "USB device $id allowed permanently: $line"
 	echo "devices: allowed, and written to the allow-list"
 }
@@ -193,8 +202,8 @@ review() {
 # The USB ports from the disk under the open state volume (not a label another disk may carry) up to its root
 # hub: a system installed to a USB disk.
 system_usb() {
-	dm=$(readlink -f /dev/mapper/cv-state) || return 0
-	set -- /sys/block/"${dm##*/}"/slaves/*
+	dev=$(mountpoint -x /dev/mapper/cv-state 2>/dev/null) || return 0
+	set -- /sys/dev/block/"$dev"/slaves/*
 	[ $# = 1 ] && [ -e "$1" ] || return 0
 	usb=$(readlink -f "/sys/class/block/${1##*/}/../device") || return 0
 	while [ -n "$usb" ]; do
@@ -208,9 +217,8 @@ enrol() (
 	work=$(mktemp -d) || exit 1
 	trap 'rm -rf "$work"' 0
 	trap 'exit 1' HUP INT TERM
-	# No parent-hash, as the installer writes them: a device moved to another hub, or a newer kernel, matches.
-	usbguard generate-policy >"$work/generated.raw" || die 'cannot generate policy'
-	sed 's/ parent-hash "[^"]*"//' "$work/generated.raw" >"$work/generated" || die 'cannot generate policy'
+	# Reviewed as generated; written as rule_portable makes them.
+	usbguard generate-policy >"$work/generated" || die 'cannot generate policy'
 	usbguard list-rules >"$work/old" || die 'cannot read policy'
 	: >"$work/approved"
 	echo 'Only attached devices individually approved here will be allowed. Review hubs too.'
@@ -232,9 +240,10 @@ enrol() (
 	ask 'Replace the entire USB policy with these devices? Unlisted devices will be blocked.'
 	usbguard list-rules >"$work/current" && cmp -s "$work/old" "$work/current" || die 'policy changed during review; retry'
 	# Insert reviewed rules before any old catch-all, then remove the old policy.
+	rule_portable <"$work/approved" >"$work/portable" || die 'cannot write the rules'
 	while IFS= read -r rule; do
 		usbguard append-rule -a 0 "$rule" >/dev/null || die 'append failed; review the policy before retrying'
-	done <"$work/approved"
+	done <"$work/portable"
 	while IFS= read -r rule; do
 		id=${rule%%:*}
 		case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac

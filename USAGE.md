@@ -536,8 +536,9 @@ rules with one per trusted device:
 
 Nothing is saved before the confirmation; declined devices stay blocked.
 
-A rule allows its device on any port and behind any hub; a device without a serial number stays bound
-to its port. Rules written before 0.1.8 also bind to the hub: run `sys usb enrol` once after updating.
+A rule allows its device on any external port and behind any hub; a device without a serial number
+stays bound to its port, and an internal one to internal ports. Rules written before 0.1.8 are
+converted at the first boot of 0.1.8.
 On a system installed to a USB disk, enrol and `revoke` refuse to block that disk or a hub above it.
 
 > [!WARNING]

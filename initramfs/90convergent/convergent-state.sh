@@ -104,6 +104,19 @@ for old in "$state"/etc/.passwd.?????? "$state"/etc/.group.?????? "$state"/etc/.
 	rm -f "$old" || warn "state: cannot remove $old"
 done
 
+# USB rules written before 0.1.8 bind each device to its hub and port, a root hub to the kernel version: rewritten
+# as install and devices write them (rule_portable), before USBGuard reads them.
+rules=$state/etc/usbguard/rules.conf
+if [ -f "$rules" ]; then
+	sed -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//' -e '/^allow id 1d6b:/s/ hash "[^"]*"//' \
+		-e 's/ with-connect-type "hotplug"//' -e 's/ with-connect-type "unknown"//' -e 's/ with-connect-type ""//' \
+		"$rules" >"$rules.new" || warn "state: cannot read the USB policy"
+	if [ -s "$rules.new" ] && ! cmp -s "$rules" "$rules.new"; then
+		chmod 0600 "$rules.new" && sync && mv "$rules.new" "$rules" && sync || warn "state: cannot convert the USB policy"
+	fi
+	rm -f "$rules.new"
+fi
+
 # Prepare this release's /var atomically; cached policy is rebuilt once per release.
 if [ ! -d "$state/var-$release" ]; then
 	new="$state/var-$release.new"
