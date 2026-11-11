@@ -332,7 +332,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `BT` | a Bluetooth radio is unblocked and can transmit (orange); hidden while blocked | `sys bluetooth off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
-| `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red) | `sys guests update` |
+| `GUESTS` | downloaded guests being applied (orange); `GUESTS failed` (red); `GUESTS: close browsers` (orange): an open browser postponed them | `sys guests update` |
 | layout, `UP`, clock | keyboard layout (every 10 s), uptime, local date and time | `sys keyboard next` |
 | `BAT` | capacity; `+` charging, `-` discharging (orange below 30 %, red below 15 %); `AC BAT` on mains but not charging; `AC` without a battery; `BAT ?` while a battery read hangs (the clock keeps running) | `sys power status` |
 
