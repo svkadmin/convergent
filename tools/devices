@@ -349,7 +349,8 @@ bluetooth) shift; bluetooth "$@"; exit ;;
 esac
 # Serialize owner policy changes, including the review interval.
 exec 9>/run/convergent-usb.lock
-flock -x 9
+# Bounded: another policy command may sit at its prompt.
+flock -w 5 9 || die 'another USB policy command is open; finish or cancel it'
 case ${1:-} in
 list) [ $# = 1 ] || usage; list ;;
 review) [ $# = 1 ] || usage; review ;;

@@ -9,6 +9,9 @@ repo=${here%/build}
 
 [ "$(id -u)" = 0 ] || { echo "packages: run as root" >&2; exit 1; }
 [ -x "$BUILDER/bin/sh" ] || { echo "packages: no builder; run build/buildenv first" >&2; exit 1; }
+# Only buildenv applies the pin: a bumped SNAPSHOT_DATE must not build from the old tree.
+[ "$(cat "$BUILDER/var/db/repos/gentoo/.convergent-snapshot" 2>/dev/null)" = "$SNAPSHOT_DATE" ] ||
+	{ echo "packages: the builder's Portage tree is not snapshot $SNAPSHOT_DATE; run build/buildenv" >&2; exit 1; }
 
 # Rebuild image-only Portage configuration.
 exec 9>/run/convergent-packages.lock

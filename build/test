@@ -1087,6 +1087,10 @@ test_guest_delivery() {
 		# build/guests' identity: SHA256SUMS and the Incus profiles.
 		id=$( (cd "$guests/$kind" && { cat SHA256SUMS; find . -type f \( -path ./incus.yaml -o -path './incus/*.yaml' \) | sort | xargs -r sha256sum; }) | sha256sum | cut -d' ' -f1)
 		grep -qx "guest $kind $id" "$delivery/release/guests.manifest" || die "missing $kind identity"
+		# What is tested is what the release ships: a guest rebuilt after build/guests is not.
+		[ ! -f "$BUILDER/releases/$release/guests.manifest" ] ||
+			grep -qx "guest $kind $id" "$BUILDER/releases/$release/guests.manifest" ||
+			die "$kind under test is not the release's $kind (rebuilt after build/guests?)"
 	done
 	awk '$1 == "size" && $2 ~ /^guests\// {print $2, $3}' "$delivery/release/guests.manifest" |
 		while read -r path bytes; do
@@ -1106,6 +1110,9 @@ test_guest_delivery() {
 	cmp "$guests/remmina/incus.yaml" "$delivery/release/guests/remmina/incus.yaml" || die 'remmina profile differs'
 	remmina_id=$( (cd "$guests/remmina" && { cat SHA256SUMS; sha256sum ./incus.yaml; }) | sha256sum | cut -d' ' -f1)
 	grep -qx "guest remmina $remmina_id" "$delivery/release/remmina.manifest" || die 'missing remmina identity'
+	[ ! -f "$BUILDER/releases/$release/remmina.manifest" ] ||
+		grep -qx "guest remmina $remmina_id" "$BUILDER/releases/$release/remmina.manifest" ||
+		die "remmina under test is not the release's remmina (rebuilt after build/guests?)"
 	# End Remmina.
 	cmp "$guests/svc/incus.yaml" "$delivery/release/guests/svc/incus.yaml" || die 'svc profile differs'
 	for role in base def tmp int; do

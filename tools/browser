@@ -94,7 +94,8 @@ browser_locks() {
     chmod 711 /run/convergent/browser
     # The guests lock covers launch; the browser lock covers the whole session.
     exec 9>/run/convergent/guests.lock
-    flock -s -n 9 || busy 'guest update in progress'
+    # A few seconds: the minute heal takes it exclusively for milliseconds.
+    flock -s -w 2 9 || busy 'guest update in progress'
     [ ! -e /run/convergent/guests-stopping ] || busy 'host is stopping guests'
     exec 6>/run/convergent/browser-update.lock
     flock -s -n 6 || busy 'browser update in progress'

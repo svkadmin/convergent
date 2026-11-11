@@ -215,7 +215,7 @@ if ! expr "$latest" '>' "$floor" >/dev/null; then
 fi
 # Fail now, not after the download: a guest update holds this for up to half an hour.
 exec 8>/run/convergent/guests.lock
-flock -s -n 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
+flock -s -w 2 8 || die 'a guest update is running (bar: GUESTS); run this again when it is done'
 exec 8>&-
 for _d in "$work"/* "$work"/.[!.]* "$work"/..?*; do
 	[ -e "$_d" ] || [ -L "$_d" ] || continue
