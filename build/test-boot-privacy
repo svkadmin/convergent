@@ -1828,11 +1828,11 @@ check_script "$work/usb-migrate"
 )
 grep -q 'inst_multiple .* sed cmp ' "$repo/initramfs/90convergent/module-setup.sh"
 # The installer, devices and boot write rules the same way.
-portable_text() { sed 's/^[[:space:]]*//; s/ *\\$//'; }
+portable_text() { sed 's/^[[:space:]]*//; s/^if //; s/ *\\$//'; }
 [ "$(sed -n '/^rule_portable() {/,/^}/p' "$repo/tools/devices" | sed -n '2,3p' | portable_text)" = \
     "$(awk '/^sed -e .s\/ parent-hash/ {print; getline; print; exit}' "$repo/install/install" | portable_text)" ]
 [ "$(sed -n '/^rule_portable() {/,/^}/p' "$repo/tools/devices" | sed -n '2,3p' | portable_text)" = \
-    "$(awk '/^[[:space:]]*sed -e .s\/ parent-hash/ {print; getline; print; exit}' "$repo/initramfs/90convergent/convergent-state.sh" | portable_text)" ]
+    "$(awk '/^[[:space:]]*(if )?sed -e .s\/ parent-hash/ {print; getline; print; exit}' "$repo/initramfs/90convergent/convergent-state.sh" | portable_text)" ]
 check_script "$work/allow-usb"
 (
     . "$work/allow-usb"
