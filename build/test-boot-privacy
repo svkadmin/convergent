@@ -996,7 +996,7 @@ echo 'test-boot-privacy: session watch passed'
 # A guest update an open browser postponed shows on the bar until sys guests update runs (20Y).
 grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browsers", orange)' "$repo/tools/bar"
 # Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
-grep -qx '23 \*/6 \* \* \* root /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
+grep -qxF '23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
 grep -B1 -x 'exec 9>/run/convergent-timezone.lock' "$repo/tools/timezone" | head -n 1 | grep -qx 'umask 077'
 # A Remmina update with no instance prunes the image it superseded (20Y).

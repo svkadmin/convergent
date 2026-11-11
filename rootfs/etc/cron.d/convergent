@@ -5,7 +5,7 @@ PATH=/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 @reboot root power
 17 * * * * root facts auto
 # cronie's 0anacron skips the daily jobs on battery: rotation must not depend on being plugged in at :01.
-23 */6 * * * root /usr/bin/logrotate /etc/logrotate.conf
+23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf
 * * * * * root facts nts
 * * * * * root observe
 42 * * * * root dns-push auto
