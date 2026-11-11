@@ -709,7 +709,7 @@ sh -n "$work/volumes"
         : >"$buf"
         . "$work/volumes"
         case $sample in
-        malformed|unavailable) [ "$ok" = 0 ] && [ ! -s "$buf" ] ;;
+        malformed|unavailable) [ "$ok" = 0 ]; [ ! -s "$buf" ] ;;
         *)
             [ "$ok" = 1 ]
             : >"$work/expected"
