@@ -1472,6 +1472,16 @@ usb3" ] || exit 1
 echo 'test-boot-privacy: wired role bound and prune passed'
 
 # Execute the shipped commands, substituting only the socket readiness probe.
+# A failed screenshot leaves no empty file behind.
+sed -n '/^screenshot_capture() /p' "$repo/rootfs/usr/lib/convergent/sys/60-screenshot" >"$work/shot-capture"
+[ "$(wc -l <"$work/shot-capture")" = 1 ]
+(
+    . "$work/shot-capture"
+    run() { return 1; }
+    shot=$work/shot.png
+    if screenshot_capture -o eDP-1; then exit 1; fi
+    [ ! -e "$shot" ]
+) || die 'a failed screenshot left its file'
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"

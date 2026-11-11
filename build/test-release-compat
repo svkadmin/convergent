@@ -247,6 +247,22 @@ for mode in check write; do
     (booted=43 latest=43 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ "$sync" = 1 ])
     (booted=42 latest=44 highest=43 floor=43 current='up to date' signed_ago='signed 0 days ago'; . "$work/current"; [ -z "$sync" ])
 done
+# An unblessed boot is refused before any download; a sync, a check or an unreadable status goes on.
+sed -n '/^# Likewise: slot write takes only/,/let it bless first"$/p' "$repo/tools/fetch-release" >"$work/blessed"
+[ "$(wc -l <"$work/blessed")" = 4 ]; sh -n "$work/blessed"
+for case in write:42:41: write:42:42: sync:42:41: check:42:41: write:42::fail; do
+    IFS=: read -r how booted good fail <<EOF
+$case
+EOF
+    sync= mode=write
+    case $how in sync) sync=1 ;; check) mode=check ;; esac
+    rc=0
+    (slot() { [ "$*" = status ] || exit 97; [ -z "$fail" ] || return 75; echo "good    ${good:-none}"; }
+        die() { echo "$*" >&2; exit 1; }; . "$work/blessed") 2>"$work/log" || rc=$?
+    want=0; [ "$case" != write:42:41: ] || want=1
+    [ "$rc" = "$want" ] || die "blessed check $case gave $rc"
+    [ "$want" = 0 ] || grep -q 'not the one marked good' "$work/log"
+done
 echo 'test-release-compat: bounded USB copies, online resumption, parallel downloads and older boot fixtures passed'
 # sys update usb names the stick's filesystem as rescue does: no probed driver, no journal replay, and no
 # symlink followed on a filesystem that carries them.

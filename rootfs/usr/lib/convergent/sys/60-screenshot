@@ -17,7 +17,7 @@ screenshot_saved() {
 	run wl-copy -t image/png <"$shot" || return
 	run notify-send -t 3000 'Screenshot saved' "${shot##*/}"
 }
-screenshot_capture() (set -C; run grim "$@" - >"$shot")
+screenshot_capture() (set -C; run grim "$@" - >"$shot" || { rm -f "$shot"; exit 1; })
 screenshot_area() {
 	noargs "$@"; screenshot_path || return
 	# Esc in slurp is a cancel, not a failure.
