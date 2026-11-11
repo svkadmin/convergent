@@ -1179,10 +1179,10 @@ grep -qF '124 | 137) die "$role did not answer its launcher check in time; retry
 grep -qF 'case $name in svc|def|int|remmina|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac' "$repo/tools/observe"
 # The firewalls' authlog rotates by size too (OpenBSD's line is weekly only); other lines stay.
 sed -n '/^awk .\$1 == "\/var\/log\/authlog"/p' "$repo/guests/fw/site/install.site" |
-    sed 's| /etc/newsyslog.conf >/etc/newsyslog.conf.new &&$| "$work/newsyslog.in" >"$work/newsyslog.out"|' >"$work/authlog-cap"
+    sed "s| /etc/newsyslog.conf >/etc/newsyslog.conf.new &&\$| $work/newsyslog.in >$work/newsyslog.out|" >"$work/authlog-cap"
 grep -q 'newsyslog.out' "$work/authlog-cap"
 printf '%s\n' '/var/log/authlog root:wheel 640 7 * 168 Z' '/var/log/daemon 640 5 300 * Z' >"$work/newsyslog.in"
-work=$work sh "$work/authlog-cap"
+sh "$work/authlog-cap"
 awk '$1 == "/var/log/authlog" && $5 == 2048 {a++} $1 == "/var/log/daemon" && $4 == 300 && $5 == "*" {d++} END {exit !(a == 1 && d == 1)}' "$work/newsyslog.out"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
