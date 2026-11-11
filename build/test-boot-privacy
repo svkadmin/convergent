@@ -1178,7 +1178,7 @@ for written in partial ''; do
     rc=0
     (
         state=$work/log-state; mkdir -p "$state/var-1/log"
-        usb_mount() { :; }; umount() { return 1; }; sync() { :; }
+        usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }; sync() { :; }
         tar() { printf '%s' "$written" >"$4"; return 2; }
         . "$work/copy-logs"; copy_logs
     ) >"$work/copy.out" 2>&1 || rc=$?
