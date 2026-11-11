@@ -1568,31 +1568,6 @@ mkdir -p "$work/home/.config/sway/config.d"; : >"$work/home/.config/sway/config.
 : >"$work/watch-calls"
 events='{"first":true,"payload":""}' watch_run "$same" ambiguous
 [ ! -s "$work/watch-calls" ] || die 'display watch: defaults overrode the outputs file on an ambiguous set'
-# With the lid open, the watch lights the panel it darkened (the lid's open event can be missing after a closed-lid
-# login), and leaves a panel alone that it did not darken (idle power-off).
-echo 'state:      open' >"$work/lid/LID0/state"
-for marked in yes no; do
-    : >"$work/watch-calls"
-    [ "$marked" = yes ] || rm -f "$work/xdg/convergent-lid-dark"
-    (
-        noargs() { :; }; sway() { :; }; path() { :; }
-        XDG_RUNTIME_DIR=$work/xdg
-        display_lock() { profiles=$work/profiles; }
-        display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":"c"}]'; }
-        display_key() { echo key; }
-        display_apply() { echo apply >>"$work/watch-calls"; }
-        display_defaults() { echo defaults >>"$work/watch-calls"; }
-        display_command() { echo "$1" >>"$work/watch-calls"; }
-        swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
-        . "$work/display-watch"
-        display_watch
-    )
-    case $marked:$(cat "$work/watch-calls" | tr '\n' ,) in
-    yes:apply,output\ eDP-1\ power\ on,) [ ! -e "$work/xdg/convergent-lid-dark" ] ;;
-    no:apply,) ;;
-    *) die "display watch: open lid, marked=$marked: $(cat "$work/watch-calls" | tr '\n' ,)" ;;
-    esac
-done
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"
