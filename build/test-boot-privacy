@@ -456,7 +456,7 @@ if grep -q '/usr/local/sbin/\|/var/lib/convergent\|/run/openrc' "$work/setup-sta
             if grep -qx cleanup "$work/setup/calls"; then die 'cleanup ran with Incus not ready'; fi ;;
         esac
         # Guests created: the state says done (the owner cannot see the guests directory).
-        [ "$(cat "$work/setup/run/status/setup")" = done ] || die 'setup state not done with guests initialized'
+        [ "$(cat "$work/setup/run/status/setup")" = "done" ] || die 'setup state not done with guests initialized'
     done
     # Installed without guests: the state says so, and no job starts.
     rm "$work/setup/lib/guests/initialized"
