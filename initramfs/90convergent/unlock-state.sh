@@ -1,3 +1,5 @@
+# rd.emergency=poweroff acts at once: leave the reason on the screen first.
+die_shown() { printf '\n%s\nPowering off in 30 seconds.\n' "$1" 2>/dev/null >/dev/console; sleep 30; die "$1"; }
 dev=/dev/disk/by-partlabel/cv-state
 state=/run/cv-state
 udevadm settle
@@ -7,17 +9,17 @@ while [ ! -e /dev/dri/card0 ] && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); don
 # A rescue boot has no root wait: give a slow boot disk time to appear.
 i=0
 while [ ! -b "$dev" ] && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
-[ -b "$dev" ] || die "state: no partition labelled cv-state"
+[ -b "$dev" ] || die_shown "state: no partition labelled cv-state"
 # A second Convergent disk would make every label ambiguous.
 [ "$(blkid -o device -t PARTLABEL=cv-state | wc -l)" = 1 ] ||
-	die "state: more than one disk has a cv-state partition; detach the other"
+	die_shown "state: more than one disk has a cv-state partition; detach the other"
 
 # Three passphrase attempts; failure powers off.
 # rd.debug traces every command; no trace may hold the passphrase.
 { set +x; } 2>/dev/null
 tries=0
 while :; do
-	[ "$tries" -lt 3 ] || die "state: the state volume did not open"
+	[ "$tries" -lt 3 ] || die_shown "state: the state volume did not open"
 	tries=$((tries + 1))
 	# A console that cannot hide input still unlocks, but the owner is told before typing.
 	stty -echo </dev/console 2>/dev/null ||

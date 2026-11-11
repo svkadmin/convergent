@@ -997,6 +997,23 @@ echo 'test-boot-privacy: session watch passed'
 grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browsers", orange)' "$repo/tools/bar"
 # Install and wan build (20Z): eMMC refused, the re-read retried, wan modes independent of the checkout umask.
 grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
+# Early boot stops the owner can fix are held on the screen before the power-off.
+grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/unlock-state.sh" | grep -qx 3
+grep -c 'die_shown "install: ' "$repo/initramfs/90convergent/convergent-install.sh" | grep -qx 2
+for hook in unlock-state convergent-install; do
+    sed -n '/^die_shown() /p' "$repo/initramfs/90convergent/$hook.sh" | sed "s|/dev/console|$work/console|" >"$work/die-shown"
+    (
+        die() { echo "died: $1"; }
+        sleep() { echo "slept $1"; }
+        . "$work/die-shown"
+        die_shown 'state: a reason' 2>&1
+    ) >"$work/die-shown.out"
+    [ "$(tail -n 2 "$work/die-shown.out")" = "slept 30
+died: state: a reason" ]
+    grep -qx "state: a reason" "$work/console"
+done
+# A boot medium that is not USB is refused before the first question, not after the last.
+awk '/die "boot disk is not USB/ { u = NR } /^# 0\. The hardware/ { h = NR } END { exit !(u && h && u < h) }' "$repo/install/install"
 grep -qF 'until blockdev --rereadpt "$disk" 2>"$work/rereadpt"; do' "$repo/install/install"
 grep -qF -- '--mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -' "$repo/guests/wan/build"
 # Rescue reaches its menu on a volume that mounts only read-only, and refuses the writes there (21C).
