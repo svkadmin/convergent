@@ -317,7 +317,7 @@ rollback() {
                 fi
             fi
             seed_remove "$guest" || return
-            rebuild_root "$guest" "$image" || return
+            rebuild_root "$guest" "$image" rollback || return
             image_alias "$guest" "$image" || return
         fi
         for volume in $(volumes "$guest"); do
@@ -1528,7 +1528,7 @@ rebuild_root() {
         sleep 1
     done
     # A redone update rebuild empties the store its first pass filled: not the networks until copied again.
-    case $1:$step in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac
+    case $1:${3:-} in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac
     locked ic rebuild "$2" "$1" || return
     case $1 in
     wan)
@@ -1537,7 +1537,7 @@ rebuild_root() {
         [ ! -d "$state/iwd.wan" ] || cp -a "$state/iwd.wan/." "$work/root/var/lib/iwd/" || return
         unmount_root || return
         # The candidate holds the networks now: from here a rollback reads them back from its disk.
-        [ "$step" = rollback ] || { : >"$state/iwd.wan.copied" && sync; } || return
+        [ "${3:-}" = rollback ] || { : >"$state/iwd.wan.copied" && sync; } || return
         ;;
     remmina)
         ic file pull "$1/usr/local/bin/remmina-launch" "$work/remmina-launch" || return

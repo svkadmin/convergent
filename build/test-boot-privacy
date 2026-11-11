@@ -1151,6 +1151,8 @@ grep -qx 'install thunderbolt_net /bin/false' "$repo/rootfs/etc/modprobe.d/conve
 grep -qx 'rm -f /var/run/dmesg.boot' "$repo/guests/fw/site/install.site"
 grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$repo/guests/wan/build"
 grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
+# A missed firewall probe shows the portal as unknown, not as off (21E).
+grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
@@ -1299,7 +1301,7 @@ usb3" ] || exit 1
     cp "$w/rules" "$w/rules.before"
     code=0
     (revoke 6) >"$w/out" 2>&1 || code=$?
-    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'not a device-specific rule' "$w/out" || exit 1
+    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'change root hubs with sys usb enrol' "$w/out" || exit 1
     for rule in 9 8 5; do
         reset; rm -f "$w/synced"
         printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"

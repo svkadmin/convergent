@@ -328,7 +328,7 @@ US | UP 3d 03:41 | Tue 04/08 15:33:02 | BAT 87% -
 | `MIC` | default microphone unmuted (orange); hidden when muted; `MIC?` (grey) if unknown; every 10 s | `sys audio mic off` / `on` |
 | Alerts | firing alerts: critical (red), warning (orange), info (white); every 30 s | click for the list, or `sys alerts` |
 | `RM:on/off/?` | Remmina running, stopped or unknown; stale status is unknown | `sys remote status`, `sys remote close` |
-| `PORTAL` | portal mode on (orange) | `sys portal off` |
+| `PORTAL` | portal mode on (orange); `PORTAL?` (grey): a guest did not answer the check | `sys portal off`; `sys portal status` |
 | `CAM`, `CAM!` | camera enabled, or driver still loaded after disabling (orange); not a recording indicator | `sys camera status`, `sys camera off` |
 | `BT` | a Bluetooth radio is unblocked and can transmit (orange); hidden while blocked | `sys bluetooth off` |
 | `SETUP` | guests being created (orange); `SETUP failed` (red) | `sys guests setup` |
@@ -348,7 +348,8 @@ charge limit.
 
 Topology starts with the uplink: `WLAN:<network>` (green connected, red with no network, grey when
 `wan` does not answer; names over 16 characters are cut) or `ETH` for a passed-through wired NIC.
-`WAN` is green with an uplink, orange without one, red when `wan` is down. Each firewall is bold
+`WAN` is green with an uplink, orange without one, red when `wan` is down, grey when it does not
+answer. Each firewall is bold
 bright green as CARP `MASTER`, dim green as standby, orange when its CARP interfaces disagree, red
 when down. `SVC` is green or red; the host name is green. `BR:n` counts running browser containers
 (grey at zero). Cron refreshes the topology every minute; older than three minutes, it turns grey.

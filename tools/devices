@@ -263,7 +263,11 @@ revoke() {
 	case $1 in ''|*[!0-9]*) die 'invalid rule number' ;; esac
 	rules=$(usbguard list-rules) || die 'cannot read policy'
 	line=$(printf '%s\n' "$rules" | grep "^$1: allow ") || die 'not an allowed rule (use review)'
-	case $line in *\ hash\ \"*\"*) ;; *) die 'not a device-specific rule; enrol individual devices first' ;; esac
+	case $line in
+	*\ hash\ \"*\"*) ;;
+	*": allow id 1d6b:"*) die 'a root hub rule (no hash since 0.1.8): change root hubs with sys usb enrol' ;;
+	*) die 'not a device-specific rule; enrol individual devices first' ;;
+	esac
 	ports=$(system_usb)
 	if [ -n "$ports" ]; then
 		devices=$(usbguard list-devices) || die 'cannot read devices'
