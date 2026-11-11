@@ -176,7 +176,7 @@ start_int
 /usr/local/sbin/incus-ui --import 8>&-
 # A failed stop must preserve the session limit without failing cleanup. The copy finds its own lock
 # free; the real one stays held, or the minute check auto's cleanup could stop Grafana first.
-sed -e 's/ic exec svc -- rc-service grafana stop || return/false || return/' \
+sed -e 's%guest_stderr ic exec svc -- rc-service grafana stop </dev/null >/dev/null || return%false || return%' \
     -e "s|/run/convergent/browser/int.lock|$work/int.lock|" /usr/local/sbin/incus-ui >"$work/stop-fail"
 grep -qF 'Running) false || return ;;' "$work/stop-fail"
 grep -qF "exec 8>$work/int.lock" "$work/stop-fail"

@@ -106,7 +106,8 @@ reconcile_svc() {
     svc_state=$(ic query '/1.0/instances/svc/state?project=default') || return
     svc_status=$(printf '%s\n' "$svc_state" | jq -er .status) || return
     case $svc_status in
-        Running) ic exec svc -- rc-service grafana stop || return ;;
+        # svc's output is a guest's: stdout dropped, stderr bounded and filtered.
+        Running) guest_stderr ic exec svc -- rc-service grafana stop </dev/null >/dev/null || return ;;
         Stopped) ;;
         *) return 1 ;;
     esac

@@ -465,6 +465,7 @@ ic() {
         *) echo '{"status":"Running"}' ;;
         esac ;;
     'exec svc -- rc-service grafana stop')
+        printf 'svc-stdout\n'; printf 'svc \033[31mstderr\n' >&2
         [ "$sample" != stop-fail ] ;;
     'config set svc limits.memory=350MiB')
         [ "$sample" != shrink-fail ] ;;
@@ -472,14 +473,20 @@ ic() {
     esac
 }
 logger() { echo "$*" >>"$work/orphan-errors"; return 1; }
+. "$work/guest-reply.sh"
 . "$work/orphan"
 EOF
+cp "$repo/rootfs/usr/lib/convergent/guest-reply.sh" "$work/guest-reply.sh"
 sh -n "$work/orphan-driver"
 for action in cleanup --reconcile --close revoke; do
     for sample in normal custom empty missing read-fail running stopped query-fail stop-fail shrink-fail; do
         : >"$work/orphan-calls"
         : >"$work/orphan-errors"
-        (export work action sample; sh -eu "$work/orphan-driver")
+        (export work action sample; sh -eu "$work/orphan-driver") >"$work/orphan-out" 2>&1
+        # svc's stdout never reaches the owner's terminal; its stderr arrives filtered.
+        if grep -q 'svc-stdout' "$work/orphan-out" || grep -q "$(printf '\033')" "$work/orphan-out"; then
+            die "raw svc output on the terminal ($action $sample)"
+        fi
         : >"$work/expected"
         case $action in
         cleanup|--reconcile)
