@@ -1559,7 +1559,33 @@ cmp -s "$work/watch-expected" "$work/watch-calls" || die 'display watch: a reloa
     . "$work/display-watch"
     display_watch
 )
-[ "$(cat "$work/watch-calls")" = 'output eDP-1 power off' ] || die 'display watch: an ambiguous set left a closed lid lit'
+[ "$(cat "$work/watch-calls" | tr '\n' ,)" = 'defaults,output eDP-1 power off,' ] || die 'display watch: an ambiguous set left a closed lid lit'
+[ -e "$work/xdg/convergent-lid-dark" ] || die 'display watch: no mark on the panel it darkened'
+# With the lid open, the watch lights the panel it darkened (the lid's open event can be missing after a closed-lid
+# login), and leaves a panel alone that it did not darken (idle power-off).
+echo 'state:      open' >"$work/lid/LID0/state"
+for marked in yes no; do
+    : >"$work/watch-calls"
+    [ "$marked" = yes ] || rm -f "$work/xdg/convergent-lid-dark"
+    (
+        noargs() { :; }; sway() { :; }; path() { :; }
+        XDG_RUNTIME_DIR=$work/xdg
+        display_lock() { profiles=$work/profiles; }
+        display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":"c"}]'; }
+        display_key() { echo key; }
+        display_apply() { echo apply >>"$work/watch-calls"; }
+        display_defaults() { echo defaults >>"$work/watch-calls"; }
+        display_command() { echo "$1" >>"$work/watch-calls"; }
+        swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
+        . "$work/display-watch"
+        display_watch
+    )
+    case $marked:$(cat "$work/watch-calls" | tr '\n' ,) in
+    yes:apply,output\ eDP-1\ power\ on,) [ ! -e "$work/xdg/convergent-lid-dark" ] ;;
+    no:apply,) ;;
+    *) die "display watch: open lid, marked=$marked: $(cat "$work/watch-calls" | tr '\n' ,)" ;;
+    esac
+done
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"
@@ -1573,6 +1599,7 @@ for b in 'XF86AudioMicMute exec sys audio micmute' '--locked XF86AudioMicMute ex
     [ "$(grep -cx -- "[[:space:]]*bindsym $b" "$sway")" = 2 ] || die "sway: $b is not bound at top level and in resize mode"
 done
 grep -qx "exec_always sh -c 'sleep 1; swaymsg -t send_tick reload'" "$sway"
+[ "$(grep -c "lid:off exec sh -c 'rm -f \"\$XDG_RUNTIME_DIR/convergent-lid-dark\"; " "$sway")" = 2 ]
 grep -qx ignore-empty-password "$repo/rootfs/etc/swaylock/config"
 check_script "$work/mic-init"
 check_script "$work/mic-locked"
