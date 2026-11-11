@@ -48,7 +48,8 @@ update_media() (
 		trap - 0
 		trap 'exit 1' HUP INT TERM
 		if [ "$mounted" = 1 ]; then
-			run sudo -v && run sudo umount -- "$target" || result=1
+			# The write's own status stands: a sudo prompt that timed out only leaves the stick mounted.
+			run sudo -v && run sudo umount -- "$target" || echo "sys: unmount failed; run sudo umount $target" >&2
 		fi
 		rm -f "$list"
 		exit "$result"

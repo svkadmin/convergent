@@ -43,7 +43,8 @@ busy() { [ "$action" != cleanup ] || { echo "incus-ui: $*" >&2; exit 75; }; die 
 case $action in
     setup|rotate|revoke|cleanup)
         exec 9>/run/convergent/guests.lock
-        flock -s -n 9 || busy 'guest operation in progress'
+        # The owner's actions wait out the minute heal's millisecond hold; cleanup defers at once.
+        case $action in cleanup) flock -s -n 9 ;; *) flock -s -w 2 9 ;; esac || busy 'guest operation in progress'
         exec 6>/run/convergent/browser-update.lock
         flock -s -n 6 || busy 'browser update in progress' ;;
 esac

@@ -21,7 +21,8 @@ close|reap)
     busy=1
     [ "$1" != reap ] || busy=75
     exec 9>/run/convergent/guests.lock
-    flock -s -n 9 || { echo 'remote: guest update in progress' >&2; exit "$busy"; }
+    # The owner's close waits out the minute heal's millisecond hold; reap defers at once.
+    if [ "$1" = reap ]; then flock -s -n 9; else flock -s -w 2 9; fi || { echo 'remote: guest update in progress' >&2; exit "$busy"; }
     exec 6>/run/convergent/browser-update.lock
     flock -s -n 6 || { echo 'remote: browser update in progress' >&2; exit "$busy"; }
     if [ "$1" = reap ]; then

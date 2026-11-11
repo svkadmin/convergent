@@ -27,6 +27,7 @@ reachable() { running "$1"; }
 start_guest() { seed_start "$1"; }
 seed_remove() { echo "unseed $1" >>"$log"; }
 image_alias() { echo "alias $1 $2" >>"$log"; }
+images_prune() { echo prune >>"$log"; }
 fail() { echo "$*" >&2; return 1; }
 sh() {
     if [ "$1" = "$lib/work-gate" ]; then echo 'gate closed' >>"$log"
@@ -794,6 +795,8 @@ echo 'test-topology: rollback holds both, waits for a booting firewall and check
     if grep -q '^rebuild fw1' "$log"; then exit 1; fi
     awk '$0 == "checkpoint fw2" {h=NR} $0 == "stop fw2" {s=NR} $0 == "rebuild fw2 new" {r=NR} $0 == "boot fw2" {b=NR} $0 == "resume" {u=NR}
         END {exit !(h && h < s && s < r && r < b && b < u)}' "$log"
+    # The old pair's images are pruned once both aliases moved (this path has no commit_update).
+    awk '$1 == "alias" {a=NR} $0 == "prune" {p=NR} END {exit !(a && p && a < p)}' "$log"
     running fw1 && running fw2
 )
 echo 'test-topology: a committed migration redoes a node that never becomes healthy'
@@ -975,8 +978,8 @@ if command -v jq >/dev/null 2>&1; then
         mkdir -p "$root/etc"
         cp "$repo/rootfs/etc/nftables.rules" "$root/etc/"
         command sh "$here/networks" host "$root"
-        sed -n '/^  security.syscalls.deny: |$/,/^  security.guestapi: "false"$/p' "$repo/guests/browser/incus/base.yaml" >"$scratch/guest-config"
-        [ "$(wc -l <"$scratch/guest-config")" = 6 ]
+        sed -n '/^  security.syscalls.deny: |$/,/^  linux.sysctl.net.ipv4.conf.eth0.arp_ignore: "0"$/p' "$repo/guests/browser/incus/base.yaml" >"$scratch/guest-config"
+        [ "$(wc -l <"$scratch/guest-config")" = 8 ]
         printf 'devices:\n  eth0:\n    type: nic\n    network: work\n    name: eth0\n    vlan: N\n    security.mac_filtering: "true"\n' >"$scratch/work-devices"
         count=0
         for profile in "$root/usr/lib/convergent/incus/work/"work-*.yaml; do

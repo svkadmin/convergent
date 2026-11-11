@@ -1987,6 +1987,8 @@ ifconfig -g handoff carpdemote 128'
         else
             profile remmina "$image_dir/incus.yaml"
             import_image remmina
+            # No instance: no commit_update, whose prune would drop the image this one superseded (best effort).
+            images_prune || :
         fi
         record_installed "$1" "$2"
         rm -rf "$state/profiles.before"
