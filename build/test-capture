@@ -96,7 +96,7 @@ awk '/^firewall_change\(\) \($/ {copy = 1} copy {print} copy && /^\)$/ {exit}' "
     sed -e "s|/run/convergent|$fixture/undo/run|g" -e "s|/var/lib/convergent|$fixture/undo/lib|g" >"$fixture/undo.sh"
 [ "$(grep -c "$fixture/undo/lib/firewall-maintenance" "$fixture/undo.sh")" = 1 ]
 sh -n "$fixture/undo.sh"
-for sample in peer-broken master-broken both-healthy both-broken both-declined fw2-peer-broken; do
+for sample in peer-broken master-broken both-healthy both-broken both-declined fw2-peer-broken fw2-none; do
     rm -rf "$fixture/undo"; mkdir -p "$fixture/undo/run" "$fixture/undo/lib/guests"
     case $sample in fw2-*) echo fw2 ;; *) echo fw1 ;; esac >"$fixture/undo/lib/firewall-maintenance"
     rc=0
@@ -108,8 +108,10 @@ for sample in peer-broken master-broken both-healthy both-broken both-declined f
         die() { echo "die $*"; exit 1; }
         logger() { :; }
         confirm() { case $1 in *anyway*) echo "asked anyway"; [ "$sample" != both-declined ] ;; esac; }
-        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | fw2-peer-broken:fw1 | master-broken:fw1 | both-broken:* | both-declined:*) return 1 ;; esac; }
-        firewall_wait_role() { echo "role $*"; }
+        firewall_healthy() { case $sample:$1 in peer-broken:fw2 | fw2-*:fw1 | master-broken:fw1 | both-broken:* | both-declined:*) return 1 ;; esac; }
+        # fw2 released: it stays BACKUP while fw1 advertises; fw2-none: nobody is MASTER.
+        firewall_wait_role() { echo "role $*"; case $sample:$1 in fw2-*:fw2) return 1 ;; esac; }
+        firewall_role() { echo "probe $*"; [ "$sample" != fw2-none ]; }
         firewall_release() { echo release; rm -f "$journal"; }
         firewall_wait() { echo "wait $*"; }
         firewall_change undo
@@ -120,7 +122,9 @@ for sample in peer-broken master-broken both-healthy both-broken both-declined f
     both-broken) [ "$rc" = 0 ] && grep -qx 'asked anyway' "$fixture/undo.out" && grep -qx release "$fixture/undo.out" ;;
     both-declined) [ "$rc" = 1 ] && ! grep -qx release "$fixture/undo.out" && [ -f "$fixture/undo/lib/firewall-maintenance" ] ;;
     # fw2 released while fw1 keeps MASTER: nothing to wait for, no warning.
-    fw2-peer-broken) [ "$rc" = 0 ] && grep -qx release "$fixture/undo.out" && ! grep -q '^role\|warning' "$fixture/undo.out" ;;
+    fw2-peer-broken) [ "$rc" = 0 ] && grep -qx release "$fixture/undo.out" && grep -qx 'probe fw1 MASTER' "$fixture/undo.out" &&
+        ! grep -q -e warning "$fixture/undo.out" ;;
+    fw2-none) [ "$rc" = 0 ] && grep -qx 'warning: neither firewall is MASTER; check sys fw status' "$fixture/undo.out" ;;
     master-broken) [ "$rc" = 1 ] && grep -q '^die fw1 is unhealthy' "$fixture/undo.out" && ! grep -qx release "$fixture/undo.out" &&
         [ -f "$fixture/undo/lib/firewall-maintenance" ] ;;
     both-healthy) [ "$rc" = 0 ] && grep -qx 'wait fw1 fw2' "$fixture/undo.out" ;;

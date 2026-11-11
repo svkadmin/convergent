@@ -45,7 +45,7 @@ client_alive() {
 	pid=$(cat "/var/run/udhcpc.$1.pid" 2>/dev/null) || return 1
 	case $pid in '' | *[!0-9]*) return 1 ;; esac
 	# One argument per line: busybox grep stops at the NUL between them.
-	{ tr '\0' '\n' <"/proc/$pid/cmdline"; } 2>/dev/null | grep -qx "/var/run/udhcpc.$1.pid"
+	{ tr '\0' '\n' <"/proc/$pid/cmdline"; } 2>/dev/null | grep -Fqx "/var/run/udhcpc.$1.pid"
 }
 
 rc=0
