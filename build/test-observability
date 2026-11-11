@@ -80,10 +80,14 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
     printf '# scan s1\ncv_checker_success 1\n%s\n%s\n%s\n' 'cv_guest_expected_running{project="default",name="fw1"} 1' \
         'cv_guest_expected_running{project="owner",name="vm"} 1' 'cv_guest_expected_running{project="default",name="old"} 0' >"$out/checker.prom"
     clock=100300
-    listed='[{"name":"fw1","project":"default"},{"name":"vm","project":"owner"}]'; due no
-    listed='[{"name":"fw1"},{"name":"vm","project":"owner"}]'; due no
-    listed='[{"name":"fw1","project":"default"},{"name":"vm","project":"default"}]'; due yes
-    listed='[{"name":"vm","project":"owner"}]'; due yes
+    on='"expanded_config":{"boot.autostart":"true"}'
+    listed="[{\"name\":\"fw1\",\"project\":\"default\",$on},{\"name\":\"vm\",\"project\":\"owner\",$on}]"; due no
+    listed="[{\"name\":\"fw1\",$on},{\"name\":\"vm\",\"project\":\"owner\",$on}]"; due no
+    listed="[{\"name\":\"fw1\",\"project\":\"default\",$on},{\"name\":\"vm\",\"project\":\"default\",$on}]"; due yes
+    listed="[{\"name\":\"vm\",\"project\":\"owner\",$on}]"; due yes
+    # Autostart turned off since the scan (the owner stopped it for good): the same as gone.
+    listed="[{\"name\":\"fw1\",\"project\":\"default\",$on},{\"name\":\"vm\",\"project\":\"owner\",\"expanded_config\":{\"boot.autostart\":\"false\"}}]"; due yes
+    listed="[{\"name\":\"fw1\",\"project\":\"default\",$on},{\"name\":\"vm\",\"project\":\"owner\"}]"; due yes
     # Every guest deleted: an empty list is an answer; anything but a list is not.
     listed='[]'; due yes
     listed='{}'; due no
@@ -95,6 +99,28 @@ for part in throttle scan-start scan-end; do [ -s "$work/$part" ]; sh -n "$work/
     echo old-report >"$state/last"
     echo 'cv_checker_success 1' >"$out/checker.prom"
     clock=100300; due yes
+)
+# The heal's resume marker: every fifth failure in a row renews it (a later episode scans too); past five only
+# a missing one is made.
+grep -A1 '# Each fifth failure renews it' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" | sed 1d >"$work/stuck"
+grep -F '[ "$resume_failed" -lt 5 ] || [ -f "$heal/resume.stuck" ]' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" >>"$work/stuck"
+[ "$(wc -l <"$work/stuck")" = 2 ]
+(
+    heal=$work/stuck-run
+    mkdir "$heal"
+    for case in 4:old:old 5:old:new 6:old:old 5:none:new 7:none:new 4:none:none; do
+        IFS=: read -r resume_failed before after <<EOF2
+$case
+EOF2
+        rm -f "$heal/resume.stuck"
+        [ "$before" = none ] || touch -d @1 "$heal/resume.stuck"
+        . "$work/stuck"
+        case $after in
+        none) [ ! -e "$heal/resume.stuck" ] ;;
+        old) [ "$(stat -c %Y "$heal/resume.stuck")" = 1 ] ;;
+        new) [ "$(stat -c %Y "$heal/resume.stuck")" -gt 1 ] ;;
+        esac || { echo "resume marker case $case" >&2; exit 1; }
+    done
 )
 # Wired uplink: an allowed NIC wan's QEMU does not hold gets its role re-added once, on the second
 # run in a row; never a NIC USBGuard blocks. The scan reports what that leaves, not a pending strike.

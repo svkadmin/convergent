@@ -915,6 +915,8 @@ sudo check accept-fw <guest-dir>/fw   # updated firewall hashes, same Secure Boo
   optional Remmina guest (no `remmina` profile), `def` and `int` suffice.
 - Accept again if the baseline lacks the profile of `tmp` or Remmina.
 - The check fails without a baseline or with Secure Boot off.
+- Owner changes the baseline records show as changed until the next accept: a new password,
+  `sys usb allow`, and `sys wired attach` or `remove`.
 - Acceptance does not verify manifest signatures: verify the release yourself first.
 
 Check and accept wait up to 120 s for a minute run's locks. The autostart scan gives up after

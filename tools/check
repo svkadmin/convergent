@@ -417,11 +417,13 @@ if [ "${1:-}" = auto ] && [ -f "$state/last" ]; then
     scan=$(sed -n 's/^Scan: //p' "$state/last")
     [ -n "$scan" ] && grep -qxF "# scan $scan" "$out/checker.prom" 2>/dev/null &&
         grep -qx 'cv_checker_success 1' "$out/checker.prom" 2>/dev/null && interval=86400
-    # A deleted or renamed autostart guest keeps GuestStopped firing until the next scan: scan now.
+    # A deleted or renamed autostart guest, or one no longer autostarted, keeps GuestStopped firing until the
+    # next scan: scan now.
     # No answer keeps the interval (and the alert); an empty list is an answer.
     if [ "$interval" = 86400 ] &&
         instances=$(timeout -k 1 10 incus --force-local list --all-projects --fast --format json 9>&- 8>&- 7>&- 2>/dev/null) &&
-        instances=$(printf '%s\n' "$instances" | jq -r 'if type == "array" then .[] | "\(.project // "default"),\(.name)"
+        instances=$(printf '%s\n' "$instances" | jq -r 'if type == "array" then .[] | select(.expanded_config["boot.autostart"] == "true") |
+            "\(.project // "default"),\(.name)"
             else error("not a list") end' 2>/dev/null); then
         for guest in $(sed -n 's/^cv_guest_expected_running{project="\([A-Za-z0-9_.-]*\)",name="\([A-Za-z0-9_.-]*\)"} 1$/\1,\2/p' "$out/checker.prom"); do
             printf '%s\n' "$instances" | grep -qxF -- "$guest" || interval=0

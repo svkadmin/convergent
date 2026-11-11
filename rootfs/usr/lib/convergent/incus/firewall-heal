@@ -155,6 +155,8 @@ heal_resume() (
             resume_failed=$(($(heal_count "$heal/resume.failed.$resume_node") + 1))
             echo "$resume_failed" >"$heal/resume.failed.$resume_node" || :
             resume_failures="$resume_failures, $resume_node ($resume_failed in a row)"
+            # Each fifth failure renews it: a later episode, after a lone success kept the marker, scans too.
+            [ "$resume_failed" != 5 ] || touch "$heal/resume.stuck" || :
             [ "$resume_failed" -lt 5 ] || [ -f "$heal/resume.stuck" ] || : >"$heal/resume.stuck"
         done
         heal_note "work DHCP resume failed on${resume_failures#,}; lease hold retained"; exit 1
