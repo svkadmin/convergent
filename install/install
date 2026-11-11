@@ -298,6 +298,9 @@ check_disk() {
 	[ -b "$disk" ] || die "not a block device: $disk"
 	kind=$(lsblk -dnro TYPE "$disk") || die "cannot identify target"
 	[ "$kind" = disk ] || die "target must be a whole physical disk"
+	# The installed kernel waits for its slot before any module loads: an MMC controller is not built in.
+	[ "$(lsblk -dnro TRAN "$disk")" != mmc ] ||
+		die "an eMMC or SD disk: the installed system could not find it at boot (its controller is not built into the kernel)"
 	for d in $bootdisks; do [ "$disk" != "$d" ] || die "refusing the boot stick"; done
 	ro=$(blockdev --getro "$disk") || die "cannot read target flags"
 	[ "$ro" = 0 ] || die "target is read-only"
@@ -680,7 +683,15 @@ check_identity
 run dd if=/dev/zero of="$disk" bs=1M seek=1 count=1 conv=fsync status=none
 run sgdisk -n1:0:+${esp_mib}M -t1:ef00 -c1:cv-esp -n2:0:+${slot_mib}M -t2:8300 -c2:cv-slot-a \
 	-n3:0:+${slot_mib}M -t3:8300 -c3:cv-slot-b -n4:0:"$state_end" -t4:8309 -c4:cv-state "$disk"
-run blockdev --rereadpt "$disk"
+run udevadm settle
+# sgdisk re-read the table already; udev may still hold a new partition open (EBUSY): retry.
+n=0
+until blockdev --rereadpt "$disk" 2>/dev/null; do
+	n=$((n + 1))
+	[ "$n" -lt 5 ] || die "the kernel cannot re-read the new partition table of $disk"
+	run sleep 1
+	run udevadm settle
+done
 run udevadm settle
 case $disk in *[0-9]) prefix=${disk}p ;; *) prefix=$disk ;; esac
 set -- cv-esp cv-slot-a cv-slot-b cv-state
