@@ -1001,7 +1001,9 @@ grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
 grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/unlock-state.sh" | grep -qx 3
 grep -c 'die_shown "install: ' "$repo/initramfs/90convergent/convergent-install.sh" | grep -qx 2
 for hook in unlock-state convergent-install; do
+    rm -f "$work/console"
     sed -n '/^die_shown() /p' "$repo/initramfs/90convergent/$hook.sh" | sed "s|/dev/console|$work/console|" >"$work/die-shown"
+    check_script "$work/die-shown"
     (
         die() { echo "died: $1"; }
         sleep() { echo "slept $1"; }
@@ -1128,7 +1130,17 @@ grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/m
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
-grep -qF '"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.?????? "$state"/etc/shadow- "$state"/etc/gshadow-; do' "$repo/initramfs/90convergent/convergent-state.sh"
+sed -n '/^for old in "$state"\/etc\/.passwd/,/^done$/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/etc-sweep"
+check_script "$work/etc-sweep"
+(
+    state=$work/sweep-state
+    mkdir -p "$state/etc"
+    warn() { echo "$*" >&2; }
+    for f in shadow- gshadow- .shadow.ABCDEF .passwd.ABCDEF shadow passwd; do : >"$state/etc/$f"; done
+    ln -s missing "$state/etc/.localtime.ABCDEF"
+    . "$work/etc-sweep"
+    [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
+)
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
