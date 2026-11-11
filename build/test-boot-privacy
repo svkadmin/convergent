@@ -1168,12 +1168,24 @@ rc=0; sh "$work/recovery-menu" 1 a "$work/state" </dev/null >"$work/recovery.out
 rc=0; sh "$work/rescue-menu" "$work/state" </dev/null >"$work/rescue.out" 2>&1 || rc=$?
 [ "$rc" = 1 ] && [ "$(grep -o 'Rescue choice: ' "$work/rescue.out" | wc -l)" = 3 ] ||
     die 'rescue menu: Ctrl-D did not show the menu again'
+rc=0; printf '4\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Rescue choice: ' "$work/rescue.out" | wc -l)" = 4 ] ||
+    die 'rescue menu: Ctrl-D at the next-slot prompt did not return to the menu'
 # State failures after the passphrase stay on screen before the power-off.
 [ "$(grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/convergent-state.sh")" = 5 ]
 # A log copy with unreadable files keeps the rest and says so; an empty archive is still a failure.
 sed -n '/^copy_logs() (/,/^)/p' "$repo/initramfs/91convergent-rescue/menu.sh" |
     sed "s|/run/rescue-usb|$work/rescue-usb|" >"$work/copy-logs"
 check_script "$work/copy-logs"
+# A full stick (tar cannot write) is a failure, however much was written.
+rc=0
+(
+    state=$work/log-state; mkdir -p "$state/var-1/log"
+    usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }; sync() { :; }
+    tar() { printf 'partial' >"$4"; echo "tar: $4: Cannot write: No space left on device" >&2; return 2; }
+    . "$work/copy-logs"; copy_logs
+) >"$work/copy.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'No space left' "$work/copy.out" || die 'log copy: a full stick passed as an incomplete source'
 for written in partial ''; do
     rc=0
     (
@@ -1211,6 +1223,7 @@ grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$r
 grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
 # A missed firewall probe shows the portal as unknown, not as off (21E).
 grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
+grep -qF 'else if (portal == "mixed") block("PORTAL?", orange)' "$repo/tools/bar"
 # 21F: the network guests' QEMUs go last under memory pressure (every heal run, before its gates); a browser may
 # run many threads; a launcher check that did not answer is no verdict on the image; Remmina's OOM kills count.
 sed -n '/^heal_qemu() {/,/^}/p; /^heal_oom() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
@@ -1561,6 +1574,22 @@ cmp -s "$work/watch-expected" "$work/watch-calls" || die 'display watch: a reloa
 )
 [ "$(cat "$work/watch-calls" | tr '\n' ,)" = 'defaults,output eDP-1 power off,' ] || die 'display watch: an ambiguous set left a closed lid lit'
 [ -e "$work/xdg/convergent-lid-dark" ] || die 'display watch: no mark on the panel it darkened'
+# The owner's outputs file stands in for the defaults on an ambiguous set too (it cannot be saved).
+mkdir -p "$work/home/.config/sway/config.d"; : >"$work/home/.config/sway/config.d/outputs"
+: >"$work/watch-calls"
+(
+    noargs() { :; }; sway() { :; }; path() { :; }
+    XDG_RUNTIME_DIR=$work/xdg HOME=$work/home
+    display_lock() { profiles=$work/profiles; }
+    display_json() { echo '[{"name":"DP-1","make":"d","model":"e","serial":""},{"name":"DP-2","make":"d","model":"e","serial":""}]'; }
+    display_key() { return 1; }
+    display_defaults() { echo defaults >>"$work/watch-calls"; }
+    display_command() { echo "$1" >>"$work/watch-calls"; }
+    swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
+    . "$work/display-watch"
+    display_watch
+)
+[ ! -s "$work/watch-calls" ] || die 'display watch: defaults overrode the outputs file on an ambiguous set'
 # With the lid open, the watch lights the panel it darkened (the lid's open event can be missing after a closed-lid
 # login), and leaves a panel alone that it did not darken (idle power-off).
 echo 'state:      open' >"$work/lid/LID0/state"

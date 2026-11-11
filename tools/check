@@ -223,8 +223,9 @@ if [ "${1:-}:$#" = status:1 ]; then
     echo "$kib" >"$status/.guestmem"
     wait
     exec 8>&-
+    # Sides that disagree are mixed (one closed: the session ends); a missed probe alone is unknown.
     awk '{n++; if ($0 == "on") on++; if ($0 == "off") off++}
-        END {print n == 3 && on == 3 ? "on" : n == 3 && off == 3 ? "off" : "unknown"}' \
+        END {print n == 3 && on == 3 ? "on" : n == 3 && off == 3 ? "off" : on && off ? "mixed" : "unknown"}' \
         "$status/.portal-fw1" "$status/.portal-fw2" "$status/.portal-wan" >"$status/.portal"
     # A failed inventory must age out, rather than publish false down states.
     if [ -s "$status/.running" ]; then

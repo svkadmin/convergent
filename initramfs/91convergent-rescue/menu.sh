@@ -62,7 +62,12 @@ copy_logs() (
 	[ $# -gt 0 ] || { echo 'No logs found.'; exit 1; }
 	# Archive numeric guest owners; do not follow links out of their filesystems.
 	# A failing disk has unreadable files: tar skips them and exits 2, and the rest is still worth keeping.
-	rc=0; tar --one-file-system --numeric-owner -cf "$dest/logs.tar" "$@" || rc=$?
+	# A full or failing stick is a failure, not an incomplete source.
+	err=$(mktemp /run/rescue-tar.XXXXXX) || exit 1
+	rc=0; tar --one-file-system --numeric-owner -cf "$dest/logs.tar" "$@" 2>"$err" || rc=$?
+	cat "$err" >&2
+	if grep -q 'Cannot write\|not recoverable' "$err"; then rc=1; fi
+	rm -f "$err"
 	case $rc in 0) ;; 2) [ -s "$dest/logs.tar" ] || exit 1 ;; *) exit 1 ;; esac
 	sync
 	[ "$rc" = 0 ] || echo 'Some files could not be read: the archive is incomplete.'
