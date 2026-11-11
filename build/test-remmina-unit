@@ -323,8 +323,8 @@ for sample in term kill collector; do
     timeout -k 1 15 sh "$work/cage-cleanup" >"$work/cleanup.log" 2>&1 || rc=$?
     [ "$rc" = 1 ]
     [ ! -e "$run" ]
-    if [ "$sample" != collector ]; then grep -qx 'cage startup diagnostic' "$work/cleanup.log"; fi
-    if [ "$sample" = term ]; then grep -qx 'cage shutdown diagnostic' "$work/cleanup.log"; fi
+    if [ "$sample" != collector ]; then grep -qx 'cage.log: cage startup diagnostic' "$work/cleanup.log"; fi
+    if [ "$sample" = term ]; then grep -qx 'cage.log: cage shutdown diagnostic' "$work/cleanup.log"; fi
 done
 echo 'CV-REMOTE unit live Cage cleanup ok'
 
