@@ -169,7 +169,7 @@ for script in check facts; do
 	ok=1
 	bad 'fixture failure'
 	[ "$ok" = 0 ] || die 'failure did not set state'
-	grep -q -- "-p user.err -t $script fixture failure" "$work/log" || exit 1
+	grep -q -- "-p user.err -t $script -- fixture failure" "$work/log" || exit 1
 	if (die 'fatal fixture') 2>/dev/null; then exit 1; fi
 done
 sed -n '/^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p' "$repo/tools/power" >"$work/power-functions"
