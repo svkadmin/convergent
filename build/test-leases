@@ -791,6 +791,9 @@ done
     guest_reply() {
         case $4 in
         *pfsync0) echo 'RUNNING defer: on' ;;
+        # Bounded like the other replies (21K).
+        'pfctl -si') echo 'Status: Enabled' ;;
+        host*) echo 100.80.2.10 ;;
         'sha256 -q /etc/pf.conf') echo old-pf ;;
         *) echo digest ;;
         esac
