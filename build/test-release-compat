@@ -312,7 +312,8 @@ grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/fetch-release"
     for p in $below; do kill "$p" 2>/dev/null || :; done
     kill "$top" 2>/dev/null || :
     wait "$top" 2>/dev/null || :
-    [ "$(printf '%s\n' "$below" | grep -c .)" -ge 3 ]
+    # The inner shell and its sleep: pkill -P alone reaches only the first.
+    [ "$(printf '%s\n' "$below" | grep -c .)" -ge 2 ]
 )
 grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/debug"
 # A failed flush must still kill states, retain tracking and allow cleanup to retry.
