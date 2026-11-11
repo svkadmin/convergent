@@ -157,6 +157,9 @@ rm -f /etc/ssh/ssh_host_* /etc/isakmpd/private/local.key /etc/iked/private/local
 rcctl stop syslogd
 find /var/log -type f \( -name '*.[0-9]' -o -name '*.[0-9].gz' \) -exec rm -f {} +
 find /var/log -type f -exec sh -c 'for f do : >"$f"; done' sh {} +
+# The build boot's dmesg names the build host's CPU and memory; cron logs outside /var/log.
+rm -f /var/run/dmesg.boot
+[ ! -f /var/cron/log ] || : >/var/cron/log
 # Rollback archives do not travel with the image; syspatch -l counts patches by these files, so they stay empty.
 for f in /var/syspatch/*/rollback.tgz; do [ ! -f "$f" ] || : >"$f"; done
 # Every mounted install filesystem, including the auto layout's separate /usr trees.

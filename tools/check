@@ -192,7 +192,8 @@ if [ "${1:-}:$#" = status:1 ]; then
                     }
                     # The uplink kind for the bar: a Wi-Fi radio or a passed-through wired NIC.
                     print up ? "up " (dev ~ /^wl/ ? "wlan" : "eth") : "nolink " (eth ? "eth" : wlan ? "wlan" : "-")}' >"$status/.wan"
-        else echo nolink - >"$status/.wan"; fi
+        # No answer is no news of the uplink: grey, not orange (the bar's "running without an uplink").
+        else echo unknown - >"$status/.wan"; fi
         if wifi=$(guest_reply 65536 wan_probe wifi status 2>/dev/null); then
             # Valid UTF-8 only: the bar's markup breaks on anything else.
             printf '%s\n' "$wifi" | iconv -c -f UTF-8 -t UTF-8 | awk '$1 == "Connected" && $2 == "network" {sub(/^ *Connected network */, ""); sub(/ *$/, ""); gsub(/[[:cntrl:]]/, ""); name=$0} END {print name == "" ? "-" : name}' >"$status/.wifi"

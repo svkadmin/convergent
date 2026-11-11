@@ -330,8 +330,10 @@ while :; do
 			block("<span foreground=\"" red "\">" count[1] "</span> <span foreground=\"" orange "\">" count[2] "</span> " count[3], "", "alerts", 1)
 		else block("? ? ?", grey, "alerts")
 		portal=fresh ? get(st "/portal") : ""
-		# Shown only while on and fresh; "unknown" before guests exist is not news.
+		# Shown while on and fresh, and grey while unknown with wan running (a missed firewall probe); "unknown"
+		# before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)
+		else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)
 		camera=get("/var/lib/convergent/devices/camera")
 		video=get("/sys/module/videodev/refcnt")
 		if (camera == "on" || video != "") block(camera == "on" ? "CAM" : "CAM!", orange)

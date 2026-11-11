@@ -40,6 +40,8 @@ for scenario in wired wifi noaddress nocarrier linkdown internal none; do
     [ "$(cat "$status/.wan")" = "$expected" ]
 done
 if guest_reply 128 wan_probe diag >/dev/null; then exit 1; fi
+# A wan that does not answer is unknown, not running without an uplink.
+(guest_reply() { return 1; }; . "$work/uplink"; [ "$(cat "$status/.wan")" = 'unknown -' ])
 echo 'check status: route preference and eligibility passed'
 flock() {
     case $* in

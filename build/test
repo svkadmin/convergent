@@ -2336,6 +2336,7 @@ incus() {
                 rm "$fixture/ephemeral"
                 [ "$clear_timeout" = 0 ] || return 124 ;;
             ephemeral=true) [ "$8" = --property ]; touch "$fixture/ephemeral" ;;
+            user.convergent.ephemeral=true) touch "$fixture/marked" ;;
             boot.autorestart=false) touch "$fixture/held" ;;
             boot.autorestart=true) : ;;
             volatile.last_state.power=RUNNING)
@@ -2396,7 +2397,7 @@ grep -q -- '--project owner config set wan boot.autorestart=false' "$fixture/cal
 grep -q 'config set wan volatile.last_state.power=RUNNING$' "$fixture/calls"
 # Preserve ephemeral owners, including cleanup after failed stops or queries.
 for fault in none clear clear-timeout stop query missing last-state; do
-    rm -f "$fixture/stopped" "$fixture/deleted"
+    rm -f "$fixture/stopped" "$fixture/deleted" "$fixture/marked"
     : >"$fixture/calls"
     : >"$fixture/timeouts"
     touch "$fixture/ephemeral"
@@ -2411,10 +2412,21 @@ for fault in none clear clear-timeout stop query missing last-state; do
     esac
     if [ "$fault" = none ]; then stop_one owner wan - - true 0 true
     elif stop_one owner wan - - true 0 true; then exit 1; fi
-    [ -f "$fixture/ephemeral" ]
     grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
-    grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"
-    grep -q '^-k 1 10 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
+    # Marked before the protection: a drain cut later leaves it for guests.
+    [ "$(grep -n 'config set wan user.convergent.ephemeral=true$' "$fixture/calls" | cut -d: -f1)" -lt \
+        "$(grep -n 'config set wan ephemeral=false --property$' "$fixture/calls" | cut -d: -f1)" ]
+    case $fault in
+    none|last-state)
+        # Stopped: ephemeral again, unmarked.
+        [ -f "$fixture/ephemeral" ]
+        grep -q '^-k 1 10 incus .*config set wan ephemeral=true --property$' "$fixture/timeouts"
+        grep -q 'config unset wan user.convergent.ephemeral$' "$fixture/calls" ;;
+    *)
+        # Not confirmed stopped: Incus would delete it as it stops it; persistent, marked for guests.
+        if grep -q 'config set wan ephemeral=true --property$' "$fixture/calls"; then exit 1; fi
+        [ "$fault" = clear ] || [ ! -f "$fixture/ephemeral" ] ;;
+    esac
     if [ "$fault" = clear ] || [ "$fault" = clear-timeout ]; then
         if grep -q 'stop wan\|boot.autorestart' "$fixture/calls"; then exit 1; fi
     fi

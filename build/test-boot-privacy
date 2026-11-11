@@ -1001,7 +1001,9 @@ grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
 grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/unlock-state.sh" | grep -qx 3
 grep -c 'die_shown "install: ' "$repo/initramfs/90convergent/convergent-install.sh" | grep -qx 2
 for hook in unlock-state convergent-install; do
+    rm -f "$work/console"
     sed -n '/^die_shown() /p' "$repo/initramfs/90convergent/$hook.sh" | sed "s|/dev/console|$work/console|" >"$work/die-shown"
+    check_script "$work/die-shown"
     (
         die() { echo "died: $1"; }
         sleep() { echo "slept $1"; }
@@ -1089,17 +1091,21 @@ check_script "$work/autorestart-clear"
 )
 # The installed policy keeps a port only for a device without a serial, as USBGuard's own policy does: a dock
 # or a USB system disk moved to another port stays allowed.
-sed -n '/^# Ports only where USBGuard/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"
-[ "$(wc -l <"$work/usb-ports")" = 4 ]
+sed -n '/^# As sys usb allow and enrol write them/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"
+[ "$(wc -l <"$work/usb-ports")" = 7 ]
 (
     work=$work/usb-ports-run
     mkdir "$work"
     die() { exit 1; }
-    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" via-port "3-2" with-interface 08:06:50' \
-        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/usb.rules"
+    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" parent-hash "r" via-port "3-2" with-interface 08:06:50 with-connect-type "hotplug"' \
+        'allow id 2:2 serial "" name "Hub" hash "b" parent-hash "r" via-port "1-1" with-interface 09:00:00 with-connect-type ""' \
+        'allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI" hash "k" parent-hash "p" with-interface 09:00:00 with-connect-type ""' \
+        'allow id 3:3 serial "C" name "Camera" hash "c" parent-hash "r" via-port "3-7" with-interface 0e:01:00 with-connect-type "hardwired"' >"$work/usb.rules"
     . "$work/../usb-ports"
     printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" with-interface 08:06:50' \
-        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/expected"
+        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' \
+        'allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI" with-interface 09:00:00' \
+        'allow id 3:3 serial "C" name "Camera" hash "c" with-interface 0e:01:00 with-connect-type "hardwired"' >"$work/expected"
     cmp "$work/expected" "$work/usb.rules"
 )
 # A boot medium that is not USB is refused before the first question, not after the last.
@@ -1128,7 +1134,25 @@ grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/m
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
-grep -qF '"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.?????? "$state"/etc/shadow- "$state"/etc/gshadow-; do' "$repo/initramfs/90convergent/convergent-state.sh"
+sed -n '/^for old in "$state"\/etc\/.passwd/,/^done$/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/etc-sweep"
+check_script "$work/etc-sweep"
+(
+    state=$work/sweep-state
+    mkdir -p "$state/etc"
+    warn() { echo "$*" >&2; }
+    for f in shadow- gshadow- .shadow.ABCDEF .passwd.ABCDEF shadow passwd; do : >"$state/etc/$f"; done
+    ln -s missing "$state/etc/.localtime.ABCDEF"
+    . "$work/etc-sweep"
+    [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
+)
+# 21E: no host NIC for a USB4 host-to-host cable; no build host details or shared id in guest images; the
+# Thunderbolt levels that keep PCIe tunnels off are named so.
+grep -qx 'install thunderbolt_net /bin/false' "$repo/rootfs/etc/modprobe.d/convergent.conf"
+grep -qx 'rm -f /var/run/dmesg.boot' "$repo/guests/fw/site/install.site"
+grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$repo/guests/wan/build"
+grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
+# A missed firewall probe shows the portal as unknown, not as off (21E).
+grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
@@ -1145,9 +1169,10 @@ grep -qx "flock -s -w 2 9 || die 'guest update in progress'" "$repo/tools/firewa
 grep -q '^flock -s -w 2 8 || die .a guest update is running' "$repo/tools/fetch-release"
 
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
-sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^system_usb() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
+sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^rule_portable() {/,/^}/p; /^system_usb() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
     sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/var/lib/convergent/guests/initialized|$work/wired/initialized|g" \
-        -e "s|/dev/disk/by-partlabel/cv-state|$work/wired/dev/cv-state|" -e "s|/sys/class/block/|$work/wired/block/|" \
+        -e "s|/dev/mapper/cv-state|$work/wired/dev/cv-state|" -e "s|/sys/dev/block/|$work/wired/sysdev/|" \
+        -e "s|/sys/class/block/|$work/wired/block/|" \
         -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
 check_script "$work/wired-functions"
 grep -q 'wired prune' "$work/wired-functions"
@@ -1250,7 +1275,11 @@ touch "$work/wired/initialized"
     : >"$w/devices-tree/usb3/idVendor"
     ln -s ../.. "$d/3-2:1.0/host0/0:0:0/block/sdz/device"
     ln -s "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/block/sdz1"
-    ln -s /dev/sdz1 "$w/dev/cv-state"
+    # The open mapping's one slave (by its major:minor, a node or a link), not a by-partlabel link a second
+    # Convergent disk may take.
+    ln -s /dev/dm-9 "$w/dev/cv-state"
+    mkdir -p "$w/sysdev/253:9/slaves/sdz1"
+    mountpoint() { [ "$1" = -x ] && [ -L "$2" ] || return 1; echo 253:9; }
     [ "$(system_usb)" = "3-2
 usb3" ] || exit 1
     printf '9: %s via-port "3-2"\n8: %s via-port "usb3"\n' "$disk" "$hub" >"$w/devices"
@@ -1265,6 +1294,14 @@ usb3" ] || exit 1
             grep -q 'runs from a USB disk: enrol again' "$w/out" || exit 1 ;;
         esac
     done
+    # Portable root hub rules carry no hash: revoke refuses them as not device-specific, so it never drops the
+    # root hub above the system disk.
+    reset; rm -f "$w/synced"
+    printf '5: %s\n6: allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI"\n' "$kbd" >"$w/rules"
+    cp "$w/rules" "$w/rules.before"
+    code=0
+    (revoke 6) >"$w/out" 2>&1 || code=$?
+    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'change root hubs with sys usb enrol' "$w/out" || exit 1
     for rule in 9 8 5; do
         reset; rm -f "$w/synced"
         printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"
@@ -1288,6 +1325,12 @@ usb3" ] || exit 1
     rm -f "$w/synced"; reset
     (revoke 5) >"$w/out"
     [ -e "$w/synced" ] || exit 1
+    # Enrolled rules carry no parent-hash.
+    printf '%s parent-hash "p1"\n' "$kbd" >"$w/generated"
+    reset
+    printf '%s\n' yes | (enrol) >"$w/out"
+    grep -qF "$kbd" "$w/rules" || exit 1
+    if grep -q parent-hash "$w/rules"; then exit 1; fi
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do
@@ -1753,7 +1796,45 @@ check_script "$work/bar-cleanup"
 echo 'test-boot-privacy: bar exit passed'
 
 # devices allow warns for any HID interface, and names vendor-specific ones in any position.
-sed -n '/^allow_usb() {/,/^}/p' "$repo/tools/devices" >"$work/allow-usb"
+sed -n '/^rule_portable() {/,/^}/p; /^allow_usb() {/,/^}/p' "$repo/tools/devices" >"$work/allow-usb"
+# Boot converts rules written before 0.1.8 once, the same way, before USBGuard reads them.
+sed -n '/^rules=\$state\/etc\/usbguard\/rules.conf$/,/^fi$/p' "$repo/initramfs/90convergent/convergent-state.sh" >"$work/usb-migrate"
+check_script "$work/usb-migrate"
+(
+    state=$work/migrate-state
+    mkdir -p "$state/etc/usbguard"
+    warn() { echo "$*" >&2; exit 1; }
+    printf '%s\n' 'allow id 1:1 serial "S" name "Dock" hash "a" parent-hash "r" via-port "3-2" with-connect-type "hotplug"' \
+        'allow id 2:2 serial "" name "Hub" hash "b" parent-hash "r" via-port "1-1" with-connect-type "unknown"' >"$state/etc/usbguard/rules.conf"
+    . "$work/usb-migrate"
+    printf '%s\n' 'allow id 1:1 serial "S" name "Dock" hash "a"' 'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1"' >"$work/migrate-expected"
+    cmp "$work/migrate-expected" "$state/etc/usbguard/rules.conf"
+    [ ! -e "$state/etc/usbguard/rules.conf.new" ]
+    touch -d @1 "$state/etc/usbguard/rules.conf"
+    . "$work/usb-migrate"
+    [ "$(stat -c %Y "$state/etc/usbguard/rules.conf")" = 1 ]
+)
+# A read or write cut short replaces nothing.
+(
+    state=$work/migrate-cut
+    mkdir -p "$state/etc/usbguard"
+    warned=
+    warn() { warned=1; }
+    sed() { command sed "$@" | head -c 20; return 1; }
+    printf '%s\n' 'allow id 1:1 serial "S" name "Dock" hash "a" parent-hash "r" via-port "3-2"' >"$state/etc/usbguard/rules.conf"
+    cp "$state/etc/usbguard/rules.conf" "$work/migrate-before"
+    . "$work/usb-migrate"
+    cmp "$work/migrate-before" "$state/etc/usbguard/rules.conf"
+    [ -n "$warned" ]
+    [ ! -e "$state/etc/usbguard/rules.conf.new" ]
+)
+grep -q 'inst_multiple .* sed cmp ' "$repo/initramfs/90convergent/module-setup.sh"
+# The installer, devices and boot write rules the same way.
+portable_text() { sed 's/^[[:space:]]*//; s/^if //; s/ *\\$//'; }
+[ "$(sed -n '/^rule_portable() {/,/^}/p' "$repo/tools/devices" | sed -n '2,3p' | portable_text)" = \
+    "$(awk '/^sed -e .s\/ parent-hash/ {print; getline; print; exit}' "$repo/install/install" | portable_text)" ]
+[ "$(sed -n '/^rule_portable() {/,/^}/p' "$repo/tools/devices" | sed -n '2,3p' | portable_text)" = \
+    "$(awk '/^[[:space:]]*(if )?sed -e .s\/ parent-hash/ {print; getline; print; exit}' "$repo/initramfs/90convergent/convergent-state.sh" | portable_text)" ]
 check_script "$work/allow-usb"
 (
     . "$work/allow-usb"
@@ -1761,12 +1842,29 @@ check_script "$work/allow-usb"
     logger() { :; }
     usbguard() {
         case $1 in
-        list-devices) printf '7: block id 1234:5678 serial "" name "x" via-port "1-1" with-interface %s with-connect-type "hotplug"\n' "$iface" ;;
-        allow-device) [ "$*" = 'allow-device -p 7' ] || exit 97 ;;
+        list-devices) printf '7: block id 1234:5678 serial "%s" name "x" hash "h7" parent-hash "r1" via-port "1-1" with-interface %s with-connect-type "hotplug"\n' "$serial" "$iface" ;;
+        append-rule) [ "$2 $3" = '-a 0' ] || exit 97; echo "$4" >"$work/allow-rule"; echo "9: $4" >>"$work/allow-rules" ;;
+        list-rules) cat "$work/allow-rules" 2>/dev/null || : ;;
+        allow-device) [ "$*" = 'allow-device 7' ] || exit 97 ;;
         *) exit 97 ;;
         esac
     }
     sync() { [ "$*" = '-f /etc/usbguard/rules.conf' ] || exit 97; echo synced >"$work/allow-synced"; }
+    # The rule written first: no parent-hash, a port only without a serial.
+    for serial in '' S1; do
+        iface=03:01:01
+        allow_usb 7 >/dev/null
+        case $serial in
+        '') expected='allow id 1234:5678 serial "" name "x" hash "h7" via-port "1-1" with-interface 03:01:01' ;;
+        *) expected='allow id 1234:5678 serial "S1" name "x" hash "h7" with-interface 03:01:01' ;;
+        esac
+        [ "$(cat "$work/allow-rule")" = "$expected" ] || die "allow wrote $(cat "$work/allow-rule")"
+    done
+    # A retry (authorization failed after the rule was written) adds no second rule.
+    allow_usb 7 >/dev/null
+    [ "$(grep -c 'serial "S1"' "$work/allow-rules")" = 1 ] || die 'allow added its rule twice'
+    rm -f "$work/allow-rules"
+    serial=
     for iface in '{ 08:06:50 03:00:00 }' '03:01:01' '{ 08:06:50 ff:00:00 }' '08:06:50'; do
         rm -f "$work/allow-synced"
         allow_usb 7 >"$work/allow-out"

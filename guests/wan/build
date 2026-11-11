@@ -189,6 +189,8 @@ awk 'BEGIN {RS=""; FS="\n"}
 sort "$work/packages.raw" >"$work/packages"
 : > "$target/etc/apk/repositories"
 rm -rf "$target"/var/cache/apk/* "$target"/tmp/* "$target"/root/.ash_history
+# One per wan, as the containers: not the build's, shared by every laptop.
+rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"
 du -smx "$target" | awk '{ print "build: root filesystem " $1 " MiB" }'
 sync
 fstrim "$target" 2>/dev/null || true

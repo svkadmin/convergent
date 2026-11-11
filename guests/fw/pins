@@ -6,8 +6,10 @@ OPENBSD_MIRROR=https://cdn.openbsd.org/pub/OpenBSD
 # Key hash: ftp.openbsd.org, openbsd/src and openbsd.org/79.html agreed on 2026-10-17.
 OPENBSD_KEY_MIRROR=https://ftp.openbsd.org/pub/OpenBSD
 OPENBSD_KEY_SHA256=b7ee8e7981549a1f707a4ed05115a99959a5f9e34b9bed9f9a098be17dd7e4b1
-# Errata the build refuses to ship without (7.9: shmat overflow, kernel refcount use-after-free).
-REQUIRED_ERRATA="018 026"
+# Errata the build refuses to ship without (7.9: shmat overflow, kernel refcount use-after-free; 046-054: zlib,
+# LibreSSL, kbind root, libc resolver overflow, remote TCP SACK and syn cache crashes, IPv6 DAD, wscons).
+# 045 patches the X server, which the firewalls do not install.
+REQUIRED_ERRATA="018 026 046 047 048 049 050 051 052 053 054"
 
 # pkg_add verifies package signatures.
 FW_PACKAGES="node_exporter"

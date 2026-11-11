@@ -122,6 +122,8 @@ fetch)
 	printf '%s\n' "$id" | grep -Eq '^[0-9a-f]{32}$' || die "invalid diagnostic id"
 	[ -f "$BUILDER/debug/$id.pub" ] || die "no pinned laptop key for request $id"
 	s3 -o "$tmp/output.cms" "$ep/debug-out/$id" || die "cannot fetch output for $id"
+	# Fetched: also an output that fails below (an upload by whoever read the script's URL) leaves the bucket's cap.
+	s3 -o /dev/null -X DELETE "$ep/debug-out/$id" || echo "debug: cannot delete output for $id" >&2
 	openssl cms -decrypt -binary -inform DER -in "$tmp/output.cms" -recip "$keys/debug.crt" \
 		-inkey "$keys/debug.key" -out "$tmp/signed" || die "result replaced or corrupt; publish a new request"
 	head -c 64 "$tmp/signed" >"$tmp/output.sig"
