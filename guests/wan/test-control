@@ -424,3 +424,7 @@ for sample in wifi-first kvm-only none; do
     esac
 done
 echo 'ptp-kvm: chrony follows the KVM clock by name'
+# Every uplink script names wlan0: iwd keeps the kernel's interface, which a reprobe recreates as wlan0.
+awk '/^\[/ {s = $0} s == "[DriverQuirks]" && $0 == "DefaultInterface=*" {f = 1} END {exit !f}' "$here/rootfs/etc/iwd/main.conf"
+grep -qx 'WIFI_IF=wlan0' "$here/rootfs/etc/wan/wan.conf"
+echo 'iwd: the Wi-Fi interface keeps its name across a driver reprobe'
