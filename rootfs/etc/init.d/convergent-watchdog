@@ -19,8 +19,8 @@ done
 logger -t convergent-watchdog "no bless within ten minutes, the watchdog is left to reset the board"
 '
 
-# sysinit runs before syslog-ng: the kernel log carries the line into /var/log/messages.
-wd_log() { logger -t convergent-watchdog "$1"; printf '<4>convergent-watchdog: %s\n' "$1" 2>/dev/null >/dev/kmsg || :; }
+# sysinit runs before any syslog: convergent-bless logs the kept line once syslog-ng runs.
+wd_log() { printf '%s\n' "$1" 2>/dev/null >>/run/convergent-watchdog.warn || :; }
 depend() {
 	after devfs
 }

@@ -1,0 +1,8 @@
+# Gentoo's defaults, and after syslog-ng: the dispatcher's syslog copy of early records is not lost (the kernel
+# queues audit records until auditd reads them).
+EXTRAOPTIONS=''
+RULEFILE_STARTUP=/etc/audit/audit.rules
+RULEFILE_STOP_PRE=/etc/audit/audit.rules.stop.pre
+RULEFILE_STOP_POST=/etc/audit/audit.rules.stop.post
+AUDITD_LANG=C
+rc_after="logger"

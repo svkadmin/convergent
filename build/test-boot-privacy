@@ -1226,14 +1226,22 @@ check_script "$work/etc-sweep"
     [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
 )
 # Boot-time records reach /var/log/messages: syslog-ng starts in boot (after lo for its 127.0.0.1 source), and the
-# sysinit watchdog warnings also go to the kernel log; lock-screen failures count as auth events (q87).
+# sysinit watchdog warning is kept in /run until convergent-bless logs it; bless checks syslog-ng; auditd and
+# convergent-net start after it, syslog-ng after AppArmor; lock-screen failures count as auth events (q87, q90).
 grep -qF 'boot/apparmor boot/syslog-ng default/chronyd' "$repo/build/image"
 grep -qF 'rm -f "$rl/boot/mtab" "$rl/default/syslog-ng"' "$repo/build/image"
-grep -qx 'rc_need="loopback"' "$repo/rootfs/etc/conf.d/syslog-ng" && grep -qx 'SYSLOG_NG_OPTS=""' "$repo/rootfs/etc/conf.d/syslog-ng"
-sed -n '/^wd_log() /p' "$repo/rootfs/etc/init.d/convergent-watchdog" | sed "s|/dev/kmsg|$work/kmsg|" >"$work/wd-log"
+grep -qx 'rc_need="loopback"' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'rc_after="apparmor"' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'SYSLOG_NG_OPTS=""' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'rc_after="logger"' "$repo/rootfs/etc/conf.d/auditd"
+grep -qx 'AUDITD_LANG=C' "$repo/rootfs/etc/conf.d/auditd"
+sed -n '/^depend() {$/,/^}$/p' "$repo/rootfs/etc/init.d/convergent-net" | grep -qx '	after logger'
+grep -qF 'for svc in convergent-firewall usbguard auditd apparmor syslog-ng; do' "$repo/tools/slot"
+sed -n '/^wd_log() /p' "$repo/rootfs/etc/init.d/convergent-watchdog" | sed "s|/run/convergent-watchdog.warn|$work/wd.warn|" >"$work/wd-log"
 check_script "$work/wd-log"
-(logger() { :; }; . "$work/wd-log"; wd_log 'no usable watchdog')
-grep -qx '<4>convergent-watchdog: no usable watchdog' "$work/kmsg"
+(. "$work/wd-log"; wd_log 'no usable watchdog')
+grep -qx 'no usable watchdog' "$work/wd.warn"
+grep -qF 'logger -t convergent-watchdog -f /run/convergent-watchdog.warn && rm -f /run/convergent-watchdog.warn' "$repo/rootfs/etc/init.d/convergent-bless"
 [ "$(grep -c '^		wd_log "' "$repo/rootfs/etc/init.d/convergent-watchdog")" = 2 ]
 grep -qF '(greetd|tuigreet|login|su|sudo|sshd|swaylock)(' "$repo/rootfs/usr/lib/convergent/sys/80-security"
 grep -qF '"sudo","sshd","swaylock")' "$repo/guests/svc/dashboards/dashlib.py"

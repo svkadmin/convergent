@@ -1,3 +1,5 @@
-# Started in boot (build/image), before auditd, usbguard and convergent-net log: its 127.0.0.1 source needs lo.
+# Started in boot (build/image) so the boot services' records are kept: after lo (its 127.0.0.1 source) and after
+# AppArmor has loaded its profile.
 rc_need="loopback"
+rc_after="apparmor"
 SYSLOG_NG_OPTS=""
