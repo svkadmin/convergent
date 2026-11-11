@@ -372,3 +372,28 @@ echo 'nameserver 192.0.2.1' >"$work/run/resolv.eth1.dns"
 [ ! -e "$work/run/resolv.eth1.dns" ]
 [ ! -s "$work/calls" ]
 echo 'wan-dhcp-dns: deconfig drops the record without queuing a check'
+# chrony's clock is KVM's by name: the Wi-Fi card's PHC may be ptp0.
+sed -e "s|/sys/class/ptp/|$work/ptp/|g" -e "s|/dev/ptp|$work/dev/ptp|g" "$here/rootfs/etc/init.d/ptp-kvm" >"$work/ptp-kvm"
+grep -qx 'refclock PHC /dev/ptp_kvm poll 2 refid KVM' "$here/rootfs/etc/chrony/chrony.conf"
+grep -qx 'boot ptp-kvm' "$here/runlevels"
+for sample in wifi-first kvm-only none; do
+    rm -rf "$work/ptp" "$work/dev"
+    mkdir -p "$work/dev"
+    case $sample in
+    wifi-first) mkdir -p "$work/ptp/ptp0" "$work/ptp/ptp1"; echo iwlwifi-PTP >"$work/ptp/ptp0/clock_name"; echo 'KVM virtual PTP' >"$work/ptp/ptp1/clock_name" ;;
+    kvm-only) mkdir -p "$work/ptp/ptp0"; echo 'KVM virtual PTP' >"$work/ptp/ptp0/clock_name" ;;
+    esac
+    (
+        ebegin() { :; }
+        eend() { return "$1"; }
+        ewarn() { echo "warn $*"; }
+        . "$work/ptp-kvm"
+        start
+    ) >"$work/ptp.out"
+    case $sample in
+    wifi-first) [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp1 ] ;;
+    kvm-only) [ "$(readlink "$work/dev/ptp_kvm")" = /dev/ptp0 ] ;;
+    none) [ ! -e "$work/dev/ptp_kvm" ]; grep -qx 'warn no KVM PTP clock' "$work/ptp.out" ;;
+    esac
+done
+echo 'ptp-kvm: chrony follows the KVM clock by name'
