@@ -1435,7 +1435,7 @@ prepare_cleanup() {
                 locked ic storage volume snapshot delete default "$volume" "$prep_snap" || return
             fi
         done
-        rm -rf "$state/iwd.$prep_guest" || return
+        rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" || return
         if [ "$prep_start" = yes ]; then
             running "$prep_guest" || start_guest "$prep_guest" || return
             prep_health=$prep_guest
@@ -1495,7 +1495,7 @@ replace() {
             logger -p user.warning -t guests 'wan: old disk unreadable; Wi-Fi networks not carried over' 2>/dev/null || :
             rm -rf "$work/wan-read" "$work/iwd" && mkdir "$work/iwd" || die 'cannot reset the wan iwd store'
         }
-        rm -rf "$state/iwd.wan"
+        rm -rf "$state/iwd.wan" "$state/iwd.wan.new" "$state/iwd.wan.reread"
         mv "$work/iwd" "$state/iwd.wan"
         sync
     fi
@@ -1582,7 +1582,7 @@ commit_update() {
     # Its kept copy first: a later commit must never find another update's images.
     rm -rf "$state/committed.stage" && rm "$state/committed" && sync || return
     images_prune || return
-    while read -r guest snap image; do rm -rf "$state/iwd.$guest" && prune "$guest" || return; done <"$work/committed"
+    while read -r guest snap image; do rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" && prune "$guest" || return; done <"$work/committed"
 }
 browser_commit() {
     # The durable marker means both replacements passed; recovery finishes the commit (cleanup too, without errexit).

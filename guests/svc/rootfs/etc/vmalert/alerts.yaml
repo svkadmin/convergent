@@ -144,7 +144,7 @@ groups:
       - alert: BtrfsDeviceErrors
         # Lifetime counters (nothing resets them): a rise over the last week, or a count with no week-old sample (raised
         # once after a reinstall or a new drive); the total stays on the dashboard.
-        expr: ((cv_btrfs_device_errors_total - min_over_time(cv_btrfs_device_errors_total[7d])) > 0) or ((cv_btrfs_device_errors_total > 0) unless (count_over_time(cv_btrfs_device_errors_total[7d] offset 1h) > 0))
+        expr: ((cv_btrfs_device_errors_total - min_over_time(cv_btrfs_device_errors_total[7d])) > 0) or ((cv_btrfs_device_errors_total > 0) unless (count_over_time(cv_btrfs_device_errors_total[14d] offset 1h) > 0))
         labels: {severity: critical}
         annotations: {summary: 'Btrfs device errors: {{ $labels.kind }}', dashboard: '/d/cv-host'}
       - alert: VolumeQuotaHigh
@@ -322,7 +322,7 @@ groups:
       - alert: NvmeErrors
         # Media errors are lifetime: a rise over the last week, or a count with no week-old sample. Every warning bit but
         # temperature (bit 1), which the daily sample kept raised a day after the drive cooled: NvmeHot reads it live.
-        expr: ((cv_nvme_media_errors_total - min_over_time(cv_nvme_media_errors_total[7d])) > 0) or ((cv_nvme_media_errors_total > 0) unless (count_over_time(cv_nvme_media_errors_total[7d] offset 1h) > 0)) or (bitmap_and(cv_nvme_critical_warning, 253) > 0)
+        expr: ((cv_nvme_media_errors_total - min_over_time(cv_nvme_media_errors_total[7d])) > 0) or ((cv_nvme_media_errors_total > 0) unless (count_over_time(cv_nvme_media_errors_total[14d] offset 1h) > 0)) or (bitmap_and(cv_nvme_critical_warning, 253) > 0)
         labels: {severity: critical}
         annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}', dashboard: '/d/cv-host'}
       - alert: NvmeHot

@@ -1276,6 +1276,13 @@ usb3" ] || exit 1
         *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'the USB disk the system runs from' "$w/out" || exit 1 ;;
         esac
     done
+    # No device list: revoke refuses rather than guess.
+    mv "$w/devices" "$w/devices.kept"
+    reset; printf '5: %s\n9: %s\n' "$kbd" "$disk" >"$w/rules"; cp "$w/rules" "$w/rules.before"
+    code=0
+    (revoke 5) >"$w/out" 2>&1 || code=$?
+    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'cannot read devices' "$w/out" || exit 1
+    mv "$w/devices.kept" "$w/devices"
     rm "$w/dev/cv-state"
     [ -z "$(system_usb)" ] || exit 1
     rm -f "$w/synced"; reset

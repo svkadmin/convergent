@@ -245,10 +245,14 @@ revoke() {
 	rules=$(usbguard list-rules) || die 'cannot read policy'
 	line=$(printf '%s\n' "$rules" | grep "^$1: allow ") || die 'not an allowed rule (use review)'
 	case $line in *\ hash\ \"*\"*) ;; *) die 'not a device-specific rule; enrol individual devices first' ;; esac
-	for port in $(system_usb); do
-		hash=$(usbguard list-devices | grep -F " via-port \"$port\"" | sed -n 's/.* hash "\([^"]*\)".*/\1/p')
-		case $line in *" hash \"$hash\""*) [ -z "$hash" ] || die 'that rule allows the USB disk the system runs from, or a hub above it' ;; esac
-	done
+	ports=$(system_usb)
+	if [ -n "$ports" ]; then
+		devices=$(usbguard list-devices) || die 'cannot read devices'
+		for port in $ports; do
+			hash=$(printf '%s\n' "$devices" | grep -F " via-port \"$port\"" | sed -n 's/.* hash "\([^"]*\)".*/\1/p')
+			case $line in *" hash \"$hash\""*) [ -z "$hash" ] || die 'that rule allows the USB disk the system runs from, or a hub above it' ;; esac
+		done
+	fi
 	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
 	ask 'Remove this allowance and reapply the remaining policy? This can disconnect input or storage.'
 	# A specific deny also defeats any overlapping allowance in an older policy.
