@@ -945,8 +945,18 @@ mkdir -p "$work/journals/leases" "$work/journals-out"
 sed -n '/- alert: GuestJournalRetained/{n;p;}' "$rules" |
     grep -qxF '        expr: (time() - cv_guest_journal_since_seconds{journal="leases/held"} > 14400) or (time() - cv_guest_journal_since_seconds > 43200)'
 # A skipped WAN probe is a local fault; the transit alert reads probe_up only.
-sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up == 0'
-sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok == 0'
+sed -n '/- alert: WanWatchProbeFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_probe_up{node=~"fw1|fw2"} == 0'
+sed -n '/- alert: WanWatchLocalFailed/{n;p;}' "$rules" | grep -qx '        expr: convergent_wan_watch_local_ok{node=~"fw1|fw2"} == 0'
+# Firewall-only rules read fw1/fw2 alone: wan cannot raise them (q83).
+sed -n '/- alert: PfsyncNotReady/{n;p;}' "$rules" | grep -qxF '        expr: (convergent_pfsync_up{node=~"fw1|fw2"} == 0) or (convergent_pfsync_defer{node=~"fw1|fw2"} == 0)'
+sed -n '/- alert: CarpMixedRoles/{n;p;}' "$rules" | grep -qxF '        expr: max by(node) (convergent_carp_state{node=~"fw1|fw2"}) != min by(node) (convergent_carp_state{node=~"fw1|fw2"})'
+# A read-only VictoriaMetrics stores no samples, its own flag included: the flag's silence is critical; samples the
+# series limiter drops count as write errors, and the counters are kept.
+sed -n '/- alert: MetricsStorageStopped/{n;p;n;p;n;p;}' "$rules" >"$work/vm-stopped"
+grep -qxF '        expr: absent_over_time(vm_storage_is_read_only{job="monitoring",service="metrics"}[3m])' "$work/vm-stopped"
+grep -qx '        labels: {severity: critical}' "$work/vm-stopped"
+sed -n '/- alert: MonitoringWriteErrors/{n;p;}' "$rules" | grep -qF '(increase(vm_hourly_series_limit_rows_dropped_total[5m]) > 0) or (increase(vm_daily_series_limit_rows_dropped_total[5m]) > 0)'
+grep -qF '|hourly_series_limit_rows_dropped_total|daily_series_limit_rows_dropped_total|' "$repo/guests/svc/rootfs/etc/victoria-metrics/scrape.yaml"
 # wan's conntrack table exceeds pf's per-source totals and alerts before it drops new NAT flows.
 sed -n '/- alert: WanConntrackHigh/{n;p;n;p;}' "$rules" >"$work/conntrack-rule"
 grep -qx '        expr: node_nf_conntrack_entries{node="wan"} / node_nf_conntrack_entries_limit{node="wan"} > 0.8' "$work/conntrack-rule"
