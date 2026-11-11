@@ -1292,19 +1292,14 @@ usb3" ] || exit 1
             grep -q 'runs from a USB disk: enrol again' "$w/out" || exit 1 ;;
         esac
     done
-    # Portable root hub rules carry no hash: the guard knows them by id and serial; the USB 2 root hub on the
-    # same controller (same serial) stays revocable.
-    for rule in 6 7; do
-        reset; rm -f "$w/synced"
-        printf '5: %s\n6: allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI"\n7: allow id 1d6b:0002 serial "0000:00:14.0" name "xHCI"\n' "$kbd" >"$w/rules"
-        cp "$w/rules" "$w/rules.before"
-        code=0
-        (revoke "$rule") >"$w/out" 2>&1 || code=$?
-        case $rule in
-        7) [ "$code" = 0 ] || { cat "$w/out" >&2; exit 1; } ;;
-        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'the USB disk the system runs from' "$w/out" || exit 1 ;;
-        esac
-    done
+    # Portable root hub rules carry no hash: revoke refuses them as not device-specific, so it never drops the
+    # root hub above the system disk.
+    reset; rm -f "$w/synced"
+    printf '5: %s\n6: allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI"\n' "$kbd" >"$w/rules"
+    cp "$w/rules" "$w/rules.before"
+    code=0
+    (revoke 6) >"$w/out" 2>&1 || code=$?
+    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'not a device-specific rule' "$w/out" || exit 1
     for rule in 9 8 5; do
         reset; rm -f "$w/synced"
         printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"

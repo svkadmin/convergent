@@ -271,10 +271,6 @@ revoke() {
 			device=$(printf '%s\n' "$devices" | grep -F " via-port \"$port\"")
 			hash=$(printf '%s\n' "$device" | sed -n 's/.* hash "\([^"]*\)".*/\1/p')
 			case $line in *" hash \"$hash\""*) [ -z "$hash" ] || die 'that rule allows the USB disk the system runs from, or a hub above it' ;; esac
-			# A root hub's rule has no hash (rule_portable): its id and serial (a controller's USB 2 and 3 root
-			# hubs share the serial).
-			id=$(printf '%s\n' "$device" | sed -n 's/.* id \(1d6b:[0-9a-f]*\) serial "\([^"]*\)".*/\1 serial "\2"/p')
-			case $line in *": allow id $id "*) [ -z "$id" ] || die 'that rule allows the USB disk the system runs from, or a hub above it' ;; esac
 		done
 	fi
 	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
