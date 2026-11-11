@@ -47,7 +47,8 @@ topology_finish() {
         if ! retry topology_started "$node" || ! retry healthy "$node"; then redo=${redo:+$redo }$node; fi
     done
     if [ -n "$redo" ]; then
-        (rebuilding=$redo; leases_hold) || return
+        # A hold that failed part-way may have left the healthy node's allocator off: resume what it can.
+        (rebuilding=$redo; leases_hold) || { leases_resume || :; return 1; }
         for node in $redo; do
             # A redo that fails resumes every reachable allocator, as a finished one does (its seed carries the checkpoint).
             { { stopped "$node" || locked force_stop "$node"; } && seed_remove "$node" &&
