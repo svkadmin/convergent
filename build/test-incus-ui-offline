@@ -429,7 +429,7 @@ for sample in ok busy-auto busy mismatch; do
     ) || rc=$?
     case $sample in
     ok) [ "$rc" = 0 ]; grep -qx continued "$work/audit-report" ;;
-    busy-auto) [ "$rc" = 0 ] && [ ! -s "$work/audit-report" ] ;;
+    busy-auto) [ "$rc" = 0 ]; [ ! -s "$work/audit-report" ] ;;
     busy) [ "$rc" = 1 ]; grep -qx 'die an Incus UI operation is running' "$work/audit-report" ;;
     mismatch) [ "$rc" = 0 ]; grep -qx 'bad Incus trust differs from metrics and unlocked int session' "$work/audit-report" ;;
     esac

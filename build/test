@@ -2504,8 +2504,8 @@ for fault in mkdir losetup partition mount none umount; do
     : >"$work/events"
     wan_mount || code=$?
     case $fault in
-    none|umount) [ "$code" = 0 ] && [ "$mounted" = 1 ] ;;
-    *) [ "$code" != 0 ] && [ -z "$mounted" ] ;;
+    none|umount) [ "$code" = 0 ]; [ "$mounted" = 1 ] ;;
+    *) [ "$code" != 0 ]; [ -z "$mounted" ] ;;
     esac
     case $fault in
     mkdir|losetup) [ -z "$loop" ] ;;
@@ -2586,7 +2586,7 @@ for sample in good empty absent oversized count total list-error dump-error miss
         case $sample in good|empty|absent) cat "$work/err"; die "rejected $sample" ;; esac
     fi
     case $sample in
-    good) [ "$(cat "$work/iwd/C V.psk")" = '[Settings]' ] && [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
+    good) [ "$(cat "$work/iwd/C V.psk")" = '[Settings]' ]; [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
     empty|absent|oversized|count|total|list-error|malformed) [ ! -e "$work/dumps" ] ;;
     *) [ ! -e "$work/iwd/C V.psk" ] ;;
     esac
@@ -2634,7 +2634,7 @@ for sample in valid mismatched missing unjournaled completed stop-error; do
         printf 'stop\ninstall incus-server.key\ninstall incus-server.crt\nstart\nready\nstatus\nready\n' >"$work/expected"
         cmp "$work/expected" "$work/events"
         [ -f "$state/init/server" ] ;;
-    mismatched|missing) [ ! -e "$work/events" ] && [ ! -e "$state/init/server" ] ;;
+    mismatched|missing) [ ! -e "$work/events" ]; [ ! -e "$state/init/server" ] ;;
     stop-error) printf 'stop\nfallback\n' >"$work/expected"; cmp "$work/expected" "$work/events" ;;
     *) printf 'status\nready\n' >"$work/expected"; cmp "$work/expected" "$work/events" ;;
     esac

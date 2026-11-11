@@ -144,8 +144,14 @@ firewall_change() (
 		confirm "Release $master maintenance demotion" || exit 1
 		firewall_release || die 'undo failed; journal retained, retry sys firewall undo'
 		if [ -z "$peer_ok" ]; then
-			# fw1 preempts; a released fw2 stays BACKUP while fw1 still advertises.
-			firewall_wait_role "$master" MASTER || echo "warning: $master is not MASTER yet; check sys fw status" >&2
+			# fw1 preempts once released. A released fw2 stays BACKUP while fw1 still advertises (no fault); fw1 down, fw2
+			# must take it.
+			if [ "$master" = fw1 ]; then
+				firewall_wait_role fw1 MASTER || echo "warning: fw1 is not MASTER yet; check sys fw status" >&2
+			else
+				firewall_role fw1 MASTER || firewall_wait_role fw2 MASTER ||
+					echo "warning: neither firewall is MASTER; check sys fw status" >&2
+			fi
 			echo "Maintenance ended; $master is released. $peer is unhealthy: the self-heal can act again, or run sys firewall rebuild $peer."
 			logger -t sys-firewall "maintenance ended with $peer unhealthy" || :
 			exit 0

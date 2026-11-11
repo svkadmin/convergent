@@ -816,6 +816,20 @@ echo 'test-topology: a committed migration redoes a node that never becomes heal
     rm -rf "$state/fw.topology" "$scratch/fw2.broken"
 )
 echo 'test-topology: a failed redo resumes work DHCP on the healthy firewall'
+# A hold that fails part-way (a write-back the healthy node did not take) resumes it before reporting the failure.
+(
+    journal
+    for f in fw1 fw2; do echo new >"$scratch/$f.image"; echo running >"$scratch/$f.status"; done
+    touch "$state/fw.topology/committed" "$scratch/fw2.broken"
+    healthy() { running "$1" && [ ! -e "$scratch/$1.broken" ]; }
+    leases_hold() { echo "checkpoint ${rebuilding:-}" >>"$log"; return 1; }
+    leases_resume() { echo resume >>"$log"; }
+    if topology_recover; then exit 1; fi
+    awk '$0 == "checkpoint fw2" {h=NR} $0 == "resume" {u=NR} END {exit !(h && u && h < u)}' "$log"
+    if grep -q '^rebuild ' "$log"; then exit 1; fi
+    rm -rf "$state/fw.topology" "$scratch/fw2.broken"
+)
+echo 'test-topology: a failed lease hold resumes the healthy allocator'
 # The same with the real lease checkpoint: fw2 silent, fw1 gets its allocator back and the hold stays for fw2.
 (
     . "$lib/fw-leases"
