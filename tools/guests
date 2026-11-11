@@ -289,6 +289,16 @@ rollback() {
             case $guest in fw1|fw2) (rebuilding=$guest; leases_hold) || return ;; esac
             autorestart_hold "$guest" || return
             stopped "$guest" || force_stop "$guest" || return
+            # Networks added or forgotten since the update started are on the candidate's disk; an unreadable
+            # one keeps those saved when it started.
+            if [ "$guest" = wan ]; then
+                rm -rf "$work/wan-read" "$work/iwd" || return
+                if (wan_read); then
+                    rm -rf "$state/iwd.wan" && mv "$work/iwd" "$state/iwd.wan" && sync || return
+                else
+                    echo 'guests: WARNING: the Wi-Fi networks saved when the update started are restored' >&2
+                fi
+            fi
             seed_remove "$guest" || return
             rebuild_root "$guest" "$image" || return
             image_alias "$guest" "$image" || return

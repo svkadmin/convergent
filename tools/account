@@ -64,6 +64,8 @@ mount -t btrfs -o rw,subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state
 refresh=1
 printf '%s:%s\n' "$user" "$pass" | chpasswd -P "$stm" -c YESCRYPT -s 5 || die 'could not hash password with yescrypt'
 unset pass
+# shadow-utils keeps the previous file, old hash included, as shadow-.
+rm -f "$stm/etc/shadow-" || die 'cannot remove the old shadow backup'
 awk -F: -v u="$user" '$1 == u && $2 ~ /^\$y\$/ {ok=1} END {exit !ok}' "$stm/etc/shadow" ||
 	die 'password is not yescrypt'
 sync -f "$stm/etc/shadow" || die 'cannot sync shadow'
