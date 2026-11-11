@@ -82,6 +82,12 @@ refresh)
 		logger -t wan-portal "portal mode off, the resolver is gone"
 	}
 	;;
+follow)
+	# A client's deconfig (every start and stop, before its lease): another uplink's resolver at once; with none,
+	# no DNS until the next lease's check refreshes the map. Portal mode stays: a cable flap must not end a login.
+	[ -e "$d/portal" ] || exit 0
+	set_map >/dev/null || close_map || die "could not close portal DNS"
+	;;
 status)
 	if [ -e "$d/portal" ]; then
 		ns=$(resolver) || die "no usable upstream resolver"
@@ -91,7 +97,7 @@ status)
 	fi
 	;;
 *)
-	echo "usage: wan-portal on|off|refresh|expire|status" >&2
+	echo "usage: wan-portal on|off|refresh|follow|expire|status" >&2
 	exit 2
 	;;
 esac

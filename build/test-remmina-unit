@@ -370,7 +370,7 @@ EOF
     sh -n "$work/remote"
     grep -q "^PATH=$work/remote-bin:" "$work/remote"
     printf '#!/bin/sh\necho 0\n' >"$work/remote-bin/id"
-    printf '#!/bin/sh\ncase "$SAMPLE:$*" in "update:-s -n 6" | "starting:-n 8") exit 1 ;; esac\n' >"$work/remote-bin/flock"
+    printf '#!/bin/sh\ncase "$SAMPLE:$*" in "update:-s -n 6" | "starting:-w 5 8") exit 1 ;; esac\n' >"$work/remote-bin/flock"
     printf '#!/bin/sh\necho "timeout $1 $2 $3" >>"$CALLS"\nshift 3\nexec "$@"\n' >"$work/remote-bin/timeout"
     cat >"$work/remote-bin/incus" <<'EOF'
 #!/bin/sh

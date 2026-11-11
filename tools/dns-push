@@ -269,7 +269,13 @@ if [ "$mode" = list ]; then
 		[ ! -f "$state/$file" ] || cat "$state/$file"
 	done
 	[ ! -f "$state/last-push" ] || { printf 'Last successful push (UTC): '; cat "$state/last-push"; }
-	[ ! -f "$state/pending" ] || echo 'A failed push is being recovered: the firewalls may serve the previous list.'
+	if [ -f "$state/pending" ]; then
+		exec 7>"$run/dns-push.lock"
+		if ! flock -n 7; then echo 'A push is running.'
+		elif [ -f "$state/edit.before" ]; then echo 'The last change failed: the next push or recovery undoes it.'
+		else echo 'A failed push awaits recovery: the firewalls may serve the previous list.'; fi
+		exec 7>&-
+	fi
 	exit 0
 fi
 exec 9>"$run/dns-push.lock"

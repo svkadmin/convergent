@@ -212,6 +212,15 @@ for fault in expired fresh boundary renewed absent resolver close; do
     absent) [ ! -e "$work/nft" ] ;;
     esac
 done
+# follow (a client's deconfig, before its lease): another uplink's resolver at once; with none the map is emptied
+# and portal mode stays on for the next lease's check (a cable flap must not end a login).
+for fault in fresh resolver; do
+    echo 2999 >"$work/run/portal"
+    rm -f "$work/nft"
+    sh "$work/portal-driver" follow >"$work/out" 2>"$work/err"
+    [ "$(cat "$work/run/portal")" = 2999 ]
+    case $fault in fresh) cmp "$work/refreshed" "$work/nft" ;; *) cmp "$work/closed" "$work/nft" ;; esac
+done
 # The periodic checker must delegate the decision, and report a failed close.
 sed -n '/^\/usr\/local\/sbin\/wan-portal expire/p' "$here/rootfs/usr/local/sbin/wan-check" |
     sed 's|/usr/local/sbin/wan-portal|portal|' >"$work/expire"
@@ -382,7 +391,7 @@ echo 'nameserver 192.0.2.1' >"$work/run/resolv.eth1.dns"
     . "$work/wan-dhcp-dns"
     wait
 )
-[ "$(cat "$work/calls")" = 'portal refresh' ]
+[ "$(cat "$work/calls")" = 'portal follow' ]
 rm "$work/run/portal"
 echo 'wan-dhcp-dns: deconfig drops the record without queuing a check'
 # chrony's clock is KVM's by name: the Wi-Fi card's PHC may be ptp0.
