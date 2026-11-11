@@ -993,6 +993,8 @@ awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage" 2>\/dev\/null; then$/ {
 grep -qx '    exit 0' "$work/after-watch"
 awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage"/ {s = NR} /^wait "\$browser" \|\| \{$/ {w = NR} END {exit !(s && w && s < w)}' "$repo/tools/browser"
 echo 'test-boot-privacy: session watch passed'
+# Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
+grep -qx '23 \*/6 \* \* \* root /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
 grep -B1 -x 'exec 9>/run/convergent-timezone.lock' "$repo/tools/timezone" | head -n 1 | grep -qx 'umask 077'
 # A Remmina update with no instance prunes the image it superseded (20Y).
