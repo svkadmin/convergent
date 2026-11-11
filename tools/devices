@@ -306,7 +306,7 @@ camera() {
 	case ${1:-} in
 	load)
 		[ "$#" = 2 ] || usage
-		case $2 in videodev|uvcvideo|intel_ipu6|intel_ipu6_isys|ipu3_cio2|ipu3_imgu|atomisp) ;; *) die 'invalid camera module' ;; esac
+		case $2 in videodev|uvcvideo|intel_ipu6|intel_ipu6_isys|intel_ipu7|intel_ipu7_isys|ipu3_cio2|ipu3_imgu|atomisp) ;; *) die 'invalid camera module' ;; esac
 		exec 7>/run/convergent-camera-load.lock
 		flock -s 7
 		[ "$(cat "$choice" 2>/dev/null || :)" = on ] || die 'camera is off (sys camera on)'
@@ -331,14 +331,18 @@ camera() {
 		for f in /sys/bus/pci/devices/*/modalias; do
 			[ -r "$f" ] || continue
 			for m in $(modprobe -R "$(cat "$f")" 2>/dev/null || :); do
-				case $m in intel_ipu6|intel_ipu6_isys|ipu3_cio2|ipu3_imgu|atomisp) modprobe "$m" || die "cannot load $m" ;; esac
+				case $m in intel_ipu6|intel_ipu6_isys|intel_ipu7|intel_ipu7_isys|ipu3_cio2|ipu3_imgu|atomisp) modprobe "$m" || die "cannot load $m" ;; esac
 			done
 		done
+		# A MIPI camera's sensor and IPU parts were asked for at boot and refused while off: asked again now, or
+		# it waits for a reboot.
+		udevadm trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary 2>/dev/null || :
+		udevadm settle -t 30 2>/dev/null || :
 	else
 		# Block new loads before unloading; never force a module an application uses.
 		failed=0
 		camera_unload videodev || failed=1
-		for m in uvcvideo intel_ipu6_isys intel_ipu6 ipu3_imgu ipu3_cio2 atomisp videodev; do
+		for m in uvcvideo intel_ipu7_isys intel_ipu7 intel_ipu6_isys intel_ipu6 ipu3_imgu ipu3_cio2 atomisp videodev; do
 			[ ! -d "/sys/module/$m" ] || modprobe -r "$m" || failed=1
 		done
 		[ "$failed" = 0 ] || die 'camera disabled for future loads; close camera applications and retry off'
