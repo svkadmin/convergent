@@ -171,7 +171,7 @@ heal_resume() (
 heal_oom() {
     for oom_node in fw1 fw2 wan; do
         pid=$(heal_qemu "$oom_node") || continue
-        echo -800 >"/proc/$pid/oom_score_adj" 2>/dev/null || :
+        echo -800 2>/dev/null >"/proc/$pid/oom_score_adj" || :
     done
 }
 heal_booted() {
