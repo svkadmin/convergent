@@ -818,4 +818,21 @@ for sample in renewed partial stray; do
     # renewed: the old entry without its file is foreign; stray: a third certificate always is.
     case $sample in partial) [ "$rc" = 0 ] ;; *) [ "$rc" = 1 ] ;; esac || { cat "$work/aud.out"; exit 1; }
 done
-echo 'incus-ui: query, independent launch, bounded audit and passphrase floor fixtures passed'
+# The UI client certificate starts a day back: a first-boot clock ahead must not leave it not yet valid.
+sed -n '/# Backdated like the guest certificates/,/-out "\$scratch\/client.crt"$/p' "$repo/tools/incus-ui" >"$work/client-cert"
+grep -q -- '-not_before "$since"' "$work/client-cert"
+(
+    tls=$work/client-tls scratch=$work/client-tls
+    mkdir "$tls"
+    die() { echo "$*" >&2; exit 1; }
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$tls/ca.key" -out "$tls/ca.crt" \
+        -days 30 -subj '/CN=Local CA' 2>/dev/null
+    openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$tls/key" -out "$tls/request" \
+        -subj '/CN=browser-int-ui' 2>/dev/null
+    : >"$scratch/extensions"
+    . "$work/client-cert" 2>/dev/null
+    start=$(openssl x509 -in "$scratch/client.crt" -startdate -noout)
+    start=$(date -d "${start#notBefore=}" +%s)
+    [ "$start" -le "$(($(date +%s) - 82800))" ]
+)
+echo 'incus-ui: query, independent launch, bounded audit, passphrase floor and backdated client fixtures passed'

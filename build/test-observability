@@ -290,7 +290,7 @@ sed -n "/-name '\.run\.??????' -mmin +1440 /p" "$repo/tools/check" >"$work/prune
     . "$work/prune"
     [ ! -e "$state/.run.OLDOLD" ] && [ -d "$state/.run.NEWNEW" ]
 )
-sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
+sed -n '/^age() /p; /^boot_stale() {/,/^}/p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
 [ -s "$work/facts-auto" ]; sh -n "$work/facts-auto"
 (
     . "$work/facts-auto"
@@ -329,7 +329,16 @@ sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
     clock=1000
     auto
     [ "$(wc -l <"$out/boot-calls")" = 4 ]
+    # One older than this boot (chrony stepped the clock forward after it was written) is redone.
+    clock=100000
+    auto
+    [ "$(wc -l <"$out/boot-calls")" = 4 ]
+    awk() { echo 100001; }
+    auto
+    [ "$(wc -l <"$out/boot-calls")" = 5 ]
 )
+# The minute's nts run redoes it too, not only the hourly auto.
+grep -qxF 'nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale; then boot; fi ;;' "$repo/tools/facts"
 # Below two NTS sources chrony is asked to resolve and poll again, at most every five minutes of uptime.
 sed -n '/^nts_nudge() {/,/^}/p' "$repo/tools/facts" | sed "s|/proc/uptime|$work/nudge-uptime|" >"$work/nts-nudge"
 [ -s "$work/nts-nudge" ]; sh -n "$work/nts-nudge"
@@ -842,6 +851,10 @@ mkdir "$work/btrfs" "$work/state"
     grep -qx 'cv_btrfs_scrub_missing_since_seconds 200000' "$work/scrub.prom"
 )
 rules=$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml
+# An offline boot never syncs the host clock: that alone is no warning while wan has no uplink.
+sed -n '/- alert: ClockOffsetHigh/{n;p;}' "$rules" >"$work/clock-rule"
+grep -qF '((node_timex_sync_status{node="host"} == 0) and on () (max(convergent_wan_upstream_up{node="wan"}) == 1))' "$work/clock-rule"
+if grep -qF 'node=~"host|wan"} == 0' "$work/clock-rule"; then exit 1; fi
 sed -n '/- alert: ScrubNeedsAttention/{n;p;}' "$rules" >"$work/scrub-rule"
 grep -q 'cv_btrfs_scrub_missing_since_seconds > time() - 86400' "$work/scrub-rule"
 if grep -q node_boot_time_seconds "$work/scrub-rule"; then exit 1; fi
