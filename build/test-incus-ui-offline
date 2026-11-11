@@ -465,6 +465,8 @@ ic() {
         *) echo '{"status":"Running"}' ;;
         esac ;;
     'exec svc -- rc-service grafana stop')
+        # The owner's typed input never reaches incus exec.
+        [ -z "$(cat)" ] || exit 97
         printf 'svc-stdout\n'; printf 'svc \033[31mstderr\n' >&2
         [ "$sample" != stop-fail ] ;;
     'config set svc limits.memory=350MiB')
@@ -478,11 +480,17 @@ logger() { echo "$*" >>"$work/orphan-errors"; return 1; }
 EOF
 cp "$repo/rootfs/usr/lib/convergent/guest-reply.sh" "$work/guest-reply.sh"
 sh -n "$work/orphan-driver"
+echo 'typed by the owner' >"$work/typed"
 for action in cleanup --reconcile --close revoke; do
     for sample in normal custom empty missing read-fail running stopped query-fail stop-fail shrink-fail; do
         : >"$work/orphan-calls"
         : >"$work/orphan-errors"
-        (export work action sample; sh -eu "$work/orphan-driver") >"$work/orphan-out" 2>&1
+        (export work action sample; sh -eu "$work/orphan-driver") <"$work/typed" >"$work/orphan-out" 2>&1
+        case $action:$sample in
+        cleanup:running|cleanup:stop-fail|cleanup:shrink-fail|--reconcile:running|--reconcile:stop-fail|--reconcile:shrink-fail)
+            grep -qx 'svc \[31mstderr' "$work/orphan-out" ||
+                { echo "test-incus-ui-offline: svc's stderr not shown filtered ($action $sample)" >&2; exit 1; } ;;
+        esac
         # svc's stdout never reaches the owner's terminal; its stderr arrives filtered.
         if grep -q 'svc-stdout' "$work/orphan-out" || grep -q "$(printf '\033')" "$work/orphan-out"; then
             echo "test-incus-ui-offline: raw svc output on the terminal ($action $sample)" >&2; exit 1

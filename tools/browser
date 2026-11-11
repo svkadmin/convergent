@@ -515,9 +515,13 @@ while kill -0 "$browser" 2>/dev/null; do
         # check status probes all three guests each minute; ignore pre-launch results.
         if [ /run/convergent/status/portal -nt "$run/portal.checked" ]; then
             read -r mode </run/convergent/status/portal || die 'portal status unavailable'
-            [ "$mode" = on ] || die 'portal mode ended'
+            # A missed probe is no verdict: a status that stays unknown ends the session at the stale bound.
+            case $mode in
+            on) checked=${uptime%.*} ;;
+            unknown) ;;
+            *) die 'portal mode ended' ;;
+            esac
             : >"$run/portal.checked"
-            checked=${uptime%.*}
         fi
         [ $((${uptime%.*} - checked)) -lt 180 ] || die 'portal status is stale'
     fi

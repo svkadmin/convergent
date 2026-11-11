@@ -66,7 +66,7 @@ for scenario in busy guests on off inconsistent failed empty; do
         busy|guests) expected=on; for node in fw1 fw2 wan; do echo unknown >"$status/.portal-$node"; done ;;
         on) expected=on ;;
         off) expected=off; for node in fw1 fw2 wan; do echo off >"$status/.portal-$node"; done ;;
-        inconsistent) echo off >"$status/.portal-wan" ;;
+        inconsistent) expected=mixed; echo off >"$status/.portal-wan" ;;
         failed) echo unknown >"$status/.portal-fw1" ;;
         empty) : >"$status/.portal-wan" ;;
     esac

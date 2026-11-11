@@ -1157,6 +1157,49 @@ grep -q 'POWEROFF$' "$work/rescue.out"
 # Writable (the usual case): option 2 runs the reset.
 printf '2\n7\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
 grep -q 'RESET$' "$work/rescue.out"
+# Ctrl-D at either menu shows it again (stopping powers off, and in Recovery costs a try); a console that
+# keeps closing stops after three (q81).
+sed -e '/^exec <\/dev\/console/d' -e '/^\. \/lib\/convergent-recovery.sh$/d' \
+    "$repo/initramfs/90convergent/convergent-recovery.sh" >"$work/recovery-menu"
+if grep -q '^\. /lib/\|^exec </dev/console' "$work/recovery-menu"; then die 'recovery menu not isolated'; fi
+rc=0; sh "$work/recovery-menu" 1 a "$work/state" </dev/null >"$work/recovery.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Recovery choice: ' "$work/recovery.out" | wc -l)" = 3 ] ||
+    die 'recovery menu: Ctrl-D did not show the menu again'
+rc=0; sh "$work/rescue-menu" "$work/state" </dev/null >"$work/rescue.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Rescue choice: ' "$work/rescue.out" | wc -l)" = 3 ] ||
+    die 'rescue menu: Ctrl-D did not show the menu again'
+rc=0; printf '4\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && [ "$(grep -o 'Rescue choice: ' "$work/rescue.out" | wc -l)" = 4 ] ||
+    die 'rescue menu: Ctrl-D at the next-slot prompt did not return to the menu'
+# State failures after the passphrase stay on screen before the power-off.
+[ "$(grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/convergent-state.sh")" = 5 ]
+# A log copy with unreadable files keeps the rest and says so; an empty archive is still a failure.
+sed -n '/^copy_logs() (/,/^)/p' "$repo/initramfs/91convergent-rescue/menu.sh" |
+    sed "s|/run/rescue-usb|$work/rescue-usb|" >"$work/copy-logs"
+check_script "$work/copy-logs"
+# A full stick (tar cannot write) is a failure, however much was written.
+rc=0
+(
+    state=$work/log-state; mkdir -p "$state/var-1/log"
+    usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }; sync() { :; }
+    tar() { printf 'partial' >"$4"; echo "tar: $4: Cannot write: No space left on device" >&2; return 2; }
+    . "$work/copy-logs"; copy_logs
+) >"$work/copy.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] && grep -q 'No space left' "$work/copy.out" || die 'log copy: a full stick passed as an incomplete source'
+for written in partial ''; do
+    rc=0
+    (
+        state=$work/log-state; mkdir -p "$state/var-1/log"
+        usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }; sync() { :; }
+        tar() { printf '%s' "$written" >"$4"; return 2; }
+        . "$work/copy-logs"; copy_logs
+    ) >"$work/copy.out" 2>&1 || rc=$?
+    case $written:$rc in
+    partial:0) grep -q 'archive is incomplete' "$work/copy.out" && grep -q '^Logs copied to ' "$work/copy.out" ;;
+    :1) ;;
+    *) die "log copy with tar status 2 ($written) gave $rc" ;;
+    esac
+done
 grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
@@ -1180,6 +1223,7 @@ grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$r
 grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
 # A missed firewall probe shows the portal as unknown, not as off (21E).
 grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
+grep -qF 'else if (portal == "mixed") block("PORTAL?", orange)' "$repo/tools/bar"
 # 21F: the network guests' QEMUs go last under memory pressure (every heal run, before its gates); a browser may
 # run many threads; a launcher check that did not answer is no verdict on the image; Remmina's OOM kills count.
 sed -n '/^heal_qemu() {/,/^}/p; /^heal_oom() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
@@ -1491,28 +1535,39 @@ sed -n '/^screenshot_capture() /p' "$repo/rootfs/usr/lib/convergent/sys/60-scree
     if screenshot_capture -o eDP-1 2>/dev/null; then exit 1; fi
     [ "$(cat "$shot")" = first ]
 ) || die 'a second screenshot run touched the first one'
-# A reload's tick has the display watch apply the profile again; after any apply a closed lid keeps the panel dark.
-sed -n '/^display_watch() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/40-display" |
-    sed "s|/proc/acpi/button/lid/\*/state|$work/lid/*/state|" >"$work/display-watch"
-grep -qF "$work/lid/" "$work/display-watch"; sh -n "$work/display-watch"
-mkdir -p "$work/lid/LID0" "$work/xdg" "$work/profiles"
-echo 'state:      closed' >"$work/lid/LID0/state"
+# A reload's tick has the display watch apply the profile again; an ambiguous set gets the defaults unless the
+# owner's outputs file stands in. The watch never powers outputs: the lid bindings and swayidle own that (q85).
+sed -n '/^display_watch() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/40-display" >"$work/display-watch"
+check_script "$work/display-watch"
+if grep -q 'power\|/proc/acpi' "$work/display-watch"; then die 'display watch: it drives output power'; fi
+mkdir -p "$work/xdg" "$work/profiles" "$work/home"
 : >"$work/profiles/key.json"
-(
+watch_run() (
+    set_json=$1 kind=$2
     noargs() { :; }; sway() { :; }; path() { :; }
-    XDG_RUNTIME_DIR=$work/xdg
+    XDG_RUNTIME_DIR=$work/xdg HOME=$work/home
     display_lock() { profiles=$work/profiles; }
-    display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":"c"},{"name":"DP-1","make":"d","model":"e","serial":"f"}]'; }
-    display_key() { echo key; }
+    display_json() { echo "$set_json"; }
+    display_key() { [ "$kind" != ambiguous ] && echo key; }
     display_apply() { echo apply >>"$work/watch-calls"; }
     display_defaults() { echo defaults >>"$work/watch-calls"; }
     display_command() { echo "$1" >>"$work/watch-calls"; }
-    swaymsg() { printf '%s\n' '{"first":true,"payload":""}' '{"first":false,"payload":""}' '{"first":false,"payload":"reload"}'; }
+    swaymsg() { case $* in *subscribe*) printf '%s\n' $events ;; esac; }
     . "$work/display-watch"
     display_watch
 )
-printf '%s\n' apply 'output eDP-1 power off' apply 'output eDP-1 power off' >"$work/watch-expected"
-cmp -s "$work/watch-expected" "$work/watch-calls" || die 'display watch: a reload was not applied again, or a closed lid lit the panel'
+set2='[{"name":"eDP-1","make":"a","model":"b","serial":"c"},{"name":"DP-1","make":"d","model":"e","serial":"f"}]'
+same='[{"name":"DP-1","make":"d","model":"e","serial":""},{"name":"DP-2","make":"d","model":"e","serial":""}]'
+: >"$work/watch-calls"
+events='{"first":true,"payload":""} {"first":false,"payload":""} {"first":false,"payload":"reload"}' watch_run "$set2" key
+[ "$(tr '\n' , <"$work/watch-calls")" = 'apply,apply,' ] || die 'display watch: a reload was not applied again'
+: >"$work/watch-calls"
+events='{"first":true,"payload":""}' watch_run "$same" ambiguous
+[ "$(tr '\n' , <"$work/watch-calls")" = 'defaults,' ] || die 'display watch: an ambiguous set got no defaults'
+mkdir -p "$work/home/.config/sway/config.d"; : >"$work/home/.config/sway/config.d/outputs"
+: >"$work/watch-calls"
+events='{"first":true,"payload":""}' watch_run "$same" ambiguous
+[ ! -s "$work/watch-calls" ] || die 'display watch: defaults overrode the outputs file on an ambiguous set'
 sway=$repo/rootfs/etc/sway/config.d/convergent
 sed -n "/^exec sh -c '.*DEFAULT_AUDIO_SOURCE@/s/^exec sh -c '\(.*\)'$/\1/p" "$sway" |
     sed 's/\[ -S /[ -e /' >"$work/mic-init"
@@ -1526,6 +1581,7 @@ for b in 'XF86AudioMicMute exec sys audio micmute' '--locked XF86AudioMicMute ex
     [ "$(grep -cx -- "[[:space:]]*bindsym $b" "$sway")" = 2 ] || die "sway: $b is not bound at top level and in resize mode"
 done
 grep -qx "exec_always sh -c 'sleep 1; swaymsg -t send_tick reload'" "$sway"
+grep -qx ignore-empty-password "$repo/rootfs/etc/swaylock/config"
 check_script "$work/mic-init"
 check_script "$work/mic-locked"
 (

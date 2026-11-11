@@ -428,3 +428,5 @@ echo 'ptp-kvm: chrony follows the KVM clock by name'
 awk '/^\[/ {s = $0} s == "[DriverQuirks]" && $0 == "DefaultInterface=*" {f = 1} END {exit !f}' "$here/rootfs/etc/iwd/main.conf"
 grep -qx 'WIFI_IF=wlan0' "$here/rootfs/etc/wan/wan.conf"
 echo 'iwd: the Wi-Fi interface keeps its name across a driver reprobe'
+awk '/^iface eth1 inet dhcp$/ {s = 1; next} /^iface / {s = 0} s && $1 == "metric" && $2 == 100 {f = 1} END {exit !f}' "$here/rootfs/etc/network/interfaces"
+echo 'wired uplink: a fixed metric 100 keeps it ahead of Wi-Fi after any number of replugs'

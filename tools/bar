@@ -334,6 +334,8 @@ while :; do
 		# before guests exist is not news.
 		if (portal == "on") block("PORTAL", orange)
 		else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)
+		# One side still open after another closed.
+		else if (portal == "mixed") block("PORTAL?", orange)
 		camera=get("/var/lib/convergent/devices/camera")
 		video=get("/sys/module/videodev/refcnt")
 		if (camera == "on" || video != "") block(camera == "on" ? "CAM" : "CAM!", orange)

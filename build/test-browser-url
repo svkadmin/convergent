@@ -389,5 +389,29 @@ for nss in .pki/nssdb .local/share/pki/nssdb; do
         die "Incus session home lacks $nss"
 done
 [ -d "$root$(jq -r .DownloadDirectory "$policy")" ] || die 'Incus session downloads missing'
+# From check's three sides to the browser's verdict: a missed probe (unknown) keeps the login, one side closed
+# (mixed) or all closed ends it, and only on refreshes the stale bound.
+sed -n '/^        if \[ \/run\/convergent\/status\/portal -nt "\$run\/portal.checked" \]; then$/,/^        fi$/p' "$repo/tools/browser" |
+    sed "s|/run/convergent/status/portal|$work/st/.portal|g" >"$work/portal-check"
+[ -s "$work/portal-check" ]; sh -n "$work/portal-check"
+sed -n "/^    awk '{n++; if (\$0 == \"on\") on++; if (\$0 == \"off\") off++}\$/,/>\"\$status\/.portal\"\$/p" "$repo/tools/check" >"$work/portal-sides"
+[ "$(wc -l <"$work/portal-sides")" = 3 ]; sh -n "$work/portal-sides"
+mkdir -p "$work/st"
+for sides in on:on:on on:unknown:on on:off:on off:off:off unknown:unknown:off; do
+    IFS=: read -r a b c <<SIDES
+$sides
+SIDES
+    echo "$a" >"$work/st/.portal-fw1"; echo "$b" >"$work/st/.portal-fw2"; echo "$c" >"$work/st/.portal-wan"
+    (status=$work/st; . "$work/portal-sides")
+    rc=0
+    (run=$work uptime=500 checked=100; die() { exit 1; }
+        rm -f "$work/portal.checked"
+        . "$work/portal-check"; echo "$checked" >"$work/portal-at") || rc=$?
+    case $sides:$rc:$(cat "$work/portal-at" 2>/dev/null || :) in
+    on:on:on:0:500 | on:unknown:on:0:100 | on:off:on:1: | off:off:off:1: | unknown:unknown:off:0:100) ;;
+    *) die "portal sides $sides ($(cat "$work/st/.portal")) gave $rc" ;;
+    esac
+    rm -f "$work/portal-at"
+done
 echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions, rollback hosts and writer locks passed'
 echo 'browser-url: Incus sessions get a tmpfs profile, home, caches and downloads and the Incus origin alone; Grafana sessions keep theirs'

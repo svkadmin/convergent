@@ -63,7 +63,7 @@ recovery=$(getarg convergent.recovery=) || recovery=
 
 mkdir -p "$state"
 mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
-	die "state: the state volume did not mount"
+	die_shown "state: the state volume did not mount"
 ( grow_state ) || warn "state: could not grow the state volume; it keeps its size"
 pass=''
 
@@ -75,7 +75,7 @@ btrfs -q filesystem resize max "$state" >/dev/null ||
 if [ "$recovery" = 1 ]; then
 	slot=$(getarg dm-mod.waitfor=)
 	sh /sbin/convergent-recovery "$release" "${slot#PARTLABEL=cv-slot-}" "$state" ||
-		die "state: recovery stopped"
+		die_shown "state: recovery stopped"
 	arm_watchdog
 fi
 
@@ -129,18 +129,18 @@ if [ ! -d "$state/var-$release" ]; then
 	good=
 	if [ -e "$state/good" ]; then
 		good=$(cat "$state/good") || good=
-		case $good in "" | *[!0-9]*) die "state: $state/good is unreadable; not starting /var from the image" ;; esac
+		case $good in "" | *[!0-9]*) die_shown "state: $state/good is unreadable; not starting /var from the image" ;; esac
 	fi
 	# Only a fresh install starts /var from the image.
 	[ -z "$good" ] || [ -d "$state/var-$good" ] ||
-		die "state: /var of the good release $good is missing; not starting release $release from the image"
+		die_shown "state: /var of the good release $good is missing; not starting release $release from the image"
 	if [ -n "$good" ]; then
 		btrfs -q subvolume snapshot "$state/var-$good" "$new"
 	else
 		# First install: /var starts from the image's own.
 		btrfs -q subvolume create "$new" && cp -a "$NEWROOT/var/." "$new/"
 	fi && rm -rf "$new/cache/apparmor" && sync && mv "$new" "$state/var-$release" ||
-		die "state: could not prepare /var for release $release"
+		die_shown "state: could not prepare /var for release $release"
 fi
 [ -d "$state/home" ] || btrfs -q subvolume create "$state/home"
 [ -d "$state/pool" ] || btrfs -q subvolume create "$state/pool"
