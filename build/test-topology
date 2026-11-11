@@ -528,11 +528,13 @@ echo 'test-topology: replace keeps a redo stopped and rebuilds wan from a damage
         damaged) echo 'partition: Bad magic number in super-block while opening filesystem' >&2 ;;
         missing) return 127 ;;
         huge) return 153 ;;
+        slow) return 124 ;;
         esac
         [ "$(cat "$scratch/debugfs")" != ok ] || echo /2/040755/0/0/..//
     }
-    # huge: a listing past the size cap (SIGXFSZ).
-    for case in ok:0 damaged:2 garbled:2 huge:2 missing:1; do
+    timeout() { [ "$1 $2 $3" = '-k 5 120' ] || exit 97; shift 3; "$@"; }
+    # huge: a listing past the size cap (SIGXFSZ); slow: a walk past its time bound (a guest-crafted directory).
+    for case in ok:0 damaged:2 garbled:2 huge:2 slow:2 missing:1; do
         echo "${case%:*}" >"$scratch/debugfs"
         rc=0
         (wan_listing /var/lib) 2>/dev/null || rc=$?
@@ -551,6 +553,7 @@ echo 'test-topology: replace keeps a redo stopped and rebuilds wan from a damage
     logger() { :; }
     rm -rf "$work/wan-read" "$work/iwd"
     mkdir -p "$work/wan-read/out" "$work/iwd"
+    timeout() { shift 3; "$@"; }
     setpriv() {
         echo 'debugfs 1.47.1 (20-May-2024)' >&2
         case $7 in

@@ -132,7 +132,8 @@ retry() {
             polling=
             # Guest text: bounded and without terminal controls.
             head -c 65536 "$work/retry.err" | guest_text >&2
-            [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(head -c 65536 "$work/retry.err")" 2>/dev/null || :
+            # One syslog line, bounded and without controls: guest text must not forge lines in the security events.
+            [ ! -s "$work/retry.err" ] || logger -p user.err -t guests "$(head -c 1024 "$work/retry.err" | guest_text | tr '\n\t' '  ')" 2>/dev/null || :
             fail "$* timed out after ${wait}s" || :
             case $1:${2:-} in pin:fw1|pin:fw2|pin:wan|seed_applied:fw1|seed_applied:fw2|seed_applied:wan|healthy:fw1|healthy:fw2|healthy:wan)
                 now=$(cut -d. -f1 /proc/uptime) || return
@@ -598,7 +599,7 @@ certificates_apply() (
     certificates_due || return 0
     certificates_prepare
     running svc || ic start svc
-    retry ic exec svc -- true
+    retry svc_answers
     for entry in 'server.crt victoria-logs vmlogs server.crt' \
         'incus-client.crt victoria-metrics vmmetrics incus-client.crt' 'ca.crt victoria-metrics vmmetrics incus-ca.crt'; do
         set -- $entry
@@ -810,7 +811,7 @@ healthy() {
     fw1|fw2) rsh "$1" true >/dev/null ;;
     wan) rsh wan check >/dev/null ;;
     svc)
-        probe incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health >/dev/null || { fail 'VictoriaMetrics health check failed'; return 1; }
+        probe incus --force-local --project default exec svc -- wget -q -T 5 -O /dev/null http://127.0.0.1:8428/health >/dev/null 2>&1 || { fail 'VictoriaMetrics health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:8880/health >/dev/null || { fail 'metrics proxy health check failed'; return 1; }
         probe curl -qfsS --noproxy '*' --max-time 5 --max-filesize 1048576 http://100.80.2.10:9428/select/logsql/query --data-urlencode 'query=_time:1m' -d limit=1 >/dev/null || { fail 'VictoriaLogs query check failed'; return 1; }
         probe_limit=5 probe openssl s_client -connect 100.80.2.10:6514 -CAfile "$tls/ca.crt" \
@@ -831,7 +832,8 @@ fw_check() {
     rsh "$1" 'rcctl check dhcpd' >/dev/null || { fail 'dhcpd is not running'; return 1; }
     guest_reply 65536 rsh "$1" 'ifconfig pfsync0' >"$work/pfsync" || return
     grep -q RUNNING "$work/pfsync" && grep -q 'defer: on' "$work/pfsync" || { fail 'pfsync is not running with defer enabled'; return 1; }
-    rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || { fail 'PF is not enabled'; return 1; }
+    # Bounded like every other firewall reply: an endless line would grow grep's buffer without limit.
+    guest_reply 65536 rsh "$1" 'pfctl -si' | grep -q '^Status: Enabled' || { fail 'PF is not enabled'; return 1; }
     pf_digest=$(guest_reply 128 rsh "$1" 'sha256 -q /etc/pf.conf') || pf_digest=
     # A rebuild's peer beside an unrecorded committed fw update may run either release.
     [ "$pf_digest" = "$(cat "$image_dir/$1.pf.sha256")" ] ||
@@ -841,7 +843,7 @@ fw_check() {
         [ "$(guest_reply 128 rsh "$1" "pfctl -sr | sed 's/__automatic_[0-9a-f_]*/__automatic/g' | sha256 -q")" = "$(cat "$image_dir/$1.rules.sha256")" ] || { fail 'loaded PF rules digest differs from release'; return 1; }
     fi
     rsh "$1" 'pfctl -nf /etc/pf.conf' >/dev/null || return 1
-    rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1' | grep -q '100.80.2.10' || fail 'svc DNS answer is missing'
+    guest_reply 65536 rsh "$1" 'host -t A svc.convergent.internal 127.0.0.1' | grep -q '100.80.2.10' || fail 'svc DNS answer is missing'
 }
 soak() {
     # Six good samples; up to twelve misses (nested test VMs stall under disk load).
@@ -961,12 +963,14 @@ seed_attach() {
     *) ic config device add "$1" seed disk source="$seed_source" readonly=true || return ;;
     esac
 }
+# svc's own stderr stays out of retry.err (unbounded on the state volume): a compromised svc runs its binaries.
+svc_answers() { ic exec svc -- true 2>/dev/null; }
 seed_applied() {
     step="seed_applied $1"
     case $1 in
     fw1|fw2) applied=$(guest_reply 128 rsh "$1" 'cat /var/db/convergent-seeded') || return 1 ;;
     wan) applied=$(guest_reply 128 rsh wan seed-status) || return 1 ;;
-    svc) applied=$(guest_reply 128 ic exec svc -- cat /var/lib/convergent/seeded) || return 1 ;;
+    svc) applied=$(guest_reply 128 ic exec svc -- cat /var/lib/convergent/seeded 2>/dev/null) || return 1 ;;
     esac
     seed_id=$(cat "$state/seeds/$1.id") || return
     [ "$applied" = "$seed_id" ] || fail 'applied seed ID differs'
@@ -1235,9 +1239,10 @@ wan_debugfs() (
     cd "$work/wan-read" || exit 1
     # Bound directory listings too; dump does not preserve guest ownership or modes.
     case $1 in dump\ *) ulimit -f 128 ;; *) ulimit -f 2048 ;; esac || exit 1
-    # Output past the cap (SIGXFSZ, 153) is the old disk's content too.
-    setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
-        debugfs -R "$1" partition >"$2" 2>"$work/wan-debugfs" 9>&- 8>&- 7>&- 6>&- || case $? in 153) exit 2 ;; *) exit 1 ;; esac
+    # Output past the cap (SIGXFSZ, 153) is the old disk's content too, and so is a walk past 120 s: the guest wrote
+    # this filesystem (a directory mapping billions of empty blocks would hold the update with wan stopped).
+    timeout -k 5 120 setpriv --reuid=65534 --regid=65534 --clear-groups --no-new-privs \
+        debugfs -R "$1" partition >"$2" 2>"$work/wan-debugfs" 9>&- 8>&- 7>&- 6>&- || case $? in 153 | 124 | 137) exit 2 ;; *) exit 1 ;; esac
     # debugfs reports a damaged filesystem on stderr and exits 0: that alone is the disk's fault (2).
     awk '/^debugfs [0-9][0-9.]* \([0-9A-Za-z -]+\)$/ {next} {exit 1}' "$work/wan-debugfs" || exit 2
 )

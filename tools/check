@@ -719,7 +719,7 @@ for node in fw1 fw2; do
         fi
     done
     guest_reply 65536 rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed"
-    rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
+    guest_reply 65536 rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
 role1=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw1") || bad 'fw1 CARP membership or state invalid'
 role2=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw2") || bad 'fw2 CARP membership or state invalid'
