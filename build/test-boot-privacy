@@ -1129,6 +1129,9 @@ grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/m
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
 grep -qF '"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.?????? "$state"/etc/shadow- "$state"/etc/gshadow-; do' "$repo/initramfs/90convergent/convergent-state.sh"
+# A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
+awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
+grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
 # Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
 grep -qxF '23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
