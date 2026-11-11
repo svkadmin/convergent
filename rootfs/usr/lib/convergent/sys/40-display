@@ -242,19 +242,6 @@ display_watch() (
 						elif [ ! -f "$HOME/.config/sway/config.d/outputs" ]; then display_defaults; fi && applied=1
 					else [ -f "$HOME/.config/sway/config.d/outputs" ] || display_defaults || :
 					fi
-					# The lid binding's work, after a failed apply too: a closed lid keeps the internal panel dark. The
-					# watch lights only a panel it darkened itself (a lid closed at login may never send its open event).
-					dark=$XDG_RUNTIME_DIR/convergent-lid-dark
-					if grep -qs closed /proc/acpi/button/lid/*/state; then power=off
-					elif [ -e "$dark" ]; then power=on
-					else power=
-					fi
-					if [ -n "$power" ]; then
-						for name in $(printf '%s\n' "$json" | jq -r '.[].name'); do
-							case $name in eDP-*|LVDS-*) display_command "output $name power $power" || applied= ;; esac
-						done
-						if [ "$power" = off ]; then : >"$dark"; elif [ -n "$applied" ]; then rm -f "$dark"; fi
-					fi
 					[ -n "$applied" ] || { printf '%s\n' "$stamp"; exit 1; }
 				fi
 				printf '%s\n' "$stamp"

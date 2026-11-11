@@ -1535,60 +1535,38 @@ sed -n '/^screenshot_capture() /p' "$repo/rootfs/usr/lib/convergent/sys/60-scree
     if screenshot_capture -o eDP-1 2>/dev/null; then exit 1; fi
     [ "$(cat "$shot")" = first ]
 ) || die 'a second screenshot run touched the first one'
-# A reload's tick has the display watch apply the profile again; after any apply a closed lid keeps the panel dark.
-sed -n '/^display_watch() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/40-display" |
-    sed "s|/proc/acpi/button/lid/\*/state|$work/lid/*/state|" >"$work/display-watch"
-grep -qF "$work/lid/" "$work/display-watch"; sh -n "$work/display-watch"
-mkdir -p "$work/lid/LID0" "$work/xdg" "$work/profiles"
-echo 'state:      closed' >"$work/lid/LID0/state"
+# A reload's tick has the display watch apply the profile again; an ambiguous set gets the defaults unless the
+# owner's outputs file stands in. The watch never powers outputs: the lid bindings and swayidle own that (q85).
+sed -n '/^display_watch() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/40-display" >"$work/display-watch"
+check_script "$work/display-watch"
+if grep -q 'power\|/proc/acpi' "$work/display-watch"; then die 'display watch: it drives output power'; fi
+mkdir -p "$work/xdg" "$work/profiles" "$work/home"
 : >"$work/profiles/key.json"
-(
-    noargs() { :; }; sway() { :; }; path() { :; }
-    XDG_RUNTIME_DIR=$work/xdg
-    display_lock() { profiles=$work/profiles; }
-    display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":"c"},{"name":"DP-1","make":"d","model":"e","serial":"f"}]'; }
-    display_key() { echo key; }
-    display_apply() { echo apply >>"$work/watch-calls"; }
-    display_defaults() { echo defaults >>"$work/watch-calls"; }
-    display_command() { echo "$1" >>"$work/watch-calls"; }
-    swaymsg() { printf '%s\n' '{"first":true,"payload":""}' '{"first":false,"payload":""}' '{"first":false,"payload":"reload"}'; }
-    . "$work/display-watch"
-    display_watch
-)
-printf '%s\n' apply 'output eDP-1 power off' apply 'output eDP-1 power off' >"$work/watch-expected"
-cmp -s "$work/watch-expected" "$work/watch-calls" || die 'display watch: a reload was not applied again, or a closed lid lit the panel'
-# An ambiguous monitor set (no key) still keeps a closed lid's panel dark.
-: >"$work/watch-calls"
-(
-    noargs() { :; }; sway() { :; }; path() { :; }
-    XDG_RUNTIME_DIR=$work/xdg
-    display_lock() { profiles=$work/profiles; }
-    display_json() { echo '[{"name":"eDP-1","make":"a","model":"b","serial":""},{"name":"DP-1","make":"d","model":"e","serial":""}]'; }
-    display_key() { return 1; }
-    display_apply() { echo apply >>"$work/watch-calls"; }
-    display_defaults() { echo defaults >>"$work/watch-calls"; }
-    display_command() { echo "$1" >>"$work/watch-calls"; }
-    swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
-    . "$work/display-watch"
-    display_watch
-)
-[ "$(cat "$work/watch-calls" | tr '\n' ,)" = 'defaults,output eDP-1 power off,' ] || die 'display watch: an ambiguous set left a closed lid lit'
-[ -e "$work/xdg/convergent-lid-dark" ] || die 'display watch: no mark on the panel it darkened'
-# The owner's outputs file stands in for the defaults on an ambiguous set too (it cannot be saved).
-mkdir -p "$work/home/.config/sway/config.d"; : >"$work/home/.config/sway/config.d/outputs"
-: >"$work/watch-calls"
-(
+watch_run() (
+    set_json=$1 kind=$2
     noargs() { :; }; sway() { :; }; path() { :; }
     XDG_RUNTIME_DIR=$work/xdg HOME=$work/home
     display_lock() { profiles=$work/profiles; }
-    display_json() { echo '[{"name":"DP-1","make":"d","model":"e","serial":""},{"name":"DP-2","make":"d","model":"e","serial":""}]'; }
-    display_key() { return 1; }
+    display_json() { echo "$set_json"; }
+    display_key() { [ "$kind" != ambiguous ] && echo key; }
+    display_apply() { echo apply >>"$work/watch-calls"; }
     display_defaults() { echo defaults >>"$work/watch-calls"; }
     display_command() { echo "$1" >>"$work/watch-calls"; }
-    swaymsg() { case $* in *subscribe*) echo '{"first":true,"payload":""}' ;; esac; }
+    swaymsg() { case $* in *subscribe*) printf '%s\n' $events ;; esac; }
     . "$work/display-watch"
     display_watch
 )
+set2='[{"name":"eDP-1","make":"a","model":"b","serial":"c"},{"name":"DP-1","make":"d","model":"e","serial":"f"}]'
+same='[{"name":"DP-1","make":"d","model":"e","serial":""},{"name":"DP-2","make":"d","model":"e","serial":""}]'
+: >"$work/watch-calls"
+events='{"first":true,"payload":""} {"first":false,"payload":""} {"first":false,"payload":"reload"}' watch_run "$set2" key
+[ "$(tr '\n' , <"$work/watch-calls")" = 'apply,apply,' ] || die 'display watch: a reload was not applied again'
+: >"$work/watch-calls"
+events='{"first":true,"payload":""}' watch_run "$same" ambiguous
+[ "$(tr '\n' , <"$work/watch-calls")" = 'defaults,' ] || die 'display watch: an ambiguous set got no defaults'
+mkdir -p "$work/home/.config/sway/config.d"; : >"$work/home/.config/sway/config.d/outputs"
+: >"$work/watch-calls"
+events='{"first":true,"payload":""}' watch_run "$same" ambiguous
 [ ! -s "$work/watch-calls" ] || die 'display watch: defaults overrode the outputs file on an ambiguous set'
 # With the lid open, the watch lights the panel it darkened (the lid's open event can be missing after a closed-lid
 # login), and leaves a panel alone that it did not darken (idle power-off).
@@ -1628,7 +1606,6 @@ for b in 'XF86AudioMicMute exec sys audio micmute' '--locked XF86AudioMicMute ex
     [ "$(grep -cx -- "[[:space:]]*bindsym $b" "$sway")" = 2 ] || die "sway: $b is not bound at top level and in resize mode"
 done
 grep -qx "exec_always sh -c 'sleep 1; swaymsg -t send_tick reload'" "$sway"
-[ "$(grep -c "lid:off exec sh -c 'rm -f \"\$XDG_RUNTIME_DIR/convergent-lid-dark\"; " "$sway")" = 2 ]
 grep -qx ignore-empty-password "$repo/rootfs/etc/swaylock/config"
 check_script "$work/mic-init"
 check_script "$work/mic-locked"
