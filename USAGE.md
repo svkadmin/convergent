@@ -428,7 +428,8 @@ Failures: [RECOVERY 15](RECOVERY.md#15-incus-ui-session-or-passphrase-failure).
 Choose **Remote** (Super+d) or run `sys remote open`. Each open asks for a non-empty keyring
 password (twice on first use). Cancelling or a wrong password closes Remmina. `sys remote status`
 reports the state; `sys remote close` stops the container and locks the keyring. Profiles and
-encrypted credentials survive updates; there is no plaintext fallback.
+encrypted credentials survive updates; there is no plaintext fallback. A connection you delete stays,
+encrypted, in the volume's last three update snapshots until they are pruned.
 
 Use numeric work addresses: SSH (TCP 22), RDP (TCP/UDP 3389), VNC (TCP 5900–5999) or ping. The
 firewalls and the gateways are excluded. Cage confines clipboard transfers to the remote session;

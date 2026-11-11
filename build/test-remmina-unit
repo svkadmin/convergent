@@ -370,7 +370,7 @@ EOF
     sh -n "$work/remote"
     grep -q "^PATH=$work/remote-bin:" "$work/remote"
     printf '#!/bin/sh\necho 0\n' >"$work/remote-bin/id"
-    printf '#!/bin/sh\n[ "$SAMPLE:$*" != "update:-s -n 6" ]\n' >"$work/remote-bin/flock"
+    printf '#!/bin/sh\ncase "$SAMPLE:$*" in "update:-s -n 6" | "starting:-n 8") exit 1 ;; esac\n' >"$work/remote-bin/flock"
     printf '#!/bin/sh\necho "timeout $1 $2 $3" >>"$CALLS"\nshift 3\nexec "$@"\n' >"$work/remote-bin/timeout"
     cat >"$work/remote-bin/incus" <<'EOF'
 #!/bin/sh
@@ -378,13 +378,14 @@ case $* in
 *' query '*)
     profiles='["remmina"]' status=Running
     [ "$SAMPLE" != foreign ] || profiles='["default"]'
-    [ "$SAMPLE" != stopped ] || status=Stopped
+    case $SAMPLE in stopped|starting) status=Stopped ;; esac
     printf '[{"name":"remmina","type":"container","status":"%s","profiles":%s}]\n' "$status" "$profiles" ;;
 *) echo "$*" >>"$CALLS"; [ "$SAMPLE" != stuck ] ;;
 esac
 EOF
     chmod +x "$work/remote-bin/"*
-    for SAMPLE in running stopped update foreign stuck; do
+    # starting: a launch holds the session lock and nothing runs yet: no reported close it would outlive.
+    for SAMPLE in running stopped update foreign stuck starting; do
         CALLS=$work/remote-calls
         : >"$CALLS"
         export SAMPLE CALLS
@@ -398,6 +399,7 @@ EOF
         update) [ "$rc" = 1 ]; grep -qx 'remote: browser update in progress' "$work/remote-out"; [ ! -s "$CALLS" ] ;;
         foreign) [ "$rc" = 1 ]; grep -qx 'remote: the remmina instance is not the shipped one' "$work/remote-out" ;;
         stuck) [ "$rc" = 1 ]; grep -qx 'timeout -k 5 60' "$CALLS" ;;
+        starting) [ "$rc" = 1 ]; grep -qx 'remote: Remote is still starting: close its window once it opens' "$work/remote-out" ;;
         esac
     done
     echo 'CV-REMOTE unit remote close ok'
