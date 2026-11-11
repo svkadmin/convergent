@@ -25,7 +25,7 @@ browser_start() (
 		wait "$pid"; result=$?
 		if [ "$result" != 0 ]; then
 			# The log holds guest output too (launcher, cleanup tails): bounded and filtered.
-			reason=$(awk '/browser: / {reason=$0} {last=$0} END {print (reason != "" ? reason : last)}' "$log" |
+			reason=$(awk '/^browser: / {reason=$0} {last=$0} END {print (reason != "" ? reason : last)}' "$log" |
 				head -c 65536 | guest_text)
 			rm -f "$log"
 			die "${reason:-browser exited ($result)}"

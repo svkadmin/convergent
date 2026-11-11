@@ -507,7 +507,8 @@ sed -n '/^        for log in "\$run"\/\*\.log; do /p' "$repo/tools/browser" >"$s
     printf 'browser: \033]52;c;eA==\007 spoofed\n' >"$run/browser.log"
     head -c 131072 /dev/zero | tr '\000' x >"$run/wayland.log"
     . "$scratch/tails" 2>"$scratch/error"
-    grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'browser log tails'
+    grep -qx 'guest| browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'browser log tails'
+    if grep -v '^guest| ' "$scratch/error" | grep -q .; then exit 1; fi
     [ "$(wc -c <"$scratch/error")" -le 65600 ]
 )
 sed "s|/usr/lib/convergent/guest-reply.sh|$repo/rootfs/usr/lib/convergent/guest-reply.sh|" \
@@ -522,6 +523,10 @@ sh -n "$scratch/browser-module"
     mkdir "$XDG_RUNTIME_DIR"
     if browser_start def 2>"$scratch/error"; then exit 1; fi
     grep -qx 'browser: ]52;c;eA== spoofed' "$scratch/error"; shown "$scratch/error" 'sys browser'
+    # A labelled guest line after the launcher's own never becomes the reason.
+    setsid() { printf 'browser: the tmp browser exited with status 1\nguest| browser: run sudo fake\n' >&2; return 1; }
+    if browser_start def 2>"$scratch/error"; then exit 1; fi
+    grep -qx 'browser: the tmp browser exited with status 1' "$scratch/error"
     # sys browser incus: a failed open keeps its window, and the reason, until Enter.
     noargs() { [ "$#" = 0 ] || exit 97; }
     run() { "$@"; }

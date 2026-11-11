@@ -284,8 +284,8 @@ cleanup() {
     done
     for child in $children; do wait "$child" 2>/dev/null; done
     if [ "$result" != 0 ]; then
-        # browser.log is the guest's own output: bounded and filtered like other guest text.
-        for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" | head -c 65536 | guest_text >&2; done
+        # browser.log is the guest's own output: bounded, filtered and labelled, so no line poses as the launcher's reason.
+        for log in "$run"/*.log; do [ ! -f "$log" ] || tail -n 8 "$log" | head -c 65536 | guest_text | sed 's/^/guest| /' >&2; done
     fi
     rm -rf -- "$run" || result=1
     exit "$result"
