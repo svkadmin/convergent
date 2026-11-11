@@ -137,7 +137,10 @@ case $action in
         metrics=$(fingerprint "$tls/incus-client.crt")
         # A metrics renewal that stopped part-way trusts the previous certificate too, until its apply ends.
         previous=
-        [ ! -f "$tls/incus-client.previous" ] || previous=$(fingerprint "$tls/incus-client.previous")
+        if [ -f "$tls/incus-client.previous" ]; then
+            previous=$(fingerprint "$tls/incus-client.previous") || die 'cannot read the previous metrics certificate'
+            logger -p user.warning -t incus-ui 'metrics renewal unfinished: the previous certificate is still trusted' 2>/dev/null || :
+        fi
         expected=
         [ ! -f "$run/client.crt" ] || expected=$(fingerprint "$run/client.crt")
         trusted=false
