@@ -166,7 +166,7 @@ copy_rescue() {
 
 bless() {
 	booted
-	# A second cv-esp disk (an install medium left attached) stops bless: a release already good is disarmed
+	# A second cv-esp disk (another installed Convergent disk; install sticks label theirs cv-inst-*) stops bless: a release already good is disarmed
 	# first, or the watchdog resets the board on every boot until the disk is removed.
 	if [ "$(blkid -o device -t PARTLABEL=cv-esp | wc -l)" != 1 ]; then
 		state_mount ro
@@ -322,15 +322,14 @@ write() {
 	[ "$(head -c "$size" "$part" | sha256sum | cut -d' ' -f1)" = "$sum" ] ||
 		die "slot $inactive does not read back as slot.img"
 
-	# Clear persistent entry overrides before the new entry exists: a failure leaves no UKI to try.
-	if [ -z "${rescue_target:-}" ]; then
-		vars_mount
-		for name in LoaderEntryDefault LoaderEntryPreferred; do
-			var=$vars/$name-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
-			[ -e "$var" ] || continue
-			chattr -i "$var" && rm "$var" || die "cannot clear $name"
-		done
-	fi
+	# Clear persistent entry overrides before the new entry exists: a failure leaves no UKI to try. Rescue
+	# too: a pin on the slot that stopped booting would keep booting it.
+	vars_mount
+	for name in LoaderEntryDefault LoaderEntryPreferred; do
+		var=$vars/$name-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+		[ -e "$var" ] || continue
+		chattr -i "$var" && rm "$var" || die "cannot clear $name"
+	done
 	# Stage the UKI before exposing its three-try boot entry.
 	dst="$esp/$linux/convergent-$new-$inactive+3.efi"
 	cp "$tmp/uki" "$dst.new" && cmp -s "$tmp/uki" "$dst.new" &&
