@@ -733,11 +733,12 @@ sed -n '/- alert: VolumeQuotaHigh/{n;p;n;p;}' \
 grep -qx '        expr: cv_volume_used_bytes / cv_volume_limit_bytes > 0.85' "$work/quota-rule"
 grep -qx '        for: 10m' "$work/quota-rule"
 echo 'observability: svc qgroup collection and high-usage alert assertions passed'
-# Lifetime error counters alert on growth (they never reset); NVMe's temperature bit is left to its own alert; the
+# Lifetime error counters alert on growth (they never reset); NVMe's temperature is watched live by NvmeHot; the
 # battery alert takes the laptop's battery, not a peripheral's (21A).
 rules=$repo/guests/svc/rootfs/etc/vmalert/alerts.yaml
-grep -qxF '        expr: increase(cv_btrfs_device_errors_total[7d]) > 0' "$rules"
-grep -qxF '        expr: (increase(cv_nvme_media_errors_total[7d]) > 0) or (bitmap_and(cv_nvme_critical_warning, 29) > 0)' "$rules"
+grep -qF 'expr: ((cv_btrfs_device_errors_total - (cv_btrfs_device_errors_total offset 7d)) > 0) or ((cv_btrfs_device_errors_total > 0) unless (cv_btrfs_device_errors_total offset 7d))' "$rules"
+grep -qF 'or (bitmap_and(cv_nvme_critical_warning, 253) > 0)' "$rules"
+grep -qF 'expr: node_hwmon_temp_celsius{node="host",chip=~"nvme.*"} >= on (node,chip,sensor) node_hwmon_temp_max_celsius' "$rules"
 grep -qF 'node_power_supply_info{node="host",type="Battery",scope!="Device",status="Discharging"}' "$rules"
 # The autostart inventory covers WirePlumber scripts and user D-Bus services, which load at every login (21A).
 grep -qF -- "-o -path '*/.local/share/wireplumber/*' -o -path '*/.local/share/dbus-1/*'" "$repo/tools/check"

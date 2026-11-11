@@ -142,8 +142,9 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'State filesystem is read-only; preserve evidence and reboot', dashboard: '/d/cv-host'}
       - alert: BtrfsDeviceErrors
-        # Lifetime counters (nothing resets them): a new error stays raised for a week, the total stays on the dashboard.
-        expr: increase(cv_btrfs_device_errors_total[7d]) > 0
+        # Lifetime counters (nothing resets them): a rise over the last week, or a count with no week-old sample (raised
+        # once after a reinstall or a new drive); the total stays on the dashboard.
+        expr: ((cv_btrfs_device_errors_total - (cv_btrfs_device_errors_total offset 7d)) > 0) or ((cv_btrfs_device_errors_total > 0) unless (cv_btrfs_device_errors_total offset 7d))
         labels: {severity: critical}
         annotations: {summary: 'Btrfs device errors: {{ $labels.kind }}', dashboard: '/d/cv-host'}
       - alert: VolumeQuotaHigh
@@ -319,11 +320,17 @@ groups:
         labels: {severity: critical}
         annotations: {summary: 'NVMe available spare below device threshold: {{ $labels.device }}', dashboard: '/d/cv-host'}
       - alert: NvmeErrors
-        # Media errors are lifetime: a new one stays raised for a week. The warning bits without temperature (bit 1),
-        # which the daily sample would keep raised for a day after the drive cooled.
-        expr: (increase(cv_nvme_media_errors_total[7d]) > 0) or (bitmap_and(cv_nvme_critical_warning, 29) > 0)
+        # Media errors are lifetime: a rise over the last week, or a count with no week-old sample. Every warning bit but
+        # temperature (bit 1), which the daily sample kept raised a day after the drive cooled: NvmeHot reads it live.
+        expr: ((cv_nvme_media_errors_total - (cv_nvme_media_errors_total offset 7d)) > 0) or ((cv_nvme_media_errors_total > 0) unless (cv_nvme_media_errors_total offset 7d)) or (bitmap_and(cv_nvme_critical_warning, 253) > 0)
         labels: {severity: critical}
         annotations: {summary: 'NVMe reports media errors or critical warning: {{ $labels.device }}', dashboard: '/d/cv-host'}
+      - alert: NvmeHot
+        # The drive's composite temperature at its own warning threshold, live; it clears when the drive cools.
+        expr: node_hwmon_temp_celsius{node="host",chip=~"nvme.*"} >= on (node,chip,sensor) node_hwmon_temp_max_celsius{node="host",chip=~"nvme.*"}
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: 'NVMe at its warning temperature: {{ $labels.chip }}', dashboard: '/d/cv-host'}
       - alert: ScrubNeedsAttention
         expr: (cv_btrfs_scrub_errors > 0) or ((cv_btrfs_scrub_finished == 0) and on(node) (time() - cv_btrfs_scrub_started_seconds > 86400)) or (time() - cv_btrfs_scrub_started_seconds > 3456000) or ((cv_btrfs_scrub_recorded == 0) unless on(node) (cv_btrfs_scrub_missing_since_seconds > time() - 86400 and cv_btrfs_scrub_missing_since_seconds <= time()))
         labels: {severity: warning}

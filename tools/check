@@ -102,8 +102,8 @@ wired_heal() (
     fi
     echo "$now" >>"$attempts" || exit 1
     # After a failed re-add the role may be gone: the add, which refuses an existing one, decides then.
-    # A retry's remove fails on the role a failed add dropped: its error is no report line.
-    if { ic config device remove wan wired-uplink 2>/dev/null || [ -n "$retry" ]; } &&
+    # A retry's remove fails on the role a failed add dropped: only then is its error no report line.
+    if { if [ -n "$retry" ]; then ic config device remove wan wired-uplink 2>/dev/null || :; else ic config device remove wan wired-uplink; fi; } &&
         ic config device add wan wired-uplink usb vendorid=0bda productid=8153 "serial=$serial" required=false; then
         echo "healed $serial" >"$outcome"
         logger -t check 'wired uplink: wan did not hold its NIC for two runs; role removed and added again' 2>/dev/null || :
