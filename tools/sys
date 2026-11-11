@@ -362,14 +362,12 @@ typed_command() (
 	[ -z "$current" ] || set -- "$@" "$current"
 	# xargs reads quotes, not shell syntax; -a preserves the terminal for prompts.
 	rm -f "$states/result" || exit 1
-	# xargs reports any command failure as 123: the command's own status is in the result file.
-	rc=0
 	xargs -a "$states/query" -r -x -s 8192 -- sh -c '
 		file=$1; shift
 		"$@"; result=$?
 		printf "%s\n" "$result" >"$file"
-	' sh "$states/result" "$@" || rc=$?
-	[ -f "$states/result" ] || exit "$rc"
+	' sh "$states/result" "$@" || exit $?
+	[ -f "$states/result" ] || exit 0
 	IFS= read -r result <"$states/result" || exit 1
 	exit "$result"
 )

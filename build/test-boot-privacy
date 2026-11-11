@@ -1012,7 +1012,7 @@ for hook in unlock-state convergent-install; do
 died: state: a reason" ]
     grep -qx "state: a reason" "$work/console"
 done
-# Menu paths: a typed command reports its own status (not xargs' 123), capture asks for its arguments, and a
+# Menu paths: a typed command reports its own status, capture asks for its arguments, and a
 # failed status probe after a Wi-Fi join says the join worked.
 sed -n '/^typed_command() (/,/^)/p' "$repo/tools/sys" >"$work/typed"
 check_script "$work/typed"
