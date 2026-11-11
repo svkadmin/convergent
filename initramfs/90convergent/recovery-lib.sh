@@ -23,6 +23,8 @@ reset_password() (
 	# As the installer asks.
 	[ "${#pass}" -ge 12 ] || { echo 'Use at least 12 bytes.'; return 1; }
 	[ "${#pass}" -le 256 ] || { echo 'Use at most 256 bytes.'; return 1; }
+	# The login prompt types the console keymap: printable ASCII only, as account requires.
+	case $pass in *[!\ -~]*) echo 'Use only printable ASCII (space through ~).'; return 1 ;; esac
 	hash=$(printf '%s\n' "$pass" | openssl passwd -6 -stdin) || return 1
 	unset pass again
 	case $hash in '$6$'*) ;; *) return 1 ;; esac

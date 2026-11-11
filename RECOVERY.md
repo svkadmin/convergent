@@ -84,7 +84,9 @@ The menu names the release and slot; the state partition is mounted read-write a
 
 1. Root shell. The verified root is `/sysroot`; the encrypted data and the writable `/etc` files
    are under `/run/cv-state`. `exit` returns to the menu.
-2. Reset owner password. Type 12–256 bytes twice; it sets the password of uid 1000.
+2. Reset owner password. Type 12–256 bytes of printable ASCII twice; it sets the password of uid
+   1000. This prompt types the US layout and the login prompt the console keymap (`console_keymap`,
+   US by default): with another keymap, use only characters on the same keys in both.
 3. Continue booting this release. The health checks then mark it good as usual.
 4. Reboot.
 5. Power off.
@@ -103,7 +105,7 @@ options 2 and 3). There is no network, watchdog, boot counter, blessing or way t
 release.
 
 1. Root shell. Only the tools of the rescue initramfs; `/sysroot` is empty. `exit` returns.
-2. Reset owner password. As in the Recovery menu: 12–256 bytes, uid 1000.
+2. Reset owner password. As in the Recovery menu: 12–256 bytes of printable ASCII, uid 1000.
 3. Write a release from USB. Steps below.
 4. Choose next slot. Type `a` or `b`: the next boot takes that slot's normal entry once, even an
    exhausted one, without resetting its counter or marking it good.

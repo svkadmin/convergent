@@ -796,7 +796,7 @@ echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
     chown() { printf 'chown %s\n' "$*" >>"$work/permissions"; }
     chmod() { printf 'chmod %s\n' "$*" >>"$work/permissions"; command chmod "$@"; }
     . "$repo/initramfs/90convergent/recovery-lib.sh"
-    for scenario in valid minimum maximum short long mismatch no-owner two-owners no-shadow two-shadows bad-group; do
+    for scenario in valid minimum maximum short long non-ascii mismatch no-owner two-owners no-shadow two-shadows bad-group; do
         printf 'root:x:0:0::/:/bin/sh\nowner:x:1000:1000::/home/owner:/bin/sh\nother:x:1001:1001::/:/bin/sh\n' >"$state/etc/passwd"
         printf 'root:x:0:\nshadow:x:42:\n' >"$state/etc/group"
         printf 'root:root-hash:1:2:3:4:5:6:7\nowner:old-hash:8:9:10:11:12:13:14\nother:other-hash:15:16:17:18:19:20:21\n' >"$state/etc/shadow"
@@ -806,6 +806,7 @@ echo 'test-boot-privacy: wan fsck and guest sshd penalties passed'
         maximum) password=$(printf '%0256d' 0) ;;
         short) password=12345678901 ;;
         long) password=$(printf '%0257d' 0) ;;
+        non-ascii) password=$(printf 'a fixture password \303\251') ;;
         mismatch) repeat='different password' ;;
         no-owner) sed '/^owner:/d' "$state/etc/passwd" >"$work/passwd"; mv "$work/passwd" "$state/etc/passwd" ;;
         two-owners) echo 'second:x:1000:1000::/:/bin/sh' >>"$state/etc/passwd" ;;

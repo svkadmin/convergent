@@ -19,7 +19,7 @@ for n in 11 12 256 257; do
     case $n:$code in 11:1|12:0|256:0|257:1) ;; *) die "a $n-byte password gave $code" ;; esac
 done
 # The greeter types the console keymap: printable ASCII only.
-for p in ' ASCII ~ password ' 'password-\303\251' 'password-\t-tab' 'password-\177'; do
+for p in ' ASCII ~ password ' 'password-long-\303\251' 'password-\t-tab' 'password-long-\177'; do
     code=0
     (LC_ALL=C; die() { exit 1; }; pass=$(printf '%b' "$p"); . "$work/length") || code=$?
     case $p in ' '*) want=0 ;; *) want=1 ;; esac

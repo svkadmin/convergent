@@ -499,6 +499,7 @@ sed -n '/^# Stage, hash and validate/,/^cp "\$work\/list\.raw" "\$state\/list\.r
 )
 # Browser launch failures: the guest's log tails, sys browser's reason and incus-ui's int commands reach
 # the owner's terminal bounded and filtered.
+[ "$(grep -c 'exec svc -- rc-service grafana st[a-z]* 9>&- 8>&- 7>&- 6>&- >/dev/null 2>&1' "$repo/tools/browser")" = 2 ]
 sed -n '/^        for log in "\$run"\/\*\.log; do /p' "$repo/tools/browser" >"$scratch/tails"
 [ "$(wc -l <"$scratch/tails")" = 1 ]; sh -n "$scratch/tails"
 (
