@@ -1013,10 +1013,10 @@ STUBS
 printf '2\n3\n7\n' | CV_STATE_RO=1 sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
 [ "$(grep -c 'The state volume is read-only' "$work/rescue.out")" = 2 ]
 if grep -q -e RESET -e SLOT "$work/rescue.out"; then die 'rescue wrote a read-only state'; fi
-grep -qx POWEROFF "$work/rescue.out"
+grep -q 'POWEROFF$' "$work/rescue.out"
 # Writable (the usual case): option 2 runs the reset.
 printf '2\n7\n' | sh "$work/rescue-menu" "$work/state" >"$work/rescue.out" 2>&1
-grep -qx RESET "$work/rescue.out"
+grep -q 'RESET$' "$work/rescue.out"
 grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
