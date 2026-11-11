@@ -851,7 +851,7 @@ set -eu
 printf '%s\n' "$*" >>"$work/modules"
 case "$*" in
 '-r videodev') printf 'choice=%s\n' "$(cat "$work/camera/state/camera")" >>"$work/modules"; exit 1 ;;
-'--ignore-install uvcvideo'|'uvcvideo') ;;
+'--ignore-install uvcvideo'|'uvcvideo'|'--ignore-install intel_ipu7') ;;
 *) exit 98 ;;
 esac
 EOF
@@ -867,9 +867,18 @@ export work
     : >"$work/udev"
     (camera on)
     [ "$(cat "$work/modules")" = uvcvideo ]
-    # A MIPI camera's loads refused at boot are asked again (sensors on i2c, IPU parts on auxiliary).
-    printf '%s\n' 'trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary' 'settle -t 30' >"$work/expected"
+    # A MIPI camera's loads refused at boot are asked again (sensors on i2c, IVSC on mei, IPU parts on auxiliary).
+    printf '%s\n' 'trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary --subsystem-match=mei' 'settle -t 30' >"$work/expected"
     cmp "$work/expected" "$work/udev"
+    # From a udev worker (power's boot restore): no settle on its own event.
+    : >"$work/udev"
+    (SEQNUM=1; camera restore) >/dev/null
+    printf '%s\n' 'trigger --action=add --subsystem-match=i2c --subsystem-match=auxiliary --subsystem-match=mei' >"$work/expected"
+    cmp "$work/expected" "$work/udev"
+    # The IPU7 gate's own load (Lunar Lake) is allowed once on.
+    : >"$work/modules"
+    (camera load intel_ipu7)
+    [ "$(cat "$work/modules")" = '--ignore-install intel_ipu7' ]
     [ "$(cat "$work/camera/state/camera")" = on ]
     : >"$work/modules"
     (camera load uvcvideo)
