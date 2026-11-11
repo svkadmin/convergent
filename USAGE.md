@@ -188,7 +188,7 @@ Stock Sway bindings plus the Convergent additions below. Super is the Windows ke
 | Super+Shift+q | close the window |
 | Super+1 … 9, Super+Shift+1 … 9 | go to a workspace; move the window there |
 | Super+f | fullscreen |
-| Super+Shift+c | reload the sway configuration |
+| Super+Shift+c | reload the sway configuration (the display profile is applied again) |
 | Super+Shift+e | exit sway |
 | Print | select an area; save to `~/Pictures/screenshots` and copy (Escape cancels) |
 | Shift+Print | save and copy the focused screen after 1 s |

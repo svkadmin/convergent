@@ -49,6 +49,8 @@ bindswitch --locked lid:off exec sh -c 'for o in $(swaymsg -r -t get_outputs | j
 mode "resize" {
     bindsym --locked Mod4+Escape exec swaylock -f
     bindsym --locked Mod4+space input type:keyboard xkb_switch_layout next
+    bindsym XF86AudioMicMute exec sys audio micmute
+    bindsym --locked XF86AudioMicMute exec sys audio mic off
     bindswitch --locked lid:on exec sh -c 'swaylock -f; for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power off ;; esac; done'
     bindswitch --locked lid:off exec sh -c 'for o in $(swaymsg -r -t get_outputs | jq -r ".[].name"); do case $o in eDP-*|LVDS-*) swaymsg output "$o" power on ;; esac; done'
 }
@@ -92,5 +94,7 @@ include ~/.config/sway/config.d/*
 
 # One subscriber per session; profiles follow monitor identities across connector changes.
 exec sys display watch
+# A reload (Super+Shift+c) drops output settings applied over IPC; this tick has the watch apply them again.
+exec_always sh -c 'sleep 1; swaymsg -t send_tick reload'
 
 for_window [sandbox_engine="^convergent$" sandbox_app_id="^remmina$" sandbox_instance_id="^remmina$"] title_format "[remote] %title"
