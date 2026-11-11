@@ -1153,6 +1153,30 @@ grep -qxF 'rm -f "$target/etc/machine-id" "$target/var/lib/dbus/machine-id"' "$r
 grep -qF 'dponly | usbonly | nopcie)' "$repo/tools/devices"
 # A missed firewall probe shows the portal as unknown, not as off (21E).
 grep -qF 'else if (portal == "unknown" && topo["wan"] != "" && topo["wan"] != "down") block("PORTAL?", grey)' "$repo/tools/bar"
+# 21F: the network guests' QEMUs go last under memory pressure (every heal run, before its gates); a browser may
+# run many threads; a launcher check that did not answer is no verdict on the image; Remmina's OOM kills count.
+sed -n '/^heal_qemu() {/,/^}/p; /^heal_oom() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" |
+    sed -e "s|/run/incus/|$work/oom/incus/|g" -e "s|/proc/|$work/oom/proc/|g" >"$work/heal-oom"
+check_script "$work/heal-oom"
+(
+    . "$work/heal-oom"
+    pid=4100
+    for n in fw1 fw2 wan svc; do
+        pid=$((pid + 1))
+        mkdir -p "$work/oom/incus/$n" "$work/oom/proc/$pid"
+        echo "$pid" >"$work/oom/incus/$n/qemu.pid"
+        printf '%s\0' /usr/bin/qemu-system-x86_64 -name "$n" -pidfile "$work/oom/incus/$n/qemu.pid" >"$work/oom/proc/$pid/cmdline"
+    done
+    heal_oom
+    [ "$(cat "$work/oom/proc/4101/oom_score_adj")" = -800 ]
+    [ "$(cat "$work/oom/proc/4102/oom_score_adj")" = -800 ]
+    [ "$(cat "$work/oom/proc/4103/oom_score_adj")" = -800 ]
+    [ ! -e "$work/oom/proc/4104/oom_score_adj" ]
+)
+grep -A1 -F '    mkdir -p "$heal" || exit 1' "$repo/rootfs/usr/lib/convergent/incus/firewall-heal" | grep -qx '    heal_oom'
+grep -qx '  limits.processes: "4096"' "$repo/guests/browser/incus/base.yaml"
+grep -qF '*) die "$role did not answer its launcher check (status $launcher_rc); retry" ;;' "$repo/tools/browser"
+grep -qF 'case $name in svc|def|int|remmina|tmp-portal|tmp-[0-9]*) ;; *) continue ;; esac' "$repo/tools/observe"
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
