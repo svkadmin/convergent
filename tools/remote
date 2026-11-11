@@ -16,28 +16,41 @@ close|reap)
         [ "$1" = close ] || exit 1
         exec sudo -- /usr/local/sbin/remote close
     fi
-    mkdir -p /run/convergent
+    mkdir -p /run/convergent/browser
     # 75 for reap: an update holding its lock defers it to check's next minute; it is no failure.
     busy=1
     [ "$1" != reap ] || busy=75
+    # The launcher holds the session lock from its first step to its cleanup. For close, held is its session
+    # (stopped without the guests lock, which an update holds for minutes; a session's own lock keeps a Remmina
+    # update out) or its start; free is an orphan or nothing. The minute's reap holds it briefly: waited out.
+    exec 8>/run/convergent/browser/remmina.lock
+    session=
+    if [ "$1" = close ] && ! flock -w 5 8; then session=1; fi
     exec 9>/run/convergent/guests.lock
-    # The owner's close waits out the minute heal's millisecond hold; reap defers at once.
-    if [ "$1" = reap ]; then flock -s -n 9; else flock -s -w 2 9; fi || { echo 'remote: guest update in progress' >&2; exit "$busy"; }
+    if [ -z "$session" ]; then
+        # The owner's close waits out the minute heal's millisecond hold; reap defers at once.
+        if [ "$1" = reap ]; then flock -s -n 9; else flock -s -w 2 9; fi || { echo 'remote: guest update in progress' >&2; exit "$busy"; }
+    fi
     exec 6>/run/convergent/browser-update.lock
     flock -s -n 6 || { echo 'remote: browser update in progress' >&2; exit "$busy"; }
-    if [ "$1" = reap ]; then
-        mkdir -p /run/convergent/browser
-        exec 8>/run/convergent/browser/remmina.lock
-        flock -n 8 || exit 0
-    fi
     instances=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 6>&- 8>&-)
     printf '%s\n' "$instances" | jq -e 'all(.[] | select(.name == "remmina"); .type == "container" and .profiles == ["remmina"])' >/dev/null ||
         { echo 'remote: the remmina instance is not the shipped one' >&2; exit 1; }
     if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
-        timeout -k 5 60 incus --force-local --project default stop remmina --force 9>&- 6>&- 8>&-
-        [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
+        # reap: only an orphan (no launcher), its lock taken after the query, which a launch must not wait for;
+        # asked again under the lock: a session that closed meanwhile stopped its own container.
+        if [ "$1" = reap ]; then
+            flock -n 8 || exit 0
+            instances=$(timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 6>&- 8>&-)
+        fi
+        if printf '%s\n' "$instances" | jq -e 'any(.[]; .name == "remmina" and .status != "Stopped")' >/dev/null; then
+            timeout -k 5 60 incus --force-local --project default stop remmina --force 9>&- 6>&- 8>&-
+            [ "$1" != reap ] || logger -t remote 'stopped orphan Remmina session'
+        fi
+    elif [ -n "$session" ]; then
+        echo 'remote: Remote is still starting: close its window once it opens' >&2; exit 1
     fi
-    [ "$1" != reap ] || rm -rf /run/convergent/browser/remmina
+    if [ "$1" = reap ]; then flock -n 8 || exit 0; rm -rf /run/convergent/browser/remmina; fi
     ;;
 *) echo 'usage: remote open|status|close' >&2; exit 1 ;;
 esac

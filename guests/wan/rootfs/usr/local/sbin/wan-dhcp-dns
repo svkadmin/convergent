@@ -42,6 +42,9 @@ clear)
 	# Every client start and stop deconfigures: a check queued from here bounced a lease-less uplink, which queued
 	# another. The minute check sees a lost lease.
 	rm -f "/run/wan/resolv.$interface.dns"
+	# In portal mode the browser's DNS map follows now, not at the minute's expiry run: a stale one sent the
+	# portal's queries to the lost uplink's resolver over another network. follow keeps portal mode on.
+	[ ! -e /run/wan/portal ] || setsid /usr/local/sbin/wan-portal follow </dev/null >/dev/null 2>&1 &
 	;;
 *)
 	echo "usage: wan-dhcp-dns set|clear" >&2

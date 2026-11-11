@@ -619,4 +619,32 @@ echo 'test-networks: DNS source age, cache commit and rollback fixtures passed'
     done >"$dns/want"
     cmp "$dns/want" "$dns/opened"
 )
+# dns list reads local files before the push lock and any recovery: a pending one with a firewall down failed it.
+awk '/^if \[ "\$mode" = list \]; then$/ {l = NR} /^exec 9>"\$run\/dns-push.lock"$/ {k = NR} /^rollback \|\| die/ {r = NR}
+    END {exit !(l && k && r && l < k && k < r)}' "$repo/tools/dns-push"
+[ "$(grep -c '^if \[ "\$mode" = list \]; then$' "$repo/tools/dns-push")" = 1 ]
+# dns add refuses a name the stored list blocks (its entry, or a wildcard above it) unless an exception covers it:
+# the list answers before local data.
+sed -n '/^blocked() {/,/^}/p' "$repo/tools/dns-push" >"$work/blocked"
+[ -s "$work/blocked" ]
+grep -qF '[ ! -f "$state/list.rpz" ] || ! blocked "$name" || die' "$repo/tools/dns-push"
+grep -qF '! blocked "$record" "$work/edit" || die "the record $record needs this exception: remove the record first"' "$repo/tools/dns-push"
+(
+    . "$work/blocked"
+    state=$work/blk work=$work/blk
+    mkdir -p "$state"
+    printf '%s\n' '$ORIGIN blocklist.rpz.' 'tracker.example.com CNAME .' '*.ads.example.net CNAME .' >"$state/list.rpz"
+    : >"$work/allow.before"
+    blocked tracker.example.com
+    blocked x.ads.example.net
+    if blocked ads.example.net; then exit 1; fi
+    if blocked other.example.com; then exit 1; fi
+    echo 'tracker.example.com' >"$work/allow.before"
+    if blocked tracker.example.com; then exit 1; fi
+    # unallow asks with the exceptions it would leave: without this one the record would read NXDOMAIN.
+    : >"$work/left"
+    blocked tracker.example.com "$work/left"
+    echo 'example.net  # work' >"$work/allow.before"
+    if blocked x.ads.example.net; then exit 1; fi
+)
 echo 'test-networks: DNS source close and interruption diagnostics passed'

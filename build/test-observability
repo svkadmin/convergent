@@ -1019,7 +1019,8 @@ echo 'observability: bounded checker reads and shared memory fixtures passed'
 # Owner inventory reads must bound partial replies and leave lock fds in the parent.
 for tool in devices remote; do
     sed -n '/^[[:space:]]*instances\{0,1\}=$(.*incus --force-local query /p' "$repo/tools/$tool" >"$work/owner-read"
-    [ "$(wc -l <"$work/owner-read")" = 1 ]
+    # Each one (remote's reap asks again under its lock): all run below, each must be bounded.
+    [ -s "$work/owner-read" ]
     sh -n "$work/owner-read"
     for reply in 0 124; do
         rc=0
