@@ -220,6 +220,8 @@ edit() {
 				guest_reply 65536 rsh "$fw" "cat $rdir/local-names.conf" >"$work/builtins" || die "cannot check built-in names on $fw"
 				awk -v name="$name" '$1 == "local-data:" {s=$2; sub(/^"/, "", s); sub(/\.$/, "", s); if (tolower(s)==name) exit 1}' "$work/builtins" || die 'name conflicts with a built-in record'
 			done
+			# The list answers before local data: a record for a name it blocks would read NXDOMAIN.
+			[ ! -f "$state/list.rpz" ] || ! blocked "$name" || die "the blocklist covers $name: run sys dns allow $name first"
 			cp "$work/records.before" "$work/edit"
 			printf '\nlocal-data: "%s. A %s"\n' "$name" "$2" >>"$work/edit"
 		else
@@ -254,6 +256,20 @@ edit() {
 	mv "$state/$file.new" "$state/$file"
 }
 
+# Whether the stored list blocks a name (its own entry or a wildcard above it) that no exception covers.
+blocked() {
+	awk -v name="$1" -v allow="$work/allow.before" '
+		BEGIN {
+			while ((getline a < allow) > 0) {
+				sub(/#.*/, "", a); gsub(/^[ \t]+|[ \t]+$/, "", a); sub(/\.$/, "", a); a = tolower(a)
+				if (a != "" && (name == a || substr(name, length(name) - length(a)) == "." a)) exit 1
+			}
+			want[name] = 1; p = name
+			while ((i = index(p, ".")) > 0) { p = substr(p, i + 1); want["*." p] = 1 }
+		}
+		{ k = tolower($1); sub(/\.$/, "", k); if (k in want) { found = 1; exit } }
+		END { exit !found }' "$state/list.rpz"
+}
 [ "$(id -u)" = 0 ] || die "run as root"
 mode=${1:-full}
 case $mode in

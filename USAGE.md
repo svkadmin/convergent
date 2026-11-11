@@ -638,7 +638,7 @@ also need USB approval. Not built: meeting compartments and screen sharing.
 | Command | Does |
 |---|---|
 | `sys dns list` | shows records, exceptions and the last successful push (UTC) |
-| `sys dns add printer.home.arpa 192.168.1.50` | adds an A record |
+| `sys dns add printer.home.arpa 192.168.1.50` | adds an A record; a name the blocklist covers needs `sys dns allow` first |
 | `sys dns remove printer.home.arpa` | removes a record |
 | `sys dns allow example.org` | exempts a domain and its subdomains from the blocklist |
 | `sys dns unallow example.org` | removes the exception |
