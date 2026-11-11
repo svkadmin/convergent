@@ -36,6 +36,7 @@ IPv4 100.80.1.2 127.0.0.1 192.168.12.34 9.9.9.9
 IPv6 2001:db8::1 fe80::1234 fd00::2 ::ffff:192.0.2.9
 Serial Number: SECRET123
 file /home/alice/PRIVATE-DOCUMENT.txt
+BTRFS warning (device dm-1): checksum error at logical 1 on dev /dev/dm-1, root 258, inode 4321, offset 0, length 4096, links 1 (path: alice/Documents/PRIVATE-medical.pdf)
 SSID=PRIVATE-NETWORK
 EOF
 awk -f "$here/diag/scrub.awk" "$work/private" >"$work/public"
@@ -168,7 +169,7 @@ for script in check facts; do
 	ok=1
 	bad 'fixture failure'
 	[ "$ok" = 0 ] || die 'failure did not set state'
-	grep -q -- "-p user.err -t $script fixture failure" "$work/log" || exit 1
+	grep -q -- "-p user.err -t $script -- fixture failure" "$work/log" || exit 1
 	if (die 'fatal fixture') 2>/dev/null; then exit 1; fi
 done
 sed -n '/^policy_online() {/,/^}/p; /^write_failed() {/,/^}/p' "$repo/tools/power" >"$work/power-functions"

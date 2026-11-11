@@ -501,8 +501,12 @@ Diagnostics are beta-only and run as root on the builder.
 3. Publish a script for 24 hours:
 
    ```sh
+   sh build/diag/mkdiag.sh <collector> <script-file>
    build/debug send <script-file> <purpose>
    ```
+
+   `send` refuses a script `mkdiag.sh` did not wrap: only scrubbed output (no addresses, serials,
+   home paths, commands or network names) leaves the laptop.
 
 4. After the owner runs it, fetch the output:
 
@@ -518,7 +522,8 @@ Owner consent, execution and output limits: [USAGE, Health and alerts](USAGE.md#
 The maintained field check, `build/diagnostics/field-check`, is builder-only:
 
 ```sh
-build/debug send build/diagnostics/field-check "<purpose>"
+sh build/diag/mkdiag.sh build/diagnostics/field-check /tmp/field-check.diag
+build/debug send /tmp/field-check.diag "<purpose>"
 ```
 
 It reads the release, time, slot and setup state, services, disk and memory, check status lines

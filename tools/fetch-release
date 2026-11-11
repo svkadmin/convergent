@@ -18,7 +18,7 @@ staged=/var/lib/convergent/guest-updates
 pointer=
 pids=
 
-die() { logger -p user.err -t fetch-release "$*"; echo "fetch-release: $*" >&2; exit 1; }
+die() { logger -p user.err -t fetch-release -- "$*"; echo "fetch-release: $*" >&2; exit 1; }
 tree() { for _c in $(pgrep -P "$1" 2>/dev/null); do echo "$_c"; tree "$_c"; done; }
 cleanup() {
 	_rc=$?

@@ -91,7 +91,7 @@ CHECK
 for d in /sys/class/power_supply/*; do [ "$(cat "$d/type")" = Battery ] || continue; c=$(cat "$d/capacity"); case $c in ''|*[!0-9]*) continue ;; esac; [ "$c" -le 100 ] || continue; echo "${d##*/}: $c%"; exit 0; done; echo 'no battery with capacity'; exit 1
 CHECK
 	check usb 10 <<'CHECK'
-s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys usb status:\n%s\n' "$s"
+s=$(sudo -n usbguard list-devices -b); n=$(printf '%s\n' "$s" | awk 'NF {n++} END {print n+0}'); echo "$n blocked devices"; [ "$n" = 0 ] || printf 'Review with sys usb status:\n%s\n' "$(printf '%s\n' "$s" | awk 'NF {l = $1; for (i = 2; i < NF; i++) if ($i == "id" || $i == "via-port") l = l " " $i " " $(i + 1); print l}')"
 CHECK
 	check firmware 10 <<'CHECK'
 # Drivers probe optional files ("Direct firmware load ... error -2") and fall back, and "[Firmware Bug]"

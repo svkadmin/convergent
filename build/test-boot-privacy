@@ -1230,6 +1230,14 @@ cmp -s "$work/tracked-image" "$work/tracked-guests"
     rm -rf "$t/.git"
     (. "$work/tracked-image") || exit 1
 )
+# The selftest report the owner sends names blocked USB devices by number, id and port only (21K).
+{
+    echo "sudo() { printf '%s\n' '5: block id 1050:0407 serial \"S3CRET\" name \"Work token\" hash \"h4sh\" parent-hash \"p4r\" via-port \"3-1\" with-interface 03:00:00'; }"
+    sed -n '/^	check usb 10 <<.CHECK.$/,/^CHECK$/p' "$repo/rootfs/usr/lib/convergent/sys/99-selftest" | sed '1d;$d'
+} >"$work/selftest-usb"
+sh "$work/selftest-usb" >"$work/selftest-usb.out"
+grep -qx '5: id 1050:0407 via-port "3-1"' "$work/selftest-usb.out"
+if grep -qE 'S3CRET|Work token|h4sh|p4r' "$work/selftest-usb.out"; then exit 1; fi
 # A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
 awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
 grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"

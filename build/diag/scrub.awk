@@ -1,5 +1,7 @@
 # Keep system facts; suppress personal log fields before output is stored or sent.
 function mask(s,    out, m, parts, count, i, valid) {
+	# Btrfs names a damaged file relative to its subvolume (no /home/ in it): an owner file name.
+	sub(/\(path: .*$/, "(path: <path>)", s)
 	if (s ~ /\/(home|root|media|mnt)\// || tolower(s) ~ /ssid|network name|connect(ed|ing) to|command=|user(name)?=/) return "<personal line>"
 	gsub(/(name|serial|hash|parent-hash) "[^"]*"/, "<identity>", s)
 	gsub(/[Ss]erial([ _]?[Nn]umber)?[ :=]+[^ ,;]+/, "SerialNumber: <serial>", s)

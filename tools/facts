@@ -12,8 +12,8 @@ efi=/sys/firmware/efi/efivars
 efi_guid=8be4df61-93ca-11d2-aa0d-00e098032b8c
 cert=/var/lib/incus/server.crt
 
-die() { logger -p user.err -t facts "$*" 2>/dev/null || :; echo "facts: $*" >&2; exit 1; }
-log() { logger -t facts "$*"; }
+die() { logger -p user.err -t facts -- "$*" 2>/dev/null || :; echo "facts: $*" >&2; exit 1; }
+log() { logger -t facts -- "$*"; }
 usage() { echo "usage: facts boot | daily | nts | auto" >&2; exit 2; }
 [ "$(id -u)" = 0 ] || die "run as root"
 
@@ -27,7 +27,7 @@ umask 022
 buf=
 ok=1
 m() { printf '%s\n' "$*" >>"$buf"; }
-bad() { ok=0; logger -p user.err -t facts "$*" 2>/dev/null || :; }
+bad() { ok=0; logger -p user.err -t facts -- "$*" 2>/dev/null || :; }
 
 # Publish NAME.prom with cv_collector_success{collector}.
 publish() {

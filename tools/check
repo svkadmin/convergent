@@ -9,8 +9,8 @@ state=/var/lib/convergent/check
 out=/var/lib/node_exporter
 list=/usr/lib/convergent/etc-state
 work=
-die() { logger -p user.err -t check "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
-bad() { ok=0; logger -p user.err -t check "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
+die() { logger -p user.err -t check -- "$*" 2>/dev/null || :; echo "check: $*" >&2; exit 1; }
+bad() { ok=0; logger -p user.err -t check -- "$*" 2>/dev/null || :; printf 'FAIL %s\n' "$*" >>"$work/report"; }
 # The same rule as the initramfs (convergent-state.sh) and tools/timezone.
 zone_valid() {
     printf '%s\n' "$1" | LC_ALL=C awk '{n++} n == 1 && /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+)*$/ && !/^(posix|right)\// && !/^(localtime|posixrules|Factory)$/ {ok = 1}
@@ -719,7 +719,7 @@ for node in fw1 fw2; do
         fi
     done
     guest_reply 65536 rsh "$node" ifconfig >"$work/$node" 2>>"$work/report" || bad "$node CARP query failed"
-    rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
+    guest_reply 65536 rsh "$node" 'pfctl -si' 2>>"$work/report" | grep -q '^Status: Enabled' || bad "$node pf is disabled"
 done
 role1=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw1") || bad 'fw1 CARP membership or state invalid'
 role2=$(awk -f /usr/lib/convergent/incus/carp.awk /etc/convergent/segments "$work/fw2") || bad 'fw2 CARP membership or state invalid'

@@ -456,6 +456,15 @@ grep -qF 'select(.size * $s <= 2147483648)' "$here/../tools/guests"
 grep -qF "{ profiles_save svc || die 'cannot save the svc profile'; profile svc" "$here/../tools/guests"
 grep -qF "{ fw_release || die 'cannot release the firewall handoff'; retry carp fw1 MASTER; }" "$here/../tools/guests"
 sed -n '/^dns_restore() {/,/^}/p' "$here/../tools/guests" | awk '/dns-push local 9>&-/ {p = NR} /flock -w 120 8/ {l = NR} /the DNS push failed/ {f = NR} END {exit !(p && l && f && p < l && l < f)}'
+# A compromised svc's stderr stays out of retry.err, which reaches syslog as one bounded line without controls;
+# firewall replies are bounded before grep (21K).
+grep -qF 'svc_answers() { ic exec svc -- true 2>/dev/null; }' "$here/../tools/guests"
+grep -qF 'logger -p user.err -t guests -- "$*: $(head -c 1024 "$work/retry.err" | guest_text | tr '"'"'\n\t'"'"' '"'"'  '"'"')"' "$here/../tools/guests"
+grep -qF "*' svc'* | svc_answers) wait=\${GUEST_SVC_TIMEOUT:-300} ;;" "$here/../tools/guests"
+# Host tools hand messages to logger after --: none can start an option (21K).
+if grep -nE 'logger( -p [a-z.]+)? -t [a-z-]+ "\$\*"' "$here/../tools/check" "$here/../tools/facts" "$here/../tools/fetch-release" "$here/../tools/portal" \
+    "$here/../tools/power" "$here/../tools/slot" "$here/../rootfs/usr/lib/convergent/incus/host-net"; then exit 1; fi
+if grep -qE '^[[:space:]]*rsh "[$]1" .(pfctl -si|host -t A)' "$here/../tools/guests"; then exit 1; fi
 # A redone update rebuild clears that mark before it empties the store again.
 grep -qxF '    case $1:${3:-} in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac' "$here/../tools/guests"
 # The rollback says so itself: $step there names its last helper (seed_remove).
@@ -755,6 +764,12 @@ done
     if retry healthy fw2 2>"$work/retry.out"; then exit 1; fi
     grep -qx 'guests: next: sys firewall rebuild fw2' "$work/retry.out"
     grep -qx console "$work/retry.out"
+    # A guest's stderr that reads as a logger option (-f/path) stays message text, after the host's prefix.
+    rsh() { printf '%s' '-f/etc/passwd' >&2; return 255; }
+    logger() { printf '%s\n' "$@" >"$work/logger-args"; }
+    if retry reachable fw2 2>/dev/null; then exit 1; fi
+    printf '%s\n' -p user.err -t guests -- 'reachable fw2: -f/etc/passwd' >"$work/logger-expected"
+    cmp "$work/logger-expected" "$work/logger-args"
 )
 # A frozen QEMU holds even a graceful stop: it runs under its bound and the forced stop follows.
 (
@@ -786,6 +801,9 @@ done
     guest_reply() {
         case $4 in
         *pfsync0) echo 'RUNNING defer: on' ;;
+        # Bounded like the other replies (21K).
+        'pfctl -si') echo 'Status: Enabled' ;;
+        host*) echo 100.80.2.10 ;;
         'sha256 -q /etc/pf.conf') echo old-pf ;;
         *) echo digest ;;
         esac

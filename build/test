@@ -2556,6 +2556,7 @@ die() { echo "$*" >&2; exit 1; }
 eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p' /usr/local/sbin/guests)"
 mkdir -p "$work/wan-read/out" "$work/iwd"
 setpriv() { shift 4; "$@"; }
+timeout() { shift 3; "$@"; }
 ulimit() { case "$*" in '-f 128'|'-f 2048') ;; *) return 1 ;; esac; }
 debugfs() {
     echo 'debugfs 1.47.3 (8-Jul-2025)' >&2
