@@ -325,6 +325,27 @@ sed -n '/^age() /p; /^auto() {/,/^}/p' "$repo/tools/facts" >"$work/facts-auto"
     auto
     grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"
     [ "$(wc -l <"$out/boot-calls")" = 3 ]
+    # One written ahead of the clock (a first boot before chrony stepped it back) is redone.
+    clock=1000
+    auto
+    [ "$(wc -l <"$out/boot-calls")" = 4 ]
+)
+# Below two NTS sources chrony is asked to resolve and poll again, at most every five minutes of uptime.
+sed -n '/^nts_nudge() {/,/^}/p' "$repo/tools/facts" | sed "s|/proc/uptime|$work/nudge-uptime|" >"$work/nts-nudge"
+[ -s "$work/nts-nudge" ]; sh -n "$work/nts-nudge"
+(
+    . "$work/nts-nudge"
+    run=$work/nudge-run; mkdir -p "$run"
+    chronyc() { echo "chronyc $*" >>"$work/nudge-calls"; }
+    nudged() { [ "$(grep -c '^chronyc refresh$' "$work/nudge-calls" 2>/dev/null)" = "$1" ]; }
+    : >"$work/nudge-calls"
+    n=3; echo '1000.5 9' >"$work/nudge-uptime"; nts_nudge; nudged 0
+    n=0; nts_nudge; nudged 1
+    echo '1299.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 1
+    echo '1300.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 2
+    # A stamp from before a reboot (uptime now smaller) does not hold it back.
+    echo '50.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 3
+    n=; echo '400.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 4
 )
 # auto waits out the per-minute nts lock instead of skipping its hour.
 sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"

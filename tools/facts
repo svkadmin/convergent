@@ -277,10 +277,25 @@ fw_ntpd() {
 	exec 7>&-
 }
 
+# Booted offline, chrony backs off resolving its NTS names to once an hour: below two sources, have it resolve and
+# poll again, at most every five minutes of uptime.
+nts_nudge() {
+	[ "${n:-0}" -lt 2 ] 2>/dev/null || return 0
+	read -r up _ </proc/uptime
+	up=${up%.*}
+	last=$(cat "$run/nts-nudge" 2>/dev/null) || last=0
+	case $last in '' | *[!0-9]*) last=0 ;; esac
+	[ "$up" -lt "$last" ] || [ "$((up - last))" -ge 300 ] || return 0
+	echo "$up" >"$run/nts-nudge" || return 0
+	chronyc online >/dev/null 2>&1 || :
+	chronyc refresh >/dev/null 2>&1 || :
+}
+
 nts() {
 	new_buf
 	fact_nts
 	publish nts nts
+	nts_nudge
 	hourly
 	logger -t cv-heartbeat alive
 	fw_ntpd
@@ -309,6 +324,9 @@ storage() {
 	else
 		m 'cv_btrfs_scrub_recorded 0'
 		now=$(date +%s)
+		# A stamp from a first boot whose clock ran ahead (RTC in local time) is renewed, not reported.
+		since=$(cat "$missing" 2>/dev/null) || since=
+		case $since in '' | *[!0-9]*) ;; *) [ "$since" -le "$now" ] || rm -f "$missing" ;; esac
 		if [ -n "$uuid" ] && [ ! -e "$missing" ]; then
 			printf '%s\n' "$now" >"$missing.new" && mv "$missing.new" "$missing" || bad 'cannot record missing scrub observation'
 		fi
@@ -338,7 +356,9 @@ age() { _m=$(stat -c %Y "$1" 2>/dev/null) || { echo 999999999; return; }; echo $
 auto() {
 	storage
 	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+	# Also one written ahead of the clock (a first boot before chrony stepped it back).
 	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ] ||
+		[ "$(stat -c %Y "$out/boot.prom")" -gt "$(($(date +%s) + 60))" ] ||
 		! grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"; then
 		boot
 	fi
