@@ -51,6 +51,9 @@ chmod 0755 /usr/local/libexec/convergent/fw-pf-reload
 # Keep the inherited rotation budget in sync with pflogd's 1MiB cap.
 awk '$1 == "/var/log/pflog" {n++; if ($3 != 3 || $6 != "ZB") bad=1}
     END {exit (n != 1 || bad)}' /etc/newsyslog.conf || die 'unexpected pflog archive budget'
+# sshd logs each of the host's probes at VERBOSE (about 7 MB a day): authlog rotates at 2 MB too, not weekly only.
+awk '$1 == "/var/log/authlog" {$5 = 2048; n++} {print} END {exit (n != 1)}' /etc/newsyslog.conf >/etc/newsyslog.conf.new &&
+	mv /etc/newsyslog.conf.new /etc/newsyslog.conf || die 'cannot cap the authlog rotation'
 cap_mkdb /etc/login.conf
 
 # Nobody sits at a firewall's console: a failed preen repairs with -y and reboots, as -p does after fixing root.
