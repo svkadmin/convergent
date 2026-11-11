@@ -203,7 +203,7 @@ sh -n "$work/driver"
 for mode in write rescue next; do
     case $mode in
     write) faults='none mount default preferred delete' ;;
-    rescue) faults=none ;;
+    rescue) faults='none default' ;;
     next) faults='none absent exhausted good unlock write protect' ;;
     esac
     for fault in $faults; do
@@ -239,8 +239,8 @@ for mode in write rescue next; do
             uki=$work/case/esp/EFI/Linux/convergent-123-b+3.efi
             case $fault in none) [ -f "$uki" ] ;; *) [ ! -e "$uki" ] && [ ! -e "$uki.new" ] || die "UKI installed after $fault failed" ;; esac
             for name in LoaderEntryDefault LoaderEntryPreferred; do
-                if [ "$mode:$fault" = write:none ]; then [ ! -e "$vars/$name-$guid" ]; fi
-                if [ "$mode" = rescue ]; then [ -e "$vars/$name-$guid.lock" ]; fi
+                # Rescue too: a pin on the slot that stopped booting would keep booting it.
+                case $fault in none) [ ! -e "$vars/$name-$guid" ] ;; esac
             done
         fi
     done

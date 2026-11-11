@@ -87,6 +87,8 @@ printf 'secret_service_store(value)\n' >"$work/src/remmina_file.c"
 (cd "$work"; sh -eu ./compile-guard) >"$work/compiled"
 grep -qx compiled "$work/compiled"
 echo 'CV-REMOTE unit compile guard ok'
+# The compile sees only the variables the build sets, not the builder shell's compiler flags.
+grep -q "^chroot \"\$root\" /usr/bin/env -i PATH=[^ ]* HOME=/root .*/bin/sh -eu <<'COMPILE'\$" "$here/../guests/remmina/build"
 # Any Alpine rebuild of the source pin passes; another version or no record stops the build.
 sed -n '/^remmina_version=/,/is not the source pin/p' "$here/../guests/remmina/build" >"$work/pin-check"
 [ "$(wc -l <"$work/pin-check")" = 3 ]

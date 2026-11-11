@@ -203,6 +203,11 @@ firewall_rebuild() {
 
 # Owner-side output keeps privileged writes out of the owner's directory.
 firewall_capture() (
+	# From the menus: asked, like the other actions with arguments.
+	if [ "$#" = 0 ]; then
+		ask 'Interface or segment (vio4, svc, ...)'; set -- "$answer"
+		ask 'Seconds (1..60)'; set -- "$1" "$answer"
+	fi
 	[ "$#" = 2 ] || die 'usage: sys firewall capture <interface-or-segment> <seconds>'
 	if [ "$(id -u)" = 0 ]; then
 		[ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] || die 'run sys firewall capture from the owner login'

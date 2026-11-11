@@ -179,8 +179,10 @@ case $action in
         openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
             -keyout "$scratch/key" -out "$scratch/request" -subj '/CN=browser-int-ui'
         printf 'basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=clientAuth\n' >"$scratch/extensions"
+        # Backdated like the guest certificates: a first-boot clock ahead must not leave it not yet valid.
+        since=$(date -u -d '1 day ago' +%Y%m%d%H%M%SZ) || die 'cannot read the clock'
         openssl x509 -req -in "$scratch/request" -CA "$tls/ca.crt" -CAkey "$tls/ca.key" \
-            -set_serial "0x$(openssl rand -hex 16)" -days 90 -extfile "$scratch/extensions" -out "$scratch/client.crt"
+            -set_serial "0x$(openssl rand -hex 16)" -not_before "$since" -days 90 -extfile "$scratch/extensions" -out "$scratch/client.crt"
         openssl verify -purpose sslclient -CAfile "$tls/ca.crt" "$scratch/client.crt"
         openssl pkcs12 -export -inkey "$scratch/key" -in "$scratch/client.crt" -name browser-int-ui \
             -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg SHA256 -iter 600000 \

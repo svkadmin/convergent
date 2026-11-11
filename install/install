@@ -412,6 +412,15 @@ xkb=$(readlink "$work/image/usr/share/X11/xkb") || xkb=/usr/share/X11/xkb
 case $xkb in /*) ;; *) xkb=/usr/share/X11/$xkb ;; esac
 evdev=$work/image$xkb/rules/evdev.lst
 
+# Step 8 keeps the stick out of the USB policy: a boot medium that is not USB fails here, before the questions.
+stick_ports=
+for d in $bootdisks; do
+	port=$(usb_port "$d") || die "cannot trace stick USB path"
+	[ -n "$port" ] || die "boot disk is not USB: $d (write the install image to a USB stick)"
+	stick_ports="$stick_ports$port
+"
+done
+
 # 0. The hardware: outside the supported list, or without the Intel render node, only by typing it.
 vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null) || vendor=
 product=$(cat /sys/class/dmi/id/product_name 2>/dev/null) || product=
@@ -564,14 +573,7 @@ while yes_no 'Join a Wi-Fi network for the first update?'; do
 	break
 done
 
-# 8. USB devices: what is attached now stays allowed, but this stick; the target's own port is kept.
-stick_ports=
-for d in $bootdisks; do
-	port=$(usb_port "$d") || die "cannot trace stick USB path"
-	[ -n "$port" ] || die "boot disk is not USB: $d"
-	stick_ports="$stick_ports$port
-"
-done
+# 8. USB devices: what is attached now stays allowed, but this stick; the target stays allowed.
 target_port=$(usb_port "$disk") || die "cannot trace the target's path"
 printf '%s' "$stick_ports" >"$work/stick-ports"
 while :; do
@@ -597,6 +599,10 @@ while :; do
 	done
 	[ "$answer" = r ] || break
 done
+# Ports only where USBGuard's own policy keeps them (no serial), as sys usb allow and enrol write them: a dock
+# or disk moved to another port stays allowed.
+sed '/ serial ""/!s/ via-port "[^"]*"//' "$work/usb.rules" >"$work/usb.rules.new" &&
+	mv "$work/usb.rules.new" "$work/usb.rules" || die "cannot write the USB policy"
 
 # 9. A LUKS header backup at the end: a filesystem on another USB or removable disk, never the stick or the target.
 # The disks as they are now: question 8 asked to attach things.

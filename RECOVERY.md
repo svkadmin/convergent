@@ -177,8 +177,8 @@ of the default runlevel, a protection not running, Incus not answering). Fix tha
 three commands again, within the watchdog window. `slot: cannot read the highest blessed release`
 means the state file `highest` is damaged: in the Recovery root shell, write the release ID the
 menu names into it (`echo <release> >/run/cv-state/highest`), then Continue.
-`slot: expected one cv-esp partition` means a second Convergent disk (an install medium) is
-attached: detach it and run the three commands again. A release already good is not reset meanwhile.
+`slot: expected one cv-esp partition` means a second installed Convergent disk is attached (not
+the install stick, whose labels differ), such as an old drive in a USB enclosure: detach it and run the three commands again. A release already good is not reset meanwhile.
 
 The release does not boot, or the previous one came back by itself:
 
@@ -404,9 +404,8 @@ Success: DNS works, at least two sources are selected or combined (`*` or `+`), 
 
 If a command fails: stop and fix that error, then repeat with fresh verified UTC; time services
 may still be stopped. Stopping ntpd before the step discards its old samples, and OpenBSD `date`
-cancels a pending slew. wan takes its time from the host and follows a step by itself; to step it
-at once, run `sudo timeout -k 5 60 incus --force-local --project default exec wan -- rc-service
-chronyd restart`.
+cancels a pending slew. wan takes its time from the host's KVM clock and steps to it by itself within
+seconds.
 
 A laptop that has not finished setup (`cannot issue under this clock`) runs no firewalls yet: set
 only the host clock with `sudo date -u -s 'YYYY-MM-DD HH:MM:SS'`, then reboot; setup runs again at
@@ -723,13 +722,12 @@ into a new dated folder, so an earlier copy stays until you delete it. Browsers,
 Remmina's keyring and the system guests are not copied: setup creates them again.
 
 1. Once per disk, find it with `lsblk -o NAME,SIZE,MODEL,TRAN`, then erase and format it. The
-   first line refuses anything that is not a USB disk:
+   block runs only for a USB disk:
    ```sh
-   [ "$(lsblk -dno TRAN /dev/sdX)" = usb ] || echo 'STOP: not a USB disk'
-   sudo cryptsetup luksFormat /dev/sdX
-   sudo cryptsetup open /dev/sdX cv-copy
-   sudo mkfs.btrfs /dev/mapper/cv-copy
-   sudo cryptsetup close cv-copy
+   if [ "$(lsblk -dno TRAN /dev/sdX)" = usb ]; then
+       sudo cryptsetup luksFormat /dev/sdX && sudo cryptsetup open /dev/sdX cv-copy &&
+           sudo mkfs.btrfs /dev/mapper/cv-copy && sudo cryptsetup close cv-copy
+   else echo 'STOP: not a USB disk'; fi
    ```
 2. Open and mount it, then check the mount. Stop if the last line does not print
    `/dev/mapper/cv-copy`: a copy would land on the laptop instead.

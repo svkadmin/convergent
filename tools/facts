@@ -359,13 +359,18 @@ storage() {
 
 age() { _m=$(stat -c %Y "$1" 2>/dev/null) || { echo 999999999; return; }; echo $(( $(date +%s) - _m )); }
 
+# Missing, older than this boot (the clock stepped forward), ahead of the clock (stepped back), or (but with
+# "clock", the minute run's test: a failing collector retries hourly) failed.
+boot_stale() {
+	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
+	[ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ] ||
+		[ "$(stat -c %Y "$out/boot.prom")" -gt "$(($(date +%s) + 60))" ] ||
+		{ [ "${1:-}" != clock ] && ! grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"; }
+}
+
 auto() {
 	storage
-	btime=$(awk '$1 == "btime" { print $2 }' /proc/stat)
-	# Also one written ahead of the clock (a first boot before chrony stepped it back).
-	if [ ! -e "$out/boot.prom" ] || [ "$(stat -c %Y "$out/boot.prom")" -lt "$btime" ] ||
-		[ "$(stat -c %Y "$out/boot.prom")" -gt "$(($(date +%s) + 60))" ] ||
-		! grep -qx 'cv_collector_success{collector="boot"} 1' "$out/boot.prom"; then
+	if boot_stale; then
 		boot
 	fi
 	daily_age=$(age "$out/daily.prom")
@@ -379,7 +384,7 @@ auto() {
 case ${1:-} in
 boot) [ $# = 1 ] || usage; flock -w 300 9 || die "another facts is running"; daily; storage; hourly; nts; boot ;;
 daily) [ $# = 1 ] || usage; flock -w 120 9 || die "another facts is running"; daily ;;
-nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts ;;
+nts) [ $# = 1 ] || usage; flock -n 9 || exit 0; nts; if boot_stale clock; then boot; fi ;;
 # nts holds the lock for seconds each minute: wait for it rather than skip an hour.
 auto) [ $# = 1 ] || usage; flock -w 60 9 || exit 0; auto ;;
 *) usage ;;

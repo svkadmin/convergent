@@ -37,6 +37,8 @@ chpasswd() {
     [ "$(cat)" = 'owner:fixture-password' ] || exit 90
     echo hash >>"$work/events"
     printf 'owner:$y$new:1:2:3:4:5:6:7\n' >"$stm/etc/shadow"
+    # Its backup of the old file, which the unmount below finds if it stays.
+    printf 'owner:$y$old:1:2:3:4:5:6:7\n' >"$stm/etc/shadow-"
 }
 sync() {
     [ "$#" = 2 ] && [ "$1" = -f ] && [ "$2" = "$stm/etc/shadow" ] || exit 90

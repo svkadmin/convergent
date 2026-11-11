@@ -96,9 +96,10 @@ for old in "$state"/.backup.?????? "$state"/var-*/.backup.??????; do
 	[ -e "$old" ] || [ -L "$old" ] || continue
 	remove_snapshot "$old" || warn "state: cannot remove abandoned snapshot $old"
 done
-# A power cut between a temporary account or zone copy and its rename leaves hashes no one would remove.
+# A power cut between a temporary account or zone copy and its rename leaves hashes no one would remove;
+# so do shadow-utils' backups of a changed password.
 for old in "$state"/etc/.passwd.?????? "$state"/etc/.group.?????? "$state"/etc/.shadow.?????? \
-	"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.??????; do
+	"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.?????? "$state"/etc/shadow- "$state"/etc/gshadow-; do
 	[ -e "$old" ] || [ -L "$old" ] || continue
 	rm -f "$old" || warn "state: cannot remove $old"
 done

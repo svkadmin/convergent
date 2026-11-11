@@ -54,6 +54,8 @@ allow_usb() {
 	case $line in *" 02:"* | *" 0a:"* | *" e0:"* | *" ff:"*) echo "NOTE: it has a network, wireless or vendor-specific interface." ;; esac
 	ask "Allow device $id for good?"
 	usbguard allow-device -p "$id" || die "usbguard refused"
+	# rules.conf is a file on the state volume: on disk before success is reported.
+	sync -f /etc/usbguard/rules.conf || die 'allowed, but the policy may not survive a power cut; run sync'
 	logger -t devices "USB device $id allowed permanently: $line"
 	echo "devices: allowed, and written to the allow-list"
 }
@@ -183,6 +185,16 @@ review() {
 	printf '%s\n' "$lines" | tr -d '\000-\010\013-\037\177'
 }
 
+# The USB ports from the disk holding the state volume up to its root hub: a system installed to a USB disk.
+system_usb() {
+	part=$(readlink -f /dev/disk/by-partlabel/cv-state) || return 0
+	usb=$(readlink -f "/sys/class/block/${part##*/}/../device") || return 0
+	while [ -n "$usb" ]; do
+		[ ! -f "$usb/idVendor" ] || echo "${usb##*/}"
+		usb=${usb%/*}
+	done
+}
+
 enrol() (
 	[ -t 0 ] || die 'enrol needs a terminal'
 	work=$(mktemp -d) || exit 1
@@ -201,6 +213,12 @@ enrol() (
 		[ "$a" != yes ] || printf '%s\n' "$rule" >>"$work/approved"
 	done 3<"$work/generated"
 	tr -d '\000-\010\013-\037\177' <"$work/approved"
+	# Blocking the disk the system runs from, or a hub above it, stops it, now and at every boot.
+	for port in $(system_usb); do
+		hash=$(usbguard list-devices | grep -F " via-port \"$port\"" | sed -n 's/.* hash "\([^"]*\)".*/\1/p')
+		[ -n "$hash" ] && grep -qF " hash \"$hash\"" "$work/approved" ||
+			die 'the system runs from a USB disk: enrol again and trust it and every hub above it; nothing changed'
+	done
 	ask 'Replace the entire USB policy with these devices? Unlisted devices will be blocked.'
 	usbguard list-rules >"$work/current" && cmp -s "$work/old" "$work/current" || die 'policy changed during review; retry'
 	# Insert reviewed rules before any old catch-all, then remove the old policy.
@@ -212,6 +230,7 @@ enrol() (
 		case $id in ''|*[!0-9]*) die 'invalid policy rule number' ;; esac
 		usbguard remove-rule "$id" || die 'removal failed; review the policy before retrying'
 	done <"$work/old"
+	sync -f /etc/usbguard/rules.conf || die 'policy saved, maybe not on disk; run sync before a reboot'
 	# The daemon applies the saved policy to present devices on startup.
 	rc-service usbguard restart || die 'policy saved; USBGuard restart failed'
 	logger -t devices 'USB policy replaced after individual review'
@@ -226,11 +245,20 @@ revoke() {
 	rules=$(usbguard list-rules) || die 'cannot read policy'
 	line=$(printf '%s\n' "$rules" | grep "^$1: allow ") || die 'not an allowed rule (use review)'
 	case $line in *\ hash\ \"*\"*) ;; *) die 'not a device-specific rule; enrol individual devices first' ;; esac
+	ports=$(system_usb)
+	if [ -n "$ports" ]; then
+		devices=$(usbguard list-devices) || die 'cannot read devices'
+		for port in $ports; do
+			hash=$(printf '%s\n' "$devices" | grep -F " via-port \"$port\"" | sed -n 's/.* hash "\([^"]*\)".*/\1/p')
+			case $line in *" hash \"$hash\""*) [ -z "$hash" ] || die 'that rule allows the USB disk the system runs from, or a hub above it' ;; esac
+		done
+	fi
 	printf '%s\n' "$line" | tr -d '\000-\010\013-\037\177'
 	ask 'Remove this allowance and reapply the remaining policy? This can disconnect input or storage.'
 	# A specific deny also defeats any overlapping allowance in an older policy.
 	usbguard append-rule -a 0 "block ${line#*: allow }" >/dev/null || die 'cannot block device'
 	usbguard remove-rule "$1" || die 'cannot remove rule'
+	sync -f /etc/usbguard/rules.conf || die 'rule removed, maybe not on disk; run sync before a reboot'
 	rc-service usbguard restart || die 'rule removed; USBGuard restart failed'
 	logger -t devices "USB rule $1 revoked"
 	[ ! -f /var/lib/convergent/guests/initialized ] || (wired prune) ||

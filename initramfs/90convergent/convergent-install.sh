@@ -15,16 +15,18 @@ ttyS[0-9] | ttyS[1-9][0-9]) line="-L 115200 $console vt100" ;;
 esac
 [ -c "/dev/$console" ] || die "install: no terminal /dev/$console"
 
+# rd.emergency=poweroff acts at once: leave the reason on the screen first.
+die_shown() { printf '\n%s\nPowering off in 30 seconds.\n' "$1" 2>/dev/null >/dev/console; sleep 30; die "$1"; }
 udevadm settle
 # One install stick, its data beside its root: a second one would make the labels ambiguous.
 for label in cv-inst-root cv-inst-data; do
 	[ "$(blkid -o device -t "PARTLABEL=$label" | wc -l)" = 1 ] ||
-		die "install: not exactly one partition labelled $label; detach other install media"
+		die_shown "install: not exactly one partition labelled $label; detach other install media"
 done
 root_part=$(blkid -o device -t PARTLABEL=cv-inst-root) && data_part=$(blkid -o device -t PARTLABEL=cv-inst-data) &&
 	root_disk=$(readlink -f "/sys/class/block/${root_part##*/}/..") &&
 	data_disk=$(readlink -f "/sys/class/block/${data_part##*/}/..") || die "install: cannot locate the install partitions"
-[ -n "$root_disk" ] && [ "$root_disk" = "$data_disk" ] || die "install: the install data is not on the install stick"
+[ -n "$root_disk" ] && [ "$root_disk" = "$data_disk" ] || die_shown "install: the install data is not on the install stick"
 mkdir -p /run/convergent-install &&
 	mount -t erofs -o ro,nodev,nosuid,noexec "$data_part" /run/convergent-install ||
 	die "install: the install data did not mount"

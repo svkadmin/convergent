@@ -997,6 +997,113 @@ echo 'test-boot-privacy: session watch passed'
 grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browsers", orange)' "$repo/tools/bar"
 # Install and wan build (20Z): eMMC refused, the re-read retried, wan modes independent of the checkout umask.
 grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
+# Early boot stops the owner can fix are held on the screen before the power-off.
+grep -c 'die_shown "state: ' "$repo/initramfs/90convergent/unlock-state.sh" | grep -qx 3
+grep -c 'die_shown "install: ' "$repo/initramfs/90convergent/convergent-install.sh" | grep -qx 2
+for hook in unlock-state convergent-install; do
+    sed -n '/^die_shown() /p' "$repo/initramfs/90convergent/$hook.sh" | sed "s|/dev/console|$work/console|" >"$work/die-shown"
+    (
+        die() { echo "died: $1"; }
+        sleep() { echo "slept $1"; }
+        . "$work/die-shown"
+        die_shown 'state: a reason' 2>&1
+    ) >"$work/die-shown.out"
+    [ "$(tail -n 2 "$work/die-shown.out")" = "slept 30
+died: state: a reason" ]
+    grep -qx "state: a reason" "$work/console"
+done
+# Menu paths: a typed command reports its own status, capture asks for its arguments, and a
+# failed status probe after a Wi-Fi join says the join worked.
+sed -n '/^typed_command() (/,/^)/p' "$repo/tools/sys" >"$work/typed"
+check_script "$work/typed"
+printf '#!/bin/sh\nexit "$1"\n' >"$work/sysstub"
+chmod +x "$work/sysstub"
+mkdir "$work/typed-states"
+for code in 0 1 3; do
+    rc=0
+    sh -c '. "$1"; text_valid() { :; }; die() { exit 99; }; states=$2 current= query=$3; typed_command' \
+        "$work/sysstub" "$work/typed" "$work/typed-states" "$code" >/dev/null 2>&1 || rc=$?
+    [ "$rc" = "$code" ] || die "a typed command exiting $code reported $rc"
+done
+sed -n '/^firewall_capture() (/,/^)/p' "$repo/rootfs/usr/lib/convergent/sys/14-firewall" >"$work/capture"
+check_script "$work/capture"
+(
+    . "$work/capture"
+    HOME=$work/capture-home
+    id() { echo 1000; }
+    ask() { IFS= read -r answer; }
+    run() { echo "$*" >"$work/capture-run"; }
+    printf 'vio4\n15\n' | firewall_capture >/dev/null
+    [ "$(cat "$work/capture-run")" = 'sudo /usr/local/sbin/firewall-capture vio4 15' ]
+)
+grep -qF "echo 'joined; the status check failed: run sys wifi status' >&2" "$repo/rootfs/usr/lib/convergent/sys/10-wifi"
+# A shutdown that cannot drain (a guest operation holds the lock) keeps running ephemeral work VMs, which Incus
+# would delete when it stops them, marked; the next guests run makes them ephemeral again.
+sed -n '/^ic() /p; /^note() /p; /^keep_ephemeral() {/,/^}/p' "$repo/rootfs/usr/lib/convergent/incus/shutdown" >"$work/keep-ephemeral"
+check_script "$work/keep-ephemeral"
+grep -qF "flock -w 30 9 || { note 'guest operation still running; leaving final shutdown to Incus'; keep_ephemeral; exit 1; }" \
+    "$repo/rootfs/usr/lib/convergent/incus/shutdown"
+(
+    set -eu
+    . "$work/keep-ephemeral"
+    logger() { :; }
+    nic='"expanded_devices":{"eth0":{"type":"nic","network":"work"}}'
+    timeout() {
+        shift 3
+        case $* in
+        "incus --force-local query /1.0/instances?recursion=1&all-projects=true")
+            printf '[%s,%s,%s,%s]\n' "{\"name\":\"w1\",\"project\":\"owner\",\"status\":\"Running\",\"ephemeral\":true,$nic}" \
+                "{\"name\":\"w2\",\"project\":\"owner\",\"status\":\"Running\",\"ephemeral\":false,$nic}" \
+                "{\"name\":\"w3\",\"project\":\"owner\",\"status\":\"Stopped\",\"ephemeral\":true,$nic}" \
+                '{"name":"x","project":"owner","status":"Running","ephemeral":true,"expanded_devices":{"eth0":{"type":"nic","network":"other"}}}' ;;
+        *) echo "$*" >>"$work/keep-calls" ;;
+        esac
+    }
+    : >"$work/keep-calls"
+    keep_ephemeral
+    printf '%s\n' 'incus --force-local --project owner config set w1 user.convergent.ephemeral=true' \
+        'incus --force-local --project owner config set w1 ephemeral=false --property' >"$work/keep-expected"
+    cmp "$work/keep-expected" "$work/keep-calls"
+)
+sed -n '/^autorestart_clear() (/,/^)/p' "$repo/tools/guests" | sed "s|/run/convergent/guests-stopping|$work/ar-stopping|" >"$work/autorestart-clear"
+check_script "$work/autorestart-clear"
+(
+    set -eu
+    . "$work/autorestart-clear"
+    state=$work/ar-state work=$work/ar-work frozen=
+    mkdir -p "$state" "$work"
+    ic() { echo "${ic_project:-default} $*" >>"$work/calls"; [ "$1" != query ] || echo '[]'; }
+    fail() { return 1; }
+    timeout() { shift 3; [ "$*" = 'incus --force-local query /1.0/instances?recursion=1&all-projects=true' ] || exit 97
+        echo '[{"name":"w1","project":"owner","config":{"user.convergent.ephemeral":"true"}},{"name":"w2","project":"owner","config":{}}]'; }
+    : >"$work/calls"
+    autorestart_clear
+    printf '%s\n' 'default query /1.0/instances?recursion=1&project=default' 'owner config set w1 ephemeral=true --property' \
+        'owner config unset w1 user.convergent.ephemeral' >"$work/expected"
+    cmp "$work/expected" "$work/calls"
+    # Not while the shutdown that kept them runs: Incus would delete them as it stops them.
+    : >"$work/../ar-stopping"
+    : >"$work/calls"
+    autorestart_clear
+    [ "$(cat "$work/calls")" = 'default query /1.0/instances?recursion=1&project=default' ]
+)
+# The installed policy keeps a port only for a device without a serial, as USBGuard's own policy does: a dock
+# or a USB system disk moved to another port stays allowed.
+sed -n '/^# Ports only where USBGuard/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"
+[ "$(wc -l <"$work/usb-ports")" = 4 ]
+(
+    work=$work/usb-ports-run
+    mkdir "$work"
+    die() { exit 1; }
+    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" via-port "3-2" with-interface 08:06:50' \
+        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/usb.rules"
+    . "$work/../usb-ports"
+    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" with-interface 08:06:50' \
+        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/expected"
+    cmp "$work/expected" "$work/usb.rules"
+)
+# A boot medium that is not USB is refused before the first question, not after the last.
+awk '/die "boot disk is not USB/ { u = NR } /^# 0\. The hardware/ { h = NR } END { exit !(u && h && u < h) }' "$repo/install/install"
 grep -qF 'until blockdev --rereadpt "$disk" 2>"$work/rereadpt"; do' "$repo/install/install"
 grep -qF -- '--mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -' "$repo/guests/wan/build"
 # Rescue reaches its menu on a volume that mounts only read-only, and refuses the writes there (21C).
@@ -1021,7 +1128,10 @@ grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/m
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
-grep -qF '"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.??????; do' "$repo/initramfs/90convergent/convergent-state.sh"
+grep -qF '"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.?????? "$state"/etc/shadow- "$state"/etc/gshadow-; do' "$repo/initramfs/90convergent/convergent-state.sh"
+# A guests run's log rotated mid-run stays one file; wan's wired DHCP client logs to syslog (21D).
+awk '/guests-update.log/ {s = 1} s && /copytruncate/ {f = 1} s && /^}/ {exit} END {exit !f}' "$repo/rootfs/etc/logrotate.d/convergent"
+grep -qx '	udhcpc-opts -S' "$repo/guests/wan/rootfs/etc/network/interfaces"
 # Logs rotate on battery too: not only through anacron's power-gated cron.daily (20Y).
 grep -qxF '23 */6 * * * root umask 077; /usr/bin/logrotate /etc/logrotate.conf' "$repo/rootfs/etc/cron.d/convergent"
 # Root locks are 0600: the time zone lock is opened under umask 077 (20Y).
@@ -1035,8 +1145,9 @@ grep -qx "flock -s -w 2 9 || die 'guest update in progress'" "$repo/tools/firewa
 grep -q '^flock -s -w 2 8 || die .a guest update is running' "$repo/tools/fetch-release"
 
 # Wired role: Incus changes are bounded, and revoke or enrol drops a role no allow rule names any more.
-sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
+sed -n '/^ic() {/p; /^wired() {/,/^}/p; /^system_usb() {/,/^}/p; /^enrol() (/,/^)/p; /^revoke() {/,/^}/p' "$repo/tools/devices" |
     sed -e "s|/run/convergent|$work/wired|g" -e "s|/sys/bus/usb/devices/|$work/wired/sys/|g" -e "s|/var/lib/convergent/guests/initialized|$work/wired/initialized|g" \
+        -e "s|/dev/disk/by-partlabel/cv-state|$work/wired/dev/cv-state|" -e "s|/sys/class/block/|$work/wired/block/|" \
         -e '/\[ -t 0 \] || die/d' -e 's/rc-service /rc_service /' >"$work/wired-functions"
 check_script "$work/wired-functions"
 grep -q 'wired prune' "$work/wired-functions"
@@ -1053,6 +1164,8 @@ touch "$work/wired/initialized"
     flock() { [ "$*" = '-w 60 9' ] || exit 97; }
     logger() { :; }
     rc_service() { [ "$*" = 'usbguard restart' ] || exit 97; }
+    # Each saved policy is on disk before success: rules.conf is a file on the state volume.
+    sync() { [ "$*" = '-f /etc/usbguard/rules.conf' ] || exit 97; echo synced >>"$w/synced"; }
     role='{"type":"usb","vendorid":"0bda","productid":"8153","serial":"S1","required":"false"}'
     timeout() {
         case "$1 $2 $3 $4" in
@@ -1082,7 +1195,9 @@ touch "$work/wired/initialized"
             mv "$w/rules.new" "$w/rules" ;;
         remove-rule) grep -v "^$2: " "$w/rules" >"$w/rules.new"; mv "$w/rules.new" "$w/rules" ;;
         generate-policy) cat "$w/generated" ;;
-        list-devices) [ "$2" = -a ] || exit 97; [ ! -e "$w/swapped" ] || return 0; printf '5: %s\n' "$nic" ;;
+        list-devices)
+            if [ "$#" = 1 ]; then cat "$w/devices"; return; fi
+            [ "$2" = -a ] || exit 97; [ ! -e "$w/swapped" ] || return 0; printf '5: %s\n' "$nic" ;;
         *) exit 97 ;;
         esac
     }
@@ -1125,6 +1240,54 @@ touch "$work/wired/initialized"
     printf '%s\n' yes | (enrol) >"$w/out"
     [ ! -s "$w/calls" ] || exit 1
     touch "$w/initialized"
+    # A system installed to a USB disk: enrol refuses to block that disk or a hub above it, revoke refuses to
+    # drop their rules, and neither changes anything.
+    disk='allow id 0781:5581 serial "D1" name "Disk" hash "h3"'
+    hub='allow id 1d6b:0003 serial "0000:00:14.0" name "xHCI" hash "h4"'
+    d=$w/devices-tree/usb3/3-2
+    mkdir -p "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/dev" "$w/block"
+    : >"$d/idVendor"
+    : >"$w/devices-tree/usb3/idVendor"
+    ln -s ../.. "$d/3-2:1.0/host0/0:0:0/block/sdz/device"
+    ln -s "$d/3-2:1.0/host0/0:0:0/block/sdz/sdz1" "$w/block/sdz1"
+    ln -s /dev/sdz1 "$w/dev/cv-state"
+    [ "$(system_usb)" = "3-2
+usb3" ] || exit 1
+    printf '9: %s via-port "3-2"\n8: %s via-port "usb3"\n' "$disk" "$hub" >"$w/devices"
+    printf '%s\n%s\n%s\n' "$kbd" "$hub" "$disk" >"$w/generated"
+    for answers in 'yes yes no' 'yes no yes' 'yes yes yes'; do
+        reset; rm -f "$w/synced"; cp "$w/rules" "$w/rules.before"
+        code=0
+        printf '%s\n' $answers | (enrol) >"$w/out" 2>&1 || code=$?
+        case $answers in
+        'yes yes yes') [ "$code" = 0 ] && [ -e "$w/synced" ] || { cat "$w/out" >&2; exit 1; } ;;
+        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && [ ! -e "$w/synced" ] &&
+            grep -q 'runs from a USB disk: enrol again' "$w/out" || exit 1 ;;
+        esac
+    done
+    for rule in 9 8 5; do
+        reset; rm -f "$w/synced"
+        printf '5: %s\n8: %s\n9: %s\n' "$kbd" "$hub" "$disk" >"$w/rules"
+        cp "$w/rules" "$w/rules.before"
+        code=0
+        (revoke "$rule") >"$w/out" 2>&1 || code=$?
+        case $rule in
+        5) [ "$code" = 0 ] && [ -e "$w/synced" ] || { cat "$w/out" >&2; exit 1; } ;;
+        *) [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'the USB disk the system runs from' "$w/out" || exit 1 ;;
+        esac
+    done
+    # No device list: revoke refuses rather than guess.
+    mv "$w/devices" "$w/devices.kept"
+    reset; printf '5: %s\n9: %s\n' "$kbd" "$disk" >"$w/rules"; cp "$w/rules" "$w/rules.before"
+    code=0
+    (revoke 5) >"$w/out" 2>&1 || code=$?
+    [ "$code" = 1 ] && cmp -s "$w/rules" "$w/rules.before" && grep -q 'cannot read devices' "$w/out" || exit 1
+    mv "$w/devices.kept" "$w/devices"
+    rm "$w/dev/cv-state"
+    [ -z "$(system_usb)" ] || exit 1
+    rm -f "$w/synced"; reset
+    (revoke 5) >"$w/out"
+    [ -e "$w/synced" ] || exit 1
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do
@@ -1603,8 +1766,11 @@ check_script "$work/allow-usb"
         *) exit 97 ;;
         esac
     }
+    sync() { [ "$*" = '-f /etc/usbguard/rules.conf' ] || exit 97; echo synced >"$work/allow-synced"; }
     for iface in '{ 08:06:50 03:00:00 }' '03:01:01' '{ 08:06:50 ff:00:00 }' '08:06:50'; do
+        rm -f "$work/allow-synced"
         allow_usb 7 >"$work/allow-out"
+        [ -e "$work/allow-synced" ] || die 'the allowance was not synced'
         case $iface in
         *03:*) grep -q '^WARNING: it has a HID interface' "$work/allow-out" || die "no HID warning for $iface" ;;
         *) if grep -q WARNING "$work/allow-out"; then die "HID warning for $iface"; fi ;;

@@ -8,6 +8,7 @@ iface eth0 inet static
 	address 100.80.0.10/28
 	up ip route add 100.80.0.0/16 via 100.80.0.1 dev eth0
 
-# Approved USB uplink; DHCP without a hostname.
+# Approved USB uplink; DHCP without a hostname, logged to syslog (diag.log) as well as stderr.
 allow-hotplug eth1
 iface eth1 inet dhcp
+	udhcpc-opts -S
