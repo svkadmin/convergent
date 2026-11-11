@@ -130,4 +130,7 @@ for sample in peer-broken master-broken both-healthy both-broken both-declined f
     both-healthy) [ "$rc" = 0 ] && grep -qx 'wait fw1 fw2' "$fixture/undo.out" ;;
     esac || { cat "$fixture/undo.out"; echo "undo fixture failed: $sample" >&2; exit 1; }
 done
+# The role probe undo uses for fw2 exists in the module with its node and role arguments.
+grep -qx 'firewall_role() {' "$repo/rootfs/usr/lib/convergent/sys/14-firewall"
+grep -q '^	output=$(guest_reply 65536 firewall_rsh "$1" ifconfig)' "$repo/rootfs/usr/lib/convergent/sys/14-firewall"
 echo 'firewall: maintenance undo with a broken peer or a broken firewall in maintenance passed'
