@@ -995,6 +995,10 @@ awk '/^if \[ "\$role" = remmina \] && ! kill -0 "\$cage"/ {s = NR} /^wait "\$bro
 echo 'test-boot-privacy: session watch passed'
 # A guest update an open browser postponed shows on the bar until sys guests update runs (20Y).
 grep -qF 'else if (get(st "/guests-pending") == "1") block("GUESTS: close browsers", orange)' "$repo/tools/bar"
+# Install and wan build (20Z): eMMC refused, the re-read retried, wan modes independent of the checkout umask.
+grep -qxF '	[ "$tran" != mmc ] ||' "$repo/install/install"
+grep -qF 'until blockdev --rereadpt "$disk" 2>"$work/rereadpt"; do' "$repo/install/install"
+grep -qF -- '--mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -' "$repo/guests/wan/build"
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"

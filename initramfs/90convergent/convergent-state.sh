@@ -99,7 +99,7 @@ done
 # A power cut between a temporary account or zone copy and its rename leaves hashes no one would remove.
 for old in "$state"/etc/.passwd.?????? "$state"/etc/.group.?????? "$state"/etc/.shadow.?????? \
 	"$state"/etc/.gshadow.?????? "$state"/etc/.localtime.??????; do
-	[ -e "$old" ] || continue
+	[ -e "$old" ] || [ -L "$old" ] || continue
 	rm -f "$old" || warn "state: cannot remove $old"
 done
 

@@ -184,6 +184,7 @@ fact_nvme() {
 
 # Count selected/combined sources with NTS cookies.
 fact_nts() {
+	nts_ok=
 	sources=$(chronyc -n -c sources 2>/dev/null) && authdata=$(chronyc -n authdata 2>/dev/null) || {
 		bad "chronyc gave no answer"; return
 	}
@@ -193,6 +194,7 @@ fact_nts() {
 		END { for (k in agree) if (k in auth) c++; print c + 0 }')
 	case $n in '' | *[!0-9]*) bad "chronyc gave no answer"; return ;; esac
 	m "cv_nts_authenticated_sources $n"
+	nts_ok=$n
 }
 
 fact_certs() {
@@ -277,15 +279,15 @@ fw_ntpd() {
 	exec 7>&-
 }
 
-# Booted offline, chrony backs off resolving its NTS names to once an hour: below two sources, have it resolve and
-# poll again, at most every five minutes of uptime.
+# Booted offline, chrony backs off resolving its NTS names to once an hour. With no authenticated source (none to
+# disturb), have it resolve and poll again: at once, then at most every five minutes of uptime.
 nts_nudge() {
-	[ "${n:-0}" -lt 2 ] 2>/dev/null || return 0
+	[ "${nts_ok:-}" = 0 ] || return 0
 	read -r up _ </proc/uptime
 	up=${up%.*}
-	last=$(cat "$run/nts-nudge" 2>/dev/null) || last=0
-	case $last in '' | *[!0-9]*) last=0 ;; esac
-	[ "$up" -lt "$last" ] || [ "$((up - last))" -ge 300 ] || return 0
+	last=$(cat "$run/nts-nudge" 2>/dev/null) || last=
+	case $last in '' | *[!0-9]*) last= ;; esac
+	[ -z "$last" ] || [ "$up" -lt "$last" ] || [ "$((up - last))" -ge 300 ] || return 0
 	echo "$up" >"$run/nts-nudge" || return 0
 	chronyc online >/dev/null 2>&1 || :
 	chronyc refresh >/dev/null 2>&1 || :
@@ -324,9 +326,13 @@ storage() {
 	else
 		m 'cv_btrfs_scrub_recorded 0'
 		now=$(date +%s)
-		# A stamp from a first boot whose clock ran ahead (RTC in local time) is renewed, not reported.
+		# A stamp from a first boot whose clock ran ahead (RTC in local time) is renewed once chrony is synchronized; a
+		# clock behind (a dead RTC) keeps it and reports it until then.
 		since=$(cat "$missing" 2>/dev/null) || since=
-		case $since in '' | *[!0-9]*) ;; *) [ "$since" -le "$now" ] || rm -f "$missing" ;; esac
+		case $since in '' | *[!0-9]*) ;; *)
+			[ "$since" -le "$now" ] 2>/dev/null || ! chronyc -n tracking 2>/dev/null | grep -q '^Leap status *: Normal$' ||
+				rm -f "$missing" ;;
+		esac
 		if [ -n "$uuid" ] && [ ! -e "$missing" ]; then
 			printf '%s\n' "$now" >"$missing.new" && mv "$missing.new" "$missing" || bad 'cannot record missing scrub observation'
 		fi

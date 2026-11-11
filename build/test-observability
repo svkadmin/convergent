@@ -339,14 +339,17 @@ sed -n '/^nts_nudge() {/,/^}/p' "$repo/tools/facts" | sed "s|/proc/uptime|$work/
     chronyc() { echo "chronyc $*" >>"$work/nudge-calls"; }
     nudged() { [ "$(grep -c '^chronyc refresh$' "$work/nudge-calls" 2>/dev/null)" = "$1" ]; }
     : >"$work/nudge-calls"
-    n=3; echo '1000.5 9' >"$work/nudge-uptime"; nts_nudge; nudged 0
-    n=0; nts_nudge; nudged 1
+    # A healthy or partly healthy chrony is left alone, as is one that gave no answer.
+    nts_ok=1; echo '1000.5 9' >"$work/nudge-uptime"; nts_nudge; nudged 0
+    nts_ok=; nts_nudge; nudged 0
+    # None authenticated: at once, then every five minutes of uptime.
+    nts_ok=0; nts_nudge; nudged 1
     echo '1299.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 1
     echo '1300.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 2
-    # A stamp from before a reboot (uptime now smaller) does not hold it back.
     echo '50.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 3
-    n=; echo '400.0 9' >"$work/nudge-uptime"; nts_nudge; nudged 4
 )
+sed -n '/^nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	nts_nudge'
+sed -n '/^fact_nts() {/,/^}/p' "$repo/tools/facts" | grep -qx '	nts_ok=$n'
 # auto waits out the per-minute nts lock instead of skipping its hour.
 sed -n '/^case \${1:-} in$/,/^esac$/p' "$repo/tools/facts" >"$work/facts-case"
 [ -s "$work/facts-case" ]; sh -n "$work/facts-case"
@@ -780,6 +783,8 @@ mkdir "$work/btrfs" "$work/state"
     date() { echo "$clock"; }
     m() { echo "$*" >>"$buf"; }
     bad() { ok=0; }
+    # chrony synchronized: a stamp ahead of the clock is renewed.
+    chronyc() { echo "Leap status     : Normal"; }
     collect() {
         (ok=1; buf=$work/scrub.prom; : >"$buf"; . "$work/scrub"; echo "$ok" >"$work/scrub.ok")
     }
@@ -803,6 +808,13 @@ mkdir "$work/btrfs" "$work/state"
         grep -qx 'cv_btrfs_scrub_missing_since_seconds 200000' "$work/scrub.prom"
         [ "$(cat "$work/scrub.ok")" = 1 ]
     done
+    # Not synchronized (a clock behind, a dead RTC): the stamp is kept and reported until chrony syncs.
+    chronyc() { echo "Leap status     : Not synchronised"; }
+    echo 300000 >"$sdir/scrub-missing.fixture"
+    collect
+    grep -qx 'cv_btrfs_scrub_missing_since_seconds 0' "$work/scrub.prom"
+    [ "$(cat "$sdir/scrub-missing.fixture")" = 300000 ]
+    chronyc() { echo "Leap status     : Normal"; }
     for value in 0 1 bad missing; do
         row='fs:1|t_start:100000|finished:1|canceled:0|uncorrectable_errors:0|read_errors:0|csum_errors:0|verify_errors:0'
         [ "$value" = missing ] || row="$row|super_errors:$value"

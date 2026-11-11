@@ -105,7 +105,7 @@ grep -q RESOLV_CONF "$target/usr/share/udhcpc/default.script" || die "udhcpc's d
 
 # Overlay and fill placeholders; set checkout-independent modes below.
 # Modes independent of the checkout's umask: no group or other write, and the minirootfs keeps its directories.
-tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner --mode=go-w -cf - . | tar -C "$target" --no-overwrite-dir -xf -
+tar -C "$here/rootfs" --owner=0 --group=0 --numeric-owner --mode=u+rw,go=rX -cf - . | tar -C "$target" --no-overwrite-dir -xf -
 # Alpine's sysctl service needs a regular-file override; hardening is in 90-convergent.conf.
 : >"$target/etc/sysctl.d/00-alpine.conf"
 sh "$here/../../build/networks" wan "$target"
