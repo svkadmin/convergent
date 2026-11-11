@@ -53,7 +53,12 @@ allow_usb() {
 	case $line in *" 08:"*) echo "NOTE: it presents itself as mass storage." ;; esac
 	case $line in *" 02:"* | *" 0a:"* | *" e0:"* | *" ff:"*) echo "NOTE: it has a network, wireless or vendor-specific interface." ;; esac
 	ask "Allow device $id for good?"
-	usbguard allow-device -p "$id" || die "usbguard refused"
+	# The rule the installer and enrol write: no parent-hash, a port only without a serial. First, so it wins
+	# over an earlier block of the same device.
+	rule=$(printf '%s\n' "$line" | sed -e 's/^[0-9]*: block /allow /' -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//')
+	case $rule in allow\ id\ *\ hash\ \"*) ;; *) die "cannot build a rule for device $id" ;; esac
+	usbguard append-rule -a 0 "$rule" >/dev/null || die "usbguard refused the rule"
+	usbguard allow-device "$id" || die "rule saved; the device is allowed at the next USBGuard start"
 	# rules.conf is a file on the state volume: on disk before success is reported.
 	sync -f /etc/usbguard/rules.conf || die 'allowed, but the policy may not survive a power cut; run sync'
 	logger -t devices "USB device $id allowed permanently: $line"
@@ -200,7 +205,9 @@ enrol() (
 	work=$(mktemp -d) || exit 1
 	trap 'rm -rf "$work"' 0
 	trap 'exit 1' HUP INT TERM
-	usbguard generate-policy >"$work/generated" || die 'cannot generate policy'
+	# No parent-hash, as the installer writes them: a device moved to another hub, or a newer kernel, matches.
+	usbguard generate-policy >"$work/generated.raw" || die 'cannot generate policy'
+	sed 's/ parent-hash "[^"]*"//' "$work/generated.raw" >"$work/generated" || die 'cannot generate policy'
 	usbguard list-rules >"$work/old" || die 'cannot read policy'
 	: >"$work/approved"
 	echo 'Only attached devices individually approved here will be allowed. Review hubs too.'

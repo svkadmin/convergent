@@ -599,9 +599,10 @@ while :; do
 	done
 	[ "$answer" = r ] || break
 done
-# Ports only where USBGuard's own policy keeps them (no serial), as sys usb allow and enrol write them: a dock
-# or disk moved to another port stays allowed.
-sed '/ serial ""/!s/ via-port "[^"]*"//' "$work/usb.rules" >"$work/usb.rules.new" &&
+# As sys usb allow and enrol write them: no parent-hash (a root hub's hash carries the kernel version, and a hub
+# changes with the port), and a port only without a serial (USBGuard's own default). A dock or disk moved to
+# another port, or a newer kernel, keeps them allowed.
+sed -e 's/ parent-hash "[^"]*"//' -e '/ serial ""/!s/ via-port "[^"]*"//' "$work/usb.rules" >"$work/usb.rules.new" &&
 	mv "$work/usb.rules.new" "$work/usb.rules" || die "cannot write the USB policy"
 
 # 9. A LUKS header backup at the end: a filesystem on another USB or removable disk, never the stick or the target.

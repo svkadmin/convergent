@@ -1089,14 +1089,14 @@ check_script "$work/autorestart-clear"
 )
 # The installed policy keeps a port only for a device without a serial, as USBGuard's own policy does: a dock
 # or a USB system disk moved to another port stays allowed.
-sed -n '/^# Ports only where USBGuard/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"
-[ "$(wc -l <"$work/usb-ports")" = 4 ]
+sed -n '/^# As sys usb allow and enrol write them/,/|| die "cannot write the USB policy"$/p' "$repo/install/install" >"$work/usb-ports"
+[ "$(wc -l <"$work/usb-ports")" = 5 ]
 (
     work=$work/usb-ports-run
     mkdir "$work"
     die() { exit 1; }
-    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" via-port "3-2" with-interface 08:06:50' \
-        'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/usb.rules"
+    printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" parent-hash "r" via-port "3-2" with-interface 08:06:50' \
+        'allow id 2:2 serial "" name "Hub" hash "b" parent-hash "r" via-port "1-1" with-interface 09:00:00' >"$work/usb.rules"
     . "$work/../usb-ports"
     printf '%s\n' 'allow id 1:1 serial "S" name "Disk" hash "a" with-interface 08:06:50' \
         'allow id 2:2 serial "" name "Hub" hash "b" via-port "1-1" with-interface 09:00:00' >"$work/expected"
@@ -1288,6 +1288,12 @@ usb3" ] || exit 1
     rm -f "$w/synced"; reset
     (revoke 5) >"$w/out"
     [ -e "$w/synced" ] || exit 1
+    # Enrolled rules carry no parent-hash.
+    printf '%s parent-hash "p1"\n' "$kbd" >"$w/generated"
+    reset
+    printf '%s\n' yes | (enrol) >"$w/out"
+    grep -qF "$kbd" "$w/rules" || exit 1
+    if grep -q parent-hash "$w/rules"; then exit 1; fi
     # Enrol without the NIC drops the role; with it, the role stays.
     printf '%s\n%s\n' "$kbd" "$nic" >"$w/generated"
     for answers in 'yes no' 'yes yes'; do
@@ -1761,12 +1767,24 @@ check_script "$work/allow-usb"
     logger() { :; }
     usbguard() {
         case $1 in
-        list-devices) printf '7: block id 1234:5678 serial "" name "x" via-port "1-1" with-interface %s with-connect-type "hotplug"\n' "$iface" ;;
-        allow-device) [ "$*" = 'allow-device -p 7' ] || exit 97 ;;
+        list-devices) printf '7: block id 1234:5678 serial "%s" name "x" hash "h7" parent-hash "r1" via-port "1-1" with-interface %s with-connect-type "hotplug"\n' "$serial" "$iface" ;;
+        append-rule) [ "$2 $3" = '-a 0' ] || exit 97; echo "$4" >"$work/allow-rule" ;;
+        allow-device) [ "$*" = 'allow-device 7' ] || exit 97 ;;
         *) exit 97 ;;
         esac
     }
     sync() { [ "$*" = '-f /etc/usbguard/rules.conf' ] || exit 97; echo synced >"$work/allow-synced"; }
+    # The rule written first: no parent-hash, a port only without a serial.
+    for serial in '' S1; do
+        iface=03:01:01
+        allow_usb 7 >/dev/null
+        case $serial in
+        '') expected='allow id 1234:5678 serial "" name "x" hash "h7" via-port "1-1" with-interface 03:01:01 with-connect-type "hotplug"' ;;
+        *) expected='allow id 1234:5678 serial "S1" name "x" hash "h7" with-interface 03:01:01 with-connect-type "hotplug"' ;;
+        esac
+        [ "$(cat "$work/allow-rule")" = "$expected" ] || die "allow wrote $(cat "$work/allow-rule")"
+    done
+    serial=
     for iface in '{ 08:06:50 03:00:00 }' '03:01:01' '{ 08:06:50 ff:00:00 }' '08:06:50'; do
         rm -f "$work/allow-synced"
         allow_usb 7 >"$work/allow-out"

@@ -536,6 +536,10 @@ rules with one per trusted device:
 
 Nothing is saved before the confirmation; declined devices stay blocked.
 
+A rule allows its device on any port and behind any hub; a device without a serial number stays bound
+to its port. Rules written before 0.1.8 also bind to the hub: run `sys usb enrol` once after updating.
+On a system installed to a USB disk, enrol and `revoke` refuse to block that disk or a hub above it.
+
 > [!WARNING]
 > Do not interrupt `sys usb enrol` after confirming: an interrupted save can leave the policy half
 > applied. Run `sys usb enrol` again.
