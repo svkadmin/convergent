@@ -401,7 +401,7 @@ done
 sed -n '/^secret_valid() {/,/^verify_image() {/p' "$repo/tools/guests" | sed '$d' |
     sed "s|/var/lib/convergent/syslog-ca|$scratch/host|g; s/rc-service /rc_service /g; $built_stamp" >"$scratch/deploy-functions"
 [ -s "$scratch/deploy-functions" ]
-sed -n '/^svc_exec() {/,/^}/p' "$repo/tools/guests" >>"$scratch/deploy-functions"
+sed -n '/^svc_exec() {/,/^}/p; /^svc_answers() /p' "$repo/tools/guests" >>"$scratch/deploy-functions"
 grep -qx 'svc_exec() {' "$scratch/deploy-functions"
 sh -n "$scratch/deploy-functions"
 sed -n '/^seed_finish() {/,/^}/p' "$repo/tools/guests" >"$scratch/init-finish"

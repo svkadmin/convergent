@@ -460,7 +460,7 @@ sed -n '/^dns_restore() {/,/^}/p' "$here/../tools/guests" | awk '/dns-push local
 # firewall replies are bounded before grep (21K).
 grep -qF 'svc_answers() { ic exec svc -- true 2>/dev/null; }' "$here/../tools/guests"
 grep -qF 'logger -p user.err -t guests "$(head -c 1024 "$work/retry.err" | guest_text | tr '"'"'\n\t'"'"' '"'"'  '"'"')"' "$here/../tools/guests"
-if grep -qE "^[[:space:]]*rsh \"\\$1\" '(pfctl -si|host -t A)" "$here/../tools/guests"; then exit 1; fi
+if grep -qE '^[[:space:]]*rsh "[$]1" .(pfctl -si|host -t A)' "$here/../tools/guests"; then exit 1; fi
 # A redone update rebuild clears that mark before it empties the store again.
 grep -qxF '    case $1:${3:-} in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac' "$here/../tools/guests"
 # The rollback says so itself: $step there names its last helper (seed_remove).
