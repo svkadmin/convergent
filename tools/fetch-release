@@ -19,12 +19,18 @@ pointer=
 pids=
 
 die() { logger -p user.err -t fetch-release "$*"; echo "fetch-release: $*" >&2; exit 1; }
+tree() { for _c in $(pgrep -P "$1" 2>/dev/null); do echo "$_c"; tree "$_c"; done; }
 cleanup() {
 	_rc=$?
 	trap - 0
 	trap '' HUP INT TERM
-	# Job first, then its command: the job exits without acting on a killed curl or sha256sum.
-	for _p in $pids; do kill "$_p" 2>/dev/null || :; pkill -P "$_p" 2>/dev/null || :; done
+	# Job first, then its commands: the job exits without acting on a killed curl or sha256sum. Listed before
+	# any dies (an orphan's parent becomes init): a refresh's ssh runs a few forks below (guest_stderr).
+	for _p in $pids; do
+		_t=$(tree "$_p")
+		kill "$_p" 2>/dev/null || :
+		for _c in $_t; do kill "$_c" 2>/dev/null || :; done
+	done
 	[ -z "$pids" ] || wait
 	[ -z "$pointer" ] || rm -rf "$pointer"
 	[ -z "$src_open" ] || close_src || { echo "fetch-release: a firewall kept the update source open; it expires within 4 hours" >&2; _rc=1; }

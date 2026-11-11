@@ -428,7 +428,28 @@ grep -qF 'rm -rf "$state/iwd.$prep_guest" "$state/iwd.$prep_guest.reread" "$stat
 grep -qF 'rm -rf "$state/iwd.$guest" "$state/iwd.$guest.reread" "$state/iwd.$guest.copied" && prune "$guest" || return' "$here/../tools/guests"
 # A compromised svc's output reaches the owner only through guest_text; a wan GPT grown past the image's size is
 # refused before the host copies it (21I).
-sed -n '/^svc_exec() {/,/^}/p' "$here/../tools/guests" | grep -q 'guest_stderr timeout -k 5 120 incus'
+sed -n '/^svc_exec() {/,/^}/p' "$here/../tools/guests" >"$work/svc-exec"
+[ -s "$work/svc-exec" ]
+(
+    . "$here/../rootfs/usr/lib/convergent/guest-reply.sh"
+    . "$work/svc-exec"
+    fail() { echo "$*" >&2; return 1; }
+    timeout() { shift 3; "$@"; }
+    incus() {
+        case $flood in
+        1) head -c 200000 /dev/zero ;;
+        *) printf '\033]52;c;eA==\007svc says\n'; printf '\033[2Jerr\n' >&2 ;;
+        esac
+    }
+    flood=0
+    svc_exec rc-service victoria-logs restart >"$work/svc-term" 2>&1
+    grep -q 'svc says' "$work/svc-term"
+    [ "$(tr -d '\033\007' <"$work/svc-term" | wc -c)" = "$(wc -c <"$work/svc-term")" ]
+    # A flood stops at the file limit and fails the exec.
+    flood=1
+    if svc_exec true >/dev/null 2>&1; then exit 1; fi
+    [ "$(wc -c <"$work/svc-out")" -le 66048 ]
+)
 grep -qF 'select(.size * $s <= 2147483648)' "$here/../tools/guests"
 # A redone update rebuild clears that mark before it empties the store again.
 grep -qxF '    case $1:${3:-} in wan:rollback) ;; wan:*) rm -f "$state/iwd.wan.copied" && sync || return ;; esac' "$here/../tools/guests"

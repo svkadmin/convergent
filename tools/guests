@@ -63,8 +63,9 @@ frozen_hint() {
 }
 # A wedged svc must not hang a mutator under the locks: a timeout counts as failed.
 svc_exec() {
-    # Its output reaches the owner's terminal only through guest_text: a compromised svc runs these binaries.
-    guest_stderr timeout -k 5 120 incus --force-local --project default exec svc -- "$@" 9>&- 8>&- 7>&- 6>&- >"$work/svc-out" ||
+    # Its output reaches the owner's terminal only through guest_text: a compromised svc runs these binaries. Kept
+    # to 64 KiB on the state volume (512-byte blocks): a flood fails the exec instead of filling the disk.
+    (ulimit -f 129; guest_stderr timeout -k 5 120 incus --force-local --project default exec svc -- "$@" 9>&- 8>&- 7>&- 6>&- >"$work/svc-out") ||
         { code=$?; head -c 65536 "$work/svc-out" | guest_text; fail "incus exec svc -- $* failed (status $code)" || return "$code"; }
     head -c 65536 "$work/svc-out" | guest_text
 }

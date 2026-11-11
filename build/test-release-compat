@@ -302,6 +302,18 @@ echo 'test-release-compat: sys update usb mounts only named FAT, exFAT, ext4 or 
     [ "$(tr -d '\033\007' <"$work/rsh-err" | wc -c)" = "$(wc -c <"$work/rsh-err")" ]
 )
 grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/fetch-release"
+# Cleanup reaches a refresh's ssh several forks below the job: tree lists every descendant.
+(
+    eval "$(sed -n '/^tree() /p' "$repo/tools/fetch-release")"
+    sh -c 'sh -c "sleep 30 & wait" & wait' &
+    top=$!
+    sleep 1
+    below=$(tree "$top")
+    for p in $below; do kill "$p" 2>/dev/null || :; done
+    kill "$top" 2>/dev/null || :
+    wait "$top" 2>/dev/null || :
+    [ "$(printf '%s\n' "$below" | grep -c .)" -ge 3 ]
+)
 grep -qx '. /usr/lib/convergent/guest-reply.sh' "$repo/tools/debug"
 # A failed flush must still kill states, retain tracking and allow cleanup to retry.
 (
