@@ -1526,6 +1526,7 @@ for b in 'XF86AudioMicMute exec sys audio micmute' '--locked XF86AudioMicMute ex
     [ "$(grep -cx -- "[[:space:]]*bindsym $b" "$sway")" = 2 ] || die "sway: $b is not bound at top level and in resize mode"
 done
 grep -qx "exec_always sh -c 'sleep 1; swaymsg -t send_tick reload'" "$sway"
+grep -qx ignore-empty-password "$repo/rootfs/etc/swaylock/config"
 check_script "$work/mic-init"
 check_script "$work/mic-locked"
 (

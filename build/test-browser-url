@@ -389,5 +389,17 @@ for nss in .pki/nssdb .local/share/pki/nssdb; do
         die "Incus session home lacks $nss"
 done
 [ -d "$root$(jq -r .DownloadDirectory "$policy")" ] || die 'Incus session downloads missing'
+# A missed portal probe (unknown) keeps the login; off or mixed ends it; only on refreshes the stale bound.
+sed -n '/^        if \[ \/run\/convergent\/status\/portal -nt "\$run\/portal.checked" \]; then$/,/^        fi$/p' "$repo/tools/browser" |
+    sed "s|/run/convergent/status/portal|$work/portal-status|g" >"$work/portal-check"
+[ -s "$work/portal-check" ]; sh -n "$work/portal-check"
+for mode in on unknown off mixed; do
+    rc=0
+    (run=$work uptime=500 checked=100; die() { exit 1; }
+        echo "$mode" >"$work/portal-status"; rm -f "$work/portal.checked"
+        . "$work/portal-check"; echo "$checked" >"$work/portal-at") || rc=$?
+    case $mode:$rc:$(cat "$work/portal-at" 2>/dev/null || :) in on:0:500|unknown:0:100|off:1:|mixed:1:) ;; *) die "portal status $mode gave $rc" ;; esac
+    rm -f "$work/portal-at"
+done
 echo 'browser-url: stdin boundaries, defaults, portal, allowlist, mixed versions, rollback hosts and writer locks passed'
 echo 'browser-url: Incus sessions get a tmpfs profile, home, caches and downloads and the Incus origin alone; Grafana sessions keep theirs'

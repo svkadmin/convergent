@@ -12,3 +12,5 @@ iface eth0 inet static
 allow-hotplug eth1
 iface eth1 inet dhcp
 	udhcpc-opts -S
+	# Wired wins over Wi-Fi (iwd: 300) for good; udhcpc's own metric is 200 + ifindex, which grows per replug.
+	metric 100
