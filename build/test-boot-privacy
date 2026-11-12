@@ -363,8 +363,9 @@ EOF
     echo 0 >"$work/sys-watchdog/watchdog0/nowayout"
 
     # A start after bless (an owner's restart) must not arm a reset on a good release.
-    sed -n '/^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
+    sed -n '/^wd_log() /p; /^start() {/,/^}/p' "$repo/rootfs/etc/init.d/convergent-watchdog" |
         sed -e "s|/run/openrc|$work/openrc|g" -e "s|/dev/watchdog|$work/watchdog|g" -e 's/\[ ! -c /[ ! -f /' \
+            -e "s|/run/convergent-watchdog.warn|$work/logger|g" \
             -e "s|/sys/class/watchdog/|$work/sys-watchdog/|g" -e "s|/proc/cmdline|$work/cmdline|g" >"$work/start"
     check_script "$work/start"
     grep -q "$work/sys-watchdog/watchdog0/identity" "$work/start" || die 'watchdog identity read moved'
@@ -1186,6 +1187,16 @@ rc=0
     . "$work/copy-logs"; copy_logs
 ) >"$work/copy.out" 2>&1 || rc=$?
 [ "$rc" = 1 ] && grep -q 'No space left' "$work/copy.out" || die 'log copy: a full stick passed as an incomplete source'
+# A stick that fails at writeback fails the copy too.
+rc=0
+(
+    state=$work/log-state; mkdir -p "$state/var-1/log"
+    usb_mount() { :; }; umount() { return 1; }; rmdir() { :; }
+    sync() { [ "$#" = 1 ] && [ "${1##*/}" = logs.tar ] && return 1; }
+    tar() { printf 'archive' >"$4"; }
+    . "$work/copy-logs"; copy_logs
+) >"$work/copy.out" 2>&1 || rc=$?
+[ "$rc" = 1 ] || die 'log copy: a writeback failure passed'
 for written in partial ''; do
     rc=0
     (
@@ -1201,6 +1212,9 @@ for written in partial ''; do
     esac
 done
 grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
+# Every mount of the state volume's top level is nodev,nosuid,noexec: the boot's /etc binds inherit it (q94).
+[ "$(grep -rh 'subvolid=5' "$repo/initramfs" "$repo/install" "$repo/tools" | grep -c 'mount ')" -ge 6 ]
+[ -z "$(grep -rh 'subvolid=5' "$repo/initramfs" "$repo/install" "$repo/tools" | grep -v 'nodev,nosuid,noexec')" ]
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
@@ -1215,6 +1229,33 @@ check_script "$work/etc-sweep"
     . "$work/etc-sweep"
     [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
 )
+# Boot-time records reach /var/log/messages: syslog-ng starts in boot (after lo for its 127.0.0.1 source), and the
+# sysinit watchdog warning is kept in /run until syslog-ng has started; bless checks syslog-ng; auditd and
+# convergent-net start after it, syslog-ng after AppArmor; lock-screen failures count as auth events (q87, q90, q91).
+grep -qF 'boot/apparmor boot/syslog-ng default/chronyd' "$repo/build/image"
+grep -qF 'rm -f "$rl/boot/mtab" "$rl/default/syslog-ng"' "$repo/build/image"
+grep -qx 'rc_need="loopback"' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'rc_after="apparmor"' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'SYSLOG_NG_OPTS=""' "$repo/rootfs/etc/conf.d/syslog-ng"
+grep -qx 'rc_after="logger"' "$repo/rootfs/etc/conf.d/auditd"
+grep -qx 'AUDITD_LANG=C' "$repo/rootfs/etc/conf.d/auditd"
+sed -n '/^depend() {$/,/^}$/p' "$repo/rootfs/etc/init.d/convergent-net" | grep -qx '	after logger'
+grep -qF 'for svc in convergent-firewall usbguard auditd apparmor syslog-ng; do' "$repo/tools/slot"
+sed -n '/^wd_log() /p' "$repo/rootfs/etc/init.d/convergent-watchdog" | sed "s|/run/convergent-watchdog.warn|$work/wd.warn|" >"$work/wd-log"
+check_script "$work/wd-log"
+(. "$work/wd-log"; wd_log 'no usable watchdog')
+grep -qx 'no usable watchdog' "$work/wd.warn"
+sed -n '/^start_post() {$/,/^}$/p' "$repo/rootfs/etc/conf.d/syslog-ng" | sed "s|/run/convergent-watchdog.warn|$work/wd.warn|g" >"$work/wd-post"
+check_script "$work/wd-post"
+(logger() { [ "$1" = --socket-errors=on ] && [ "$5" = "$work/wd.warn" ] && false; }; . "$work/wd-post"; start_post)
+grep -qx 'no usable watchdog' "$work/wd.warn"
+(logger() { [ "$1" = --socket-errors=on ] && [ "$5" = "$work/wd.warn" ]; }; . "$work/wd-post"; start_post)
+[ ! -e "$work/wd.warn" ]
+(logger() { false; }; . "$work/wd-post"; start_post)
+[ "$(grep -c watchdog "$repo/rootfs/etc/init.d/convergent-bless")" = 0 ]
+[ "$(grep -c '^		wd_log "' "$repo/rootfs/etc/init.d/convergent-watchdog")" = 2 ]
+grep -qF '(greetd|tuigreet|login|su|sudo|sshd|swaylock)(' "$repo/rootfs/usr/lib/convergent/sys/80-security"
+grep -qF '"sudo","sshd","swaylock")' "$repo/guests/svc/dashboards/dashlib.py"
 # 21E: no host NIC for a USB4 host-to-host cable; no build host details or shared id in guest images; the
 # Thunderbolt levels that keep PCIe tunnels off are named so.
 grep -qx 'install thunderbolt_net /bin/false' "$repo/rootfs/etc/modprobe.d/convergent.conf"

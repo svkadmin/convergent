@@ -61,7 +61,7 @@ CARP_CHANGES = FIREWALLS + ' AND _msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MA
 FW_CHANGES = (FIREWALLS + ' AND '
               '(_msg:~"carp[0-9]+:.*(MASTER|BACKUP|INIT) -> (MASTER|BACKUP|INIT)" OR app_name:="wan-watch" OR app_name:="pfctl") AND ' + QUIET)
 SECURITY_EVENTS = (INFRA + ' AND ('
-                   '(app_name:in("greetd","tuigreet","login","su","sudo","sshd") AND '
+                   '(app_name:in("greetd","tuigreet","login","su","sudo","sshd","swaylock") AND '
                    '_msg:~"(?i)session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|COMMAND=") '
                    'OR (_msg:~"type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) " AND '
                    '_msg:~' + json.dumps(r'exe="[^"]*/(greetd|tuigreet|login|su|sudo|sshd)"') + ') '

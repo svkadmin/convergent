@@ -326,8 +326,8 @@ acl=$root/etc/usbguard/IPCAccessControl.d
 # What starts at boot. Left out: mtab (the link above), network file systems (netmount) and a
 # DHCP client (every address is static).
 rl="$root/etc/runlevels"
-rm -f "$rl/boot/mtab" "$rl/default/netmount" "$rl/default/dhcpcd" "$rl/default/bluetooth"
-for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor default/syslog-ng default/chronyd \
+rm -f "$rl/boot/mtab" "$rl/default/syslog-ng" "$rl/default/netmount" "$rl/default/dhcpcd" "$rl/default/bluetooth"
+for s in boot/keymaps boot/consolefont boot/convergent-firewall boot/usbguard boot/auditd boot/apparmor boot/syslog-ng default/chronyd \
 	default/cronie default/acpid default/dbus default/seatd default/node_exporter default/lxcfs default/incus \
 	sysinit/convergent-watchdog default/convergent-bless default/convergent-setup boot/convergent-net default/convergent-swap; do
 	[ -e "$root/etc/init.d/${s#*/}" ] || die "no init script for ${s#*/}"

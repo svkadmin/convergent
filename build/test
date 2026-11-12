@@ -270,13 +270,13 @@ if [ "${1:-}" = --advisories ] && [ "$#" = 1 ]; then
 	)
 	exec sh "$here/advisories" --selftest
 fi
-# A published install image <image> <manifest>: its .sha256 names the file beside it, which matches, then
-# the manifest of the release it carries.
+# A published install image <image> <release-dir>: its .sha256 names the file beside it, which matches, then
+# the manifests of the release and guests it carries.
 image_sum() {
-	awk -v f="${1##*/}" -v m="$(sha256sum <"$2" | cut -d' ' -f1)" '
-		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
-		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
-		END {exit bad || NR != 2}' "$1.sha256" && head -n 1 "$1.sha256" | (cd "$(dirname "$1")" && sha256sum -c --quiet -)
+	awk -v f="${1##*/}" 'BEGIN { split("manifest guests.manifest remmina.manifest", n, " ") }
+		NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == (NR == 1 ? f : n[NR - 1]) {next} {bad = 1}
+		END {exit bad || NR != 4}' "$1.sha256" && head -n 1 "$1.sha256" | (cd "$(dirname "$1")" && sha256sum -c --quiet -) &&
+		tail -n +2 "$1.sha256" | (cd "$2" && sha256sum -c --quiet -)
 }
 if [ "${1:-}" = --install-options ]; then
 	[ $# = 1 ] || exit 1
@@ -286,7 +286,7 @@ if [ "${1:-}" = --install-options ]; then
 		grep -qF 'LUKS passphrase must use printable ASCII (space through `~`)' "$here/../$doc"
 	done
 	grep -qF 'release: major.minor.patch, optional -rcN.' "$here/../BUILD.md"
-	# The owner takes <release> from the signed latest and compares the image line of its two-line .sha256
+	# The owner takes <release> from the signed latest and compares the image line of its .sha256
 	# with the hash of the file to be written (sha256sum -c would hash whichever file the line names).
 	grep -qF 'openssl pkeyutl -verify -pubin -inkey release.pub -rawin -in latest -sigfile latest.sig &&' "$here/../USAGE.md" &&
 		grep -qF '[ "$(head -n 1 convergent-<release>.img.zst.sha256)" = "$(sha256sum convergent-<release>.img.zst)" ]' "$here/../USAGE.md" ||
@@ -832,24 +832,31 @@ aaaa-0002'
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' 0
 	# --install with a published image checks its .sha256 before using it.
-	f=$work/convergent-42.img.zst m=$work/manifest
+	f=$work/convergent-42.img.zst all='manifest guests.manifest remmina.manifest'
 	printf 'image\n' >"$f"
-	printf 'release 42\n' >"$m"
-	(cd "$work" && sha256sum convergent-42.img.zst manifest >convergent-42.img.zst.sha256)
-	image_sum "$f" "$m" || die 'refused a matching image'
+	printf 'release 42\n' >"$work/manifest"
+	printf 'guests 1\n' >"$work/guests.manifest"
+	printf 'remmina 1\n' >"$work/remmina.manifest"
+	sums() { (cd "$work" && sha256sum "$@") >"$f.sha256"; }
+	sums convergent-42.img.zst $all
+	image_sum "$f" "$work" || die 'refused a matching image'
 	printf 'other\n' >"$f"
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted an image that does not match its .sha256'; fi
-	(cd "$work" && sha256sum convergent-42.img.zst manifest | sed 's/  / */' >convergent-42.img.zst.sha256)
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a binary-mode .sha256 line'; fi
-	(cd "$work" && cp convergent-42.img.zst convergent-43.img.zst && sha256sum convergent-43.img.zst manifest >convergent-42.img.zst.sha256)
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 naming another file'; fi
-	(cd "$work" && sha256sum convergent-42.img.zst convergent-42.img.zst >convergent-42.img.zst.sha256)
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 of two image lines'; fi
-	(cd "$work" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die 'accepted a .sha256 without the manifest'; fi
-	{ (cd "$work" && sha256sum convergent-42.img.zst); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'; } >"$f.sha256"
-	if image_sum "$f" "$m" >/dev/null 2>&1; then die "accepted a .sha256 of another release's manifest"; fi
-	grep -q '^		image_sum "\$image" "\$BUILDER/releases/\$release/manifest" || die' "$here/test" || die 'the --install image check moved'
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted an image that does not match its .sha256'; fi
+	sums convergent-42.img.zst $all; sed -i '1s/  / */' "$f.sha256"
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted a binary-mode .sha256 line'; fi
+	cp "$f" "$work/convergent-43.img.zst"; sums convergent-43.img.zst $all
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted a .sha256 naming another file'; fi
+	sums convergent-42.img.zst convergent-42.img.zst guests.manifest remmina.manifest
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted a .sha256 of two image lines'; fi
+	sums convergent-42.img.zst manifest
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted a .sha256 without the guest manifests'; fi
+	sums convergent-42.img.zst $all
+	image_sum "$f" "$work" || die 'refused a matching image'
+	printf 'guests 2\n' >"$work/guests.manifest"
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die 'accepted a .sha256 of other guests'; fi
+	printf 'guests 1\n' >"$work/guests.manifest"; printf 'release 41\n' >"$work/manifest"
+	if image_sum "$f" "$work" >/dev/null 2>&1; then die "accepted a .sha256 of another release's manifest"; fi
+	grep -q '^		image_sum "\$image" "\$BUILDER/releases/\$release" || die' "$here/test" || die 'the --install image check moved'
 	)
 	echo 'test: install options passed'
 	exit 0
@@ -6536,7 +6543,7 @@ if [ "$mode" = install ]; then
 	if [ -n "$image" ]; then
 		# The published artefact byte for byte, once its .sha256 matches.
 		[ "${image##*/}" = "convergent-$release.img.zst" ] || die "the image is not convergent-$release.img.zst"
-		image_sum "$image" "$BUILDER/releases/$release/manifest" || die "$image does not match its .sha256 or release $release"
+		image_sum "$image" "$BUILDER/releases/$release" || die "$image does not match its .sha256 or release $release"
 		bld zstd -q -dc <"$image" >"$img" || die "cannot decompress $image"
 	else
 		sh "$here/stick" "$release" "$img" || die "build/stick failed"

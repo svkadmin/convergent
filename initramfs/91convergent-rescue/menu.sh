@@ -69,7 +69,8 @@ copy_logs() (
 	if grep -q 'Cannot write\|not recoverable' "$err"; then rc=1; fi
 	rm -f "$err"
 	case $rc in 0) ;; 2) [ -s "$dest/logs.tar" ] || exit 1 ;; *) exit 1 ;; esac
-	sync
+	# A worn stick fails at writeback: fsync the archive so its error is seen.
+	sync "$dest/logs.tar" || exit 1
 	[ "$rc" = 0 ] || echo 'Some files could not be read: the archive is incomplete.'
 	echo "Logs copied to ${dest#"$usb"}/logs.tar (includes Incus VM console logs)."
 )

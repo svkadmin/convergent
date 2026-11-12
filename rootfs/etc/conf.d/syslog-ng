@@ -1,0 +1,13 @@
+# Started in boot (build/image) so the boot services' records are kept: after lo (its 127.0.0.1 source) and after
+# AppArmor has loaded its profile.
+rc_need="loopback"
+rc_after="apparmor"
+SYSLOG_NG_OPTS=""
+
+# The sysinit watchdog warning (convergent-watchdog), kept in /run until a syslog takes it.
+start_post() {
+	if [ -s /run/convergent-watchdog.warn ] &&
+		logger --socket-errors=on -t convergent-watchdog -f /run/convergent-watchdog.warn; then
+		rm -f /run/convergent-watchdog.warn
+	fi
+}

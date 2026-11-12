@@ -60,7 +60,7 @@ because Incus cannot combine VLANs with IP filtering. Addresses: section 4.1; fl
 | Accounts | Root locked; the owner in wheel, seat, audio, video and dialout; su limited to wheel; sudo with a PTY, its own log and a 5 min ticket; yescrypt; 5 failures lock login for 15 min |
 | Session | seatd, greetd with tuigreet on tty1, Sway, foot, bemenu, mako, swaylock and swayidle; session PipeWire and WirePlumber; SOF firmware and ALSA UCM for SoundWire |
 | Virtualization | Incus: QEMU/KVM for VMs, LXC for containers; UI assets pinned for Incus 7.0.1 |
-| Devices | USBGuard with state-bound rules changed over IPC; a disk-image install allows all-HID or all-storage devices and hubs, a physical install the devices present at install, until [enrolment](USAGE.md#first-boot); camera modules load only after a saved choice (section 9) |
+| Devices | USBGuard with state-bound rules changed over IPC; the installer allows the devices attached at install (not its stick) until [enrolment](USAGE.md#first-boot); camera modules load only after a saved choice (section 9) |
 | Power | No suspend; CPU preference and cap applied at boot and on power-source events; optional charge and thermal controls leave the fans to firmware |
 | Time | chrony with NTS sources (three by default, two must agree); starts without network and serves NTP to the firewalls |
 | Network | nftables input restrictions and no host forwarding (section 4.4) |

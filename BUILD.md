@@ -107,7 +107,8 @@ Output: `/var/lib/convergent/builder/releases/<release>`.
 
 ### Guest images
 
-Assemble the guests in one directory, here `$g`:
+Assemble the guests in one directory, here `$g`. Build from a `git archive` export: in a checkout,
+`build/guests` and `build/image` refuse the guests' `out/` directories as untracked files.
 
 ```sh
 g=/var/lib/convergent/out/guests
@@ -158,7 +159,7 @@ build/stick <release> <out.img>                   # a raw image only
 
 `--release` writes `convergent-<release>.img.zst` (`zstd -6`) and its `.sha256` to `<out-dir>` and
 prints both sizes. The image is not in the manifest (it holds the manifests): the signed `.sha256`
-vouches for it, and its second line, the sha256 of the release's `manifest`, ties it to that release. `build/stick` signs it when the channel key is on the build host; with an offline
+vouches for it, and its next lines, the sha256 of the release's `manifest`, `guests.manifest` and `remmina.manifest`, tie it to that release and its guests. `build/stick` signs it when the channel key is on the build host; with an offline
 key run `build/sign --image <out-dir> <release-dir> <key>`.
 
 `build/stick` makes the release's generic install image after `build/guests`; it reads no input

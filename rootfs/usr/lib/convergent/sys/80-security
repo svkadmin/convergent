@@ -69,7 +69,7 @@ security_event_lines() {
 		/type=(EXECVE|SYSCALL|CWD|PATH|PROCTITLE|1300|1302|1307|1309|1327) / {next}
 		{
 			s=tolower($0)
-			auth=s ~ /(greetd|tuigreet|login|su|sudo|sshd)(\[[0-9]+\])?:/ &&
+			auth=s ~ /(greetd|tuigreet|login|su|sudo|sshd|swaylock)(\[[0-9]+\])?:/ &&
 				s ~ /session opened|successful su|accepted (password|publickey)|authentication (failure|failed|error|success)|failed (password|publickey|login|su)|pam_authenticate|pam_faillock|incorrect password|not in the sudoers|command=/
 			audit=$0 ~ /type=(USER_AUTH|USER_LOGIN|USER_START|1100|1105|1112) / &&
 				$0 ~ /exe="[^"]*\/(greetd|tuigreet|login|su|sudo|sshd)"/

@@ -101,7 +101,7 @@ healthy() {
 		return 1
 	fi
 	# From the boot runlevel only the protections; stock one-shots may differ per machine.
-	for svc in convergent-firewall usbguard auditd apparmor; do
+	for svc in convergent-firewall usbguard auditd apparmor syslog-ng; do
 		rc-service -q "$svc" status || { log "$svc is not running"; return 1; }
 	done
 	for h in "$health"/*; do

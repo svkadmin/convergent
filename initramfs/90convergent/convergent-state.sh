@@ -62,7 +62,8 @@ recovery=$(getarg convergent.recovery=) || recovery=
 [ "$recovery" = 1 ] || arm_watchdog
 
 mkdir -p "$state"
-mount -t btrfs -o subvolid=5,noatime /dev/mapper/cv-state "$state" ||
+# nodev,nosuid,noexec as every other top-level mount: the /etc binds and the audit view inherit them.
+mount -t btrfs -o subvolid=5,noatime,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||
 	die_shown "state: the state volume did not mount"
 ( grow_state ) || warn "state: could not grow the state volume; it keeps its size"
 pass=''

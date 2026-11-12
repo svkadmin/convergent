@@ -4,6 +4,8 @@ description="The host's network before Incus: loopback and the host firewall"
 
 depend() {
 	need loopback convergent-firewall
+	# Its failures are logged: after syslog-ng, which starts in boot too.
+	after logger
 	provide net
 }
 

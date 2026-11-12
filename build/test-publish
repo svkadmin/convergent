@@ -126,9 +126,11 @@ required '' '10 beta/42/slot.img
     . "$work/image"
     mkdir -p "$img" "$dir" "$work/other" "$work/saved-image"
     printf 'release 42\n' >"$dir/manifest"
-    # The image's .sha256: the image, then the release's manifest.
+    printf 'guests 1\n' >"$dir/guests.manifest"
+    printf 'remmina 1\n' >"$dir/remmina.manifest"
+    # The image's .sha256: the image, then the release's manifests.
     image_sign() {
-        { (cd "$img" && sha256sum "$zst"); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
+        { (cd "$img" && sha256sum "$zst"); (cd "$dir" && sha256sum manifest guests.manifest remmina.manifest); } >"$img/$zst.sha256"
         openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
     }
     head -c 4000 /dev/urandom >"$img/$zst"
@@ -247,19 +249,31 @@ required '' '10 beta/42/slot.img
     refuse 'a changed image' 'does not match its .sha256'
     cp "$work/saved-image/"* "$img/"
     image_local
-    { (cd "$img" && sha256sum "$zst" | sed 's/convergent-42/convergent-43/'); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
+    { (cd "$img" && sha256sum "$zst" | sed 's/convergent-42/convergent-43/'); (cd "$dir" && sha256sum manifest guests.manifest remmina.manifest); } >"$img/$zst.sha256"
     openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
     refuse 'a .sha256 of another file' 'does not match its .sha256'
-    # The signature binds this release: one line, or another release's manifest, is refused.
+    # The signature binds this release and its guests: one line, the host manifest alone, or another release's
+    # or guest set's manifest, is refused.
     (cd "$img" && sha256sum "$zst" >"$zst.sha256")
     openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
-    refuse 'a .sha256 without the manifest' "or the release's manifest"
-    { (cd "$img" && sha256sum "$zst"); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'; } >"$img/$zst.sha256"
+    refuse 'a .sha256 without the manifests' "or the release's manifests"
+    { (cd "$img" && sha256sum "$zst"); (cd "$dir" && sha256sum manifest); } >"$img/$zst.sha256"
     openssl pkeyutl -sign -inkey "$work/key" -rawin -in "$img/$zst.sha256" -out "$img/$zst.sha256.sig"
-    refuse "a .sha256 of another release's manifest" "or the release's manifest"
+    refuse 'a .sha256 without the guest manifests' "or the release's manifests"
+    image_sign
+    printf 'guests 2\n' >"$dir/guests.manifest"
+    refuse 'a .sha256 of other guests' "or the release's manifests"
+    printf 'guests 1\n' >"$dir/guests.manifest"
+    printf 'release 41\n' >"$dir/manifest"
+    refuse "a .sha256 of another release's manifest" "or the release's manifests"
+    printf 'release 42\n' >"$dir/manifest"
     truncate -s 5G "$img/$zst"
     refuse 'a 5 GiB image' "over R2's 5 GiB single upload"
 )
+# build/stick writes the image line, then the manifests in the order the checks read them.
+grep -qx "manifests='manifest guests.manifest remmina.manifest'" "$here/stick" &&
+    grep -qxF '	(cd "$work/data" && sha256sum $manifests) >>"$zst.sha256" || die "cannot write $zst.sha256"' "$here/stick" ||
+    die 'the install image .sha256 lines moved'
 # build/sign --image signs only a .sha256 that matches the image beside it.
 mkdir -p "$work/signer" "$work/signrel" "$work/signimg" "$work/keys"
 cp "$here/sign" "$work/signer/sign"
@@ -270,14 +284,19 @@ grep -q "^key=.*$work/keys/" "$work/signer/sign" && grep -q "^pub=$work/keys/" "
 cp "$work/key" "$work/keys/beta.key"
 cp "$work/pub" "$work/keys/beta.pub"
 printf 'release 42\n' >"$work/signrel/manifest"
+printf 'guests 1\n' >"$work/signrel/guests.manifest"
+printf 'remmina 1\n' >"$work/signrel/remmina.manifest"
 printf 'image\n' >"$work/signimg/convergent-42.img.zst"
-# Without the release's manifest as its second line, or with another release's, nothing is signed.
+# Without the release's manifests after the image line, or with another release's, nothing is signed.
 (cd "$work/signimg" && sha256sum convergent-42.img.zst >convergent-42.img.zst.sha256)
-if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 without the manifest'; fi
-printf 'release 41\n' | sha256sum | sed 's/-$/manifest/' >>"$work/signimg/convergent-42.img.zst.sha256"
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 without the manifests'; fi
+(cd "$work/signrel" && sha256sum manifest) >>"$work/signimg/convergent-42.img.zst.sha256"
+if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die 'signed a .sha256 without the guest manifests'; fi
+{ (cd "$work/signimg" && sha256sum convergent-42.img.zst); printf 'release 41\n' | sha256sum | sed 's/-$/manifest/'
+    (cd "$work/signrel" && sha256sum guests.manifest remmina.manifest); } >"$work/signimg/convergent-42.img.zst.sha256"
 if sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null 2>&1; then die "signed a .sha256 of another release's manifest"; fi
 [ ! -e "$work/signimg/convergent-42.img.zst.sha256.sig" ] || die 'a refused .sha256 has a signature'
-{ (cd "$work/signimg" && sha256sum convergent-42.img.zst); (cd "$work/signrel" && sha256sum manifest); } >"$work/signimg/convergent-42.img.zst.sha256"
+{ (cd "$work/signimg" && sha256sum convergent-42.img.zst); (cd "$work/signrel" && sha256sum manifest guests.manifest remmina.manifest); } >"$work/signimg/convergent-42.img.zst.sha256"
 sh "$work/signer/sign" --image "$work/signimg" "$work/signrel" >/dev/null
 openssl pkeyutl -verify -pubin -inkey "$work/pub" -rawin -in "$work/signimg/convergent-42.img.zst.sha256" \
     -sigfile "$work/signimg/convergent-42.img.zst.sha256.sig" >/dev/null || die 'sign --image signed nothing valid'
