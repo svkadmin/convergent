@@ -55,21 +55,22 @@ for mode in normal interrupted detached renamed committed; do
 			# Trace the assertions: a failure names its check on the console.
 			set -x
 			case $fault in pruning) [ "$r" = 1 ] ;; *) [ "$r" = 137 ] ;; esac
-			for role in base def tmp int; do
-				cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
-			done
 			if [ "$fault" = pruning ]; then
-				[ ! -e "$state/profiles.before" ]
-				[ ! -e "$state/pending" ]
-				[ ! -e "$state/committed" ]
+				# Both browsers passed: the cleanup finishes their commit; only the prune failed.
+				for journal in browser.rename browser.ready profiles.before pending committed; do [ ! -e "$state/$journal" ]; done
+				ic profile list --format json |
+					jq -e 'all(.[]; .name != "browser-web" and .name != "browser-admin" and .name != "browser-portal")'
 			else
+				for role in base def tmp int; do
+					cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
+				done
 				[ -f "$state/profiles.before/browser-web.yaml" ]
 			fi
 			case $fault in interrupted) first=web ;; *) first=def ;; esac
 			case $fault in committed|pruning) second='int' ;; *) second='admin' ;; esac
 			ic list --format json | jq -e --arg first "$first" --arg second "$second" 'any(.[]; .name == $first) and any(.[]; .name == $second)'
+			case $fault in committed) [ -f "$state/browser.ready" ] ;; esac
 			case $fault in committed|pruning)
-				[ -f "$state/browser.ready" ]
 				for role in def int; do
 					[ "$(ic profile device get "browser-$role" state source)" = "browser-$role-state" ]
 				done

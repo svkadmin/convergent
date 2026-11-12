@@ -2559,8 +2559,9 @@ sh -eu <<'GUEST_GUARDS' || bad $LINENO
 . /usr/lib/convergent/guest-reply.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
+fail() { echo "$*" >&2; return 1; }
 die() { echo "$*" >&2; exit 1; }
-eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p' /usr/local/sbin/guests)"
+eval "$(sed -n '/^wan_debugfs() (/,/^)/p; /^wan_listing() {/,/^}/p; /^wan_extract() {/,/^}/p; /^wan_profile_valid() {/,/^}/p; /^wan_damaged() /p' /usr/local/sbin/guests)"
 mkdir -p "$work/wan-read/out" "$work/iwd"
 setpriv() { shift 4; "$@"; }
 timeout() { shift 3; "$@"; }
@@ -2600,11 +2601,18 @@ for sample in good empty absent oversized count total list-error dump-error miss
     esac
     # Never traverse subdirectories, follow symlinks, or dump unapproved names.
     printf '/7/040700/0/0/nested//\n/8/120777/0/0/link.psk/10/\n/9/100600/0/0/cache/999999/\n' >>"$work/list"
-    if (wan_extract) >"$work/out" 2>"$work/err"; then
-        case $sample in good|empty|absent) ;; *) die "accepted $sample" ;; esac
-    else
-        case $sample in good|empty|absent) cat "$work/err"; die "rejected $sample" ;; esac
-    fi
+    code=0
+    (logger() { :; }; wan_extract) >"$work/out" 2>"$work/err" || code=$?
+    case $sample in
+    good|empty|absent) [ "$code" = 0 ] || { cat "$work/err"; die "rejected $sample"; } ;;
+    # A profile the old disk cannot give whole stays behind with a warning; the extraction goes on.
+    missing|short|dump-error)
+        [ "$code" = 0 ] || die "rejected $sample"
+        grep -qx 'guests: wan Wi-Fi profile C V.psk not carried over: unreadable on the old disk' "$work/err" ||
+            die "no warning for $sample" ;;
+    # Limits and listings the old disk breaks are its damage (2), not a host failure.
+    *) [ "$code" = 2 ] || die "$sample: status $code" ;;
+    esac
     case $sample in
     good) [ "$(cat "$work/iwd/C V.psk")" = '[Settings]' ]; [ "$(wc -l <"$work/dumps")" -eq 1 ] ;;
     empty|absent|oversized|count|total|list-error|malformed) [ ! -e "$work/dumps" ] ;;
@@ -2996,8 +3004,8 @@ sh -n "$work/verify-image"
 (
 	tls=$work/tls
 	mkdir "$tls"
-	sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p; /^svc_exec() {/,/^}/p' /usr/local/sbin/guests >"$work/cert-functions"
-	[ "$(grep -c '^certificates_due() {$\|^certificates_apply() ($\|^svc_exec() {$' "$work/cert-functions")" = 3 ]
+	sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p; /^svc_exec() {/,/^}/p; /^svc_answers() /p' /usr/local/sbin/guests >"$work/cert-functions"
+	[ "$(grep -c '^certificates_due() {$\|^certificates_apply() ($\|^svc_exec() {$\|^svc_answers() { ' "$work/cert-functions")" = 4 ]
 	. "$work/cert-functions"
 	certificate_current() { return 0; }
 	certificates_clock() { return 0; }
@@ -3838,7 +3846,10 @@ done
     fwssh fw1 'rcctl check unbound'
     fwssh fw1 'rcctl stop unbound'
     touch "$dns/pending"
-    dns-push list
+    # list only reads: it names the recovery, which the next push runs.
+    dns-push list | grep -qx 'A failed push awaits recovery: the firewalls may serve the previous list.'
+    [ -e "$dns/pending" ]
+    dns-push local
     [ ! -e "$dns/pending" ]
     for f in fw1 fw2; do
         fwssh "$f" 'rcctl check unbound && ! grep -Eq "unbound.*(max open fds|less udp ports)" /var/log/daemon &&
