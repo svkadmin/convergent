@@ -66,7 +66,7 @@ for f in /var/log/guests-update.log /var/log/guests-setup.log; do
 	t 10 tail -n 120 "$f"
 done
 sec 'incus'
-t 30 incus --force-local list --all-projects -c nstL -f compact 2>&1 | head -n 40
+t 30 incus --force-local list --all-projects -c nst -f compact 2>&1 | head -n 40
 echo '-- incusd.log: last 60'; t 10 tail -n 60 /var/log/incus/incusd.log
 sec 'firewalls'
 for node in fw1 fw2; do
