@@ -94,7 +94,8 @@ build/image
 
 - `build/buildenv` creates the builder chroot from a signed, pinned stage3 and Portage snapshot.
 - `build/packages` builds the image packages; `--pretend` previews them. Patched packages never come
-  from binary packages; all rebuild when any patch changes.
+  from binary packages; all rebuild when any patch changes. Image packages build under the builder's
+  `/var/tmp/staging/portage` (failed builds and their logs stay there), the builder's own under `/var/tmp/portage`.
 - `build/image` assembles the release. One UKI per slot carries the main and Recovery profiles.
 
 Bump `VERSION` in `build/build.conf` for each
