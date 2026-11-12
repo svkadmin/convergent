@@ -42,8 +42,8 @@ prints the command that restores the header ([RECOVERY 10](RECOVERY.md#10-second
 
 2. Download that release's image, published beside it (the latest release's only), with its
    checksum and signature, and check both with the same key. The checksum's first line must be the
-   hash of the very file you write (not of another file it names); its second ties it to the
-   release's manifest:
+   hash of the very file you write (not of another file it names); the next three tie it to
+   the release's manifest, guests.manifest and remmina.manifest:
 
    ```sh
    for f in convergent-<release>.img.zst convergent-<release>.img.zst.sha256 convergent-<release>.img.zst.sha256.sig; do

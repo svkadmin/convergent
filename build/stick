@@ -5,8 +5,8 @@
 #   p3 cv-inst-data: an EROFS of the release as published (manifests, both UKIs, guest files).
 # The install UKI boots p2 with convergent.install=1 and carries the manifests as an extra initrd.
 # stick --release <release-dir> <out-dir>: the published form, convergent-<release>.img.zst and its
-# .sha256 (signed by build/sign --image, here when the channel key is on this host); the .sha256's second
-# line is the sha256 of the release's manifest.
+# .sha256 (signed by build/sign --image, here when the channel key is on this host); its next
+# lines are the sha256 of the release's manifest, guests.manifest and remmina.manifest.
 set -eu
 set +ax
 umask 077
