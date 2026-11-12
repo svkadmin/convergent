@@ -76,13 +76,12 @@ image_local() {
 	done
 	openssl pkeyutl -verify -pubin -inkey "$pub" -rawin -in "$img/$zst.sha256" -sigfile "$img/$zst.sha256.sig" >/dev/null ||
 		die "$zst.sha256 is not signed with the $CHANNEL key"
-	# Two lines: the image, then the manifest of the release it was built from.
-	msum=$(sha256sum <"$dir/manifest" | cut -d' ' -f1)
-	awk -v f="$zst" -v m="$msum" '
-		NR == 1 && NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == f {next}
-		NR == 2 && NF == 2 && length(m) == 64 && $1 == m && $2 == "manifest" {next} {bad = 1}
-		END {exit bad || NR != 2}' "$img/$zst.sha256" && head -n 1 "$img/$zst.sha256" | (cd "$img" && sha256sum -c --quiet -) ||
-		die "$zst does not match its .sha256 or the release's manifest"
+	# The image, then the manifests of the release and guests it was built from (build/stick).
+	awk -v f="$zst" 'BEGIN { split("manifest guests.manifest remmina.manifest", n, " ") }
+		NF == 2 && length($1) == 64 && $1 !~ /[^0-9a-f]/ && $2 == (NR == 1 ? f : n[NR - 1]) {next} {bad = 1}
+		END {exit bad || NR != 4}' "$img/$zst.sha256" && head -n 1 "$img/$zst.sha256" | (cd "$img" && sha256sum -c --quiet -) &&
+		tail -n +2 "$img/$zst.sha256" | (cd "$dir" && sha256sum -c --quiet -) ||
+		die "$zst does not match its .sha256 or the release's manifests"
 }
 # Bytes under prefix $1 ('' for the bucket) of the releases, or of the install images (<channel>/<n>/install/).
 bytes_of() {
