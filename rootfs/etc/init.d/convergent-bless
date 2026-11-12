@@ -9,10 +9,6 @@ depend() {
 }
 
 start() {
-	# The sysinit watchdog warning, kept until a syslog runs.
-	if [ -s /run/convergent-watchdog.warn ]; then
-		logger -t convergent-watchdog -f /run/convergent-watchdog.warn && rm -f /run/convergent-watchdog.warn
-	fi
 	ebegin "Checking the booted release"
 	/usr/local/sbin/slot bless
 	eend $?

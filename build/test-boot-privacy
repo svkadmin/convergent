@@ -1227,8 +1227,8 @@ check_script "$work/etc-sweep"
     [ "$(ls -A "$state/etc" | sort | tr '\n' ' ')" = 'passwd shadow ' ]
 )
 # Boot-time records reach /var/log/messages: syslog-ng starts in boot (after lo for its 127.0.0.1 source), and the
-# sysinit watchdog warning is kept in /run until convergent-bless logs it; bless checks syslog-ng; auditd and
-# convergent-net start after it, syslog-ng after AppArmor; lock-screen failures count as auth events (q87, q90).
+# sysinit watchdog warning is kept in /run until syslog-ng has started; bless checks syslog-ng; auditd and
+# convergent-net start after it, syslog-ng after AppArmor; lock-screen failures count as auth events (q87, q90, q91).
 grep -qF 'boot/apparmor boot/syslog-ng default/chronyd' "$repo/build/image"
 grep -qF 'rm -f "$rl/boot/mtab" "$rl/default/syslog-ng"' "$repo/build/image"
 grep -qx 'rc_need="loopback"' "$repo/rootfs/etc/conf.d/syslog-ng"
@@ -1242,7 +1242,14 @@ sed -n '/^wd_log() /p' "$repo/rootfs/etc/init.d/convergent-watchdog" | sed "s|/r
 check_script "$work/wd-log"
 (. "$work/wd-log"; wd_log 'no usable watchdog')
 grep -qx 'no usable watchdog' "$work/wd.warn"
-grep -qF 'logger -t convergent-watchdog -f /run/convergent-watchdog.warn && rm -f /run/convergent-watchdog.warn' "$repo/rootfs/etc/init.d/convergent-bless"
+sed -n '/^start_post() {$/,/^}$/p' "$repo/rootfs/etc/conf.d/syslog-ng" | sed "s|/run/convergent-watchdog.warn|$work/wd.warn|g" >"$work/wd-post"
+check_script "$work/wd-post"
+(logger() { [ "$1" = --socket-errors=on ] && [ "$5" = "$work/wd.warn" ] && false; }; . "$work/wd-post"; start_post)
+grep -qx 'no usable watchdog' "$work/wd.warn"
+(logger() { [ "$1" = --socket-errors=on ] && [ "$5" = "$work/wd.warn" ]; }; . "$work/wd-post"; start_post)
+[ ! -e "$work/wd.warn" ]
+(logger() { false; }; . "$work/wd-post"; start_post)
+[ "$(grep -c watchdog "$repo/rootfs/etc/init.d/convergent-bless")" = 0 ]
 [ "$(grep -c '^		wd_log "' "$repo/rootfs/etc/init.d/convergent-watchdog")" = 2 ]
 grep -qF '(greetd|tuigreet|login|su|sudo|sshd|swaylock)(' "$repo/rootfs/usr/lib/convergent/sys/80-security"
 grep -qF '"sudo","sshd","swaylock")' "$repo/guests/svc/dashboards/dashlib.py"
