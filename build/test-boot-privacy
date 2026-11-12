@@ -1212,6 +1212,9 @@ for written in partial ''; do
     esac
 done
 grep -qF 'mount -t btrfs -o ro,nologreplay,subvolid=5,nodev,nosuid,noexec /dev/mapper/cv-state "$state" ||' "$repo/initramfs/91convergent-rescue/rescue.sh"
+# Every mount of the state volume's top level is nodev,nosuid,noexec: the boot's /etc binds inherit it (q94).
+[ "$(grep -rh 'subvolid=5' "$repo/initramfs" "$repo/install" "$repo/tools" | grep -c 'mount ')" -ge 6 ]
+[ -z "$(grep -rh 'subvolid=5' "$repo/initramfs" "$repo/install" "$repo/tools" | grep -v 'nodev,nosuid,noexec')" ]
 # Secret copies do not outlive a kill or a power cut (20Z).
 grep -qxF "trap 'rm -f \"\$buf\"; [ -z \"\${luks_tmp:-}\" ] || rm -rf \"\$luks_tmp\"' 0" "$repo/tools/facts"
 grep -qxF '	rm -rf "$run"/luks.??????' "$repo/tools/facts"
