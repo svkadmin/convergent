@@ -146,6 +146,9 @@ EOF
 	# Remmina draws on the same table; its one address makes each source cap rule-wide.
 	[ "$(grep -c '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf")" = 3 ]
 	if grep '^pass in quick on \$if_web .* from \$a_remmina ' "$fw/etc/pf.conf" | grep -v 'source-track rule, max-src-states [0-9]'; then exit 1; fi
+	# Segment DNS keeps short UDP states, so a burst of lookups does not hold a source's cap for a minute (q92).
+	[ "$(grep -c '^pass in on \$if_[a-z]* .* port 53 keep state (source-track rule, max-src-states [0-9]*, udp.first 15, udp.single 15, udp.multiple 15)$' "$fw/etc/pf.conf")" = 5 ]
+	if grep '^pass in on .* to $gw_[a-z]* *port 53 keep state' "$fw/etc/pf.conf" | grep -v 'udp.multiple 15)$'; then exit 1; fi
 	# A guest's DHCP reply is dropped by its client port too: udhcpc takes any source port.
 	grep -q '^		ibrname "work" iifname != { "fw1work", "fw2work" } udp dport 68 drop' "$work/$topology/host/etc/nftables.rules"
 	grep -q '^		ibrname "work" iifname != { "fw1work", "fw2work" } ether type vlan vlan type ip udp dport 68 drop$' "$work/$topology/host/etc/nftables.rules"
