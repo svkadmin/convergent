@@ -487,7 +487,9 @@ root_hash=$(dmsetup table vroot 2>>"$work/report" | awk '$3 == "verity" {print $
 [ -n "$root_hash" ] && [ "$root_hash" = "$(awk '$1 == "roothash" {print $2}' "$manifest" 2>/dev/null)" ] || bad 'verity root hash differs from manifest'
 findmnt -nro FSTYPE,OPTIONS / | grep -Eq '^erofs ro(,|$)' || bad 'root is not read-only EROFS'
 dmsetup status vroot 2>>"$work/report" | grep -Eq ' verity V$' || bad 'verity is not healthy'
-[ "$(readlink -f "$(findmnt -nro SOURCE /)")" = "$(readlink -f /dev/mapper/vroot)" ] || bad 'root does not use vroot'
+# By device number: the kernel creates vroot (dm-mod.create), so no /dev/mapper/vroot exists.
+[ "$(findmnt -nro MAJ:MIN /)" = "$(dmsetup info -c --noheadings -o major,minor --separator : vroot 2>>"$work/report")" ] ||
+    bad 'root does not use vroot'
 boot_slot=$(awk '$1 == "booted" {print $4}' "$work/slot")
 partition=$(lsblk -dnro MAJ:MIN "/dev/disk/by-partlabel/cv-slot-$boot_slot" 2>>"$work/report")
 dmsetup table vroot | awk -v p="$partition" 'END {exit !(p != "" && $5 == p && $6 == p)}' || bad 'verity does not use the booted slot partition'

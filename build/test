@@ -5901,6 +5901,13 @@ t [ ! -e /proc/sys/net/mptcp ]
 t [ ! -e /proc/sys/kernel/io_uring_disabled ]
 t grep -q ' 2 restart_on_error restart_on_corruption"' /proc/cmdline
 t sh -c 'dmsetup table vroot | grep -Eq " verity .* 2 (restart_on_error restart_on_corruption|restart_on_corruption restart_on_error)"'
+# check's root test on the booted image: the kernel's vroot has no /dev/mapper node.
+t sh -eu <<'CHECK'
+work=$(mktemp -d)
+trap 'rm -rf "$work"' 0
+bad() { echo "check: $*" >&2; exit 1; }
+eval "$(grep -B1 -F "bad 'root does not use vroot'" /usr/local/sbin/check)"
+CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
