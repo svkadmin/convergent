@@ -33,8 +33,9 @@ for mode in normal interrupted detached renamed committed; do
 	step="$mode update"
 	if [ "$mode" != normal ]; then
 		faults=$mode
-		# Reuse the committed transaction to stay within the VM test deadline.
-		[ "$mode" != committed ] || faults='committed pruning'
+		# Reuse the committed transaction to stay within the VM test deadline; ready then kills a fresh update as its
+		# commit starts, which the resume must finish (update's own browser_commit), never restore or roll back.
+		[ "$mode" != committed ] || faults='committed pruning ready'
 		for fault in $faults; do
 			step="$fault fault injection"
 			# Each copy injects one fault; final recovery uses the installed command.
@@ -44,7 +45,8 @@ for mode in normal interrupted detached renamed committed; do
 				(mode == "interrupted" && $0 == "        mv \"$work/browser.rename\" \"$state/browser.rename\"") ||
 				(mode == "detached" && $0 ~ /ic profile device remove "browser-\$role" state$/) ||
 				(mode == "renamed" && $0 ~ /ic storage volume rename default "browser-\$old-state" "browser-\$new-state"$/) ||
-				(mode == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return") {
+				(mode == "committed" && $0 == "    cp \"$state/committed\" \"$work/committed\" || return") ||
+				(mode == "ready" && $0 == "    browser_image=$(cat \"$state/browser.ready\") || return") {
 					print "    kill -KILL \"$$\""
 				}
 			' /usr/local/sbin/guests >"$release/guests-interrupt"
@@ -60,6 +62,12 @@ for mode in normal interrupted detached renamed committed; do
 				for journal in browser.rename browser.ready profiles.before pending committed; do [ ! -e "$state/$journal" ]; done
 				ic profile list --format json |
 					jq -e 'all(.[]; .name != "browser-web" and .name != "browser-admin" and .name != "browser-portal")'
+			elif [ "$fault" = ready ]; then
+				# Killed as the commit began: both replacements passed, nothing is committed yet.
+				[ -f "$state/browser.ready" ]
+				[ -f "$state/pending" ]
+				[ -d "$state/profiles.before" ]
+				[ ! -e "$state/committed" ]
 			else
 				for role in base def tmp int; do
 					cmp "$release/guests/browser/incus/$role.yaml" "$state/browser.rename/$role.yaml"
@@ -67,10 +75,10 @@ for mode in normal interrupted detached renamed committed; do
 				[ -f "$state/profiles.before/browser-web.yaml" ]
 			fi
 			case $fault in interrupted) first=web ;; *) first=def ;; esac
-			case $fault in committed|pruning) second='int' ;; *) second='admin' ;; esac
+			case $fault in committed|pruning|ready) second='int' ;; *) second='admin' ;; esac
 			ic list --format json | jq -e --arg first "$first" --arg second "$second" 'any(.[]; .name == $first) and any(.[]; .name == $second)'
 			case $fault in committed) [ -f "$state/browser.ready" ] ;; esac
-			case $fault in committed|pruning)
+			case $fault in committed|pruning|ready)
 				for role in def int; do
 					[ "$(ic profile device get "browser-$role" state source)" = "browser-$role-state" ]
 				done
@@ -84,6 +92,10 @@ for mode in normal interrupted detached renamed committed; do
 		tail -n 80 "/var/log/guests-update-browser-$mode.log" >&2
 		exit 1
 	}
+	if [ "$mode" = committed ]; then
+		if grep -Eq '^\++ (profiles_restore|rollback)$' "/var/log/guests-update-browser-$mode.log"; then exit 1; fi
+		[ "$(grep -Ec '^\++ browser_commit$' "/var/log/guests-update-browser-$mode.log")" = 2 ]
+	fi
 	step="$mode assertions"
 	for entry in web:def admin:int; do
 		old=${entry%:*}; new=${entry#*:}

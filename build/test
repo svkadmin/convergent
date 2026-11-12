@@ -3849,7 +3849,8 @@ done
     # list only reads: it names the recovery, which the next push runs.
     dns-push list | grep -qx 'A failed push awaits recovery: the firewalls may serve the previous list.'
     [ -e "$dns/pending" ]
-    dns-push local
+    # A refused edit recovers alone: no new list or probe after the restore, and nothing else starts Unbound.
+    dns-push remove absent.convergent.internal 2>&1 | grep -qx 'dns-push: no local record with that name'
     [ ! -e "$dns/pending" ]
     for f in fw1 fw2; do
         fwssh "$f" 'rcctl check unbound && ! grep -Eq "unbound.*(max open fds|less udp ports)" /var/log/daemon &&
