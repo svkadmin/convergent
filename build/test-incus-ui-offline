@@ -234,7 +234,7 @@ sh -n "$work/operations"
         [ "$ops" != unanswered ] || return 1
         printf '%s\n' "$ops"
     }
-    for sample in running project snapshot namesake success empty none unanswered; do
+    for sample in running project snapshot namesake success empty blank none unanswered; do
         case $sample in
         running) ops='{"running":[{"status_code":103,"resources":{"instances":["/1.0/instances/int"]}}]}' ;;
         project) ops='{"running":[{"status_code":105,"resources":{"instances":["/1.0/instances/int?project=default"]}}]}' ;;
@@ -242,11 +242,13 @@ sh -n "$work/operations"
         namesake) ops='{"running":[{"status_code":103,"resources":{"instances":["/1.0/instances/internal"]}}]}' ;;
         success) ops='{"success":[{"status_code":200,"resources":{"instances":["/1.0/instances/int"]}}]}' ;;
         empty) ops='{}' ;;
+        # Incus prints nothing for an empty operations map.
+        blank) ops= ;;
         none) ops='{"running":[{"status_code":103,"resources":null}]}' ;;
         unanswered) ops=unanswered ;;
         esac
         if operations_done int; then
-            case $sample in namesake|success|empty|none) ;; *) exit 97 ;; esac
+            case $sample in namesake|success|empty|blank|none) ;; *) exit 97 ;; esac
         else
             case $sample in running|project|snapshot|unanswered) ;; *) exit 97 ;; esac
         fi
@@ -728,6 +730,7 @@ for sample in ok remove-fail stop-fail token token-fail list-fail none empty arr
                 list-fail) return 1 ;;
                 none) echo null ;;
                 array) echo '[]' ;;
+                # Incus prints nothing for an empty operations map.
                 empty) ;;
                 *) echo '{}' ;;
                 esac ;;
@@ -746,7 +749,7 @@ for sample in ok remove-fail stop-fail token token-fail list-fail none empty arr
         printf '%s\n' 'query /1.0/instances?recursion=1&project=default' 'stop int --force'
     } | cmp - "$work/close-calls"
     case $sample in
-    ok | token | none) [ "$rc" = 0 ] && [ ! -e "$work/close/incus-ui" ] ;;
+    ok | token | none | empty) [ "$rc" = 0 ] && [ ! -e "$work/close/incus-ui" ] ;;
     *) [ "$rc" = 1 ] && [ -d "$work/close/incus-ui" ] ;;
     esac || exit 1
 done

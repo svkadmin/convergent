@@ -21,8 +21,11 @@ ic() {
 instances_json() { timeout -k 1 30 incus --force-local query '/1.0/instances?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&-; }
 # A client cut off by its timeout leaves the operation running in Incus; unanswered is not done.
 operations_done() {
-    timeout -k 1 30 incus --force-local query '/1.0/operations?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&- 2>/dev/null |
-        jq -e --arg i "/1.0/instances/$1" '[.[]?[]? | select(.status_code < 200) |
+    ops=$(timeout -k 1 30 incus --force-local query '/1.0/operations?recursion=1&project=default' 9>&- 8>&- 7>&- 6>&- 2>/dev/null) ||
+        return 1
+    # Incus prints nothing for an empty operations map.
+    [ -n "$ops" ] || return 0
+    printf '%s\n' "$ops" | jq -e --arg i "/1.0/instances/$1" '[.[]?[]? | select(.status_code < 200) |
             select(any(.resources[]?[]?; split("?")[0] | . == $i or startswith($i + "/")))] | length == 0' >/dev/null
 }
 owner() {
