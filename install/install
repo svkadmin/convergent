@@ -290,7 +290,12 @@ other_uki_size=$(awk -v f="convergent-$release-b.efi" '$1 == "size" && $2 == f {
 rootdev=$(findmnt -nro SOURCE /) || die "cannot identify the live root"
 rootdev=$(readlink -f "$rootdev") || die "cannot resolve the live root"
 [ -b "$rootdev" ] || die "the live root is not block-backed; cannot identify the stick"
-ancestry=$(lsblk -snrpo NAME,TYPE "$rootdev" ${p3:+"$p3"}) || die "cannot trace the live root"
+roots=$rootdev
+# The kernel's dm-mod.create root has no /dev/mapper node, without which lsblk -s fails: trace its slaves.
+case ${rootdev##*/} in dm-*)
+	roots=$(cd "/sys/class/block/${rootdev##*/}/slaves" && printf '/dev/%s\n' *) || die "cannot trace the live root" ;;
+esac
+ancestry=$(lsblk -snrpo NAME,TYPE $roots ${p3:+"$p3"}) || die "cannot trace the live root"
 bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" && !seen[$1]++ { print $1 }')
 [ -n "$bootdisks" ] || die "cannot identify the boot disk"
 
