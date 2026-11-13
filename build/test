@@ -559,9 +559,10 @@ if [ "${1:-}" = --install-options ]; then
 		'NAME="/dev/sdc" TYPE="disk" SIZE="1G" TRAN="usb" MODEL="Stick" RM="1"' >"$work/ld-bin/lsblk.out"
 	printf '%s\n' '#!/bin/sh' 'case $* in' 'settle*) [ ! -e "${0%/*}/unsettled" ] ;;' \
 		'*ID_SERIAL_SHORT*" /dev/nvme0n1") echo CVTARGET ;;' '*ID_SERIAL_SHORT*" /dev/sda") echo CVSTICK ;;' \
-		'*ID_SERIAL_SHORT*" /dev/sdc") printf "%s\n" "X\101" ;;' 'esac' >"$work/ld-bin/udevadm"
+		'*ID_SERIAL_SHORT*" /dev/sdb") printf "A\001B\n" ;;' '*ID_SERIAL_SHORT*" /dev/sdc") printf "%s\n" "X\101" ;;' \
+		'esac' >"$work/ld-bin/udevadm"
 	chmod +x "$work/ld-bin/lsblk" "$work/ld-bin/udevadm"
-	# A serial with a backslash is not offered; unsettled, none is.
+	# A serial with a control character or a backslash is not offered; unsettled, none is.
 	for case in CVSTICK:CVTARGET :; do
 		[ "$case" != : ] || : >"$work/ld-bin/unsettled"
 		(
