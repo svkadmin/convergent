@@ -22,6 +22,7 @@ stop_one() (
         ephemeral=false
     fi
     # Our own hold saves the guest's value: guests restores it if the drain is killed.
+    # An unset value is saved as "unset": Incus reads a value of "-" from stdin.
     if [ "$old_hold" = - ]; then
         ic config set "$node" boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old="$old_auto" || exit 1
     else ic config set "$node" boot.autorestart=false user.convergent.autorestart=true || exit 1; fi
@@ -38,7 +39,7 @@ stop_one() (
     stopped=1
     [ "$ephemeral" != true ] || exit 0
     # Restore only our override; an interrupted update may already own a hold.
-    if [ "$old_auto" = - ]; then ic config unset "$node" boot.autorestart
+    if [ "$old_auto" = unset ]; then ic config unset "$node" boot.autorestart
     else ic config set "$node" boot.autorestart="$old_auto"; fi
     if [ "$old_hold" = - ]; then ic config unset "$node" user.convergent.autorestart user.convergent.autorestart.old
     else ic config set "$node" user.convergent.autorestart="$old_hold"; fi
@@ -77,7 +78,7 @@ jq -r '.[] | select(.status != "Stopped") | (.project // "default") as $project 
      elif $project == "default" and (.name == "fw1" or .name == "fw2") then 4
      elif any(.expanded_devices[]?; .type == "nic" and (.network == "work" or .parent == "work")) then 0
      else empty end) as $stage |
-    [$stage, $project, .name, (.config["boot.autorestart"] // "-"),
+    [$stage, $project, .name, (.config["boot.autorestart"] // "unset"),
      (.config["user.convergent.autorestart"] // "-"), .ephemeral,
      ($stage == 0 and .status != "Stopped" and .status != "Error" and
       ((.expanded_config["boot.autostart"] // "") | . == "" or . == "last-state"))] | @tsv' "$work/instances" >"$work/order"

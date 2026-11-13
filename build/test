@@ -2289,8 +2289,8 @@ timeout() {
     '-k 1 120 incus --force-local query /1.0/instances?recursion=1&project=default') echo '[]' ;;
     '-k 1 120 incus --force-local query /1.0/instances?recursion=1&all-projects=true')
         echo '[{"name":"build","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"true"}},
-            {"name":"vm","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}},
-            {"name":"cut","project":"owner","config":{"user.convergent.autorestart":"true","user.convergent.autorestart.old":"-"}}]' ;;
+            {"name":"vm","project":"owner","config":{"boot.autorestart":"false","user.convergent.autorestart":"true","user.convergent.autorestart.old":"unset"}},
+            {"name":"cut","project":"owner","config":{"user.convergent.autorestart":"true","user.convergent.autorestart.old":"unset"}}]' ;;
     '-k 1 120 incus --force-local --project owner config set build boot.autorestart=true') [ -z "$set_timeout" ] || return 124 ;;
     '-k 1 120 incus --force-local --project owner config unset build user.convergent.autorestart user.convergent.autorestart.old') ;;
     '-k 1 120 incus --force-local --project owner config unset vm boot.autorestart user.convergent.autorestart user.convergent.autorestart.old') ;;
@@ -2367,14 +2367,16 @@ incus() {
     esac
 }
 stuck=0 clear_fail=0 clear_timeout=0 query_fail=0 last_state_fail=0
-stop_one default wan - - false 3 false
+stop_one default wan unset - false 3 false
 grep -q '25 incus .*stop wan --timeout 20' "$fixture/timeouts"
 grep -q '40 incus .*stop wan --force' "$fixture/timeouts"
 grep -q 'config unset wan boot.autorestart' "$fixture/calls"
 grep -q 'config unset wan user.convergent.autorestart' "$fixture/calls"
 # Our own hold saves the guest's value for guests' clear after a killed drain, and drops it after the restore.
-grep -qx -- '--force-local --project default config set wan boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old=-' "$fixture/calls"
+grep -qx -- '--force-local --project default config set wan boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old=unset' "$fixture/calls"
 grep -qx -- '--force-local --project default config unset wan user.convergent.autorestart user.convergent.autorestart.old' "$fixture/calls"
+# Incus reads a value of - from stdin: never one the drain sets.
+if grep -Eq -- '=-( |$)' "$fixture/calls"; then exit 1; fi
 rm "$fixture/stopped"; : >"$fixture/calls"
 stop_one owner wan true - false 0 false
 grep -qx -- '--force-local --project owner config set wan boot.autorestart=false user.convergent.autorestart=true user.convergent.autorestart.old=true' "$fixture/calls"
@@ -2388,11 +2390,11 @@ grep -qx -- '--force-local --project default config set wan boot.autorestart=fal
 if grep -q 'autorestart.old' "$fixture/calls"; then exit 1; fi
 rm "$fixture/stopped"; : >"$fixture/calls"
 stuck=1
-if stop_one default wan - - false 3 false; then exit 1; fi
+if stop_one default wan unset - false 3 false; then exit 1; fi
 if grep -q 'config unset' "$fixture/calls"; then exit 1; fi
 stuck=0
 touch "$fixture/ephemeral"
-stop_one default wan - - true 1 false
+stop_one default wan unset - true 1 false
 [ -f "$fixture/deleted" ]
 if grep -q 'ephemeral=.*--property\|config unset\|volatile.last_state.power' "$fixture/calls"; then exit 1; fi
 rm "$fixture/deleted" "$fixture/ephemeral"
@@ -2417,8 +2419,8 @@ for fault in none clear clear-timeout stop query missing last-state; do
     missing) touch "$fixture/deleted" ;;
     last-state) last_state_fail=1 ;;
     esac
-    if [ "$fault" = none ]; then stop_one owner wan - - true 0 true
-    elif stop_one owner wan - - true 0 true; then exit 1; fi
+    if [ "$fault" = none ]; then stop_one owner wan unset - true 0 true
+    elif stop_one owner wan unset - true 0 true; then exit 1; fi
     grep -q 'config set wan ephemeral=false --property$' "$fixture/calls"
     # Marked before the protection: a drain cut later leaves it for guests.
     [ "$(grep -n 'config set wan user.convergent.ephemeral=true$' "$fixture/calls" | cut -d: -f1)" -lt \
@@ -2447,7 +2449,7 @@ done
 clear_fail=0 clear_timeout=0 stuck=0 query_fail=0 last_state_fail=0
 rm -f "$fixture/ephemeral" "$fixture/deleted" "$fixture/stopped"
 : >"$fixture/calls"
-stop_one owner wan - - false 0 false
+stop_one owner wan unset - false 0 false
 if grep -q 'volatile.last_state.power\|boot.autostart' "$fixture/calls"; then exit 1; fi
 # Exercise work NICs, duplicate names across projects, browsers and unrelated instances.
 work=$fixture
@@ -2466,7 +2468,7 @@ cat >"$work/instances" <<'JSON'
  {"name":"unrelated","status":"Running","config":{},"ephemeral":false}]
 JSON
 eval "$(sed -n '/^jq -r /,/^result=0/p' /usr/lib/convergent/incus/shutdown | sed '$d')"
-printf '0\towner\twan\t-\t-\tfalse\ttrue\n0\tother\tbuild\t-\t-\ttrue\ttrue\n1\tdefault\tremmina\t-\t-\tfalse\tfalse\n1\tdefault\tdef\t-\t-\tfalse\tfalse\n1\tdefault\ttmp-23\t-\t-\ttrue\tfalse\n2\tdefault\tsvc\t-\t-\tfalse\tfalse\n3\tdefault\twan\tfalse\ttrue\tfalse\tfalse\n4\tdefault\tfw1\t-\t-\tfalse\tfalse\n4\tdefault\tfw2\t-\t-\tfalse\tfalse\n' >"$work/expected"
+printf '0\towner\twan\tunset\t-\tfalse\ttrue\n0\tother\tbuild\tunset\t-\ttrue\ttrue\n1\tdefault\tremmina\tunset\t-\tfalse\tfalse\n1\tdefault\tdef\tunset\t-\tfalse\tfalse\n1\tdefault\ttmp-23\tunset\t-\ttrue\tfalse\n2\tdefault\tsvc\tunset\t-\tfalse\tfalse\n3\tdefault\twan\tfalse\ttrue\tfalse\tfalse\n4\tdefault\tfw1\tunset\t-\tfalse\tfalse\n4\tdefault\tfw2\tunset\t-\tfalse\tfalse\n' >"$work/expected"
 cmp "$work/expected" "$work/order"
 stop_one() {
     [ "$6" = "$stage" ]
@@ -2486,7 +2488,7 @@ for status in Running Ready Frozen Stopped Error; do
         case $status:$auto in
         Running:|Running:last-state|Ready:|Ready:last-state|Frozen:|Frozen:last-state) remember=true ;;
         esac
-        printf '0\tdefault\towner\t-\t-\tfalse\t%s\n' "$remember" >"$work/expected"
+        printf '0\tdefault\towner\tunset\t-\tfalse\t%s\n' "$remember" >"$work/expected"
         cmp "$work/expected" "$work/order"
     done
 done
