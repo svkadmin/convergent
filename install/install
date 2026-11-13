@@ -343,9 +343,10 @@ usb_port() {
 # The whole disks: name, size, transport, serial, model, removable (tab-separated; lsblk -P keeps empty fields).
 # This lsblk reads sysfs, not udev (no serial for USB disks, NVMe values space-padded): the serial is udev's.
 list_disks() {
-	udevadm settle -t 10 || :
+	# Unsettled, a disk may lack its serial yet and escape the shared count: then no serial is offered.
+	udev=1; udevadm settle -t 10 || udev=
 	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,MODEL,RM >"$work/lsblk" || die "cannot list the disks"
-	awk '{
+	awk -v udev="$udev" '{
 		split("", v); line = $0
 		while (match(line, /^[A-Z:]+="[^"]*"/)) {
 			kv = substr(line, 1, RLENGTH); line = substr(line, RLENGTH + 2)
@@ -353,7 +354,9 @@ list_disks() {
 		}
 		if (v["TYPE"] != "disk") next
 		s = ""; cmd = "udevadm info --query=property --property=ID_SERIAL_SHORT --value " v["NAME"] " 2>/dev/null"
-		cmd | getline s; close(cmd)
+		if (udev) { cmd | getline s; close(cmd) }
+		# Typed back and passed to awk -v: a serial with control characters or a backslash is not offered.
+		if (s ~ /[[:cntrl:]\\]/) s = ""
 		gsub(/^ +| +$/, "", v["MODEL"])
 		print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" s "\t" v["MODEL"] "\t" v["RM"]
 	}' "$work/lsblk" >"$work/disks" || die "cannot read the disk list"
@@ -490,9 +493,6 @@ check_identity() {
 	[ "$(lsblk -dnbo MAJ:MIN,SIZE,SERIAL "$disk")" = "$identity" ] || die "target identity changed"
 	[ -z "$diskseq" ] || [ "$(cat "/sys/block/${disk##*/}/diskseq")" = "$diskseq" ] || die "target diskseq changed"
 }
-serial=$(disk_field "$disk" 4)
-shared=$(awk -F '\t' -v s="$serial" '$4 == s {n++} END {print n + 0}' "$work/disks")
-model=$(disk_field "$disk" 5)
 install_size "$disk_size" 32768
 
 # 2. The owner.
@@ -666,6 +666,11 @@ while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
 done
 # Disks attached during question 9 count too.
 others_detached
+
+# The target's serial from the list after the last attach: a disk attached since may share it.
+serial=$(disk_field "$disk" 4)
+shared=$(awk -F '\t' -v s="$serial" '$4 == s {n++} END {print n + 0}' "$work/disks")
+model=$(disk_field "$disk" 5)
 
 # 10. The summary, then the erase confirmation; a wrong answer erases nothing.
 tries=0

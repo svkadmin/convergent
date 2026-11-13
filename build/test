@@ -555,18 +555,25 @@ if [ "${1:-}" = --install-options ]; then
 	printf '%s\n' 'NAME="/dev/sda" TYPE="disk" SIZE="2.7G" TRAN="usb" MODEL="QEMU HARDDISK   " RM="0"' \
 		'NAME="/dev/sr0" TYPE="rom" SIZE="1G" TRAN="sata" MODEL="QEMU DVD-ROM" RM="1"' \
 		'NAME="/dev/nvme0n1" TYPE="disk" SIZE="64G" TRAN="nvme" MODEL="QEMU NVMe Ctrl            " RM="0"' \
-		'NAME="/dev/sdb" TYPE="disk" SIZE="64M" TRAN="usb" MODEL="" RM="1"' >"$work/ld-bin/lsblk.out"
-	printf '%s\n' '#!/bin/sh' 'case $* in' 'settle*) ;;' '*ID_SERIAL_SHORT*" /dev/nvme0n1") echo CVTARGET ;;' \
-		'*ID_SERIAL_SHORT*" /dev/sda") echo CVSTICK ;;' 'esac' >"$work/ld-bin/udevadm"
+		'NAME="/dev/sdb" TYPE="disk" SIZE="64M" TRAN="usb" MODEL="" RM="1"' \
+		'NAME="/dev/sdc" TYPE="disk" SIZE="1G" TRAN="usb" MODEL="Stick" RM="1"' >"$work/ld-bin/lsblk.out"
+	printf '%s\n' '#!/bin/sh' 'case $* in' 'settle*) [ ! -e "${0%/*}/unsettled" ] ;;' \
+		'*ID_SERIAL_SHORT*" /dev/nvme0n1") echo CVTARGET ;;' '*ID_SERIAL_SHORT*" /dev/sda") echo CVSTICK ;;' \
+		'*ID_SERIAL_SHORT*" /dev/sdc") printf "%s\n" "X\101" ;;' 'esac' >"$work/ld-bin/udevadm"
 	chmod +x "$work/ld-bin/lsblk" "$work/ld-bin/udevadm"
-	(
-	unset -f lsblk udevadm; PATH=$work/ld-bin:$PATH
-	. "$work/list-disks"
-	list_disks
-	t=$(printf '\t')
-	printf '%s\n' "/dev/sda${t}2.7G${t}usb${t}CVSTICK${t}QEMU HARDDISK${t}0" "/dev/nvme0n1${t}64G${t}nvme${t}CVTARGET${t}QEMU NVMe Ctrl${t}0" \
-		"/dev/sdb${t}64M${t}usb${t}${t}${t}1" | cmp -s - "$work/disks"
-	) || die 'disk list: serial not from udev or model not trimmed'
+	# A serial with a backslash is not offered; unsettled, none is.
+	for case in CVSTICK:CVTARGET :; do
+		[ "$case" != : ] || : >"$work/ld-bin/unsettled"
+		(
+		unset -f lsblk udevadm; PATH=$work/ld-bin:$PATH
+		. "$work/list-disks"
+		list_disks
+		t=$(printf '\t')
+		printf '%s\n' "/dev/sda${t}2.7G${t}usb${t}${case%:*}${t}QEMU HARDDISK${t}0" \
+			"/dev/nvme0n1${t}64G${t}nvme${t}${case#*:}${t}QEMU NVMe Ctrl${t}0" "/dev/sdb${t}64M${t}usb${t}${t}${t}1" \
+			"/dev/sdc${t}1G${t}usb${t}${t}Stick${t}1" | cmp -s - "$work/disks"
+		) || die "disk list: serial not from udev, model not trimmed or serial offered ($case)"
+	done
 	# The erase confirmation: the disk as typed, or ERASE and a serial only that disk has.
 	erase_ok /dev/sda /dev/sda S1 1 && erase_ok 'ERASE S1' /dev/sda S1 1 || die 'refused the erase confirmation'
 	for bad in '/dev/sda ' /dev/sdb 'ERASE S1' 'ERASE ' 'erase S1' yes ''; do
@@ -574,6 +581,9 @@ if [ "${1:-}" = --install-options ]; then
 		if erase_ok "$bad" /dev/sda "$@"; then die "accepted erase confirmation $bad ($*)"; fi
 	done
 	# The retype loop: a wrong answer erases nothing and shows the summary again; three end the installer.
+	# The shared count is taken after the last attach (question 9), before the summary.
+	awk '/^others_detached$/ { o = NR } /^shared=/ { s = NR } /^# 10\. The summary/ { m = NR } END { exit !(o && s > o && m > s) }' \
+		"$here/../install/install" || die 'the shared serial count is taken before the last attach'
 	sed -n '/^# 10\. The summary/,/^done$/p' "$here/../install/install" >"$work/confirm"
 	grep -q erase_ok "$work/confirm" && [ "$(wc -l <"$work/confirm")" -lt 30 ] || die 'erase confirmation loop moved'
 	sh -n "$work/confirm"
@@ -659,7 +669,7 @@ if [ "${1:-}" = --install-options ]; then
 	# filesystem is a USB or removable disk's, checked again by disk, diskseq, parent and type.
 	{
 		sed -n '/^disk_field() {/p; /^no_other() {/,/^}/p' "$here/../install/install"
-		sed -n '/^# 9\. A LUKS header backup/,/^# 10\. The summary/p' "$here/../install/install"
+		sed -n '/^# 9\. A LUKS header backup/,/^# The target.s serial from the list/p' "$here/../install/install"
 	} | sed "s|/sys/block/|$work/sys/block/|g" >"$work/backup-q"
 	[ "$(grep -c '^[a-z_]*() {' "$work/backup-q")" = 4 ] && grep -q "$work/sys/block/" "$work/backup-q" || die 'backup question moved'
 	sh -n "$work/backup-q"
