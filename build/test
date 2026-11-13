@@ -3006,6 +3006,8 @@ sh -n "$work/verify-image"
 (
 	tls=$work/tls
 	mkdir "$tls"
+	# svc_exec and certificates_apply read svc replies through guest-reply.sh, as guests does.
+	. /usr/lib/convergent/guest-reply.sh
 	sed -n '/^certificates_due() {/,/^}/p; /^certificates_apply() (/,/^)/p; /^svc_exec() {/,/^}/p; /^svc_answers() /p' /usr/local/sbin/guests >"$work/cert-functions"
 	[ "$(grep -c '^certificates_due() {$\|^certificates_apply() ($\|^svc_exec() {$\|^svc_answers() { ' "$work/cert-functions")" = 4 ]
 	. "$work/cert-functions"
@@ -4429,7 +4431,7 @@ for step in journal rebuilt seeded rolledback; do
         }
         step == "seeded" && /^        seed_start "\$guest"$/ {print "        kill -KILL \"$$\""}
         step == "rolledback" && /^        seed_start "\$guest"$/ {print "        die \"injected failure after seeding\""}
-        step == "rolledback" && /^            rebuild_root "\$guest" "\$image" \|\| return$/ {print "            kill -KILL \"$$\""}
+        step == "rolledback" && /^            rebuild_root "\$guest" "\$image" rollback \|\| return$/ {print "            kill -KILL \"$$\""}
     ' /usr/local/sbin/guests >"$release/guests-kill-$step"
     grep -q '^ *kill -KILL "\$\$"$' "$release/guests-kill-$step" || bad $LINENO
     sh "$release/guests-kill-$step" update svc "$release/guests/svc" --trusted-local >"/var/log/guests-update-kill-$step.log" 2>&1
