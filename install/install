@@ -341,15 +341,21 @@ usb_port() {
 	[ -z "$usb" ] || printf '%s\n' "${usb##*/}"
 }
 # The whole disks: name, size, transport, serial, model, removable (tab-separated; lsblk -P keeps empty fields).
+# This lsblk reads sysfs, not udev (no serial for USB disks, NVMe values space-padded): the serial is udev's.
 list_disks() {
-	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,SERIAL,MODEL,RM >"$work/lsblk" || die "cannot list the disks"
+	udevadm settle -t 10 || :
+	lsblk -dnpPo NAME,TYPE,SIZE,TRAN,MODEL,RM >"$work/lsblk" || die "cannot list the disks"
 	awk '{
 		split("", v); line = $0
 		while (match(line, /^[A-Z:]+="[^"]*"/)) {
 			kv = substr(line, 1, RLENGTH); line = substr(line, RLENGTH + 2)
 			v[substr(kv, 1, index(kv, "=") - 1)] = substr(kv, index(kv, "=") + 2, length(kv) - index(kv, "=") - 2)
 		}
-		if (v["TYPE"] == "disk") print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" v["SERIAL"] "\t" v["MODEL"] "\t" v["RM"]
+		if (v["TYPE"] != "disk") next
+		s = ""; cmd = "udevadm info --query=property --property=ID_SERIAL_SHORT --value " v["NAME"] " 2>/dev/null"
+		cmd | getline s; close(cmd)
+		gsub(/^ +| +$/, "", v["MODEL"])
+		print v["NAME"] "\t" v["SIZE"] "\t" v["TRAN"] "\t" s "\t" v["MODEL"] "\t" v["RM"]
 	}' "$work/lsblk" >"$work/disks" || die "cannot read the disk list"
 }
 show_disks() {
@@ -655,7 +661,7 @@ while yes_no 'Save a LUKS header backup to another USB disk at the end?'; do
 	if [ -e "/sys/block/${backup_disk##*/}/diskseq" ]; then
 		backup_seq=$(cat "/sys/block/${backup_disk##*/}/diskseq") || die "cannot read the diskseq of $backup_disk"
 	fi
-	if yes_no "Write the header backup to $1 on $3 $(lsblk -dno MODEL "$3" 2>/dev/null)?"; then break; fi
+	if yes_no "Write the header backup to $1 on $3 $(disk_field "$3" 5)?"; then break; fi
 	backup=
 done
 # Disks attached during question 9 count too.

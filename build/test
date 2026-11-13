@@ -547,6 +547,26 @@ if [ "${1:-}" = --install-options ]; then
 		done
 	done
 	)
+	# The disk list: the serial from udev (lsblk here has none for USB, NVMe padded), the model trimmed.
+	sed -n '/^list_disks() {/,/^}/p' "$here/../install/install" >"$work/list-disks"
+	grep -q ID_SERIAL_SHORT "$work/list-disks" || die 'disk list moved'
+	mkdir "$work/ld-bin"
+	printf '%s\n' '#!/bin/sh' 'exec cat "${0%/*}/lsblk.out"' >"$work/ld-bin/lsblk"
+	printf '%s\n' 'NAME="/dev/sda" TYPE="disk" SIZE="2.7G" TRAN="usb" MODEL="QEMU HARDDISK   " RM="0"' \
+		'NAME="/dev/sr0" TYPE="rom" SIZE="1G" TRAN="sata" MODEL="QEMU DVD-ROM" RM="1"' \
+		'NAME="/dev/nvme0n1" TYPE="disk" SIZE="64G" TRAN="nvme" MODEL="QEMU NVMe Ctrl            " RM="0"' \
+		'NAME="/dev/sdb" TYPE="disk" SIZE="64M" TRAN="usb" MODEL="" RM="1"' >"$work/ld-bin/lsblk.out"
+	printf '%s\n' '#!/bin/sh' 'case $* in' 'settle*) ;;' '*ID_SERIAL_SHORT*" /dev/nvme0n1") echo CVTARGET ;;' \
+		'*ID_SERIAL_SHORT*" /dev/sda") echo CVSTICK ;;' 'esac' >"$work/ld-bin/udevadm"
+	chmod +x "$work/ld-bin/lsblk" "$work/ld-bin/udevadm"
+	(
+	unset -f lsblk udevadm; PATH=$work/ld-bin:$PATH
+	. "$work/list-disks"
+	list_disks
+	t=$(printf '\t')
+	printf '%s\n' "/dev/sda${t}2.7G${t}usb${t}CVSTICK${t}QEMU HARDDISK${t}0" "/dev/nvme0n1${t}64G${t}nvme${t}CVTARGET${t}QEMU NVMe Ctrl${t}0" \
+		"/dev/sdb${t}64M${t}usb${t}${t}${t}1" | cmp -s - "$work/disks"
+	) || die 'disk list: serial not from udev or model not trimmed'
 	# The erase confirmation: the disk as typed, or ERASE and a serial only that disk has.
 	erase_ok /dev/sda /dev/sda S1 1 && erase_ok 'ERASE S1' /dev/sda S1 1 || die 'refused the erase confirmation'
 	for bad in '/dev/sda ' /dev/sdb 'ERASE S1' 'ERASE ' 'erase S1' yes ''; do
