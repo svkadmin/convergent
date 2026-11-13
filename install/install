@@ -293,7 +293,8 @@ rootdev=$(readlink -f "$rootdev") || die "cannot resolve the live root"
 roots=$rootdev
 # The kernel's dm-mod.create root has no /dev/mapper node, without which lsblk -s fails: trace its slaves.
 case ${rootdev##*/} in dm-*)
-	roots=$(cd "/sys/class/block/${rootdev##*/}/slaves" && printf '/dev/%s\n' *) || die "cannot trace the live root" ;;
+	roots=$(cd "/sys/class/block/${rootdev##*/}/slaves" && set -- * && [ -e "$1" ] && printf '/dev/%s\n' "$@") ||
+		die "cannot trace the live root" ;;
 esac
 ancestry=$(lsblk -snrpo NAME,TYPE $roots ${p3:+"$p3"}) || die "cannot trace the live root"
 bootdisks=$(printf '%s\n' "$ancestry" | awk '$2 == "disk" && !seen[$1]++ { print $1 }')

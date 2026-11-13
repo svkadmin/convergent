@@ -226,7 +226,7 @@ autorestart_clear() (
         case $auto in true) auto=boot.autorestart ;; *) auto= ;; esac
         case $old in
         '') ic config unset "$node" ${auto:+"$auto"} user.convergent.autorestart || return ;;
-        unset) ic config unset "$node" ${auto:+"$auto"} user.convergent.autorestart user.convergent.autorestart.old || return ;;
+        -|unset) ic config unset "$node" ${auto:+"$auto"} user.convergent.autorestart user.convergent.autorestart.old || return ;;
         *) ic config set "$node" boot.autorestart="$old" &&
             ic config unset "$node" user.convergent.autorestart user.convergent.autorestart.old || return ;;
         esac
@@ -237,7 +237,7 @@ autorestart_clear() (
     while read -r project node old; do
         ic_project=$project
         case $old in
-        unset) ic config unset "$node" user.convergent.autorestart.old || return ;;
+        -|unset) ic config unset "$node" user.convergent.autorestart.old || return ;;
         *) ic config set "$node" boot.autorestart="$old" &&
             ic config unset "$node" user.convergent.autorestart.old || return ;;
         esac

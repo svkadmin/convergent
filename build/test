@@ -5910,7 +5910,9 @@ t sh -eu <<'CHECK'
 work=$(mktemp -d)
 trap 'rm -rf "$work"' 0
 bad() { echo "check: $*" >&2; exit 1; }
-eval "$(grep -B1 -F "bad 'root does not use vroot'" /usr/local/sbin/check)"
+lines=$(grep -B1 -F "bad 'root does not use vroot'" /usr/local/sbin/check)
+[ "$(printf '%s\n' "$lines" | wc -l)" = 2 ]
+eval "$lines"
 CHECK
 t sh -eu <<'CHECK'
 work=$(mktemp -d)
